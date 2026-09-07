@@ -25,8 +25,8 @@ usage: build/build-image.sh [--version V] [--dietpi-image PATH] [--check] [--kee
   --dietpi-image P    use an already downloaded DietPi .img.xz instead of downloading
                        (used as-is; not checksum-verified)
   --check             verify the repository tree only (no root, no network)
-  --keep-work         keep build/work after a successful build; also keeps a failed
-                       build's partial working image for inspection
+  --keep-work         keep a failed build's partial working image for inspection
+                       (build/work itself is always kept, with or without this)
 EOF
 }
 

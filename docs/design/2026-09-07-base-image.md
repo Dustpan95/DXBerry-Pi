@@ -291,8 +291,12 @@ user is told to run `sudo dxberry-provision` once the Pi has internet.
 - Persistent log: `/var/lib/dxberry/provision.log` (root-only, never on the
   RAM log filesystem).
 - Human-readable summary: `/boot/dxberry-status.txt` — timestamp, image
-  version, hostname, active interface and address, Graywolf version and URL,
-  and any step that failed. Readable from a PC if the drive is pulled.
+  version, hostname, the **configured** network mode and address, Graywolf
+  version and URL, and any step that failed. Written on every run, successful
+  or not. The address it reports is the one just written to
+  `interfaces.d/`, which becomes the live address when `dxberry-netwatch`
+  next applies it — on first boot that is after the reboot, not while the
+  provisioner is still running. Readable from a PC if the drive is pulled.
 
 ## 8. Network: `dxberry-netwatch`
 
@@ -381,12 +385,19 @@ inherent to DHCP and acceptable.
 
 ### 8.6 systemd integration
 
-`dxberry-netwatch.service`: `Type=notify`, `After=networking.service`,
-`Before=network-online.target`, `WantedBy=multi-user.target`, `Restart=always`.
-It signals readiness once the start phase has settled (an interface is
-configured, or 30 s have elapsed), so anything ordered after
-`network-online.target` — including Graywolf's unit — waits for a usable
-network.
+`dxberry-netwatch.service`: `Type=notify` with `NotifyAccess=all`,
+`After=networking.service`, `Before=network-online.target`,
+`WantedBy=multi-user.target network-online.target`, `Restart=always`,
+`TimeoutStartSec=90`.
+
+Readiness is signalled (`systemd-notify --ready`) as soon as the initial state
+has been applied: `nw_startup` adopts whatever ifupdown already has, runs one
+immediate tick — no debounce — and brings the chosen interface up, then the
+daemon reports ready and enters its event loop. There is **no settle window
+and no wait for an address**: a Pi that boots with no link at all decides
+`NONE` and still reports ready rather than holding the boot open. So anything
+ordered after `network-online.target`, including Graywolf's unit, waits for
+netwatch's first decision, not for connectivity.
 
 ### 8.7 Test hooks
 
@@ -542,9 +553,15 @@ about a minute and needs no QEMU.
 
 ## 14. Testing and acceptance
 
-Unit (in CI): `tests/config.bats` covers valid configs, each validation rule in
-§5, CRLF input, quoted values, unknown keys, missing required keys, and the
-`<applied>` skip rule.
+Unit (in CI): `tests/run.sh` — plain bash, awk and jq, no bats. It sources
+every `tests/test_*.sh` and runs every `test_*` function it finds, capturing
+each test's stderr and printing it only on failure. Coverage includes valid
+configs, each validation rule in §5, CRLF and UTF-8-BOM input, quoted values,
+unknown keys, missing required keys and the `<applied>` skip rule; the
+netwatch state machine and its failover sequences; the network module's
+files, WiFi import, stray-stanza scan and pre-reboot gate; Graywolf install
+and seeding against a fake `curl`; and scrub behaviour for consumed and
+unconsumed secrets.
 
 Acceptance on a Raspberry Pi 4, before tagging `v0.1.0`:
 
@@ -615,3 +632,30 @@ Open, to be confirmed on the first flashed image:
 3. Loop-device mounting on GitHub-hosted runners (works with `sudo` today;
    the release job is the only place it matters, and a local build is always
    available as a fallback).
+
+### To verify on hardware (Task 12)
+
+Everything below is implemented against documented behaviour but has never run
+on a real Pi. Each item is a thing the implementation would get wrong silently
+if the assumption is false.
+
+1. DietPi's `/etc/network/interfaces` only sources `interfaces.d/*`, and
+   per-interface files are `<iface>.conf` — no `auto` or `allow-hotplug` line
+   for eth0 or wlan0 survives anywhere on the built image
+   (`dxb_net_scan_stray_stanzas` must find nothing on a fresh first boot).
+2. `wlan0` exists after `dietpi-set_hardware wifimodules enable`, and
+   `dietpi-wifidb 1` still imports `/boot/dietpi-wifi.txt` with WiFi disabled
+   in `dietpi.txt` (`AUTO_SETUP_NET_WIFI_ENABLED=0`).
+3. Calling `reboot` from `Automation_Custom_Script.sh` is safe: DietPi has
+   finalized `.install_stage` by then, and the installer does not re-run on
+   the next boot.
+4. `Type=notify` plus `systemd-notify --ready` from a shell script is accepted
+   on Trixie (the unit reaches `active (running)`, not a start timeout).
+5. `build/build-image.sh` run as root end to end, including the DietPi
+   `.sha256` file's format and the FAT timestamp behaviour the build relies on
+   (`verify_fat_older`).
+6. Graywolf accepts the `PUT /igate/config` merge body — the GET response's
+   read-only fields sent back unchanged are ignored, not rejected.
+7. Physical failover in all three network shapes — static, DHCP and
+   Ethernet-only — with `ip -4 addr` checked at each step: cable pull, cable
+   replug, and (Ethernet-only) that `NONE` recovers to `ETH`.

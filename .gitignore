@@ -12,3 +12,6 @@ dietpi-wifi.txt
 # Editor / OS noise
 *.swp
 .DS_Store
+
+# Local development notes and task scratch
+.superpowers/
