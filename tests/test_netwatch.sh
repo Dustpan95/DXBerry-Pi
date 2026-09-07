@@ -90,10 +90,51 @@ test_wifi_association_loss_returns_to_none_then_retries() {
 
 test_simulate_writes_and_clears_file() {
   nw_env
+  touch "$IFACES_DIR/wlan0.conf"
   nw_simulate eth0-down > /dev/null; assert_eq "$(cat "$SIM_FILE")" "0"
   nw_simulate eth0-up > /dev/null; assert_eq "$(cat "$SIM_FILE")" "1"
   nw_simulate off > /dev/null; [[ -f $SIM_FILE ]] && _fail "sim file should be removed"
-  assert_fails nw_simulate bogus
+  assert_fails nw_simulate bogus 2> /dev/null
+}
+
+# On an Ethernet-only Pi, "simulate the cable coming out" takes the address away with nothing to
+# fail over to - a guaranteed lockout, so it has to be asked for explicitly.
+test_simulate_eth0_down_refuses_without_wifi_unless_forced() {
+  nw_env
+  assert_fails nw_simulate eth0-down 2> /dev/null
+  [[ -f $SIM_FILE ]] && _fail "a refused simulation must not write the sim file"
+  local out; out=$(nw_simulate eth0-down 2>&1)
+  assert_contains "$out" "refusing"
+  assert_contains "$out" "would drop this Pi's only address"
+  assert_not_contains "$out" "simulating:"
+  # --force is the documented escape hatch for someone at the console, in either argument order.
+  out=$(nw_simulate eth0-down --force)
+  assert_contains "$out" "simulating: eth0 carrier lost"
+  assert_eq "$(cat "$SIM_FILE")" "0"
+  rm -f "$SIM_FILE"
+  out=$(nw_simulate --force eth0-down)
+  assert_eq "$(cat "$SIM_FILE")" "0"
+  # eth0-up never needs --force: it only ever restores the primary interface.
+  rm -f "$SIM_FILE"
+  assert_ok nw_simulate eth0-up > /dev/null
+  assert_eq "$(cat "$SIM_FILE")" "1"
+}
+
+# An unwritable sim file means the daemon will keep reading the real carrier: say so, and do not
+# print a "simulating:" line the operator would then trust.
+test_simulate_reports_a_failed_write() {
+  nw_env
+  touch "$IFACES_DIR/wlan0.conf"
+  export DXB_NW_SIM_FILE=$TEST_TMP/no-such-dir/sim
+  SIM_FILE=$DXB_NW_SIM_FILE
+  local out rc
+  out=$(nw_simulate eth0-down 2> /dev/null); rc=$?
+  assert_eq "$rc" "1"
+  assert_not_contains "$out" "simulating:"
+  assert_contains "$(nw_simulate eth0-down 2>&1 > /dev/null)" "could not write $SIM_FILE"
+  out=$(nw_simulate eth0-up 2> /dev/null); rc=$?
+  assert_eq "$rc" "1"
+  assert_not_contains "$out" "simulating:"
 }
 
 # A failed ifup eth0 (e.g. a DHCP timeout while carrier is still present) must not wedge

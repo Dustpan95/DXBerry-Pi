@@ -52,8 +52,25 @@ dxb_config_failure() {
   return 1
 }
 
+# dxb_first_boot_gate: the first-boot reboot hands the network to dxberry-netwatch alone - no
+# interface has an auto/allow-hotplug line, so nothing else will ever bring one up. Refuse to
+# reboot unless the unit is actually enabled and no foreign ifupdown stanza can fight it;
+# otherwise the Pi would come back with no address and no way in. Returns non-zero when blocked.
+dxb_first_boot_gate() {
+  local blocked=0
+  if ! systemctl is-enabled --quiet dxberry-netwatch; then
+    dxb_step_failed network "not rebooting: dxberry-netwatch is not enabled, so this Pi would come back with no network. Run 'systemctl enable dxberry-netwatch', then 'sudo dxberry-provision --first-boot'"
+    blocked=1
+  fi
+  if ! dxb_net_scan_stray_stanzas; then
+    dxb_step_failed network "not rebooting: the stray stanza(s) above would let ifupdown configure eth0/wlan0 behind dxberry-netwatch's back. Remove them, then run 'sudo dxberry-provision --first-boot'"
+    blocked=1
+  fi
+  return $blocked
+}
+
 main() {
-  local reseed=0 check=0 boot cfg w
+  local reseed=0 check=0 gate_ok=1 boot cfg w
   DXB_MODE=run
   for a in "$@"; do
     case $a in
@@ -110,10 +127,14 @@ main() {
   fi
   provision_scrub
 
+  # Runs before the status files are written so the operator - whose DietPi session is still up -
+  # reads exactly what to fix, and before the marker so --first-boot can simply be re-run.
+  if [[ $DXB_MODE == first-boot ]] && ! dxb_first_boot_gate; then gate_ok=0; fi
+
   dxb_status_write "$boot/dxberry-status.txt"
   cp "$boot/dxberry-status.txt" "$DXB_STATE_DIR/status.txt" 2> /dev/null || true
   rm -f "$boot/dxberry-ERROR.txt"
-  touch "$DXB_STATE_DIR/provisioned"
+  if (( gate_ok )); then touch "$DXB_STATE_DIR/provisioned"; fi
   local rc=0
   if (( ${#DXB_FAILED_STEPS[@]} )); then
     rc=1
@@ -122,10 +143,12 @@ main() {
     dxb_info "finished: all steps completed"
   fi
 
-  if [[ $DXB_MODE == first-boot ]]; then
+  if [[ $DXB_MODE == first-boot ]] && (( gate_ok )); then
     dxb_info "rebooting to start dxberry-netwatch and graywolf cleanly"
     sync
     reboot
+  elif [[ $DXB_MODE == first-boot ]]; then
+    dxb_warn "not rebooting; this session stays up. Fix the network problem in $boot/dxberry-status.txt, then run: sudo dxberry-provision --first-boot"
   elif (( DXB_NET_CHANGED )); then
     dxb_warn "network configuration changed; restarting dxberry-netwatch in 3s (an SSH session may drop and can reconnect at the new address)"
     systemd-run --quiet --on-active=3 systemctl restart dxberry-netwatch 2> /dev/null || systemctl restart dxberry-netwatch

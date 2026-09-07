@@ -136,21 +136,57 @@ nw_run() {
   done
 }
 
+# nw_sim_write VALUE: the whole point of the file is to be read back, so a write that fails
+# must not be reported as a running simulation.
+nw_sim_write() {
+  if ! echo "$1" > "$SIM_FILE"; then
+    echo "could not write $SIM_FILE; simulation unchanged" >&2
+    return 1
+  fi
+}
+
+# nw_simulate WHAT [--force]: WHAT is eth0-down|eth0-up|off.
 nw_simulate() {
-  case ${1:-} in
-    eth0-down) echo 0 > "$SIM_FILE"; echo "simulating: $ETH carrier lost (takes effect within $((POLL + DEBOUNCE))s)" ;;
-    eth0-up)   echo 1 > "$SIM_FILE"; echo "simulating: $ETH carrier present" ;;
-    off)       rm -f "$SIM_FILE"; echo "simulation off; using the real carrier state" ;;
-    *)         echo "usage: dxberry-netwatch --simulate eth0-down|eth0-up|off" >&2; return 2 ;;
+  local what='' force=0 a
+  for a in "$@"; do
+    case $a in
+      --force) force=1 ;;
+      '') ;;
+      *) if [[ -z $what ]]; then what=$a; fi ;;
+    esac
+  done
+  case $what in
+    eth0-down)
+      # Without WiFi failover there is nothing to fail over to: ifdown eth0 takes the address
+      # away and the session that just typed this command is the only way back.
+      if ! nw_wifi_defined && (( ! force )); then
+        echo "refusing: no WiFi failover is configured ($IFACES_DIR/$WLAN.conf or $SYS_NET/$WLAN is missing), so simulating a lost $ETH carrier would drop this Pi's only address and lock you out. Add WIFI_SSID and re-provision, or pass --force if you have console access." >&2
+        return 1
+      fi
+      nw_sim_write 0 || return 1
+      echo "simulating: $ETH carrier lost (takes effect within $((POLL + DEBOUNCE))s)"
+      ;;
+    eth0-up)
+      nw_sim_write 1 || return 1
+      echo "simulating: $ETH carrier present"
+      ;;
+    off)
+      rm -f "$SIM_FILE"
+      echo "simulation off; using the real carrier state"
+      ;;
+    *)
+      echo "usage: dxberry-netwatch --simulate eth0-down|eth0-up|off [--force]" >&2
+      return 2
+      ;;
   esac
 }
 
 main() {
   case ${1:-run} in
     run)        nw_run ;;
-    --simulate) nw_simulate "${2:-}" ;;
+    --simulate) nw_simulate "${@:2}" ;;
     --status)   cat "$STATE_FILE" 2> /dev/null || echo unknown ;;
-    -h|--help)  echo "usage: dxberry-netwatch [run | --simulate eth0-down|eth0-up|off | --status]" ;;
+    -h|--help)  echo "usage: dxberry-netwatch [run | --simulate eth0-down|eth0-up|off [--force] | --status]" ;;
     *)          echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 }

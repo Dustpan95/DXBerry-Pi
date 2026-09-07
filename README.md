@@ -47,7 +47,9 @@ Ethernet is primary. If `WIFI_SSID` is set, `dxberry-netwatch` brings WiFi up on
 while the cable has no link, and hands back to Ethernet when it returns — exactly one interface is ever
 configured. `dxberry-netwatch --status` shows the current state; `--simulate eth0-down|eth0-up|off`
 exercises failover without touching cables. Network settings live in `/etc/network/interfaces.d/`; leave
-`dietpi-config`'s network menu alone, it does not know about the failover service.
+`dietpi-config`'s network menu alone, it does not know about the failover service. `eth0-down`
+takes the address off Ethernet, so with no WiFi configured it would leave the Pi unreachable — it is
+refused there unless you add `--force` from the console.
 
 ## Storage
 
