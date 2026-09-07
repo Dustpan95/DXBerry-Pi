@@ -1,0 +1,143 @@
+#!/bin/bash
+# dxberry-netwatch: Ethernet-primary / WiFi-failover with exactly one configured interface at a time.
+# Design: docs/design/2026-09-07-base-image.md section 8 in the DXBerry-Pi repository.
+set -uo pipefail
+
+ETH=${DXB_ETH:-eth0}
+WLAN=${DXB_WLAN:-wlan0}
+IFACES_DIR=${DXB_IFACES_DIR:-/etc/network/interfaces.d}
+SYS_NET=${DXB_SYS_NET:-/sys/class/net}
+SIM_FILE=${DXB_NW_SIM_FILE:-/run/dxberry-netwatch.simulate}
+STATE_FILE=${DXB_NW_STATE_FILE:-/run/dxberry-netwatch.state}
+DEBOUNCE=${DXB_NW_DEBOUNCE:-2}
+WIFI_GRACE=${DXB_NW_WIFI_GRACE:-30}
+RETRY=${DXB_NW_RETRY:-30}
+POLL=${DXB_NW_POLL:-5}
+
+NW_STATE=NONE
+NW_WIFI_SINCE=0
+NW_LAST_RETRY=0
+
+log() { printf 'dxberry-netwatch: %s\n' "$*" >&2; }
+
+nw_wifi_defined() { [[ -f $IFACES_DIR/$WLAN.conf && -d $SYS_NET/$WLAN ]]; }
+
+# Prints 1 when IFACE has carrier, else 0. The Ethernet reading can be overridden by --simulate.
+nw_carrier() {
+  local v=''
+  if [[ $1 == "$ETH" && -f $SIM_FILE ]]; then
+    read -r v 2> /dev/null < "$SIM_FILE" || v=''
+  else
+    read -r v 2> /dev/null < "$SYS_NET/$1/carrier" || v=''
+  fi
+  if [[ $v == 1 ]]; then printf 1; else printf 0; fi
+}
+
+nw_configured() { ifquery --state "$1" > /dev/null 2>&1; }
+nw_up() { log "ifup $1"; ifup "$1" || log "ifup $1 failed"; }
+nw_down() {
+  log "ifdown $1"
+  ifdown "$1" 2> /dev/null || ifdown --force "$1" 2> /dev/null || true
+  # A link that stays administratively down reports no carrier, so eth0 is re-raised without an address.
+  if [[ $1 == "$ETH" ]]; then ip link set "$ETH" up 2> /dev/null; fi
+  return 0
+}
+
+# Pure decision: nw_decide STATE ETH_CARRIER WIFI_DEFINED WLAN_CARRIER -> "NEWSTATE [actions...]"
+nw_decide() {
+  local state=$1 ec=$2 wd=$3 wc=$4
+  case $state in
+    ETH)  if (( ec )); then echo ETH; elif (( wd )); then echo 'WIFI down_eth up_wifi'; else echo 'NONE down_eth'; fi ;;
+    WIFI) if (( ec )); then echo 'ETH down_wifi up_eth'; elif (( wc )); then echo WIFI; else echo 'NONE down_wifi'; fi ;;
+    *)    if (( ec )); then echo 'ETH up_eth'; elif (( wd )); then echo 'WIFI up_wifi'; else echo NONE; fi ;;
+  esac
+}
+
+nw_do() {
+  local a
+  for a in "$@"; do
+    case $a in
+      down_eth)  nw_down "$ETH" ;;
+      up_eth)    nw_up "$ETH" ;;
+      down_wifi) nw_down "$WLAN" ;;
+      up_wifi)   nw_up "$WLAN"; NW_WIFI_SINCE=$(date +%s) ;;
+    esac
+  done
+}
+
+nw_set_state() { NW_STATE=$1; printf '%s\n' "$1" > "$STATE_FILE" 2> /dev/null || true; }
+
+# One evaluation of the state machine. $1=1 skips the debounce (start-up).
+nw_tick() {
+  local immediate=${1:-0} ec wd wc decision new actions now
+  now=$(date +%s)
+  ec=$(nw_carrier "$ETH")
+  if nw_wifi_defined; then wd=1; else wd=0; fi
+  wc=$(nw_carrier "$WLAN")
+  # Right after ifup, association takes a few seconds: treat the link as up during the grace period.
+  if [[ $NW_STATE == WIFI ]] && (( now - NW_WIFI_SINCE < WIFI_GRACE )); then wc=1; fi
+  decision=$(nw_decide "$NW_STATE" "$ec" "$wd" "$wc")
+  new=${decision%% *}
+  actions=${decision#"$new"}
+  [[ $new == "$NW_STATE" ]] && return 0
+  if [[ $NW_STATE == NONE && $new == WIFI ]]; then
+    (( now - NW_LAST_RETRY >= RETRY )) || return 0
+    NW_LAST_RETRY=$now
+  fi
+  if (( ! immediate )) && [[ $actions == *eth* ]]; then
+    sleep "$DEBOUNCE"
+    [[ $(nw_carrier "$ETH") == "$ec" ]] || return 0
+  fi
+  log "state $NW_STATE -> $new (eth carrier=$ec, wifi defined=$wd, wlan carrier=$wc)"
+  # shellcheck disable=SC2086
+  nw_do $actions
+  if [[ $new == WIFI ]] && ! nw_configured "$WLAN"; then
+    log "$WLAN did not come up; will retry in ${RETRY}s"
+    nw_set_state NONE
+    return 0
+  fi
+  nw_set_state "$new"
+}
+
+nw_startup() {
+  ip link set "$ETH" up 2> /dev/null || true
+  if nw_configured "$ETH"; then NW_STATE=ETH
+  elif nw_configured "$WLAN"; then NW_STATE=WIFI; NW_WIFI_SINCE=$(date +%s)
+  else NW_STATE=NONE; fi
+  log "startup: ifupdown reports $NW_STATE"
+  nw_tick 1
+  nw_set_state "$NW_STATE"
+}
+
+nw_run() {
+  nw_startup
+  systemd-notify --ready 2> /dev/null || true
+  exec 3< <(ip monitor link 2> /dev/null)
+  local rc
+  while true; do
+    read -r -t "$POLL" -u 3 _; rc=$?
+    (( rc == 0 || rc > 128 )) || sleep "$POLL"
+    nw_tick 0
+  done
+}
+
+nw_simulate() {
+  case ${1:-} in
+    eth0-down) echo 0 > "$SIM_FILE"; echo "simulating: $ETH carrier lost (takes effect within $((POLL + DEBOUNCE))s)" ;;
+    eth0-up)   echo 1 > "$SIM_FILE"; echo "simulating: $ETH carrier present" ;;
+    off)       rm -f "$SIM_FILE"; echo "simulation off; using the real carrier state" ;;
+    *)         echo "usage: dxberry-netwatch --simulate eth0-down|eth0-up|off" >&2; return 2 ;;
+  esac
+}
+
+main() {
+  case ${1:-run} in
+    run)        nw_run ;;
+    --simulate) nw_simulate "${2:-}" ;;
+    --status)   cat "$STATE_FILE" 2> /dev/null || echo unknown ;;
+    -h|--help)  echo "usage: dxberry-netwatch [run | --simulate eth0-down|eth0-up|off | --status]" ;;
+    *)          echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
