@@ -1,0 +1,14 @@
+# Built images and build scratch
+out/
+build/work/
+*.img
+*.img.xz
+*.sha256
+
+# A filled-in station config must never be committed; only the .example is tracked
+dxberry.txt
+dietpi-wifi.txt
+
+# Editor / OS noise
+*.swp
+.DS_Store
