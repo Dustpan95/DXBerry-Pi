@@ -1,0 +1,71 @@
+#!/bin/bash
+# DXBerry-Pi first-boot hook. Runs from /boot/Automation_Custom_PreScript.sh before the network is up:
+# turns <boot>/dxberry.txt into DietPi's own dietpi.txt / dietpi-wifi.txt settings.
+# Always exits 0 so DietPi keeps booting; problems go to <boot>/dxberry-ERROR.txt.
+set -uo pipefail
+
+DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
+# shellcheck disable=SC1091
+source "$DXB_LIB/common.sh"
+# shellcheck disable=SC1091
+source "$DXB_LIB/config.sh"
+# shellcheck disable=SC1091
+source "$DXB_LIB/network.sh"
+
+main() {
+  local dietpi_txt=${DXB_DIETPI_TXT:-/boot/dietpi.txt}
+  local dietpi_wifi=${DXB_DIETPI_WIFI:-/boot/dietpi-wifi.txt}
+  local boot cfg errf w
+  boot=$(dxb_boot_dir); cfg="$boot/dxberry.txt"; errf="$boot/dxberry-ERROR.txt"
+  mkdir -p "$DXB_STATE_DIR" 2> /dev/null || true
+
+  if [[ ! -f $cfg ]]; then
+    {
+      echo "DXBerry-Pi: no dxberry.txt was found on the boot partition."
+      echo "Rename dxberry.txt.example to dxberry.txt, fill it in, and reboot."
+      echo "This boot used DietPi defaults: DHCP address, hostname DietPi, login root / dietpi."
+    } > "$errf"
+    dxb_warn "no $cfg; DietPi defaults kept"
+    return 0
+  fi
+
+  dxb_config_load "$cfg"
+  if ! dxb_config_validate; then
+    {
+      echo "DXBerry-Pi: dxberry.txt has errors. Fix them and reboot."
+      echo
+      printf '%s\n' "${DXB_CFG_ERRORS[@]}"
+      echo
+      echo "This boot used DietPi defaults: DHCP address, hostname DietPi, login root / dietpi."
+    } > "$errf"
+    dxb_error "dxberry.txt invalid; see $errf"
+    return 0
+  fi
+  rm -f "$errf"
+  for w in "${DXB_CFG_WARNINGS[@]}"; do dxb_warn "$w"; done
+
+  dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_HOSTNAME "${DXB_CFG[HOSTNAME]}"
+  [[ ${DXB_CFG[PASSWORD]} == "$DXB_APPLIED" ]] || dxb_set_kv "$dietpi_txt" AUTO_SETUP_GLOBAL_PASSWORD "${DXB_CFG[PASSWORD]}"
+  dxb_set_kv "$dietpi_txt" AUTO_SETUP_TIMEZONE "${DXB_CFG[TIMEZONE]}"
+  dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_ETHERNET_ENABLED 1
+  dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_WIFI_ENABLED 0
+  if [[ ${DXB_CFG[_MODE]} == static ]]; then
+    dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_USESTATIC 1
+    dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_STATIC_IP "${DXB_CFG[STATIC_IP]}"
+    dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_STATIC_GATEWAY "${DXB_CFG[GATEWAY]}"
+    dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_STATIC_DNS "${DXB_CFG[DNS]}"
+  else
+    dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_USESTATIC 0
+  fi
+  [[ ${DXB_CFG[SERIAL_CONSOLE]} == on ]] && w=1 || w=0
+  dxb_set_kv "$dietpi_txt" CONFIG_SERIAL_CONSOLE_ENABLE "$w"
+  if (( DXB_CFG[_WIFI] )); then
+    dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_WIFI_COUNTRY_CODE "${DXB_CFG[WIFI_COUNTRY]}"
+    [[ ${DXB_CFG[WIFI_PASSWORD]} == "$DXB_APPLIED" ]] || dxb_net_write_wifi_txt "$dietpi_wifi" "${DXB_CFG[WIFI_SSID]}" "${DXB_CFG[WIFI_PASSWORD]}"
+  fi
+  touch "$DXB_STATE_DIR/preboot.done" 2> /dev/null || true
+  dxb_info "preboot: dietpi.txt prepared for ${DXB_CFG[HOSTNAME]} (${DXB_CFG[_MODE]})"
+  return 0
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; exit 0; fi
