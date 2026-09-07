@@ -11,14 +11,11 @@ test_set_kv_replaces_first_match_keeps_rest_and_appends() {
   dxb_set_kv "$TEST_TMP/f" C 'v=with=equals and $dollar \backslash'
   assert_file_contains "$TEST_TMP/f" 'C=v=with=equals and $dollar \backslash'
   assert_eq "$(stat -c %a "$TEST_TMP/f")" "600"
-  mkdir -p "$TEST_TMP/readonly"
-  printf 'ORIG=value\n' > "$TEST_TMP/readonly/f"
-  local orig_content; orig_content=$(cat "$TEST_TMP/readonly/f")
-  chmod 500 "$TEST_TMP/readonly"
-  dxb_set_kv "$TEST_TMP/readonly/f" ORIG modified 2>/dev/null
-  local rc=$?; [[ $rc -eq 0 ]] && _fail "dxb_set_kv should fail with read-only directory"
-  assert_eq "$(cat "$TEST_TMP/readonly/f")" "$orig_content"
-  chmod 755 "$TEST_TMP/readonly"
+  # A failed replace must leave the original untouched and return non-zero.
+  printf 'KEY=old\n' > "$TEST_TMP/fail.conf"
+  mkdir "$TEST_TMP/fail.conf.dxbtmp"
+  assert_fails dxb_set_kv "$TEST_TMP/fail.conf" KEY new 2> /dev/null
+  assert_eq "$(< "$TEST_TMP/fail.conf")" "KEY=old"
 }
 
 test_set_kv_handles_bracketed_keys_and_missing_file() {
