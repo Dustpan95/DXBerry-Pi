@@ -58,8 +58,9 @@ test_provision_network_static_with_wifi_writes_everything_once() {
   net_env
   net_cfg 'PASSWORD=secretpass' 'STATIC_IP=192.168.1.90/24' 'GATEWAY=192.168.1.1' 'WIFI_SSID=Home' 'WIFI_PASSWORD=wifipass1' 'WIFI_COUNTRY=US'
   printf '#!/bin/bash\nexit 1\n' > "$DXB_DIETPI_WIFIDB"; chmod +x "$DXB_DIETPI_WIFIDB"
-  DXB_MODE=first-boot provision_network
-  assert_ok true  # provision_network returns 0 despite wifi failure
+  # shellcheck disable=SC2034
+  DXB_MODE=first-boot
+  assert_ok provision_network 2> /dev/null
   assert_file_contains "$DXB_IFACES_DIR/eth0.conf" "address 192.168.1.90/24"
   assert_file_contains "$DXB_SYSTEMD_DIR/dxberry-netwatch.service" "ExecStart"
   assert_contains "${DXB_FAILED_STEPS[*]}" "dietpi-wifidb"

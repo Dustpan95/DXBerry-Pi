@@ -16,9 +16,11 @@ for t in $(declare -F | awk '{print $3}' | grep '^test_' | sort); do
   TEST_TMP=$(mktemp -d)
   export TEST_TMP
   before=$TESTS_FAILED
-  "$t"
+  err=$(mktemp)
+  "$t" 2> "$err"
   rm -rf "$TEST_TMP"
-  if (( TESTS_FAILED == before )); then echo "ok   $t"; else echo "FAIL $t"; fi
+  if (( TESTS_FAILED == before )); then echo "ok   $t"; else echo "FAIL $t"; cat "$err" >&2; fi
+  rm -f "$err"
 done
 echo "$TESTS_RUN tests, $TESTS_FAILED failures"
 (( TESTS_FAILED == 0 ))
