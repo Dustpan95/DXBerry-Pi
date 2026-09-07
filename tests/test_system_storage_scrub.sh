@@ -68,6 +68,13 @@ test_storage_writes_journald_dropin_once_and_reports_zram() {
   : > "$TEST_TMP/calls"
   provision_storage
   assert_file_not_contains "$TEST_TMP/calls" "restart systemd-journald"
+  # Sub-case: missing template fails cleanly
+  DXB_STATUS_LINES=(); DXB_FAILED_STEPS=()
+  export DXB_TEMPLATES=$TEST_TMP/empty-templates
+  mkdir -p "$DXB_TEMPLATES"
+  provision_storage 2> /dev/null
+  [[ -f "$DXB_JOURNALD_DROPIN.new" ]] && _fail "no dropin should be written on template failure"
+  assert_contains "${DXB_FAILED_STEPS[*]}" "journald template missing"
 }
 
 test_scrub_replaces_secrets_in_place_and_dietpi_password() {
@@ -82,4 +89,14 @@ test_scrub_replaces_secrets_in_place_and_dietpi_password() {
   assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "HOSTNAME=x"
   assert_file_contains "$DXB_DIETPI_TXT" "AUTO_SETUP_GLOBAL_PASSWORD="
   assert_file_not_contains "$DXB_DIETPI_TXT" "AUTO_SETUP_GLOBAL_PASSWORD=dietpi"
+  # Sub-case: write failure is detected and not marked applied
+  DXB_STATUS_LINES=(); DXB_FAILED_STEPS=()
+  printf 'PASSWORD=newsecret\nWIFI_PASSWORD=newwifi\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  dxb_config_load "$DXB_BOOT_DIR/dxberry.txt"; DXB_CFG[WIFI_COUNTRY]=US; dxb_config_validate
+  mkdir "$DXB_BOOT_DIR/dxberry.txt.dxbtmp"
+  provision_scrub 2> /dev/null
+  assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "PASSWORD=newsecret"
+  [[ "${DXB_CFG[PASSWORD]}" == "$DXB_APPLIED" ]] && _fail "PASSWORD should not be marked applied when scrub fails"
+  assert_contains "${DXB_FAILED_STEPS[*]}" "scrub"
+  assert_file_not_contains "$DXB_BOOT_DIR/dxberry.txt" "<applied>"
 }

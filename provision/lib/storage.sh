@@ -8,7 +8,10 @@
 provision_storage() {
   local content
   mkdir -p "$(dirname "$DXB_JOURNALD_DROPIN")"
-  content=$(< "$DXB_TEMPLATES/journald-dxberry.conf")
+  if ! content=$(dxb_render "$DXB_TEMPLATES/journald-dxberry.conf"); then
+    dxb_step_failed storage "journald template missing"
+    return 1
+  fi
   if dxb_write_if_changed "$DXB_JOURNALD_DROPIN" "$content"; then
     systemctl restart systemd-journald 2> /dev/null || true
     dxb_info "journald set to volatile storage"
