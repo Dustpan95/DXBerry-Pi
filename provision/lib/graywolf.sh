@@ -118,11 +118,11 @@ dxb_gw_login() {
   local pw=${DXB_CFG[WEBUI_PASSWORD]}
   if [[ $pw == "$DXB_APPLIED" ]]; then
     if ! read -rst 120 -p "Graywolf password for ${DXB_CFG[WEBUI_USER]}: " pw < "$DXB_TTY" 2> /dev/null || [[ -z $pw ]]; then
-      echo
+      echo >&2
       dxb_step_failed graywolf "WEBUI_PASSWORD was scrubbed and no terminal is available to prompt; set it in dxberry.txt and re-run"
       return 1
     fi
-    echo
+    echo >&2
   fi
   dxb_gw_api POST /auth/login "$(PW=$pw jq -cn --arg u "${DXB_CFG[WEBUI_USER]}" '{username: $u, password: env.PW}')" > /dev/null \
     || { dxb_step_failed graywolf "login as ${DXB_CFG[WEBUI_USER]} failed"; return 1; }
