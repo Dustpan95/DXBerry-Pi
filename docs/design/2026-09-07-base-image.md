@@ -77,9 +77,10 @@ DXBerry-Pi/
 ├── .gitignore                       # out/, *.img*, dxberry.txt, dietpi-wifi.txt
 ├── build/
 │   └── build-image.sh               # stock DietPi .img.xz → DXBerry-Pi .img.xz
-├── boot/                            # copied verbatim to the image's boot (FAT) partition
-│   ├── dietpi.txt                   # DietPi automation defaults (no secrets)
-│   ├── dxberry.txt.example          # the one file users edit
+├── boot/                            # first-boot files (see §6 for where each lands)
+│   ├── dietpi.overrides.txt         # DietPi keys applied onto the stock dietpi.txt at build time (no secrets)
+│   ├── dxberry.txt.example          # the one file users edit (FAT partition)
+│   ├── README-DXBERRY.txt           # three-line pointer on the FAT partition
 │   ├── Automation_Custom_PreScript.sh   # → /opt/dxberry/bin/dxberry-preboot
 │   └── Automation_Custom_Script.sh      # → /opt/dxberry/bin/dxberry-provision --first-boot
 ├── provision/                       # copied to /opt/dxberry/ on the image's root partition
@@ -102,11 +103,14 @@ DXBerry-Pi/
 │   │   └── dxberry-netwatch.service
 │   └── VERSION
 ├── tests/
-│   └── config.bats                  # parser/validator tests
+│   ├── run.sh                       # dependency-free test runner
+│   ├── lib.sh                       # assert helpers
+│   └── test_*.sh                    # unit tests (config, common, preboot, network, netwatch, scrub, graywolf)
 ├── docs/
-│   └── design/                      # this document and successors
+│   ├── design/                      # this document and successors
+│   └── plans/                       # implementation plans
 └── .github/workflows/
-    ├── ci.yml                       # shellcheck + bats on every push/PR
+    ├── ci.yml                       # shellcheck + unit tests on every push/PR
     └── release.yml                  # build + attach image on v* tags
 ```
 
@@ -171,12 +175,22 @@ DietPi's first-boot script runs, in order: the custom pre-script, hostname,
 password, network from `dietpi.txt`, then the automated first-run installs,
 then the custom post-script. DXBerry-Pi uses both hooks.
 
+**Where files live on a Raspberry Pi.** DietPi mounts the FAT partition at
+`/boot/firmware`. DietPi's own `dietpi.txt`, `dietpi-wifi.txt` and the two
+`Automation_Custom_*.sh` hooks live on the root filesystem under `/boot/`; at
+first boot DietPi copies any newer user-edited copies of those specific files
+from the FAT partition into `/boot/` and deletes them from FAT. Everything
+DXBerry-Pi shows the user — `dxberry.txt`, `dxberry-ERROR.txt`,
+`dxberry-status.txt`, `README-DXBERRY.txt` — lives on the FAT partition and
+stays there. The provisioner locates it with `dxb_boot_dir` (`/boot/firmware`
+when a vfat filesystem is mounted there, else `/boot`).
+
 ### 6.1 Pre-network: `dxberry-preboot`
 
 Invoked by `/boot/Automation_Custom_PreScript.sh` before any network is up.
 
-1. Parse and validate `/boot/dxberry.txt` (`lib/config.sh`).
-2. On failure: write `/boot/dxberry-ERROR.txt` listing each problem with the
+1. Parse and validate `<boot>/dxberry.txt` (`lib/config.sh`).
+2. On failure: write `<boot>/dxberry-ERROR.txt` listing each problem with the
    line it came from, leave `dietpi.txt` untouched, exit 0. The Pi boots with
    DietPi defaults and stays reachable over DHCP.
 3. On success, rewrite these `dietpi.txt` keys from the config:
@@ -195,8 +209,9 @@ managed exclusively by `dxberry-netwatch` (§8).
 
 ### 6.2 DietPi automated first run
 
-`boot/dietpi.txt` ships with these non-default values (everything else is
-DietPi's default):
+The image build applies `boot/dietpi.overrides.txt` onto the stock
+`dietpi.txt` (so the file tracks whatever DietPi ships, with only these keys
+changed):
 
 ```
 AUTO_SETUP_AUTOMATED=1
@@ -207,10 +222,14 @@ AUTO_SETUP_SWAPFILE_LOCATION=zram
 AUTO_SETUP_LOCALE=en_US.UTF-8
 AUTO_SETUP_KEYBOARD_LAYOUT=us
 AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0         # run /boot/Automation_Custom_Script.sh
-AUTO_SETUP_APT_INSTALLS=curl ca-certificates wpasupplicant
+AUTO_SETUP_APT_INSTALLS=curl ca-certificates jq wpasupplicant
 SURVEY_OPTED_IN=0
 CONFIG_SERIAL_CONSOLE_ENABLE=0
 ```
+
+DietPi's own automated first run needs internet access (it updates APT and
+installs packages); that is a DietPi requirement, not something this design
+can remove.
 
 These are the shipped defaults. The keys listed in §6.1 are overwritten by
 `dxberry-preboot` from `dxberry.txt` on every first boot (so, for example,
@@ -261,8 +280,9 @@ driver runs them in a fixed order:
 
 A step that fails is logged and reported in the status file; later steps that
 do not depend on it still run. Network configuration is applied before
-Graywolf installation so a Graywolf download failure (no internet at first
-boot, upstream outage) still leaves a reachable Pi. Graywolf download is
+Graywolf installation so a Graywolf download failure (GitHub unreachable,
+upstream outage, a pinned version that does not exist) still leaves a
+reachable Pi. Graywolf download is
 retried three times with backoff; a persistent failure is recorded and the
 user is told to run `sudo dxberry-provision` once the Pi has internet.
 
@@ -296,27 +316,27 @@ tie-breaking impossible rather than merely handled.
 Rendered from templates into `/etc/network/interfaces.d/`:
 
 ```
-# eth0 — static form; DHCP form uses "inet dhcp" with no address lines
+# /etc/network/interfaces.d/eth0.conf — static form; DHCP form is "inet dhcp" with no address lines
 iface eth0 inet static
-    address 192.168.1.90
-    netmask 255.255.255.0
-    gateway 192.168.1.1
-    dns-nameservers 192.168.1.1
+address 192.168.1.90/24
+gateway 192.168.1.1
 
-# wlan0 — same addressing; present only when WIFI_SSID is set
+# /etc/network/interfaces.d/wlan0.conf — same addressing; present only when WIFI_SSID is set
 iface wlan0 inet static
-    address 192.168.1.90
-    netmask 255.255.255.0
-    gateway 192.168.1.1
-    dns-nameservers 192.168.1.1
-    wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
+address 192.168.1.90/24
+gateway 192.168.1.1
+wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
+pre-up iw dev wlan0 set power_save off || true
+post-down iw dev wlan0 set power_save on || true
 ```
 
-`address`/`netmask` are written as separate keys (derived from the CIDR in
-`STATIC_IP`) because that is the form DietPi's own network tooling parses, so
-`dietpi-config` still displays the interfaces correctly. `wpa_supplicant.conf`
-is generated by DietPi's `dietpi-wifidb 1` from `dietpi-wifi.txt`, so DietPi's
-WiFi tooling keeps working alongside ours.
+This is the exact form DietPi's own `dietpi-network` writes (CIDR `address`,
+same file names), so `dietpi-config` still displays the interfaces. DNS is not
+in the stanza: DietPi images ship without `resolvconf`, so `dns-nameservers`
+would be ignored; in static mode the provisioner writes `/etc/resolv.conf`
+directly, as DietPi itself does. In DHCP mode the DHCP client manages it.
+`wpa_supplicant.conf` is generated by DietPi's `dietpi-wifidb 1` from
+`dietpi-wifi.txt`, so DietPi's WiFi tooling keeps working alongside ours.
 
 ### 8.4 Behavior
 
@@ -345,6 +365,12 @@ event stream. All transitions are logged to the journal.
 
 `ifdown` is always called before `ifup` on the other interface, so the same
 address is never held by two interfaces even for an instant.
+
+Starting netwatch is non-disruptive: if ifupdown already reports the right
+interface configured (a service restart, not a boot), it adopts that state
+instead of cycling the interface. A provisioner re-run restarts netwatch only
+when an interface file actually changed, and does so as its last action, since
+the SSH session running the provisioner may drop when the address moves.
 
 ### 8.5 DHCP mode
 
@@ -404,13 +430,31 @@ All calls go to `http://127.0.0.1:8080/api` with a session cookie.
 4. `PUT /station/config {callsign}` — when `CALLSIGN` is set.
 5. `PUT /igate/config {enabled: true, server, port: 14580, gate_rf_to_is,
    gate_is_to_rf}` — when `CALLSIGN` is set.
-6. `POST /beacons` — when `LATITUDE`/`LONGITUDE` are set: a position beacon
-   with `latitude`, `longitude`, `comment`, `interval` (minutes × 60),
-   `send_path`, `path`, `symbol_table`, `symbol`, `enabled: true`. The beacon
-   inherits the station callsign.
-7. Digipeater preset — when `DIGIPEATER` is `fillin` or `wide`, applied through
-   Graywolf's digipeater configuration endpoint.
+6. `POST /beacons` — when `LATITUDE`/`LONGITUDE` are set: a `position` beacon
+   with `latitude`, `longitude`, `comment`, `interval` (seconds; minutes × 60),
+   `send_path` (`is_only`, `rf` or `both`), `path`, `symbol_table`, `symbol`,
+   `enabled: true`. The beacon inherits the station callsign. `rf`/`both`
+   require a radio channel; if none exists yet the beacon is created as
+   `is_only` and the status file says so — switching it is one click in the
+   UI once a channel is configured. The beacon's id is remembered in
+   `/var/lib/dxberry/graywolf-seed.env` so `--reseed` updates it rather than
+   creating duplicates.
+7. Digipeater — when `DIGIPEATER` is `fillin` or `wide`:
+   `PUT /digipeater {enabled: true, my_call, dedupe_window_seconds: 30}`.
+   Graywolf's "presets" are rule sets, and every rule is bound to a radio
+   channel, which cannot exist before hardware is configured. The rules are
+   therefore created by `--reseed` once at least one channel exists (bound to
+   the first channel), if no rules exist yet:
+   - fill-in: `{alias: <CALLSIGN>, alias_type: exact, max_hops: 1, priority: 1}`
+     and `{alias: WIDE, alias_type: widen, max_hops: 1, priority: 10}`
+   - wide: the same with `max_hops: 2` on the `WIDE` rule.
+   The status file tells the user this step is pending until a channel exists.
 8. `POST /auth/logout`.
+
+All writes to existing Graywolf objects (`igate/config`, an existing beacon)
+read the current object first and merge the seeded fields into it, so
+settings the user changed in the UI that the file does not cover survive a
+`--reseed`.
 
 With `CALLSIGN` blank, steps 4–7 are skipped: Graywolf is installed with an
 admin account and the user completes station setup in the UI.
@@ -520,8 +564,10 @@ Acceptance on a Raspberry Pi 4, before tagging `v0.1.0`:
    address; failover works.
 6. Invalid config (missing `PASSWORD`, bad CIDR): Pi boots on DHCP with DietPi
    defaults and `dxberry-ERROR.txt` names both problems.
-7. Boot without internet: Pi reaches the static address; status reports the
-   Graywolf failure; re-running the provisioner with internet completes it.
+7. Graywolf install failure: with `GRAYWOLF_VERSION=v0.0.1` (a release that
+   does not exist) the Pi still reaches the static address and the status
+   file reports the Graywolf failure; clearing the key and re-running the
+   provisioner completes the install and seeding.
 
 ## 15. Hooks reserved for later sub-projects
 
@@ -537,26 +583,35 @@ Acceptance on a Raspberry Pi 4, before tagging `v0.1.0`:
   update checks.
 - **netwatch `NONE` state:** attachment point for hotspot fallback.
 
-## 16. Open risks (verified during implementation, before v0.1.0)
+## 16. Verified assumptions and open risks
 
-1. DietPi's boot-time network wait must be satisfied by netwatch bringing an
-   interface up, since no interface is `auto`. If DietPi polls ifupdown state
-   rather than addresses, netwatch's readiness notification ordering is
-   adjusted so DietPi sees a configured interface.
-2. Whether `dietpi-wifidb 1` clears the key from `dietpi-wifi.txt` after import.
-   The provisioner scrubs it regardless (§13), so this only affects whether a
-   warning is logged.
-3. The exact request fields of Graywolf's digipeater configuration endpoint,
-   the preset names for fill-in and wide-area, and the unit of the beacon
-   `interval` field (§9.2 assumes seconds).
-4. Graywolf's iGate request schema has no passcode field; the passcode is
-   derived from the callsign. Confirmed against the API definition; if a
-   Graywolf release adds a required passcode field, an `APRS_PASSCODE` key is
-   added to §5.
-5. DietPi's first run must not reboot on its own before the post-script has
-   run. Its documented behavior is to run the post-script after installs; the
-   provisioner also records a marker in `/var/lib/dxberry/` so a second
-   invocation is harmless.
-6. Loop-device mounting on GitHub-hosted runners (works with `sudo` today;
+Verified against DietPi and Graywolf source before implementation:
+
+- DietPi's "wait for network at boot" is a drop-in making
+  `dietpi-postboot.service` `Wants=`/`After=network-online.target`; netwatch
+  is `Before=network-online.target` and `WantedBy=` it, so the ordering holds
+  with no `auto` interfaces.
+- `dietpi-wifidb 1` *moves* `/boot/dietpi-wifi.txt` into the root-only
+  `/var/lib/dietpi/dietpi-wifi.db` and writes `wpa_supplicant.conf` with mode
+  0600; the text file is gone afterwards.
+- DietPi's automated first run no longer reboots by itself after installs;
+  the post-script runs and DXBerry-Pi performs the reboot.
+- Graywolf: beacon `interval` is seconds (`every_seconds`, default 1800);
+  `send_path` is `rf` | `both` | `is_only`; digipeater rules require a
+  channel; the iGate request has no passcode field.
+- DietPi's stock `/etc/network/interfaces` only sources `interfaces.d/*`;
+  per-interface files are `interfaces.d/<iface>.conf`, DHCP client is
+  `isc-dhcp-client`, and `resolvconf` is not installed.
+
+Open, to be confirmed on the first flashed image:
+
+1. `PUT /igate/config` with a GET-then-merge body: Graywolf must ignore the
+   read-only fields the GET response carries. If it rejects them, the
+   provisioner sends only the seeded fields on a fresh install.
+2. DietPi's first-boot import of `dietpi.txt` from the FAT partition is
+   mtime-based (`cp -u`). The build stamps the FAT copy older than the root
+   copy, mirroring DietPi's own imager; an unmodified FAT copy must therefore
+   not overwrite the built `dietpi.txt`.
+3. Loop-device mounting on GitHub-hosted runners (works with `sudo` today;
    the release job is the only place it matters, and a local build is always
    available as a fallback).
