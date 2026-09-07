@@ -117,7 +117,9 @@ dxb_gw_first_channel() { dxb_gw_api GET /channels 2> /dev/null | jq -r 'if type 
 dxb_gw_login() {
   local pw=${DXB_CFG[WEBUI_PASSWORD]}
   if [[ $pw == "$DXB_APPLIED" ]]; then
-    if ! read -rst 120 -p "Graywolf password for ${DXB_CFG[WEBUI_USER]}: " pw < "$DXB_TTY" 2> /dev/null || [[ -z $pw ]]; then
+    # No 2> /dev/null here: bash writes a read -p prompt to stderr, so discarding stderr would
+    # turn the documented --reseed recovery into a silent 120 s hang.
+    if ! read -rst 120 -p "Graywolf password for ${DXB_CFG[WEBUI_USER]}: " pw < "$DXB_TTY" || [[ -z $pw ]]; then
       echo >&2
       dxb_step_failed graywolf "WEBUI_PASSWORD was scrubbed and no terminal is available to prompt; set it in dxberry.txt and re-run"
       return 1

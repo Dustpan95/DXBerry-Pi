@@ -192,13 +192,23 @@ test_seed_fails_when_auth_setup_query_is_unusable() {
   assert_not_contains "$DXB_CONSUMED_SECRETS" "WEBUI_PASSWORD"
 }
 
+# bash writes a "read -p" prompt to stderr and only when input is a terminal, so a 2> /dev/null
+# on that read leaves the operator staring at a silent 120 s hang instead of a password prompt.
+# The prompt itself needs a pty to exercise; this guards the redirect that broke it.
+test_login_prompt_reaches_the_operator() {
+  local line
+  line=$(grep -n 'read -rst' "$DXB_LIB/graywolf.sh")
+  assert_contains "$line" 'Graywolf password for'
+  assert_not_contains "$line" '2> /dev/null'
+}
+
 test_seed_login_prompt_without_terminal_fails_distinctly() {
   gw_env
   GW_NEEDS_SETUP=false
   gw_cfg 'PASSWORD=secretpass' 'WEBUI_PASSWORD=<applied>' 'CALLSIGN=N0CALL-2'
   local saved_tty=$DXB_TTY
   DXB_TTY=/dev/null
-  assert_fails dxb_gw_seed 1
+  assert_fails dxb_gw_seed 1 2> /dev/null
   DXB_TTY=$saved_tty
   assert_contains "${DXB_FAILED_STEPS[*]}" "no terminal is available"
   assert_not_contains "$(calls)" "/auth/login"

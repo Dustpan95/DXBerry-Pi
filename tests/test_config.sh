@@ -14,6 +14,22 @@ test_config_load_parses_keys_quotes_crlf_and_comments() {
   assert_eq "${#DXB_CFG_ERRORS[@]}" "0"
 }
 
+# Windows Notepad saves UTF-8 with a byte-order mark. It lands on line 1 - a comment in the
+# shipped example - and used to turn the whole file into "expected KEY=value".
+test_config_load_strips_a_utf8_bom_from_line_1() {
+  export DXB_ZONEINFO_DIR=$TEST_TMP/no-such-dir
+  { printf '\xef\xbb\xbf'; sed 's/^PASSWORD=.*/PASSWORD=examplepass/' "$DXB_ROOT/boot/dxberry.txt.example"; } > "$TEST_TMP/dxberry.txt"
+  assert_ok dxb_config_load "$TEST_TMP/dxberry.txt"
+  assert_ok dxb_config_validate
+  assert_eq "${#DXB_CFG_ERRORS[@]}" "0"
+  assert_eq "${DXB_CFG[PASSWORD]}" "examplepass"
+  # A BOM in front of a key must not become part of the key either.
+  printf '\xef\xbb\xbfPASSWORD=secretpass\n' > "$TEST_TMP/dxberry.txt"
+  assert_ok dxb_config_load "$TEST_TMP/dxberry.txt"
+  assert_ok dxb_config_validate
+  assert_eq "${DXB_CFG[PASSWORD]}" "secretpass"
+}
+
 test_config_load_warns_on_unknown_key_and_ignores_reserved_prefix() {
   write_cfg 'PASSWORD=secretpass' 'FOO=bar' 'PAT_MYCALL=X'
   dxb_config_load "$TEST_TMP/dxberry.txt"

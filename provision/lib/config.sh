@@ -29,6 +29,9 @@ dxb_config_load() {
   [[ -r $file ]] || { DXB_CFG_ERRORS+=("cannot read $file"); return 1; }
   while IFS= read -r line || [[ -n $line ]]; do
     n=$((n + 1))
+    # Windows Notepad writes UTF-8 with a BOM; without this every first line - usually a comment -
+    # would be rejected as malformed and take the whole file down with it.
+    if (( n == 1 )); then line=${line#$'\xef\xbb\xbf'}; fi
     line=${line%$'\r'}
     line=${line#"${line%%[![:space:]]*}"}
     [[ -z $line || $line == \#* ]] && continue

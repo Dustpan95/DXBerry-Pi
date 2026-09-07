@@ -105,6 +105,11 @@ test_scrub_replaces_secrets_in_place_and_dietpi_password() {
   assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "HOSTNAME=x"
   assert_file_contains "$DXB_DIETPI_TXT" "AUTO_SETUP_GLOBAL_PASSWORD="
   assert_file_not_contains "$DXB_DIETPI_TXT" "AUTO_SETUP_GLOBAL_PASSWORD=dietpi"
+  # The status line names what was actually rewritten. WEBUI_PASSWORD was defaulted from
+  # PASSWORD and has no line of its own in dxberry.txt, so it is not claimed.
+  assert_contains "${DXB_STATUS_LINES[*]}" "secrets: scrubbed PASSWORD WIFI_PASSWORD"
+  assert_not_contains "${DXB_STATUS_LINES[*]}" "WEBUI_PASSWORD"
+  assert_not_contains "${DXB_STATUS_LINES[*]}" "left in dxberry.txt"
   # Sub-case: write failure is detected and not marked applied
   DXB_STATUS_LINES=(); DXB_FAILED_STEPS=()
   printf 'PASSWORD=newsecret\nWIFI_PASSWORD=newwifi\n' > "$DXB_BOOT_DIR/dxberry.txt"
@@ -116,6 +121,22 @@ test_scrub_replaces_secrets_in_place_and_dietpi_password() {
   [[ "${DXB_CFG[PASSWORD]}" == "$DXB_APPLIED" ]] && _fail "PASSWORD should not be marked applied when scrub fails"
   assert_contains "${DXB_FAILED_STEPS[*]}" "scrub"
   assert_file_not_contains "$DXB_BOOT_DIR/dxberry.txt" "<applied>"
+  # Nothing was scrubbed, so nothing may claim it was; the plaintext that is still there is named.
+  assert_not_contains "${DXB_STATUS_LINES[*]}" "scrubbed"
+  assert_contains "${DXB_STATUS_LINES[*]}" "secrets: PASSWORD WIFI_PASSWORD left in dxberry.txt"
+}
+
+# With nothing to scrub - every secret already <applied> - the status file must stay silent
+# rather than claim a scrub that never happened.
+test_scrub_says_nothing_when_there_is_nothing_to_do() {
+  sys_env
+  printf 'PASSWORD=<applied>\nWIFI_SSID=Home\nWIFI_PASSWORD=<applied>\nWEBUI_PASSWORD=<applied>\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  dxb_config_load "$DXB_BOOT_DIR/dxberry.txt"; DXB_CFG[WIFI_COUNTRY]=US; dxb_config_validate
+  rm -f "$DXB_DIETPI_TXT"
+  DXB_CONSUMED_SECRETS='PASSWORD WIFI_PASSWORD WEBUI_PASSWORD'
+  provision_scrub
+  assert_eq "${#DXB_STATUS_LINES[@]}" "0"
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
 }
 
 test_scrub_leaves_unconsumed_secrets_alone() {
@@ -132,9 +153,14 @@ test_scrub_leaves_unconsumed_secrets_alone() {
   assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "WIFI_PASSWORD=wifipass1"
   [[ "${DXB_CFG[PASSWORD]}" == "$DXB_APPLIED" ]] && _fail "PASSWORD must not be marked applied when it was never consumed"
   assert_file_contains "$DXB_DIETPI_WIFI" "aWIFI_KEY[0]='wifipass1'"
+  assert_not_contains "${DXB_STATUS_LINES[*]}" "scrubbed"
+  assert_contains "${DXB_STATUS_LINES[*]}" "secrets: PASSWORD WIFI_PASSWORD left in dxberry.txt (the step that needed it did not complete; fix and re-run sudo dxberry-provision)"
   # Once actually consumed, scrub proceeds as usual (including removing the WiFi key file).
+  DXB_STATUS_LINES=()
   DXB_CONSUMED_SECRETS='PASSWORD WIFI_PASSWORD'
   provision_scrub
+  assert_contains "${DXB_STATUS_LINES[*]}" "secrets: scrubbed PASSWORD WIFI_PASSWORD"
+  assert_not_contains "${DXB_STATUS_LINES[*]}" "left in dxberry.txt"
   assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "PASSWORD=<applied>"
   assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "WIFI_PASSWORD=<applied>"
   [[ -f $DXB_DIETPI_WIFI ]] && _fail "dietpi-wifi.txt should be removed once WIFI_PASSWORD was consumed"

@@ -17,18 +17,25 @@ dxb_scrub_key() {
 }
 
 provision_scrub() {
-  local cfg k v scrub_ok=1
+  local cfg k v scrubbed=() remaining=()
   cfg="$(dxb_boot_dir)/dxberry.txt"
   for k in $DXB_SECRET_KEYS; do
-    dxb_secret_was_consumed "$k" || continue
+    # DXB_CFG_LINES only holds keys that really appear in dxberry.txt: a key that was defaulted
+    # (WEBUI_PASSWORD falling back to PASSWORD) has no line to rewrite and no plaintext of its own.
+    [[ -n ${DXB_CFG_LINES[$k]:-} ]] || continue
     v=${DXB_CFG[$k]:-}
     [[ -n $v && $v != "$DXB_APPLIED" ]] || continue
+    if ! dxb_secret_was_consumed "$k"; then
+      remaining+=("$k")
+      continue
+    fi
     if dxb_scrub_key "$cfg" "$k"; then
       # shellcheck disable=SC2004
       DXB_CFG[$k]=$DXB_APPLIED
+      scrubbed+=("$k")
     else
       dxb_step_failed scrub "could not scrub $k from dxberry.txt"
-      scrub_ok=0
+      remaining+=("$k")
     fi
   done
   if [[ -f $DXB_DIETPI_TXT ]]; then
@@ -36,7 +43,6 @@ provision_scrub() {
     if [[ -n $v ]]; then
       if ! dxb_set_kv "$DXB_DIETPI_TXT" AUTO_SETUP_GLOBAL_PASSWORD ''; then
         dxb_step_failed scrub "could not clear AUTO_SETUP_GLOBAL_PASSWORD from dietpi.txt"
-        scrub_ok=0
       fi
     fi
   fi
@@ -44,8 +50,12 @@ provision_scrub() {
     dxb_warn "$DXB_DIETPI_WIFI still held a WiFi key; removed it"
     rm -f "$DXB_DIETPI_WIFI"
   fi
-  if (( scrub_ok )); then
-    dxb_status_add "secrets: scrubbed from dxberry.txt"
+  # Only claim what actually happened: nothing to scrub means no line at all.
+  if (( ${#scrubbed[@]} )); then
+    dxb_status_add "secrets: scrubbed ${scrubbed[*]}"
+  fi
+  if (( ${#remaining[@]} )); then
+    dxb_status_add "secrets: ${remaining[*]} left in dxberry.txt (the step that needed it did not complete; fix and re-run sudo dxberry-provision)"
   fi
   return 0
 }
