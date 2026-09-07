@@ -185,6 +185,8 @@ test_first_boot_does_not_reboot_when_a_stray_stanza_would_fight_netwatch() {
   [[ -f $DXB_STATE_DIR/provisioned ]] && _fail "the provisioned marker must not be written when the gate blocks"
   assert_file_contains "$DXB_BOOT_DIR/dxberry-status.txt" "stray stanza $DXB_IFACES_DIR/dietpi.conf:2: allow-hotplug eth0"
   assert_file_contains "$DXB_BOOT_DIR/dxberry-status.txt" "not rebooting"
+  # provision_network and the gate both scan; the stanza itself is listed once, not twice.
+  assert_eq "$(grep -c 'allow-hotplug eth0' "$DXB_BOOT_DIR/dxberry-status.txt")" "1"
   # The foreign file is reported, never edited.
   assert_file_contains "$DXB_IFACES_DIR/dietpi.conf" "allow-hotplug eth0"
 }

@@ -13,6 +13,9 @@
 : "${DXB_SYS_NET:=/sys/class/net}"
 # shellcheck disable=SC2034
 DXB_NET_CHANGED=0
+# Set once dxb_net_scan_stray_stanzas has recorded its findings, so the second call in a run
+# (the pre-reboot gate) re-reads the files without listing the same stanzas twice.
+DXB_NET_STRAY_REPORTED=0
 
 # dxb_net_write_wifi_txt FILE SSID KEY: fill slot 0 of a DietPi dietpi-wifi.txt.
 dxb_net_write_wifi_txt() {
@@ -87,9 +90,10 @@ dxb_net_scan_stray_stanzas() {
   while IFS= read -r hit; do
     [[ -n $hit ]] || continue
     loc=${hit%%:*}; line=${hit#*:}; num=${line%%:*}; text=${line#*:}
-    dxb_step_failed network "stray stanza $loc:$num: $text"
+    if (( ! DXB_NET_STRAY_REPORTED )); then dxb_step_failed network "stray stanza $loc:$num: $text"; fi
     hits=1
   done < <(grep -nHE '^[[:blank:]]*(auto|allow-hotplug)[[:blank:]].*\b(eth0|wlan0)\b|^[[:blank:]]*iface[[:blank:]]+(eth0|wlan0)\b' "${files[@]}" 2> /dev/null)
+  if (( hits )); then DXB_NET_STRAY_REPORTED=1; fi
   (( hits == 0 ))
 }
 

@@ -22,6 +22,7 @@ net_env() {
   DXB_FAILED_STEPS=()
   # shellcheck disable=SC2034
   DXB_NET_CHANGED=0
+  DXB_NET_STRAY_REPORTED=0
   DXB_CONSUMED_SECRETS=''
 }
 net_cfg() { printf '%s\n' "$@" > "$TEST_TMP/dxberry.txt"; dxb_config_load "$TEST_TMP/dxberry.txt"; dxb_config_validate; }
@@ -180,10 +181,17 @@ test_stray_stanza_scan_reports_file_and_line() {
   assert_contains "${DXB_FAILED_STEPS[*]}" "stray stanza $DXB_IFACES_DIR/dietpi.conf:2: allow-hotplug eth0"
   assert_contains "${DXB_FAILED_STEPS[*]}" "stray stanza $DXB_IFACES_DIR/dietpi.conf:3: iface eth0 inet dhcp"
   assert_file_contains "$DXB_IFACES_DIR/dietpi.conf" "allow-hotplug eth0"
+  # A second scan in the same run (the pre-reboot gate does one) still fails, but must not
+  # list the same stanzas again.
+  local before=${#DXB_FAILED_STEPS[@]}
+  assert_fails dxb_net_scan_stray_stanzas 2> /dev/null
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "$before"
   # /etc/network/interfaces itself is scanned too, and provision_network reports through it.
   rm -f "$DXB_IFACES_DIR/dietpi.conf"
   # shellcheck disable=SC2034
   DXB_FAILED_STEPS=()
+  # shellcheck disable=SC2034
+  DXB_NET_STRAY_REPORTED=0
   printf 'source /etc/network/interfaces.d/*\nauto lo\niface lo inet loopback\n  auto wlan0\n' > "$DXB_INTERFACES_FILE"
   DXB_MODE=run provision_network 2> /dev/null
   assert_contains "${DXB_FAILED_STEPS[*]}" "stray stanza $DXB_INTERFACES_FILE:4:   auto wlan0"
