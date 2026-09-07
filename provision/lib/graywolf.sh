@@ -7,6 +7,7 @@
 : "${DXB_GW_COOKIES:=/run/dxberry-graywolf.cookies}"
 : "${DXB_GW_SEED_STATE:=$DXB_STATE_DIR/graywolf-seed.env}"
 : "${DXB_CURL:=curl}"
+: "${DXB_TTY:=/dev/tty}"
 
 dxb_gw_release_base() {
   local v=${DXB_CFG[GRAYWOLF_VERSION]:-}
@@ -21,10 +22,17 @@ dxb_gw_installed_version() { dpkg-query -W -f '${Version}' graywolf 2> /dev/null
 dxb_gw_fetch() {
   local i
   for i in 1 2 3; do
-    "$DXB_CURL" -fsSL --connect-timeout 15 "$1" && return 0
+    "$DXB_CURL" -fsSL --connect-timeout 15 --max-time 300 "$1" && return 0
     sleep $(( i * 5 ))
   done
   return 1
+}
+
+# dxb_gw_fetch_to FILE URL: lets curl own the output file (and its own retry), so a partial
+# attempt followed by a retry can never concatenate bytes into FILE, and a stalled transfer
+# cannot hang forever.
+dxb_gw_fetch_to() {
+  "$DXB_CURL" -fsSL --connect-timeout 15 --max-time 300 --retry 2 --retry-delay 5 -o "$1" "$2"
 }
 
 dxb_gw_install() {
@@ -38,7 +46,7 @@ dxb_gw_install() {
   v=$(sed -E 's/^graywolf_([0-9.]+)_.*/\1/' <<< "$name")
   if [[ $(dxb_gw_installed_version) == "$v" ]]; then dxb_info "graywolf $v already installed"; return 0; fi
   tmp=$(mktemp -d)
-  if ! dxb_gw_fetch "$base/$name" > "$tmp/$name"; then dxb_step_failed graywolf "download of $name failed"; rm -rf "$tmp"; return 1; fi
+  if ! dxb_gw_fetch_to "$tmp/$name" "$base/$name"; then dxb_step_failed graywolf "download of $name failed"; rm -rf "$tmp"; return 1; fi
   if [[ $(sha256sum "$tmp/$name" | cut -d' ' -f1) != "$sha" ]]; then dxb_step_failed graywolf "checksum mismatch for $name"; rm -rf "$tmp"; return 1; fi
   if ! DEBIAN_FRONTEND=noninteractive apt-get install -y "$tmp/$name" > /dev/null 2>&1; then dxb_step_failed graywolf "apt-get install of $name failed"; rm -rf "$tmp"; return 1; fi
   rm -rf "$tmp"
@@ -60,7 +68,18 @@ dxb_gw_api() {
   fi
 }
 dxb_gw_wait_ready() { local i; for i in $(seq 1 60); do "$DXB_CURL" -fsS "$DXB_GW_API/auth/setup" > /dev/null 2>&1 && return 0; sleep 2; done; return 1; }
-dxb_gw_needs_setup() { dxb_gw_api GET /auth/setup | jq -e '.needs_setup == true' > /dev/null; }
+# 0 = setup needed, 1 = already set up, 2 = could not tell (request failed or body wasn't JSON
+# with a needs_setup field) - the caller must treat 2 as a failure, never as "already configured".
+dxb_gw_needs_setup() {
+  local body ns
+  body=$(dxb_gw_api GET /auth/setup) || return 2
+  ns=$(printf '%s' "$body" | jq -r 'if has("needs_setup") then (.needs_setup | tostring) else empty end' 2> /dev/null)
+  case $ns in
+    true) return 0 ;;
+    false) return 1 ;;
+    *) return 2 ;;
+  esac
+}
 
 _dxb_bool() { if [[ $1 == on ]]; then echo true; else echo false; fi; }
 dxb_gw_payload_station() { jq -cn --arg c "${DXB_CFG[CALLSIGN]}" '{callsign: $c}'; }
@@ -98,9 +117,14 @@ dxb_gw_first_channel() { dxb_gw_api GET /channels 2> /dev/null | jq -r 'if type 
 dxb_gw_login() {
   local pw=${DXB_CFG[WEBUI_PASSWORD]}
   if [[ $pw == "$DXB_APPLIED" ]]; then
-    read -rsp "Graywolf password for ${DXB_CFG[WEBUI_USER]}: " pw < /dev/tty; echo
+    if ! read -rst 120 -p "Graywolf password for ${DXB_CFG[WEBUI_USER]}: " pw < "$DXB_TTY" 2> /dev/null || [[ -z $pw ]]; then
+      echo
+      dxb_step_failed graywolf "WEBUI_PASSWORD was scrubbed and no terminal is available to prompt; set it in dxberry.txt and re-run"
+      return 1
+    fi
+    echo
   fi
-  dxb_gw_api POST /auth/login "$(jq -cn --arg u "${DXB_CFG[WEBUI_USER]}" --arg p "$pw" '{username: $u, password: $p}')" > /dev/null \
+  dxb_gw_api POST /auth/login "$(PW=$pw jq -cn --arg u "${DXB_CFG[WEBUI_USER]}" '{username: $u, password: env.PW}')" > /dev/null \
     || { dxb_step_failed graywolf "login as ${DXB_CFG[WEBUI_USER]} failed"; return 1; }
 }
 
@@ -157,12 +181,17 @@ dxb_gw_seed_digi() {
 
 # dxb_gw_seed RESEED(0|1)
 dxb_gw_seed() {
-  local reseed=${1:-0}
+  local reseed=${1:-0} setup_rc
   dxb_gw_wait_ready || { dxb_step_failed graywolf "API at $DXB_GW_API not reachable"; return 1; }
   rm -f "$DXB_GW_COOKIES"; ( umask 077; : > "$DXB_GW_COOKIES" )
-  if dxb_gw_needs_setup; then
+  dxb_gw_needs_setup
+  setup_rc=$?
+  if (( setup_rc == 2 )); then
+    dxb_step_failed graywolf "could not query /auth/setup (request failed or returned an unexpected body)"
+    return 1
+  elif (( setup_rc == 0 )); then
     [[ ${DXB_CFG[WEBUI_PASSWORD]} != "$DXB_APPLIED" ]] || { dxb_step_failed graywolf "admin password already scrubbed; set WEBUI_PASSWORD in dxberry.txt and re-run"; return 1; }
-    dxb_gw_api POST /auth/setup "$(jq -cn --arg u "${DXB_CFG[WEBUI_USER]}" --arg p "${DXB_CFG[WEBUI_PASSWORD]}" '{username: $u, password: $p}')" > /dev/null \
+    dxb_gw_api POST /auth/setup "$(PW=${DXB_CFG[WEBUI_PASSWORD]} jq -cn --arg u "${DXB_CFG[WEBUI_USER]}" '{username: $u, password: env.PW}')" > /dev/null \
       || { dxb_step_failed graywolf "creating admin ${DXB_CFG[WEBUI_USER]} failed"; return 1; }
     dxb_info "graywolf admin '${DXB_CFG[WEBUI_USER]}' created"
   elif (( ! reseed )); then

@@ -16,23 +16,43 @@ gw_env() {
   sleep() { :; }
   GW_NEEDS_SETUP=true
   GW_CHANNELS=''
+  GW_FAIL_AUTH_SETUP=0
 }
 # Fake curl: records "METHOD PATH BODY" per call and answers from canned responses.
 # --data-binary @- means the body was piped over stdin (never as a literal argument); read it.
+# -b/-c (cookie jar) only appear on calls that went through dxb_gw_api, distinguishing them from
+# dxb_gw_wait_ready's plain readiness ping to the same path. -o FILE means the response is
+# written to FILE (curl owns the output file), as dxb_gw_fetch_to uses for the .deb download.
 fake_curl() {
-  local url='' m=GET data='' a
+  local url='' m=GET data='' a via_api=0 outfile=''
   while (( $# )); do
-    case $1 in -X) m=$2; shift ;; --data|--data-binary) data=$2; shift ;; http*) url=$1 ;; esac
+    case $1 in
+      -X) m=$2; shift ;;
+      --data|--data-binary) data=$2; shift ;;
+      -b|-c) via_api=1 ;;
+      -o) outfile=$2; shift ;;
+      http*) url=$1 ;;
+    esac
     shift
   done
   [[ $data == @-* ]] && data=$(cat)
   if [[ $url == "$DXB_GW_RELEASES"* ]]; then
     local f=$TEST_TMP/http/${url##*/}
     [[ -f $f ]] || return 22
-    cat "$f"; return 0
+    if [[ -n $outfile ]]; then
+      cp "$f" "$outfile"
+      echo "FETCH ${url##*/} -> $outfile" >> "$TEST_TMP/calls"
+    else
+      cat "$f"
+    fi
+    return 0
   fi
   local p=${url#"$DXB_GW_API"}
   echo "$m $p $data" >> "$TEST_TMP/calls"
+  if [[ $p == /auth/setup && $m == GET && $via_api == 1 && $GW_FAIL_AUTH_SETUP == 1 ]]; then
+    echo 'not json'
+    return 0
+  fi
   case "$m $p" in
     "GET /auth/setup")    echo "{\"needs_setup\":$GW_NEEDS_SETUP}" ;;
     "POST /beacons")      echo '{"id":7}' ;;
@@ -69,6 +89,7 @@ test_install_downloads_verifies_and_installs() {
   assert_ok dxb_gw_install
   assert_contains "$(calls)" "apt-get install -y"
   assert_contains "$(calls)" "graywolf_0.14.13_arm64.deb"
+  assert_contains "$(calls)" "FETCH graywolf_0.14.13_arm64.deb ->"
   assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
 }
 
@@ -157,4 +178,26 @@ test_seed_without_callsign_only_creates_admin() {
   assert_contains "$(calls)" "POST /auth/setup"
   assert_not_contains "$(calls)" "/station/config"
   assert_contains "${DXB_STATUS_LINES[*]}" "no CALLSIGN"
+}
+
+test_seed_fails_when_auth_setup_query_is_unusable() {
+  gw_env
+  GW_FAIL_AUTH_SETUP=1
+  gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2'
+  assert_fails dxb_gw_seed 0
+  assert_contains "${DXB_FAILED_STEPS[*]}" "/auth/setup"
+  assert_not_contains "$(calls)" "POST /auth/setup"
+  assert_not_contains "$(calls)" "POST /auth/login"
+}
+
+test_seed_login_prompt_without_terminal_fails_distinctly() {
+  gw_env
+  GW_NEEDS_SETUP=false
+  gw_cfg 'PASSWORD=secretpass' 'WEBUI_PASSWORD=<applied>' 'CALLSIGN=N0CALL-2'
+  local saved_tty=$DXB_TTY
+  DXB_TTY=/dev/null
+  assert_fails dxb_gw_seed 1
+  DXB_TTY=$saved_tty
+  assert_contains "${DXB_FAILED_STEPS[*]}" "no terminal is available"
+  assert_not_contains "$(calls)" "/auth/login"
 }
