@@ -1,0 +1,16 @@
+[Unit]
+Description=DXBerry-Pi network watcher (Ethernet primary, WiFi failover)
+Documentation=file:///opt/dxberry/bin/dxberry-netwatch
+After=networking.service
+Before=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=all
+ExecStart=/opt/dxberry/bin/dxberry-netwatch run
+Restart=always
+RestartSec=3
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target network-online.target

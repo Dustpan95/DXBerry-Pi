@@ -1,0 +1,9 @@
+# Location: /etc/network/interfaces.d/wlan0.conf
+# Managed by DXBerry-Pi: dxberry-netwatch brings this interface up only while eth0 has no link.
+# No "auto" line on purpose - see /opt/dxberry and docs/design in the DXBerry-Pi repo.
+iface wlan0 inet @METHOD@
+@ADDRESS@
+@GATEWAY@
+wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
+pre-up iw dev wlan0 set power_save off || true
+post-down iw dev wlan0 set power_save on || true
