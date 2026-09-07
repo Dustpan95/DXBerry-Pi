@@ -34,3 +34,125 @@ test_config_load_missing_file() {
   assert_fails dxb_config_load "$TEST_TMP/nope.txt"
   assert_contains "${DXB_CFG_ERRORS[0]}" "cannot read"
 }
+
+load_and_validate() { dxb_config_load "$TEST_TMP/dxberry.txt"; dxb_config_validate; }
+errors_text() { printf '%s\n' "${DXB_CFG_ERRORS[@]}"; }
+
+test_validate_minimal_valid_config_applies_defaults() {
+  export DXB_ZONEINFO_DIR=$TEST_TMP/no-such-dir
+  write_cfg 'PASSWORD=secretpass'
+  assert_ok load_and_validate
+  assert_eq "${DXB_CFG[HOSTNAME]}" "dxberry-pi"
+  assert_eq "${DXB_CFG[TIMEZONE]}" "UTC"
+  assert_eq "${DXB_CFG[_MODE]}" "dhcp"
+  assert_eq "${DXB_CFG[_WIFI]}" "0"
+  assert_eq "${DXB_CFG[_BEACON]}" "0"
+  assert_eq "${DXB_CFG[WEBUI_USER]}" "admin"
+  assert_eq "${DXB_CFG[WEBUI_PASSWORD]}" "secretpass"
+  assert_eq "${DXB_CFG[IGATE_SERVER]}" "rotate.aprs2.net"
+  assert_eq "${DXB_CFG[_SEND_PATH]}" "is_only"
+  assert_eq "${DXB_CFG[_SYMBOL_TABLE]}" "R"
+  assert_eq "${DXB_CFG[_SYMBOL]}" "&"
+  assert_eq "${DXB_CFG[_INTERVAL_S]}" "1800"
+  assert_eq "${DXB_CFG[SERIAL_CONSOLE]}" "off"
+}
+
+test_validate_password_required_and_length() {
+  export DXB_ZONEINFO_DIR=$TEST_TMP/no-such-dir
+  write_cfg 'HOSTNAME=x'
+  assert_fails load_and_validate
+  assert_contains "$(errors_text)" "PASSWORD is required"
+  write_cfg 'PASSWORD=short'
+  assert_fails load_and_validate
+  assert_contains "$(errors_text)" "line 1: PASSWORD must be 8-100 characters"
+  write_cfg 'PASSWORD=<applied>'
+  assert_ok load_and_validate
+}
+
+test_validate_static_ip_rules() {
+  export DXB_ZONEINFO_DIR=$TEST_TMP/no-such-dir
+  write_cfg 'PASSWORD=secretpass' 'STATIC_IP=192.168.1.90/24' 'GATEWAY=192.168.1.1'
+  assert_ok load_and_validate
+  assert_eq "${DXB_CFG[_MODE]}" "static"
+  assert_eq "${DXB_CFG[_IP]}" "192.168.1.90"
+  assert_eq "${DXB_CFG[_PREFIX]}" "24"
+  assert_eq "${DXB_CFG[DNS]}" "192.168.1.1"
+  write_cfg 'PASSWORD=secretpass' 'STATIC_IP=192.168.1.90/24'
+  assert_fails load_and_validate
+  assert_contains "$(errors_text)" "GATEWAY is required when STATIC_IP is set"
+  write_cfg 'PASSWORD=secretpass' 'STATIC_IP=192.168.1.90/24' 'GATEWAY=10.0.0.1'
+  assert_fails load_and_validate
+  assert_contains "$(errors_text)" "GATEWAY is not inside 192.168.1.90/24"
+  write_cfg 'PASSWORD=secretpass' 'STATIC_IP=192.168.1.90' 'GATEWAY=192.168.1.1'
+  assert_fails load_and_validate
+  assert_contains "$(errors_text)" "STATIC_IP must be an IPv4 address with prefix length"
+  write_cfg 'PASSWORD=secretpass' 'STATIC_IP=192.168.1.90/24' 'GATEWAY=192.168.1.1' 'DNS=1.1.1.1 999.1.1.1'
+  assert_fails load_and_validate
+  assert_contains "$(errors_text)" "DNS '999.1.1.1' is not a valid IPv4 address"
+}
+
+test_validate_wifi_rules() {
+  export DXB_ZONEINFO_DIR=$TEST_TMP/no-such-dir
+  write_cfg 'PASSWORD=secretpass' 'WIFI_SSID=Home'
+  assert_fails load_and_validate
+  assert_contains "$(errors_text)" "WIFI_PASSWORD is required when WIFI_SSID is set"
+  assert_contains "$(errors_text)" "WIFI_COUNTRY must be a two-letter uppercase country code"
+  write_cfg 'PASSWORD=secretpass' 'WIFI_SSID=Home' 'WIFI_PASSWORD=wifipass1' 'WIFI_COUNTRY=US'
+  assert_ok load_and_validate
+  assert_eq "${DXB_CFG[_WIFI]}" "1"
+  write_cfg 'PASSWORD=secretpass' 'WIFI_SSID=Home' 'WIFI_PASSWORD=<applied>' 'WIFI_COUNTRY=US'
+  assert_ok load_and_validate
+}
+
+test_validate_station_and_beacon_rules() {
+  export DXB_ZONEINFO_DIR=$TEST_TMP/no-such-dir
+  write_cfg 'PASSWORD=secretpass' 'CALLSIGN=n0call' 'LATITUDE=37.1' 'BEACON_INTERVAL_MIN=0' 'BEACON_SEND=maybe' 'DIGIPEATER=yes' 'BEACON_SYMBOL=abc' 'GRAYWOLF_VERSION=latest' 'IGATE_IS_TO_RF=yes'
+  assert_fails load_and_validate
+  local e; e=$(errors_text)
+  assert_contains "$e" "CALLSIGN must look like N0CALL or N0CALL-10"
+  assert_contains "$e" "LATITUDE and LONGITUDE must be given together"
+  assert_contains "$e" "BEACON_INTERVAL_MIN must be a whole number of minutes, 1-120"
+  assert_contains "$e" "BEACON_SEND must be is, rf or both"
+  assert_contains "$e" "DIGIPEATER must be off, fillin or wide"
+  assert_contains "$e" "BEACON_SYMBOL must be exactly two characters"
+  assert_contains "$e" "GRAYWOLF_VERSION must look like v0.14.13"
+  assert_contains "$e" "IGATE_IS_TO_RF must be on or off"
+  write_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2' 'LATITUDE=37.145833' 'LONGITUDE=-101.375' 'BEACON_INTERVAL_MIN=10' 'BEACON_SEND=both' 'BEACON_SYMBOL=/#' 'DIGIPEATER=wide' 'GRAYWOLF_VERSION=v0.14.13'
+  assert_ok load_and_validate
+  assert_eq "${DXB_CFG[_BEACON]}" "1"
+  assert_eq "${DXB_CFG[_INTERVAL_S]}" "600"
+  assert_eq "${DXB_CFG[_SEND_PATH]}" "both"
+  assert_eq "${DXB_CFG[_SYMBOL_TABLE]}" "/"
+  assert_eq "${DXB_CFG[_SYMBOL]}" "#"
+}
+
+test_validate_timezone_checked_against_zoneinfo_when_present() {
+  mkdir -p "$TEST_TMP/zi/America"; : > "$TEST_TMP/zi/America/Chicago"
+  export DXB_ZONEINFO_DIR=$TEST_TMP/zi
+  write_cfg 'PASSWORD=secretpass' 'TIMEZONE=America/Chicago'
+  assert_ok load_and_validate
+  write_cfg 'PASSWORD=secretpass' 'TIMEZONE=Mars/Phobos'
+  assert_fails load_and_validate
+  assert_contains "$(errors_text)" "TIMEZONE 'Mars/Phobos' is not a known time zone"
+}
+
+test_validate_hostname_and_ssh_key() {
+  export DXB_ZONEINFO_DIR=$TEST_TMP/no-such-dir
+  write_cfg 'PASSWORD=secretpass' 'HOSTNAME=Bad_Name' 'SSH_PUBKEY=not a key'
+  assert_fails load_and_validate
+  assert_contains "$(errors_text)" "HOSTNAME must be lowercase letters, digits and hyphens"
+  assert_contains "$(errors_text)" "SSH_PUBKEY must be a single OpenSSH public key"
+  write_cfg 'PASSWORD=secretpass' 'HOSTNAME=dx-berry-2' 'SSH_PUBKEY=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample+key/here= me@host'
+  assert_ok load_and_validate
+}
+
+test_print_masked_hides_secrets() {
+  export DXB_ZONEINFO_DIR=$TEST_TMP/no-such-dir
+  write_cfg 'PASSWORD=secretpass' 'WIFI_SSID=Home' 'WIFI_PASSWORD=<applied>' 'WIFI_COUNTRY=US'
+  load_and_validate
+  local out; out=$(dxb_config_print_masked)
+  assert_contains "$out" "PASSWORD=********"
+  assert_contains "$out" "WIFI_PASSWORD=<applied>"
+  assert_contains "$out" "WEBUI_PASSWORD=********"
+  assert_not_contains "$out" "secretpass"
+}
