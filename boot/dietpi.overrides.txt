@@ -1,0 +1,16 @@
+# Applied onto the stock DietPi dietpi.txt by build/build-image.sh. No secrets here:
+# per-station values come from dxberry.txt through /opt/dxberry/bin/dxberry-preboot.
+AUTO_SETUP_AUTOMATED=1
+AUTO_SETUP_SSH_SERVER_INDEX=-2
+AUTO_SETUP_LOGGING_INDEX=-1
+AUTO_SETUP_SWAPFILE_SIZE=1
+AUTO_SETUP_SWAPFILE_LOCATION=zram
+AUTO_SETUP_LOCALE=en_US.UTF-8
+AUTO_SETUP_KEYBOARD_LAYOUT=us
+AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0
+AUTO_SETUP_APT_INSTALLS=curl ca-certificates jq wpasupplicant
+AUTO_SETUP_NET_ETHERNET_ENABLED=1
+AUTO_SETUP_NET_WIFI_ENABLED=0
+AUTO_SETUP_NET_HOSTNAME=dxberry-pi
+SURVEY_OPTED_IN=0
+CONFIG_SERIAL_CONSOLE_ENABLE=0

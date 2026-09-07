@@ -1,0 +1,105 @@
+#!/bin/bash
+# dxberry-provision: apply <boot>/dxberry.txt to this system. Idempotent; safe to re-run over SSH.
+#   --first-boot   full run followed by a reboot (used by /boot/Automation_Custom_Script.sh)
+#   --reseed       also push station/iGate/beacon/digipeater values into an already set-up Graywolf
+#   --check        validate the config and print it with secrets masked; no changes, no root needed
+set -uo pipefail
+
+DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
+for _m in common config system network storage graywolf scrub; do
+  # shellcheck disable=SC1090
+  source "$DXB_LIB/$_m.sh"
+done
+
+usage() { sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# dxb_write_error_file BOOT MESSAGE: record a pre-provisioning config failure on the boot partition.
+dxb_write_error_file() {
+  local boot=$1 message=$2
+  {
+    echo "DXBerry-Pi: $message"
+    echo
+    printf '  %s\n' "${DXB_CFG_ERRORS[@]}"
+  } > "$boot/dxberry-ERROR.txt" 2> /dev/null || true
+}
+
+main() {
+  local reseed=0 check=0 boot cfg w
+  DXB_MODE=run
+  for a in "$@"; do
+    case $a in
+      --first-boot) DXB_MODE=first-boot ;;
+      --reseed) reseed=1 ;;
+      --check) check=1 ;;
+      -h|--help) usage; return 0 ;;
+      *) echo "unknown option: $a" >&2; usage >&2; return 2 ;;
+    esac
+  done
+  boot=$(dxb_boot_dir); cfg="$boot/dxberry.txt"
+  if [[ ! -f $cfg ]]; then echo "no $cfg found; see $boot/README-DXBERRY.txt" >&2; return 1; fi
+  dxb_config_load "$cfg"
+  if ! dxb_config_validate; then
+    echo "dxberry.txt has errors:" >&2
+    printf '  %s\n' "${DXB_CFG_ERRORS[@]}" >&2
+    if (( ! check )); then
+      dxb_write_error_file "$boot" "dxberry.txt has errors. Fix them and run: sudo dxberry-provision"
+      if [[ $DXB_MODE == first-boot ]]; then
+        dxb_info "dxberry.txt invalid on first boot; rebooting so the Pi comes up on DietPi defaults"
+        sync
+        reboot
+      fi
+    fi
+    return 1
+  fi
+  for w in "${DXB_CFG_WARNINGS[@]}"; do echo "warning: $w" >&2; done
+  if (( check )); then
+    dxb_config_print_masked
+    echo "mode: ${DXB_CFG[_MODE]}  wifi: ${DXB_CFG[_WIFI]}  beacon: ${DXB_CFG[_BEACON]}  send: ${DXB_CFG[_SEND_PATH]}"
+    return 0
+  fi
+  dxb_require_root
+  if [[ $DXB_MODE == first-boot && -f $DXB_STATE_DIR/provisioned ]]; then
+    dxb_info "first-boot provisioning already completed; nothing to do"
+    return 0
+  fi
+  mkdir -p "$DXB_STATE_DIR"; chmod 700 "$DXB_STATE_DIR"
+  : >> "$DXB_LOG_FILE"; chmod 600 "$DXB_LOG_FILE"
+  dxb_info "dxberry-provision starting (mode=$DXB_MODE, reseed=$reseed)"
+  for w in "${DXB_CFG_WARNINGS[@]}"; do dxb_warn "$w"; done
+  dxb_status_add "image: $(sed -n 's/^DXBERRY_VERSION=//p' /etc/dxberry-release 2> /dev/null || echo unknown)"
+
+  provision_system
+  provision_network
+  provision_storage
+  command -v jq > /dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y jq > /dev/null 2>&1 || dxb_step_failed system "jq is not installed"
+  if dxb_gw_install; then
+    systemctl enable --now graywolf > /dev/null 2>&1 || dxb_step_failed graywolf "could not start graywolf.service"
+    dxb_gw_seed "$reseed"
+    dxb_status_add "graywolf: version $(dxb_gw_installed_version) at http://${DXB_CFG[_IP]:-<this-pi>}:8080 (user ${DXB_CFG[WEBUI_USER]})"
+  fi
+  provision_scrub
+
+  dxb_status_write "$boot/dxberry-status.txt"
+  cp "$boot/dxberry-status.txt" "$DXB_STATE_DIR/status.txt" 2> /dev/null || true
+  rm -f "$boot/dxberry-ERROR.txt"
+  touch "$DXB_STATE_DIR/provisioned"
+  local rc=0
+  if (( ${#DXB_FAILED_STEPS[@]} )); then
+    rc=1
+    dxb_warn "finished with ${#DXB_FAILED_STEPS[@]} failed step(s); see $boot/dxberry-status.txt"
+  else
+    dxb_info "finished: all steps completed"
+  fi
+
+  if [[ $DXB_MODE == first-boot ]]; then
+    dxb_info "rebooting to start dxberry-netwatch and graywolf cleanly"
+    sync
+    reboot
+  elif (( DXB_NET_CHANGED )); then
+    dxb_warn "network configuration changed; restarting dxberry-netwatch in 3s (an SSH session may drop and can reconnect at the new address)"
+    systemd-run --quiet --on-active=3 systemctl restart dxberry-netwatch 2> /dev/null || systemctl restart dxberry-netwatch
+  fi
+  return $rc
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

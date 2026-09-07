@@ -1,0 +1,60 @@
+# DXBerry-Pi station configuration. Rename this file to dxberry.txt and fill it in.
+# One KEY=value per line. Lines starting with # are ignored. Leave a value blank for its default.
+# Passwords are replaced with <applied> after the first boot; put a new value to change them.
+
+# ---------------------------------------------------------------- System
+# Name on the network: lowercase letters, digits, hyphens.
+HOSTNAME=dxberry-pi
+# Login password for root and dietpi (8-100 characters). REQUIRED.
+PASSWORD=
+# Time zone, e.g. America/Chicago or Europe/Berlin. Default UTC.
+TIMEZONE=UTC
+
+# ---------------------------------------------------------------- Network
+# Fixed address with prefix length. Leave blank to use DHCP.
+# Ethernet is primary; WiFi (if set below) takes over the same address when the cable is unplugged.
+STATIC_IP=
+# Required when STATIC_IP is set.
+GATEWAY=
+# DNS servers, space separated. Default: the gateway.
+DNS=
+# WiFi network for failover. Leave WIFI_SSID blank for Ethernet only.
+WIFI_SSID=
+WIFI_PASSWORD=
+# Two-letter country code, required with WIFI_SSID (US, GB, DE, ...).
+WIFI_COUNTRY=
+
+# ---------------------------------------------------------------- Station
+# Your callsign with SSID, e.g. N0CALL-10. Leave blank to finish station setup in the web UI.
+CALLSIGN=
+# Decimal degrees; both or neither. Enables a position beacon.
+LATITUDE=
+LONGITUDE=
+BEACON_COMMENT=DXBerry-Pi iGate
+# Minutes between position beacons, 1-120.
+BEACON_INTERVAL_MIN=30
+# APRS-IS server. rotate.aprs2.net picks a nearby server; regional: noam.aprs2.net, euro.aprs2.net ...
+IGATE_SERVER=rotate.aprs2.net
+
+# ---------------------------------------------------------------- Graywolf web UI account
+WEBUI_USER=admin
+# Leave blank to reuse PASSWORD.
+WEBUI_PASSWORD=
+
+# ---------------------------------------------------------------- Advanced (blank = default)
+# One OpenSSH public key to add for root and dietpi.
+# SSH_PUBKEY=
+# Where beacons go: is (APRS-IS only, no radio needed), rf, or both.
+# BEACON_SEND=is
+# Digipeater path used for rf/both.
+# BEACON_PATH=WIDE1-1,WIDE2-1
+# Two characters: symbol table/overlay + symbol. R& = receive-only iGate, I& = iGate, /# = digipeater.
+# BEACON_SYMBOL=R&
+# off, fillin (WIDE1-1 only, home stations) or wide (WIDE1-1 + WIDE2-2, high sites only).
+# DIGIPEATER=off
+# IGATE_RF_TO_IS=on
+# IGATE_IS_TO_RF=off
+# Pin a Graywolf release instead of installing the latest, e.g. v0.14.13.
+# GRAYWOLF_VERSION=
+# on keeps the console on the GPIO UART; off (default) leaves the UART free for a GPS.
+# SERIAL_CONSOLE=off
