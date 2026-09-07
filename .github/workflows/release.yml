@@ -14,7 +14,12 @@ jobs:
       - name: No real station config in the tree
         run: '! git ls-files | grep -qxE "boot/dxberry\.txt|boot/dietpi-wifi\.txt"'
       - name: No attribution lines committed
-        run: '! git grep -qIiE "Co-Authored-By|claude|anthropic" -- . ":!.github/workflows/ci.yml" ":!.github/workflows/release.yml"'
+        run: |
+          if git grep -qIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic' -- . ; then
+            echo "attribution text found in a tracked file:" >&2
+            git grep -nIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic' -- . >&2
+            exit 1
+          fi
       - name: Syntax
         run: |
           for f in provision/bin/* provision/lib/*.sh build/*.sh boot/*.sh tests/*.sh; do bash -n "$f"; done
@@ -31,7 +36,7 @@ jobs:
           {
             echo "Flash \`DXBerry-Pi-${GITHUB_REF_NAME#v}-rpi234-arm64.img.xz\`, rename \`dxberry.txt.example\` to \`dxberry.txt\` on the boot partition, fill it in, boot."
             echo
-            echo "Base image: $(cat build/work/*.img.xz.sha256)"
+            echo "DietPi base image: $(cat build/work/*.img.xz.sha256)"
             echo "Graywolf: latest release at first boot (pin with GRAYWOLF_VERSION=)."
           } > notes.md
       - name: Publish
