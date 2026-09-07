@@ -58,19 +58,20 @@ dxb_set_kv() {
       {
         if (!done && $0 ~ ("^[[:blank:]]*" ENVIRON["kre"] "=")) { print ENVIRON["k"] "=" ENVIRON["v"]; done = 1 }
         else print
-      }' "$file" > "$file.dxbtmp" && mv "$file.dxbtmp" "$file"
+      }' "$file" > "$file.dxbtmp" && chmod --reference="$file" "$file.dxbtmp" 2>/dev/null || true && mv "$file.dxbtmp" "$file"
   else
     printf '%s=%s\n' "$key" "$val" >> "$file"
   fi
 }
 
 # dxb_render TEMPLATE NAME=VALUE...: print TEMPLATE with @NAME@ placeholders replaced.
+# Placeholder names: uppercase letters, digits, and underscores (@NAME@, @IP1@, @ETH0_MAC@, etc).
 dxb_render() {
   local file=$1 content kv
   shift
   content=$(< "$file")
   for kv in "$@"; do content=${content//"@${kv%%=*}@"/${kv#*=}}; done
-  if [[ $content =~ @[A-Z_]+@ ]]; then
+  if [[ $content =~ @[A-Z0-9_]+@ ]]; then
     echo "dxb_render: unresolved placeholder ${BASH_REMATCH[0]} in $file" >&2
     return 1
   fi
@@ -78,18 +79,19 @@ dxb_render() {
 }
 
 # dxb_write_if_changed FILE CONTENT [MODE]: 0 = written, 1 = already identical.
+# Atomic write: temp file + rename. Returns 0 if written, 1 if unchanged.
 dxb_write_if_changed() {
   local dest=$1 content=$2 mode=${3:-} existing_mode
   if [[ -f $dest && ! -L $dest && $(< "$dest") == "$content" ]]; then return 1; fi
   if [[ -f $dest && ! -L $dest ]]; then existing_mode=$(stat -c %a "$dest"); fi
-  [[ -L $dest ]] && rm -f "$dest"
-  printf '%s\n' "$content" > "$dest"
+  printf '%s\n' "$content" > "$dest.dxbtmp"
   if [[ -n $mode ]]; then
-    chmod "$mode" "$dest"
+    chmod "$mode" "$dest.dxbtmp"
   elif [[ -n ${existing_mode:-} ]]; then
-    chmod "$existing_mode" "$dest"
+    chmod "$existing_mode" "$dest.dxbtmp"
   else
-    chmod 644 "$dest"
-  fi
+    chmod 644 "$dest.dxbtmp"
+  fi || { dxb_warn "chmod failed for $dest (vfat?), continuing"; }
+  mv -f "$dest.dxbtmp" "$dest"
   return 0
 }
