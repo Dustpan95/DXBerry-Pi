@@ -245,6 +245,65 @@ test_run_mode_restarts_netwatch_last_and_never_reboots() {
   assert_eq "$rc" "0"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "reboot"
   assert_eq "$(tail -1 "$TEST_TMP/calls")" "systemd-run --quiet --on-active=3 systemctl restart dxberry-netwatch"
+  # Run mode means "first boot already happened"; it must never write the marker itself, gate or
+  # no gate - only a --first-boot run whose gate passed does that.
+  [[ -f $DXB_STATE_DIR/provisioned ]] && _fail "run mode must never write the provisioned marker"
+}
+
+# The finding this guards against: a blocked gate's own status text ("Fix the cause, then run:
+# sudo dxberry-provision --first-boot") could be followed literally in RUN mode - which used to
+# write the marker anyway (gate_ok started at 1 and only run mode never touched it), permanently
+# disarming the gate for the next --first-boot. Walk the real remediation loop end to end.
+test_remediation_loop_survives_a_run_mode_call_between_a_blocked_and_passing_gate() {
+  full_env
+  printf 'PASSWORD=secretpass\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  : > "$TEST_TMP/netwatch-not-enabled"
+  local rc
+  (
+    # shellcheck disable=SC1091
+    source "$DXB_ROOT/provision/bin/dxberry-provision"
+    dxb_require_root() { :; }
+    dxb_gw_install() { return 0; }
+    dxb_gw_seed() { return 0; }
+    main --first-boot
+  ) 2> /dev/null
+  rc=$?
+  assert_eq "$rc" "1"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "reboot"
+  [[ -f $DXB_STATE_DIR/provisioned ]] && _fail "marker must not exist after a blocked gate"
+
+  # Someone follows the status file's generic tail instead of the gate's own instruction and
+  # runs plain "sudo dxberry-provision" - must still not arm the marker.
+  : > "$TEST_TMP/calls"
+  (
+    # shellcheck disable=SC1091
+    source "$DXB_ROOT/provision/bin/dxberry-provision"
+    dxb_require_root() { :; }
+    dxb_gw_install() { return 0; }
+    dxb_gw_seed() { return 0; }
+    main
+  ) 2> /dev/null
+  rc=$?
+  assert_eq "$rc" "0"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "reboot"
+  [[ -f $DXB_STATE_DIR/provisioned ]] && _fail "a run-mode call must never write the marker"
+
+  # Now actually fix the cause and re-run --first-boot: the gate passes, the marker is written,
+  # and the reboot the gate exists to gatekeep finally happens.
+  rm -f "$TEST_TMP/netwatch-not-enabled"
+  : > "$TEST_TMP/calls"
+  (
+    # shellcheck disable=SC1091
+    source "$DXB_ROOT/provision/bin/dxberry-provision"
+    dxb_require_root() { :; }
+    dxb_gw_install() { return 0; }
+    dxb_gw_seed() { return 0; }
+    main --first-boot
+  ) 2> /dev/null
+  rc=$?
+  assert_eq "$rc" "0"
+  [[ -f $DXB_STATE_DIR/provisioned ]] || _fail "marker must be written once --first-boot's gate passes"
+  assert_eq "$(tail -2 "$TEST_TMP/calls")" $'sync\nreboot'
 }
 
 test_run_mode_wifi_import_failure_leaves_wifi_password_intact() {

@@ -197,6 +197,15 @@ test_stray_stanza_scan_reports_file_and_line() {
   assert_contains "${DXB_FAILED_STEPS[*]}" "stray stanza $DXB_INTERFACES_FILE:4:   auto wlan0"
 }
 
+# dietpi-wifi.txt holds a plaintext WiFi PSK; it must never be left group/world-readable, even
+# if dxb_net_import_wifi's own call to dietpi-wifidb then fails.
+test_write_wifi_txt_leaves_the_file_mode_600() {
+  net_env
+  chmod 644 "$DXB_DIETPI_WIFI"
+  dxb_net_write_wifi_txt "$DXB_DIETPI_WIFI" Home wifipass1
+  assert_eq "$(stat -c %a "$DXB_DIETPI_WIFI")" "600"
+}
+
 test_provision_network_removes_wlan0_when_wifi_unset() {
   net_env
   mkdir -p "$DXB_IFACES_DIR"; echo old > "$DXB_IFACES_DIR/wlan0.conf"

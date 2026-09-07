@@ -137,6 +137,19 @@ test_simulate_reports_a_failed_write() {
   assert_not_contains "$out" "simulating:"
 }
 
+# rm -f fails (EISDIR here) when SIM_FILE is a directory: report the failure and exit non-zero
+# rather than printing "simulation off" while the real carrier state is still being ignored.
+test_simulate_off_reports_failure_when_sim_file_cannot_be_removed() {
+  nw_env
+  mkdir -p "$SIM_FILE"
+  local out rc
+  out=$(nw_simulate off 2> /dev/null); rc=$?
+  assert_eq "$rc" "1"
+  assert_not_contains "$out" "simulation off"
+  assert_contains "$(nw_simulate off 2>&1 > /dev/null)" "could not remove $SIM_FILE"
+  [[ -d $SIM_FILE ]] || _fail "the directory must still be there; rm -f must not have partially succeeded"
+}
+
 # A failed ifup eth0 (e.g. a DHCP timeout while carrier is still present) must not wedge
 # the daemon in a false ETH state, and must not be retried hotter than DXB_NW_RETRY.
 test_failed_ifup_eth_does_not_wedge_or_hot_retry() {

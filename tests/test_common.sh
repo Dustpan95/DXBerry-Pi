@@ -59,6 +59,20 @@ test_status_file_lists_failures() {
   assert_file_contains "$TEST_TMP/log" "[ERROR] graywolf: download failed"
 }
 
+test_status_tail_names_first_boot_flag_only_in_first_boot_mode() {
+  DXB_STATUS_LINES=(); DXB_FAILED_STEPS=()
+  DXB_LOG_FILE=$TEST_TMP/log
+  dxb_step_failed network "simulated failure"
+  DXB_MODE=first-boot
+  dxb_status_write "$TEST_TMP/first-boot-status.txt"
+  assert_file_contains "$TEST_TMP/first-boot-status.txt" "Fix the cause, then run: sudo dxberry-provision --first-boot"
+  DXB_MODE=run
+  dxb_status_write "$TEST_TMP/run-status.txt"
+  assert_file_contains "$TEST_TMP/run-status.txt" "Fix the cause, then run: sudo dxberry-provision"
+  assert_file_not_contains "$TEST_TMP/run-status.txt" "sudo dxberry-provision --first-boot"
+  unset DXB_MODE
+}
+
 test_boot_dir_override_and_squote() {
   DXB_BOOT_DIR=$TEST_TMP/bootfs
   assert_eq "$(dxb_boot_dir)" "$TEST_TMP/bootfs"

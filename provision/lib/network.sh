@@ -17,12 +17,14 @@ DXB_NET_CHANGED=0
 # (the pre-reboot gate) re-reads the files without listing the same stanzas twice.
 DXB_NET_STRAY_REPORTED=0
 
-# dxb_net_write_wifi_txt FILE SSID KEY: fill slot 0 of a DietPi dietpi-wifi.txt.
+# dxb_net_write_wifi_txt FILE SSID KEY: fill slot 0 of a DietPi dietpi-wifi.txt. Holds a WiFi
+# PSK, so it must never be left world/group-readable, including if the import below fails.
 dxb_net_write_wifi_txt() {
   local file=$1 ssid=$2 key=$3
   dxb_set_kv "$file" 'aWIFI_SSID[0]' "$(dxb_squote "$ssid")"
   dxb_set_kv "$file" 'aWIFI_KEY[0]' "$(dxb_squote "$key")"
   dxb_set_kv "$file" 'aWIFI_KEYMGR[0]' "'WPA-PSK'"
+  chmod 600 "$file" 2> /dev/null || true
 }
 
 # dxb_net_render_iface eth0|wlan0: print the ifupdown stanza for the configured mode.

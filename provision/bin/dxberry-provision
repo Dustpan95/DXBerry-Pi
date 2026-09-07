@@ -134,7 +134,7 @@ main() {
   dxb_status_write "$boot/dxberry-status.txt"
   cp "$boot/dxberry-status.txt" "$DXB_STATE_DIR/status.txt" 2> /dev/null || true
   rm -f "$boot/dxberry-ERROR.txt"
-  if (( gate_ok )); then touch "$DXB_STATE_DIR/provisioned"; fi
+  if [[ $DXB_MODE == first-boot ]] && (( gate_ok )); then touch "$DXB_STATE_DIR/provisioned"; fi
   local rc=0
   if (( ${#DXB_FAILED_STEPS[@]} )); then
     rc=1

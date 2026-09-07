@@ -44,7 +44,11 @@ dxb_status_write() {
     if (( ${#DXB_FAILED_STEPS[@]} )); then
       echo "FAILED STEPS:"
       printf '  - %s\n' "${DXB_FAILED_STEPS[@]}"
-      echo "Fix the cause, then run: sudo dxberry-provision"
+      if [[ ${DXB_MODE:-run} == first-boot ]]; then
+        echo "Fix the cause, then run: sudo dxberry-provision --first-boot"
+      else
+        echo "Fix the cause, then run: sudo dxberry-provision"
+      fi
     else
       echo "All steps completed."
     fi
