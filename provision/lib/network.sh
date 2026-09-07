@@ -35,10 +35,15 @@ dxb_net_import_wifi() {
   [[ ${DXB_CFG[WIFI_PASSWORD]} == "$DXB_APPLIED" ]] && return 0
   dxb_net_write_wifi_txt "$DXB_DIETPI_WIFI" "${DXB_CFG[WIFI_SSID]}" "${DXB_CFG[WIFI_PASSWORD]}"
   if [[ -x $DXB_DIETPI_WIFIDB ]]; then
-    "$DXB_DIETPI_WIFIDB" 1 > /dev/null 2>&1 || dxb_step_failed network "dietpi-wifidb failed to import WiFi credentials"
-    dxb_info "WiFi credentials imported for ${DXB_CFG[WIFI_SSID]}"
+    if "$DXB_DIETPI_WIFIDB" 1 > /dev/null 2>&1; then
+      dxb_info "WiFi credentials imported for ${DXB_CFG[WIFI_SSID]}"
+    else
+      dxb_step_failed network "dietpi-wifidb failed to import WiFi credentials"
+      return 1
+    fi
   else
     dxb_step_failed network "$DXB_DIETPI_WIFIDB not found; WiFi credentials not imported"
+    return 1
   fi
 }
 

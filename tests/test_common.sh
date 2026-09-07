@@ -32,6 +32,7 @@ test_render_substitutes_and_rejects_unresolved() {
   assert_fails dxb_render "$TEST_TMP/t.tmpl" IFACE=eth0
   printf 'eth @ETH0_MAC@\n' > "$TEST_TMP/t2.tmpl"
   assert_fails dxb_render "$TEST_TMP/t2.tmpl" IFACE=eth0
+  assert_fails dxb_render "$TEST_TMP/does-not-exist.tmpl" 2> /dev/null
 }
 
 test_write_if_changed_reports_change() {

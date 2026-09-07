@@ -73,4 +73,14 @@ test_provision_network_removes_wlan0_when_wifi_unset() {
   DXB_MODE=run provision_network
   [[ -f $DXB_IFACES_DIR/wlan0.conf ]] && _fail "wlan0.conf should be removed"
   assert_eq "$DXB_NET_CHANGED" "1"
+  # Missing templates should fail gracefully
+  local saved_templates=$DXB_TEMPLATES
+  rm -rf "$DXB_IFACES_DIR"
+  net_cfg 'PASSWORD=secretpass'
+  DXB_TEMPLATES=$TEST_TMP/empty-templates
+  mkdir -p "$DXB_TEMPLATES"
+  assert_fails provision_network 2> /dev/null
+  assert_file_contains "$TEST_TMP/log" "eth0 template failed"
+  [[ -f $DXB_IFACES_DIR/eth0.conf ]] && _fail "eth0.conf should not be created when template is missing"
+  DXB_TEMPLATES=$saved_templates
 }

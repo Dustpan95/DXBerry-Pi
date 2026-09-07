@@ -75,6 +75,7 @@ dxb_set_kv() {
 dxb_render() {
   local file=$1 content kv
   shift
+  [[ -f $file ]] || { echo "dxb_render: no such template: $file" >&2; return 1; }
   content=$(< "$file")
   for kv in "$@"; do content=${content//"@${kv%%=*}@"/${kv#*=}}; done
   if [[ $content =~ @[A-Z0-9_]+@ ]]; then
