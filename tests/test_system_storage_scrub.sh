@@ -70,11 +70,14 @@ test_storage_writes_journald_dropin_once_and_reports_zram() {
   assert_file_not_contains "$TEST_TMP/calls" "restart systemd-journald"
   # Sub-case: missing template fails cleanly
   DXB_STATUS_LINES=(); DXB_FAILED_STEPS=()
-  export DXB_TEMPLATES=$TEST_TMP/empty-templates
+  local saved_templates=$DXB_TEMPLATES
+  DXB_TEMPLATES=$TEST_TMP/empty-templates
   mkdir -p "$DXB_TEMPLATES"
   provision_storage 2> /dev/null
-  [[ -f "$DXB_JOURNALD_DROPIN.new" ]] && _fail "no dropin should be written on template failure"
+  assert_file_contains "$DXB_JOURNALD_DROPIN" "Storage=volatile"
+  assert_fails test -e "$DXB_JOURNALD_DROPIN.dxbtmp"
   assert_contains "${DXB_FAILED_STEPS[*]}" "journald template missing"
+  DXB_TEMPLATES=$saved_templates
 }
 
 test_scrub_replaces_secrets_in_place_and_dietpi_password() {
