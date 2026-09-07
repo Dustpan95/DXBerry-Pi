@@ -53,12 +53,18 @@ dxb_set_kv() {
   kre=$(printf '%s' "$key" | sed 's/[][\\.^$*+?(){}|]/\\&/g')
   [[ -f $file ]] || : > "$file"
   if grep -qE "^[[:blank:]]*${kre}=" "$file"; then
-    k="$key" kre="$kre" v="$val" awk '
+    if k="$key" kre="$kre" v="$val" awk '
       BEGIN { done = 0 }
       {
         if (!done && $0 ~ ("^[[:blank:]]*" ENVIRON["kre"] "=")) { print ENVIRON["k"] "=" ENVIRON["v"]; done = 1 }
         else print
-      }' "$file" > "$file.dxbtmp" && chmod --reference="$file" "$file.dxbtmp" 2>/dev/null || true && mv "$file.dxbtmp" "$file"
+      }' "$file" > "$file.dxbtmp"; then
+      chmod --reference="$file" "$file.dxbtmp" 2>/dev/null || true
+      mv -f "$file.dxbtmp" "$file"
+    else
+      rm -f "$file.dxbtmp"
+      return 1
+    fi
   else
     printf '%s=%s\n' "$key" "$val" >> "$file"
   fi
