@@ -49,7 +49,10 @@ dxb_net_import_wifi() {
 
 dxb_net_install_netwatch() {
   local unit="$DXB_SYSTEMD_DIR/dxberry-netwatch.service" content
-  content=$(< "$DXB_TEMPLATES/dxberry-netwatch.service")
+  if ! content=$(dxb_render "$DXB_TEMPLATES/dxberry-netwatch.service"); then
+    dxb_step_failed network "dxberry-netwatch unit template missing"
+    return 1
+  fi
   if dxb_write_if_changed "$unit" "$content"; then
     systemctl daemon-reload
     systemctl enable dxberry-netwatch > /dev/null 2>&1

@@ -54,6 +54,15 @@ test_provision_network_static_with_wifi_writes_everything_once() {
   DXB_MODE=run provision_network
   assert_eq "$DXB_NET_CHANGED" "0"
   assert_file_not_contains "$TEST_TMP/calls" "wifidb 1"
+  # WiFi import failure should not prevent other steps; provision_network still succeeds
+  net_env
+  net_cfg 'PASSWORD=secretpass' 'STATIC_IP=192.168.1.90/24' 'GATEWAY=192.168.1.1' 'WIFI_SSID=Home' 'WIFI_PASSWORD=wifipass1' 'WIFI_COUNTRY=US'
+  printf '#!/bin/bash\nexit 1\n' > "$DXB_DIETPI_WIFIDB"; chmod +x "$DXB_DIETPI_WIFIDB"
+  DXB_MODE=first-boot provision_network
+  assert_ok true  # provision_network returns 0 despite wifi failure
+  assert_file_contains "$DXB_IFACES_DIR/eth0.conf" "address 192.168.1.90/24"
+  assert_file_contains "$DXB_SYSTEMD_DIR/dxberry-netwatch.service" "ExecStart"
+  assert_contains "${DXB_FAILED_STEPS[*]}" "dietpi-wifidb"
 }
 
 test_provision_network_applied_wifi_password_skips_import() {
@@ -64,6 +73,18 @@ test_provision_network_applied_wifi_password_skips_import() {
   assert_file_not_contains "$TEST_TMP/calls" "wifidb 1"
   assert_file_contains "$DXB_IFACES_DIR/eth0.conf" "iface eth0 inet dhcp"
   [[ -f $DXB_RESOLV_CONF ]] && _fail "resolv.conf must not be written in DHCP mode"
+  # dxb_net_install_netwatch should fail gracefully if template is missing
+  local saved_templates=$DXB_TEMPLATES
+  rm -rf "$DXB_SYSTEMD_DIR"
+  mkdir -p "$DXB_SYSTEMD_DIR"
+  DXB_TEMPLATES=$TEST_TMP/empty-templates-2
+  mkdir -p "$DXB_TEMPLATES"
+  # shellcheck disable=SC2034
+  DXB_FAILED_STEPS=()
+  assert_fails dxb_net_install_netwatch 2> /dev/null
+  assert_contains "${DXB_FAILED_STEPS[*]}" "dxberry-netwatch unit template"
+  [[ -f $DXB_SYSTEMD_DIR/dxberry-netwatch.service ]] && _fail "netwatch service should not be created when template is missing"
+  DXB_TEMPLATES=$saved_templates
 }
 
 test_provision_network_removes_wlan0_when_wifi_unset() {
@@ -81,6 +102,7 @@ test_provision_network_removes_wlan0_when_wifi_unset() {
   mkdir -p "$DXB_TEMPLATES"
   assert_fails provision_network 2> /dev/null
   assert_file_contains "$TEST_TMP/log" "eth0 template failed"
+  assert_contains "${DXB_FAILED_STEPS[*]}" "eth0 template"
   [[ -f $DXB_IFACES_DIR/eth0.conf ]] && _fail "eth0.conf should not be created when template is missing"
   DXB_TEMPLATES=$saved_templates
 }
