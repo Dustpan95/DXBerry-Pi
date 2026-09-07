@@ -124,7 +124,7 @@ CRLF line endings are accepted (Windows editors).
 | `HOSTNAME` | no | `dxberry-pi` | RFC 1123 label: lowercase letters, digits, hyphens, 1–63 chars |
 | `PASSWORD` | yes | — | login password for `root` and `dietpi`; 8–100 chars |
 | `TIMEZONE` | no | `UTC` | must exist under `/usr/share/zoneinfo` |
-| `STATIC_IP` | no | blank = DHCP | CIDR, e.g. `10.0.0.90/24`; applies to both interfaces |
+| `STATIC_IP` | no | blank = DHCP | CIDR, e.g. `192.168.1.90/24`; applies to both interfaces |
 | `GATEWAY` | if `STATIC_IP` | — | IPv4 within `STATIC_IP`'s subnet |
 | `DNS` | no | `GATEWAY` | one or more IPv4 addresses, space-separated |
 | `WIFI_SSID` | no | blank = Ethernet only | 1–32 chars |
@@ -298,17 +298,17 @@ Rendered from templates into `/etc/network/interfaces.d/`:
 ```
 # eth0 — static form; DHCP form uses "inet dhcp" with no address lines
 iface eth0 inet static
-    address 10.0.0.90
+    address 192.168.1.90
     netmask 255.255.255.0
-    gateway 10.0.0.1
-    dns-nameservers 10.0.0.100 10.0.0.1
+    gateway 192.168.1.1
+    dns-nameservers 192.168.1.1
 
 # wlan0 — same addressing; present only when WIFI_SSID is set
 iface wlan0 inet static
-    address 10.0.0.90
+    address 192.168.1.90
     netmask 255.255.255.0
-    gateway 10.0.0.1
-    dns-nameservers 10.0.0.100 10.0.0.1
+    gateway 192.168.1.1
+    dns-nameservers 192.168.1.1
     wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
 ```
 
