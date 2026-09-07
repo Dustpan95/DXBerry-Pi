@@ -23,7 +23,7 @@ main() {
     {
       echo "DXBerry-Pi: no dxberry.txt was found on the boot partition."
       echo "Rename dxberry.txt.example to dxberry.txt, fill it in, and reboot."
-      echo "This boot used DietPi defaults: DHCP address, hostname DietPi, login root / dietpi."
+      echo "This boot used DietPi defaults: DHCP address, hostname dxberry-pi, login root / dietpi."
     } > "$errf"
     dxb_warn "no $cfg; DietPi defaults kept"
     return 0
@@ -36,7 +36,7 @@ main() {
       echo
       printf '%s\n' "${DXB_CFG_ERRORS[@]}"
       echo
-      echo "This boot used DietPi defaults: DHCP address, hostname DietPi, login root / dietpi."
+      echo "This boot used DietPi defaults: DHCP address, hostname dxberry-pi, login root / dietpi."
     } > "$errf"
     dxb_error "dxberry.txt invalid; see $errf"
     return 0

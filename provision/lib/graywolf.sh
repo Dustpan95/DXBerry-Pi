@@ -126,6 +126,7 @@ dxb_gw_login() {
   fi
   dxb_gw_api POST /auth/login "$(PW=$pw jq -cn --arg u "${DXB_CFG[WEBUI_USER]}" '{username: $u, password: env.PW}')" > /dev/null \
     || { dxb_step_failed graywolf "login as ${DXB_CFG[WEBUI_USER]} failed"; return 1; }
+  dxb_secret_consumed WEBUI_PASSWORD
 }
 
 dxb_gw_seed_igate() {
@@ -194,6 +195,7 @@ dxb_gw_seed() {
     dxb_gw_api POST /auth/setup "$(PW=${DXB_CFG[WEBUI_PASSWORD]} jq -cn --arg u "${DXB_CFG[WEBUI_USER]}" '{username: $u, password: env.PW}')" > /dev/null \
       || { dxb_step_failed graywolf "creating admin ${DXB_CFG[WEBUI_USER]} failed"; return 1; }
     dxb_info "graywolf admin '${DXB_CFG[WEBUI_USER]}' created"
+    dxb_secret_consumed WEBUI_PASSWORD
   elif (( ! reseed )); then
     dxb_info "graywolf already set up; not reseeding (use --reseed)"
     dxb_status_add "graywolf: already configured (not reseeded)"

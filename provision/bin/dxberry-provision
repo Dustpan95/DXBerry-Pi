@@ -13,14 +13,43 @@ done
 
 usage() { sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; }
 
-# dxb_write_error_file BOOT MESSAGE: record a pre-provisioning config failure on the boot partition.
-dxb_write_error_file() {
-  local boot=$1 message=$2
-  {
-    echo "DXBerry-Pi: $message"
-    echo
-    printf '  %s\n' "${DXB_CFG_ERRORS[@]}"
-  } > "$boot/dxberry-ERROR.txt" 2> /dev/null || true
+# dxb_config_failure BOOT KIND: one tail for "no dxberry.txt" (KIND=missing) and "dxberry.txt
+# has errors" (KIND=invalid). Writes dxberry-ERROR.txt (on first boot, APPENDS a
+# "dxberry-provision:" section so dxberry-preboot's own explanation survives; otherwise
+# overwrites it fresh), records a "config" failed step, writes both status files, and on
+# --first-boot reboots last so the automated boot cycle still completes. Always returns 1.
+dxb_config_failure() {
+  local boot=$1 kind=$2 msg
+  local errf="$boot/dxberry-ERROR.txt"
+  case $kind in
+    missing) msg='no dxberry.txt was found on the boot partition. Rename dxberry.txt.example to dxberry.txt, fill it in, and re-run.' ;;
+    *)       msg='dxberry.txt has errors:' ;;
+  esac
+  if [[ $DXB_MODE == first-boot ]]; then
+    {
+      [[ -s $errf ]] && echo
+      echo 'dxberry-provision:'
+      echo "DXBerry-Pi: $msg"
+      [[ $kind == invalid ]] && printf '%s\n' "${DXB_CFG_ERRORS[@]}"
+      echo
+      echo 'This boot used DietPi defaults: DHCP address, hostname dxberry-pi, login root / dietpi.'
+    } >> "$errf" 2> /dev/null || true
+  else
+    {
+      echo "DXBerry-Pi: $msg"
+      [[ $kind == invalid ]] && printf '%s\n' "${DXB_CFG_ERRORS[@]}"
+    } > "$errf" 2> /dev/null || true
+  fi
+  mkdir -p "$DXB_STATE_DIR" 2> /dev/null && chmod 700 "$DXB_STATE_DIR" 2> /dev/null
+  dxb_step_failed config "$msg (see $errf)"
+  dxb_status_write "$boot/dxberry-status.txt"
+  cp "$boot/dxberry-status.txt" "$DXB_STATE_DIR/status.txt" 2> /dev/null || true
+  if [[ $DXB_MODE == first-boot ]]; then
+    dxb_info "dxberry.txt problem on first boot; rebooting so the Pi comes up on DietPi defaults"
+    sync
+    reboot
+  fi
+  return 1
 }
 
 main() {
@@ -36,20 +65,19 @@ main() {
     esac
   done
   boot=$(dxb_boot_dir); cfg="$boot/dxberry.txt"
-  if [[ ! -f $cfg ]]; then echo "no $cfg found; see $boot/README-DXBERRY.txt" >&2; return 1; fi
+  if [[ ! -f $cfg ]]; then
+    echo "no $cfg found; see $boot/README-DXBERRY.txt" >&2
+    (( check )) && return 1
+    dxb_config_failure "$boot" missing
+    return $?
+  fi
   dxb_config_load "$cfg"
   if ! dxb_config_validate; then
     echo "dxberry.txt has errors:" >&2
     printf '  %s\n' "${DXB_CFG_ERRORS[@]}" >&2
-    if (( ! check )); then
-      dxb_write_error_file "$boot" "dxberry.txt has errors. Fix them and run: sudo dxberry-provision"
-      if [[ $DXB_MODE == first-boot ]]; then
-        dxb_info "dxberry.txt invalid on first boot; rebooting so the Pi comes up on DietPi defaults"
-        sync
-        reboot
-      fi
-    fi
-    return 1
+    (( check )) && return 1
+    dxb_config_failure "$boot" invalid
+    return $?
   fi
   for w in "${DXB_CFG_WARNINGS[@]}"; do echo "warning: $w" >&2; done
   if (( check )); then
@@ -67,6 +95,9 @@ main() {
   dxb_info "dxberry-provision starting (mode=$DXB_MODE, reseed=$reseed)"
   for w in "${DXB_CFG_WARNINGS[@]}"; do dxb_warn "$w"; done
   dxb_status_add "image: $(sed -n 's/^DXBERRY_VERSION=//p' /etc/dxberry-release 2> /dev/null || echo unknown)"
+  # DietPi's own automated first run already applied AUTO_SETUP_GLOBAL_PASSWORD from dietpi.txt
+  # (dxberry-preboot put it there); provision_system deliberately skips chpasswd on first boot.
+  [[ $DXB_MODE == first-boot ]] && dxb_secret_consumed PASSWORD
 
   provision_system
   provision_network

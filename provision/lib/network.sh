@@ -34,9 +34,16 @@ dxb_net_render_iface() {
 dxb_net_import_wifi() {
   [[ ${DXB_CFG[WIFI_PASSWORD]} == "$DXB_APPLIED" ]] && return 0
   dxb_net_write_wifi_txt "$DXB_DIETPI_WIFI" "${DXB_CFG[WIFI_SSID]}" "${DXB_CFG[WIFI_PASSWORD]}"
+  if [[ ${DXB_MODE:-run} == first-boot ]]; then
+    # DietPi's own automated first-run setup already read /boot/dietpi-wifi.txt (written by
+    # dxberry-preboot before the network came up) and imported it; the plaintext is out of our
+    # hands regardless of whether the re-import below succeeds.
+    dxb_secret_consumed WIFI_PASSWORD
+  fi
   if [[ -x $DXB_DIETPI_WIFIDB ]]; then
     if "$DXB_DIETPI_WIFIDB" 1 > /dev/null 2>&1; then
       dxb_info "WiFi credentials imported for ${DXB_CFG[WIFI_SSID]}"
+      dxb_secret_consumed WIFI_PASSWORD
     else
       dxb_step_failed network "dietpi-wifidb failed to import WiFi credentials"
       return 1

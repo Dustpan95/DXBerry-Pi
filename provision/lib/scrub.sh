@@ -20,6 +20,7 @@ provision_scrub() {
   local cfg k v scrub_ok=1
   cfg="$(dxb_boot_dir)/dxberry.txt"
   for k in $DXB_SECRET_KEYS; do
+    dxb_secret_was_consumed "$k" || continue
     v=${DXB_CFG[$k]:-}
     [[ -n $v && $v != "$DXB_APPLIED" ]] || continue
     if dxb_scrub_key "$cfg" "$k"; then
@@ -39,7 +40,7 @@ provision_scrub() {
       fi
     fi
   fi
-  if [[ -f $DXB_DIETPI_WIFI ]] && grep -qE "^aWIFI_KEY\[[0-9]\]='.+'" "$DXB_DIETPI_WIFI"; then
+  if dxb_secret_was_consumed WIFI_PASSWORD && [[ -f $DXB_DIETPI_WIFI ]] && grep -qE "^aWIFI_KEY\[[0-9]\]='.+'" "$DXB_DIETPI_WIFI"; then
     dxb_warn "$DXB_DIETPI_WIFI still held a WiFi key; removed it"
     rm -f "$DXB_DIETPI_WIFI"
   fi

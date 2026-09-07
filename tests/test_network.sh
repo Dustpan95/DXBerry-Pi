@@ -19,6 +19,7 @@ net_env() {
   DXB_FAILED_STEPS=()
   # shellcheck disable=SC2034
   DXB_NET_CHANGED=0
+  DXB_CONSUMED_SECRETS=''
 }
 net_cfg() { printf '%s\n' "$@" > "$TEST_TMP/dxberry.txt"; dxb_config_load "$TEST_TMP/dxberry.txt"; dxb_config_validate; }
 
@@ -64,6 +65,26 @@ test_provision_network_static_with_wifi_writes_everything_once() {
   assert_file_contains "$DXB_IFACES_DIR/eth0.conf" "address 192.168.1.90/24"
   assert_file_contains "$DXB_SYSTEMD_DIR/dxberry-netwatch.service" "ExecStart"
   assert_contains "${DXB_FAILED_STEPS[*]}" "dietpi-wifidb"
+  # DietPi's own first-boot install already imported dietpi-wifi.txt before we ever ran, so the
+  # secret counts as consumed even though our own re-import above failed.
+  assert_contains "$DXB_CONSUMED_SECRETS" "WIFI_PASSWORD"
+}
+
+test_wifi_import_marks_secret_consumed_only_when_actually_imported() {
+  net_env
+  net_cfg 'PASSWORD=secretpass' 'WIFI_SSID=Home' 'WIFI_PASSWORD=wifipass1' 'WIFI_COUNTRY=US'
+  DXB_MODE=run provision_network
+  assert_contains "$DXB_CONSUMED_SECRETS" "WIFI_PASSWORD"
+  net_env
+  net_cfg 'PASSWORD=secretpass' 'WIFI_SSID=Home' 'WIFI_PASSWORD=wifipass1' 'WIFI_COUNTRY=US'
+  printf '#!/bin/bash\nexit 1\n' > "$DXB_DIETPI_WIFIDB"; chmod +x "$DXB_DIETPI_WIFIDB"
+  DXB_MODE=run provision_network 2> /dev/null
+  assert_not_contains "$DXB_CONSUMED_SECRETS" "WIFI_PASSWORD"
+  net_env
+  net_cfg 'PASSWORD=secretpass' 'WIFI_SSID=Home' 'WIFI_PASSWORD=wifipass1' 'WIFI_COUNTRY=US'
+  printf '#!/bin/bash\nexit 1\n' > "$DXB_DIETPI_WIFIDB"; chmod +x "$DXB_DIETPI_WIFIDB"
+  DXB_MODE=first-boot provision_network 2> /dev/null
+  assert_contains "$DXB_CONSUMED_SECRETS" "WIFI_PASSWORD"
 }
 
 test_provision_network_applied_wifi_password_skips_import() {

@@ -5,6 +5,10 @@
 : "${DXB_STATE_DIR:=/var/lib/dxberry}"
 : "${DXB_LOG_FILE:=$DXB_STATE_DIR/provision.log}"
 declare -ga DXB_FAILED_STEPS=() DXB_STATUS_LINES=()
+# Space-separated secret key names that were actually consumed (applied somewhere) this run.
+# provision_scrub only replaces a secret's plaintext once it is in this list - a key nobody
+# managed to use must stay readable so a re-run can retry it.
+DXB_CONSUMED_SECRETS=''
 
 # Directory of the user-editable boot (FAT) partition.
 dxb_boot_dir() {
@@ -25,6 +29,11 @@ dxb_warn() { dxb_log WARN "$@"; }
 dxb_error() { dxb_log ERROR "$@"; }
 dxb_step_failed() { DXB_FAILED_STEPS+=("$1: $2"); dxb_error "$1: $2"; }
 dxb_status_add() { DXB_STATUS_LINES+=("$1"); }
+
+# dxb_secret_consumed KEY: record that KEY's plaintext value was actually used this run.
+dxb_secret_consumed() { DXB_CONSUMED_SECRETS+=" $1"; }
+# dxb_secret_was_consumed KEY: true if dxb_secret_consumed KEY was called this run.
+dxb_secret_was_consumed() { [[ " $DXB_CONSUMED_SECRETS " == *" $1 "* ]]; }
 
 dxb_status_write() {
   local f=$1

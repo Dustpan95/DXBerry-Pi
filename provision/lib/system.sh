@@ -65,9 +65,12 @@ provision_system() {
     dxb_step_failed system "time zone $tz not found under $DXB_ZONEINFO_DIR"
   fi
   if [[ ${DXB_CFG[PASSWORD]} != "$DXB_APPLIED" && ${DXB_MODE:-run} != first-boot ]]; then
-    printf 'root:%s\n' "${DXB_CFG[PASSWORD]}" | chpasswd
-    printf 'dietpi:%s\n' "${DXB_CFG[PASSWORD]}" | chpasswd
-    dxb_info "login password updated for root and dietpi"
+    if printf 'root:%s\n' "${DXB_CFG[PASSWORD]}" | chpasswd && printf 'dietpi:%s\n' "${DXB_CFG[PASSWORD]}" | chpasswd; then
+      dxb_info "login password updated for root and dietpi"
+      dxb_secret_consumed PASSWORD
+    else
+      dxb_step_failed system "chpasswd failed to update the login password"
+    fi
   fi
   [[ ${DXB_MODE:-run} == first-boot ]] || dxb_sys_serial_console
   if [[ -n ${DXB_CFG[SSH_PUBKEY]:-} ]]; then

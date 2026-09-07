@@ -9,7 +9,7 @@ gw_env() {
     DXB_GW_SEED_STATE=$TEST_TMP/state/graywolf-seed.env DXB_GW_API=http://gw/api DXB_GW_RELEASES=http://rel DXB_DPKG_ARCH=arm64 DXB_ZONEINFO_DIR=$TEST_TMP/nozone
   mkdir -p "$DXB_STATE_DIR" "$TEST_TMP/http"
   : > "$TEST_TMP/calls"
-  DXB_STATUS_LINES=(); DXB_FAILED_STEPS=()
+  DXB_STATUS_LINES=(); DXB_FAILED_STEPS=(); DXB_CONSUMED_SECRETS=''
   DXB_CURL=fake_curl
   apt-get() { echo "apt-get $*" >> "$TEST_TMP/calls"; }
   systemctl() { echo "systemctl $*" >> "$TEST_TMP/calls"; }
@@ -134,6 +134,7 @@ test_seed_fresh_install_creates_admin_station_igate_beacon_digi() {
   assert_file_contains "$DXB_GW_SEED_STATE" "BEACON_ID=7"
   assert_contains "${DXB_STATUS_LINES[*]}" "digipeater rules pending"
   assert_eq "$(stat -c %a "$DXB_GW_SEED_STATE")" "600"
+  assert_contains "$DXB_CONSUMED_SECRETS" "WEBUI_PASSWORD"
 }
 
 test_seed_skips_when_already_set_up_unless_reseed() {
@@ -188,6 +189,7 @@ test_seed_fails_when_auth_setup_query_is_unusable() {
   assert_contains "${DXB_FAILED_STEPS[*]}" "/auth/setup"
   assert_not_contains "$(calls)" "POST /auth/setup"
   assert_not_contains "$(calls)" "POST /auth/login"
+  assert_not_contains "$DXB_CONSUMED_SECRETS" "WEBUI_PASSWORD"
 }
 
 test_seed_login_prompt_without_terminal_fails_distinctly() {
@@ -200,4 +202,5 @@ test_seed_login_prompt_without_terminal_fails_distinctly() {
   DXB_TTY=$saved_tty
   assert_contains "${DXB_FAILED_STEPS[*]}" "no terminal is available"
   assert_not_contains "$(calls)" "/auth/login"
+  assert_not_contains "$DXB_CONSUMED_SECRETS" "WEBUI_PASSWORD"
 }

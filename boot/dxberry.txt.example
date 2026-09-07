@@ -11,7 +11,7 @@ PASSWORD=
 TIMEZONE=UTC
 
 # ---------------------------------------------------------------- Network
-# Fixed address with prefix length. Leave blank to use DHCP.
+# Fixed address with prefix length (/8-/30), e.g. 192.168.1.90/24. Leave blank to use DHCP.
 # Ethernet is primary; WiFi (if set below) takes over the same address when the cable is unplugged.
 STATIC_IP=
 # Required when STATIC_IP is set.
@@ -25,11 +25,12 @@ WIFI_PASSWORD=
 WIFI_COUNTRY=
 
 # ---------------------------------------------------------------- Station
-# Your callsign with SSID, e.g. N0CALL-10. Leave blank to finish station setup in the web UI.
+# Your callsign with SSID, e.g. N0CALL-10 (uppercase). Leave blank to finish station setup in the web UI.
 CALLSIGN=
 # Decimal degrees; both or neither. Enables a position beacon.
 LATITUDE=
 LONGITUDE=
+# Text appended to the beacon, 43 characters or fewer.
 BEACON_COMMENT=DXBerry-Pi iGate
 # Minutes between position beacons, 1-120.
 BEACON_INTERVAL_MIN=30
