@@ -3,6 +3,10 @@
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+if [[ -z $ROOT ]]; then
+  echo "cannot resolve repo root" >&2
+  exit 1
+fi
 DIETPI_URL=${DIETPI_URL:-https://dietpi.com/downloads/images/DietPi_RPi234-ARMv8-Trixie.img.xz}
 WORK=$ROOT/build/work
 OUT=$ROOT/out
@@ -12,14 +16,17 @@ CHECK=0
 KEEP=0
 MNT=''
 LOOP=''
+SUCCESS=0
 
 usage() {
   cat << 'EOF'
 usage: build/build-image.sh [--version V] [--dietpi-image PATH] [--check] [--keep-work]
-  --version V         image version (default: git describe)
+  --version V         image version (default: git describe, else provision/VERSION-dev)
   --dietpi-image P    use an already downloaded DietPi .img.xz instead of downloading
+                       (used as-is; not checksum-verified)
   --check             verify the repository tree only (no root, no network)
-  --keep-work         keep build/work after a successful build
+  --keep-work         keep build/work after a successful build; also keeps a failed
+                       build's partial working image for inspection
 EOF
 }
 
@@ -57,12 +64,22 @@ REQUIRED_FILES=(
   provision/templates/interfaces-eth0.tmpl provision/templates/interfaces-wlan0.tmpl
   provision/templates/journald-dxberry.conf provision/templates/dxberry-netwatch.service
 )
+EXECUTABLE_FILES=(
+  provision/bin/dxberry-preboot provision/bin/dxberry-provision provision/bin/dxberry-netwatch
+  boot/Automation_Custom_PreScript.sh boot/Automation_Custom_Script.sh
+)
 
 check_tree() {
   local f ok=1
   for f in "${REQUIRED_FILES[@]}"; do
     if [[ ! -f $ROOT/$f ]]; then
       echo "missing $f" >&2
+      ok=0
+    fi
+  done
+  for f in "${EXECUTABLE_FILES[@]}"; do
+    if [[ -f $ROOT/$f ]] && [[ ! -x $ROOT/$f ]]; then
+      echo "not executable: $f" >&2
       ok=0
     fi
   done
@@ -88,7 +105,7 @@ if (( EUID != 0 )); then
   echo "the build must run as root (sudo) for loop-device mounts" >&2
   exit 1
 fi
-for t in losetup xz sha256sum curl partprobe mount; do
+for t in losetup xz sha256sum curl partprobe mount udevadm; do
   if ! command -v "$t" > /dev/null; then
     echo "missing tool: $t" >&2
     exit 1
@@ -102,7 +119,12 @@ if ! source "$ROOT/provision/lib/common.sh"; then
   die "failed to source provision/lib/common.sh"
 fi
 
-VERSION=${VERSION:-$(git -C "$ROOT" describe --tags --always --dirty 2> /dev/null || echo dev)}
+if [[ -z $VERSION ]]; then
+  if ! VERSION=$(git -C "$ROOT" describe --tags --always --dirty 2> /dev/null); then
+    echo "warning: git describe failed, falling back to provision/VERSION-dev" >&2
+    VERSION="$(< "$ROOT/provision/VERSION")-dev"
+  fi
+fi
 VERSION=${VERSION#v}
 if ! mkdir -p "$WORK" "$OUT"; then
   die "failed to create $WORK or $OUT"
@@ -117,26 +139,41 @@ cleanup() {
   if [[ -n $LOOP ]]; then
     losetup -d "$LOOP" 2> /dev/null
   fi
+  if (( ! SUCCESS )) && (( ! KEEP )); then
+    rm -f "$WORK"/DXBerry-Pi-*.img
+  fi
   return 0
 }
 trap cleanup EXIT
 
+verify_fat_older() {
+  local fat=$1 root=$2 fat_t root_t
+  if ! fat_t=$(stat -c %Y "$fat"); then die "failed to stat $fat"; fi
+  if ! root_t=$(stat -c %Y "$root"); then die "failed to stat $root"; fi
+  if (( fat_t >= root_t )); then
+    die "FAT copy $fat is not older than root copy $root - DietPi's first-boot import would overwrite it"
+  fi
+}
+
 # 1. Official DietPi image, verified against DietPi's published checksum.
-name=$(basename "$DIETPI_URL")
+url_name=$(basename "$DIETPI_URL")
 if [[ -z $DIETPI_IMG ]]; then
-  DIETPI_IMG=$WORK/$name
-  if ! curl -fsSL -o "$WORK/$name.sha256" "$DIETPI_URL.sha256"; then
+  DIETPI_IMG=$WORK/$url_name
+  if ! curl -fsSL -o "$WORK/$url_name.sha256" "$DIETPI_URL.sha256"; then
     die "failed to download $DIETPI_URL.sha256"
   fi
-  if [[ ! -f $DIETPI_IMG ]] || ! (cd "$WORK" && sha256sum -c --quiet "$name.sha256"); then
+  if [[ ! -f $DIETPI_IMG ]] || ! (cd "$WORK" && sha256sum -c --quiet "$url_name.sha256"); then
     echo "downloading $DIETPI_URL"
     if ! curl -fL -o "$DIETPI_IMG" "$DIETPI_URL"; then
       die "failed to download $DIETPI_URL"
     fi
-    if ! (cd "$WORK" && sha256sum -c --quiet "$name.sha256"); then
+    if ! (cd "$WORK" && sha256sum -c --quiet "$url_name.sha256"); then
       die "checksum verification failed for $DIETPI_IMG"
     fi
   fi
+  image_name=$url_name
+else
+  image_name=$(basename "$DIETPI_IMG")
 fi
 dietpi_sha=$(sha256sum "$DIETPI_IMG" | cut -d' ' -f1)
 if [[ -z $dietpi_sha ]]; then
@@ -156,6 +193,16 @@ fi
 if ! partprobe "$LOOP"; then
   die "partprobe failed for $LOOP"
 fi
+if ! udevadm settle; then
+  die "udevadm settle failed for $LOOP"
+fi
+for _ in {1..50}; do
+  if [[ -b ${LOOP}p1 && -b ${LOOP}p2 ]]; then break; fi
+  sleep 0.1
+done
+if [[ ! -b ${LOOP}p1 || ! -b ${LOOP}p2 ]]; then
+  die "partition nodes for $LOOP never appeared"
+fi
 MNT=$(mktemp -d)
 if [[ -z $MNT ]]; then
   die "mktemp -d failed"
@@ -163,15 +210,22 @@ fi
 if ! mkdir -p "$MNT/boot" "$MNT/root"; then
   die "failed to create mount points under $MNT"
 fi
-if ! mount "${LOOP}p1" "$MNT/boot"; then
+if ! mount -t vfat "${LOOP}p1" "$MNT/boot"; then
   die "failed to mount ${LOOP}p1"
 fi
-if ! mount "${LOOP}p2" "$MNT/root"; then
+if ! mount -t ext4 "${LOOP}p2" "$MNT/root"; then
   die "failed to mount ${LOOP}p2"
 fi
 
 # 3. DietPi automation defaults: the root copy is authoritative, the FAT copy is what users see.
-#    DietPi imports the FAT copy at first boot only if it is newer (cp -u), so stamp it older.
+#    DietPi imports the FAT copy at first boot only if it is newer (cp -u), so the FAT copy is
+#    stamped at the FAT epoch floor (1980-01-01) and the root copy at build time (always later).
+if [[ ! -f $MNT/root/boot/dietpi.txt ]]; then
+  die "stock dietpi.txt not on the root partition - DietPi image layout changed"
+fi
+if [[ ! -f $MNT/boot/dietpi.txt ]]; then
+  die "stock dietpi.txt not on the FAT partition - DietPi image layout changed"
+fi
 apply_overrides() {
   local target=$1 line
   while IFS= read -r line; do
@@ -181,19 +235,25 @@ apply_overrides() {
     fi
   done < "$ROOT/boot/dietpi.overrides.txt"
 }
-apply_overrides "$MNT/root/boot/dietpi.txt"
+apply_overrides "$MNT/root/boot/dietpi.txt" || die "failed to apply dietpi overrides"
 if ! cp "$MNT/root/boot/dietpi.txt" "$MNT/boot/dietpi.txt"; then
   die "failed to copy dietpi.txt to the FAT partition"
 fi
-if ! touch -d '1970-01-01 00:00:00 UTC' "$MNT/boot/dietpi.txt"; then
+if ! touch -d '1980-01-01 00:00:00 UTC' "$MNT/boot/dietpi.txt"; then
   die "failed to stamp the FAT dietpi.txt"
 fi
-if ! touch -d '1970-01-01 00:01:00 UTC' "$MNT/root/boot/dietpi.txt"; then
+if ! touch "$MNT/root/boot/dietpi.txt"; then
   die "failed to stamp the root dietpi.txt"
 fi
 for s in Automation_Custom_PreScript.sh Automation_Custom_Script.sh; do
   if ! install -m 755 -o 0 -g 0 "$ROOT/boot/$s" "$MNT/root/boot/$s"; then
     die "failed to install $s"
+  fi
+  if ! cp "$ROOT/boot/$s" "$MNT/boot/$s"; then
+    die "failed to copy $s to the FAT partition"
+  fi
+  if ! touch -d '1980-01-01 00:00:00 UTC' "$MNT/boot/$s"; then
+    die "failed to stamp the FAT copy of $s"
   fi
 done
 if ! cp "$ROOT/boot/dxberry.txt.example" "$ROOT/boot/README-DXBERRY.txt" "$MNT/boot/"; then
@@ -222,6 +282,11 @@ fi
 if ! chmod 755 "$MNT/root/opt/dxberry/bin/"*; then
   die "failed to chmod /opt/dxberry/bin"
 fi
+# The resolved build version is the single source of truth; it can never disagree with
+# /etc/dxberry-release below.
+if ! printf '%s\n' "$VERSION" > "$MNT/root/opt/dxberry/VERSION"; then
+  die "failed to write /opt/dxberry/VERSION"
+fi
 if ! mkdir -p "$MNT/root/usr/local/sbin"; then
   die "failed to create /usr/local/sbin"
 fi
@@ -235,15 +300,22 @@ if ! cat > "$MNT/root/etc/dxberry-release" << EOF
 DXBERRY_VERSION=$VERSION
 DXBERRY_COMMIT=$(git -C "$ROOT" rev-parse --short HEAD 2> /dev/null || echo unknown)
 DXBERRY_BUILD_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-DIETPI_IMAGE=$name
+DIETPI_IMAGE=$image_name
 DIETPI_IMAGE_SHA256=$dietpi_sha
 EOF
 then
   die "failed to write /etc/dxberry-release"
 fi
 
+# Verify DietPi's first-boot cp -u import can never re-overwrite what we just applied.
+verify_fat_older "$MNT/boot/dietpi.txt" "$MNT/root/boot/dietpi.txt"
+verify_fat_older "$MNT/boot/Automation_Custom_PreScript.sh" "$MNT/root/boot/Automation_Custom_PreScript.sh"
+verify_fat_older "$MNT/boot/Automation_Custom_Script.sh" "$MNT/root/boot/Automation_Custom_Script.sh"
+
 # 5. Unmount, compress, checksum.
-sync
+if ! sync; then
+  die "sync failed"
+fi
 if ! umount "$MNT/boot"; then
   die "failed to unmount the FAT partition"
 fi
@@ -259,6 +331,7 @@ if ! losetup -d "$LOOP"; then
 fi
 LOOP=''
 final="$OUT/$(basename "$img")"
+rm -f "$final.xz" "$final.xz.sha256"
 if ! mv "$img" "$final"; then
   die "failed to move the image to $final"
 fi
@@ -269,8 +342,14 @@ fi
 if ! (cd "$OUT" && sha256sum "$(basename "$final").xz" > "$(basename "$final").xz.sha256"); then
   die "failed to checksum $final.xz"
 fi
-if (( ! KEEP )); then
-  rm -f "$WORK/DXBerry-Pi-"*.img
+if [[ -n ${SUDO_UID:-} ]]; then
+  if ! chown "${SUDO_UID}:${SUDO_GID:-0}" "$final.xz" "$final.xz.sha256"; then
+    die "failed to chown output artifacts back to the invoking user"
+  fi
+  if ! chown -R "${SUDO_UID}:${SUDO_GID:-0}" "$WORK"; then
+    die "failed to chown $WORK back to the invoking user"
+  fi
 fi
+SUCCESS=1
 echo "built $final.xz"
 echo "sha256: $(cut -d' ' -f1 "$final.xz.sha256")"
