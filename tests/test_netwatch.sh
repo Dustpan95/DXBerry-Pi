@@ -95,3 +95,59 @@ test_simulate_writes_and_clears_file() {
   nw_simulate off > /dev/null; [[ -f $SIM_FILE ]] && _fail "sim file should be removed"
   assert_fails nw_simulate bogus
 }
+
+# A failed ifup eth0 (e.g. a DHCP timeout while carrier is still present) must not wedge
+# the daemon in a false ETH state, and must not be retried hotter than DXB_NW_RETRY.
+test_failed_ifup_eth_does_not_wedge_or_hot_retry() {
+  nw_env
+  touch "$IFACES_DIR/wlan0.conf"
+  RETRY=5
+  ifup() {
+    echo "ifup $1" >> "$TEST_TMP/calls"
+    if [[ $1 == "$ETH" ]]; then return 1; fi
+    echo "$1" >> "$TEST_TMP/ifstate"
+  }
+  nw_startup
+  assert_eq "$NW_STATE" "NONE"
+  # Fake the clock forward so the retry gate is armed and blocks an immediate re-attempt.
+  NW_LAST_RETRY=9999999999
+  : > "$TEST_TMP/calls"
+  nw_tick 0
+  assert_eq "$NW_STATE" "NONE"
+  assert_eq "$(calls)" ""
+  # Fake the clock past the retry window; eth0's cable is also now gone, so failover to WIFI.
+  NW_LAST_RETRY=0
+  echo 0 > "$SYS_NET/eth0/carrier"
+  nw_tick 0
+  assert_eq "$NW_STATE" "WIFI"
+  assert_eq "$(calls)" "ifup wlan0;"
+  RETRY=0
+}
+
+# A one-tick wlan0 carrier blip that resolves itself during the debounce window must not
+# tear wlan0 down.
+test_wifi_debounce_absorbs_a_brief_carrier_blip() {
+  nw_env
+  touch "$IFACES_DIR/wlan0.conf"
+  echo 0 > "$SYS_NET/eth0/carrier"
+  nw_startup
+  assert_eq "$NW_STATE" "WIFI"
+  echo 0 > "$SYS_NET/wlan0/carrier"
+  sleep() { echo 1 > "$SYS_NET/wlan0/carrier"; }
+  : > "$TEST_TMP/calls"
+  nw_tick 0
+  assert_eq "$NW_STATE" "WIFI"
+  assert_eq "$(calls)" ""
+}
+
+# ifupdown reporting both interfaces configured at startup (a stale prior run, a manual
+# ifup) must be healed back to the single-interface invariant, not just adopted as ETH.
+test_startup_with_both_configured_heals_to_eth_only() {
+  nw_env
+  touch "$IFACES_DIR/wlan0.conf"
+  echo eth0 >> "$TEST_TMP/ifstate"
+  echo wlan0 >> "$TEST_TMP/ifstate"
+  nw_startup
+  assert_eq "$NW_STATE" "ETH"
+  assert_contains "$(calls)" "ifdown wlan0"
+}

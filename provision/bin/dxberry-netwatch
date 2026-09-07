@@ -80,7 +80,7 @@ nw_tick() {
   new=${decision%% *}
   actions=${decision#"$new"}
   [[ $new == "$NW_STATE" ]] && return 0
-  if [[ $NW_STATE == NONE && $new == WIFI ]]; then
+  if [[ $NW_STATE == NONE ]]; then
     (( now - NW_LAST_RETRY >= RETRY )) || return 0
     NW_LAST_RETRY=$now
   fi
@@ -88,9 +88,18 @@ nw_tick() {
     sleep "$DEBOUNCE"
     [[ $(nw_carrier "$ETH") == "$ec" ]] || return 0
   fi
+  if (( ! immediate )) && [[ $actions == *wifi* ]]; then
+    sleep "$DEBOUNCE"
+    [[ $(nw_carrier "$WLAN") == "$wc" ]] || return 0
+  fi
   log "state $NW_STATE -> $new (eth carrier=$ec, wifi defined=$wd, wlan carrier=$wc)"
   # shellcheck disable=SC2086
   nw_do $actions
+  if [[ $new == ETH ]] && ! nw_configured "$ETH"; then
+    log "$ETH did not come up; will retry in ${RETRY}s"
+    nw_set_state NONE
+    return 0
+  fi
   if [[ $new == WIFI ]] && ! nw_configured "$WLAN"; then
     log "$WLAN did not come up; will retry in ${RETRY}s"
     nw_set_state NONE
@@ -101,9 +110,15 @@ nw_tick() {
 
 nw_startup() {
   ip link set "$ETH" up 2> /dev/null || true
-  if nw_configured "$ETH"; then NW_STATE=ETH
-  elif nw_configured "$WLAN"; then NW_STATE=WIFI; NW_WIFI_SINCE=$(date +%s)
-  else NW_STATE=NONE; fi
+  if nw_configured "$ETH"; then
+    NW_STATE=ETH
+    if nw_configured "$WLAN"; then nw_down "$WLAN"; fi
+  elif nw_configured "$WLAN"; then
+    NW_STATE=WIFI; NW_WIFI_SINCE=$(date +%s)
+    if nw_configured "$ETH"; then nw_down "$ETH"; fi
+  else
+    NW_STATE=NONE
+  fi
   log "startup: ifupdown reports $NW_STATE"
   nw_tick 1
   nw_set_state "$NW_STATE"
