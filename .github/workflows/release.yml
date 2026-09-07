@@ -1,0 +1,40 @@
+name: Release image
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: No real station config in the tree
+        run: '! git ls-files | grep -qxE "boot/dxberry\.txt|boot/dietpi-wifi\.txt"'
+      - name: No attribution lines committed
+        run: '! git grep -qIiE "Co-Authored-By|claude|anthropic" -- . ":!.github/workflows/ci.yml" ":!.github/workflows/release.yml"'
+      - name: Syntax
+        run: |
+          for f in provision/bin/* provision/lib/*.sh build/*.sh boot/*.sh tests/*.sh; do bash -n "$f"; done
+      - name: shellcheck
+        run: shellcheck -x provision/bin/* provision/lib/*.sh build/build-image.sh boot/*.sh tests/*.sh
+      - name: Unit tests
+        run: tests/run.sh
+      - name: Build tree check
+        run: build/build-image.sh --check
+      - name: Build image
+        run: sudo build/build-image.sh --version "${GITHUB_REF_NAME#v}"
+      - name: Release notes
+        run: |
+          {
+            echo "Flash \`DXBerry-Pi-${GITHUB_REF_NAME#v}-rpi234-arm64.img.xz\`, rename \`dxberry.txt.example\` to \`dxberry.txt\` on the boot partition, fill it in, boot."
+            echo
+            echo "Base image: $(cat build/work/*.img.xz.sha256)"
+            echo "Graywolf: latest release at first boot (pin with GRAYWOLF_VERSION=)."
+          } > notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" out/*.img.xz out/*.sha256 --title "DXBerry-Pi $GITHUB_REF_NAME" --notes-file notes.md

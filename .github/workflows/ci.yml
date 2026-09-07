@@ -1,0 +1,24 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No real station config in the tree
+        run: '! git ls-files | grep -qxE "boot/dxberry\.txt|boot/dietpi-wifi\.txt"'
+      - name: No attribution lines committed
+        run: '! git grep -qIiE "Co-Authored-By|claude|anthropic" -- . ":!.github/workflows/ci.yml" ":!.github/workflows/release.yml"'
+      - name: Syntax
+        run: |
+          for f in provision/bin/* provision/lib/*.sh build/*.sh boot/*.sh tests/*.sh; do bash -n "$f"; done
+      - name: shellcheck
+        run: shellcheck -x provision/bin/* provision/lib/*.sh build/build-image.sh boot/*.sh tests/*.sh
+      - name: Unit tests
+        run: tests/run.sh
+      - name: Build tree check
+        run: build/build-image.sh --check
