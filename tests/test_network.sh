@@ -68,6 +68,11 @@ dietpi_main_interfaces_cleaned() {
     '' \
     '# Ethernet'
 }
+# assert_eq "$(cat f1)" "$(cat f2)" strips trailing newlines on both sides, which would hide a
+# missing/extra final newline - use this instead for exact byte-for-byte comparisons.
+assert_interfaces_file_matches() {
+  cmp -s "$DXB_INTERFACES_FILE" "$1" || _fail "$DXB_INTERFACES_FILE differs from $1:"$'\n'"$(diff -u "$1" "$DXB_INTERFACES_FILE")"
+}
 
 test_render_static_and_dhcp_stanzas() {
   net_env
@@ -256,8 +261,9 @@ test_stray_stanza_scan_reports_file_and_line() {
 test_network_clean_main_removes_dietpi_stanzas() {
   net_env
   write_dietpi_main_interfaces "$DXB_INTERFACES_FILE"
+  dietpi_main_interfaces_cleaned > "$TEST_TMP/expected"
   assert_ok dxb_net_clean_main_interfaces
-  assert_eq "$(cat "$DXB_INTERFACES_FILE")" "$(dietpi_main_interfaces_cleaned)"
+  assert_interfaces_file_matches "$TEST_TMP/expected"
   assert_ok dxb_net_scan_stray_stanzas
   assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
 }
@@ -266,11 +272,24 @@ test_network_clean_main_is_idempotent() {
   net_env
   write_dietpi_main_interfaces "$DXB_INTERFACES_FILE"
   dxb_net_clean_main_interfaces
-  local cleaned_once; cleaned_once=$(cat "$DXB_INTERFACES_FILE")
+  cp "$DXB_INTERFACES_FILE" "$TEST_TMP/expected"
   : > "$TEST_TMP/log"
   assert_ok dxb_net_clean_main_interfaces
-  assert_eq "$(cat "$DXB_INTERFACES_FILE")" "$cleaned_once"
+  assert_interfaces_file_matches "$TEST_TMP/expected"
   assert_file_not_contains "$TEST_TMP/log" "removed DietPi"
+}
+
+# Debian/DietPi's stock file uses the absolute form of the include, not the relative form our
+# own cleaner writes when the line is missing - both must count as "already sourced".
+test_network_clean_main_accepts_absolute_include() {
+  net_env
+  printf 'source /etc/network/interfaces.d/*\nauto lo\niface lo inet loopback\n' > "$DXB_INTERFACES_FILE"
+  cp "$DXB_INTERFACES_FILE" "$TEST_TMP/expected"
+  : > "$TEST_TMP/log"
+  assert_ok dxb_net_clean_main_interfaces
+  assert_interfaces_file_matches "$TEST_TMP/expected"
+  assert_file_not_contains "$TEST_TMP/log" "removed DietPi"
+  assert_eq "$DXB_NET_CHANGED" "0"
 }
 
 test_network_clean_main_leaves_clean_file_alone() {
@@ -285,16 +304,17 @@ test_network_clean_main_leaves_clean_file_alone() {
     'auto lo' \
     'iface lo inet loopback' \
     > "$DXB_INTERFACES_FILE"
-  local before; before=$(cat "$DXB_INTERFACES_FILE")
+  cp "$DXB_INTERFACES_FILE" "$TEST_TMP/expected"
   assert_ok dxb_net_clean_main_interfaces
-  assert_eq "$(cat "$DXB_INTERFACES_FILE")" "$before"
+  assert_interfaces_file_matches "$TEST_TMP/expected"
 }
 
 test_network_clean_main_adds_source_when_missing() {
   net_env
   printf 'allow-hotplug eth0\niface eth0 inet dhcp\n' > "$DXB_INTERFACES_FILE"
+  printf 'source interfaces.d/*\n' > "$TEST_TMP/expected"
   assert_ok dxb_net_clean_main_interfaces
-  assert_eq "$(cat "$DXB_INTERFACES_FILE")" "source interfaces.d/*"
+  assert_interfaces_file_matches "$TEST_TMP/expected"
 }
 
 test_network_clean_main_never_touches_interfaces_d() {

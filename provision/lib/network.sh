@@ -17,6 +17,16 @@ DXB_NET_CHANGED=0
 # (the pre-reboot gate) re-reads the files without listing the same stanzas twice.
 DXB_NET_STRAY_REPORTED=0
 
+# Shared between dxb_net_scan_stray_stanzas and dxb_net_clean_main_interfaces so the two can
+# never drift apart: if one is widened without the other, the cleaner would stop removing a
+# stanza the scan still flags, and the first-boot gate would block forever. Guarded so that
+# re-sourcing this file (several test files and dxberry-preboot all source it) does not hit
+# "readonly variable".
+if [[ -z ${DXB_NET_ETH_WLAN_AUTO_RE:-} ]]; then
+  readonly DXB_NET_ETH_WLAN_AUTO_RE='^[[:blank:]]*(auto|allow-hotplug)[[:blank:]].*\b(eth0|wlan0)\b'
+  readonly DXB_NET_ETH_WLAN_IFACE_RE='^[[:blank:]]*iface[[:blank:]]+(eth0|wlan0)\b'
+fi
+
 # dxb_net_write_wifi_txt FILE SSID KEY: fill slot 0 of a DietPi dietpi-wifi.txt. Holds a WiFi
 # PSK, so it must never be left world/group-readable, including if the import below fails.
 dxb_net_write_wifi_txt() {
@@ -94,7 +104,7 @@ dxb_net_scan_stray_stanzas() {
     loc=${hit%%:*}; line=${hit#*:}; num=${line%%:*}; text=${line#*:}
     if (( ! DXB_NET_STRAY_REPORTED )); then dxb_step_failed network "stray stanza $loc:$num: $text"; fi
     hits=1
-  done < <(grep -nHE '^[[:blank:]]*(auto|allow-hotplug)[[:blank:]].*\b(eth0|wlan0)\b|^[[:blank:]]*iface[[:blank:]]+(eth0|wlan0)\b' "${files[@]}" 2> /dev/null)
+  done < <(grep -nHE "${DXB_NET_ETH_WLAN_AUTO_RE}|${DXB_NET_ETH_WLAN_IFACE_RE}" "${files[@]}" 2> /dev/null)
   if (( hits )); then DXB_NET_STRAY_REPORTED=1; fi
   (( hits == 0 ))
 }
@@ -111,10 +121,12 @@ dxb_net_clean_main_interfaces() {
   [[ -f $file ]] || return 0
   local -a out=()
   local line inblock=0 has_source=0
-  local direct_re='^[[:blank:]]*(auto|allow-hotplug)[[:blank:]].*\b(eth0|wlan0)\b'
-  local block_start_re='^[[:blank:]]*iface[[:blank:]]+(eth0|wlan0)\b'
+  local direct_re=$DXB_NET_ETH_WLAN_AUTO_RE
+  local block_start_re=$DXB_NET_ETH_WLAN_IFACE_RE
   local term_re='^[[:blank:]]*(iface|auto|allow-[A-Za-z0-9_-]+|source-directory|source|mapping|rename)([[:blank:]]|$)'
-  local source_re='^[[:blank:]]*(source[[:blank:]]+interfaces\.d/\*|source-directory[[:blank:]]+interfaces\.d)[[:blank:]]*$'
+  # Debian/DietPi's stock file uses the absolute form; an optional /etc/network/ prefix on
+  # either directive still counts as "our drop-ins are already sourced".
+  local source_re='^[[:blank:]]*(source[[:blank:]]+(/etc/network/)?interfaces\.d/\*|source-directory[[:blank:]]+(/etc/network/)?interfaces\.d)[[:blank:]]*$'
   while IFS= read -r line || [[ -n $line ]]; do
     if (( inblock )) && [[ $line =~ $term_re ]]; then inblock=0; fi
     if (( inblock )); then continue; fi

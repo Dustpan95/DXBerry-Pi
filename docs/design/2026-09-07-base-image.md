@@ -279,8 +279,8 @@ driver runs them in a fixed order:
 - `--reseed` needs Graywolf credentials. It uses `WEBUI_USER`/`WEBUI_PASSWORD`
   from the file if present, otherwise prompts on the terminal.
 - The network step strips DietPi's own eth0/wlan0 stanzas from the main
-  `/etc/network/interfaces` file (§16) before writing its own `interfaces.d/`
-  drop-ins; a re-run with nothing left to strip changes nothing.
+  `/etc/network/interfaces` file (§16) before the stray-stanza scan; a re-run
+  with nothing left to strip changes nothing.
 
 ### 7.3 Failure handling
 
@@ -626,9 +626,11 @@ Verified against DietPi and Graywolf source before implementation:
 - Graywolf: beacon `interval` is seconds (`every_seconds`, default 1800);
   `send_path` is `rf` | `both` | `is_only`; digipeater rules require a
   channel; the iGate request has no passcode field.
-- DietPi's stock `/etc/network/interfaces` only sources `interfaces.d/*`;
-  per-interface files are `interfaces.d/<iface>.conf`, DHCP client is
-  `isc-dhcp-client`, and `resolvconf` is not installed.
+- DietPi's stock `/etc/network/interfaces` sources `interfaces.d/*` **and**
+  carries its own eth0/wlan0 `allow-hotplug`/`iface` stanzas in the main file
+  (confirmed on hardware, §16 below); per-interface drop-ins are
+  `interfaces.d/<iface>.conf`, DHCP client is `isc-dhcp-client`, and
+  `resolvconf` is not installed.
 
 Open, to be confirmed on the first flashed image:
 
