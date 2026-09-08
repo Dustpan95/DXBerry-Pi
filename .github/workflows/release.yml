@@ -29,6 +29,8 @@ jobs:
         run: tests/run.sh
       - name: Build tree check
         run: build/build-image.sh --check
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y parted
       - name: Build image
         run: sudo build/build-image.sh --version "${GITHUB_REF_NAME#v}"
       - name: Release notes
