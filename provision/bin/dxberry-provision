@@ -133,6 +133,9 @@ main() {
 
   dxb_status_write "$boot/dxberry-status.txt"
   cp "$boot/dxberry-status.txt" "$DXB_STATE_DIR/status.txt" 2> /dev/null || true
+  if [[ $DXB_MODE == run ]] && (( DXB_NET_REBOOT_NEEDED )); then
+    dxb_warn "reboot required for wlan0; run: sudo reboot"
+  fi
   rm -f "$boot/dxberry-ERROR.txt"
   if [[ $DXB_MODE == first-boot ]] && (( gate_ok )); then touch "$DXB_STATE_DIR/provisioned"; fi
   local rc=0

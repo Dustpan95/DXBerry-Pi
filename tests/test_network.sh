@@ -7,10 +7,19 @@ source "$DXB_LIB/network.sh"
 net_env() {
   export DXB_IFACES_DIR=$TEST_TMP/ifaces DXB_RESOLV_CONF=$TEST_TMP/resolv.conf DXB_SYSTEMD_DIR=$TEST_TMP/systemd \
     DXB_DIETPI_WIFIDB=$TEST_TMP/wifidb DXB_DIETPI_WIFI=$TEST_TMP/dietpi-wifi.txt DXB_LOG_FILE=$TEST_TMP/log DXB_ZONEINFO_DIR=$TEST_TMP/nozone \
-    DXB_DIETPI_SET_HW=$TEST_TMP/set_hw DXB_SYS_NET=$TEST_TMP/sys DXB_INTERFACES_FILE=$TEST_TMP/interfaces
+    DXB_DIETPI_SET_HW=$TEST_TMP/set_hw DXB_SYS_NET=$TEST_TMP/sys DXB_INTERFACES_FILE=$TEST_TMP/interfaces DXB_RPI_CONFIG_TXT=$TEST_TMP/config.txt
   mkdir -p "$DXB_SYSTEMD_DIR" "$DXB_SYS_NET/eth0" "$DXB_SYS_NET/wlan0"
   printf '#!/bin/bash\necho "wifidb $*" >> %s/calls\n' "$TEST_TMP" > "$DXB_DIETPI_WIFIDB"; chmod +x "$DXB_DIETPI_WIFIDB"
-  printf '#!/bin/bash\necho "set_hw $*" >> %s/calls\n' "$TEST_TMP" > "$DXB_DIETPI_SET_HW"; chmod +x "$DXB_DIETPI_SET_HW"
+  # The fake dietpi-set_hardware also plays the real onboard_enable's part: when called with
+  # "wifimodules onboard_enable" and $DXB_RPI_CONFIG_TXT exists, delete its disable-wifi line.
+  cat > "$DXB_DIETPI_SET_HW" <<EOF
+#!/bin/bash
+echo "set_hw \$*" >> "$TEST_TMP/calls"
+if [[ "\$1 \$2" == "wifimodules onboard_enable" && -f "$DXB_RPI_CONFIG_TXT" ]]; then
+  sed -i '/^[[:blank:]]*dtoverlay=disable-wifi/d' "$DXB_RPI_CONFIG_TXT"
+fi
+EOF
+  chmod +x "$DXB_DIETPI_SET_HW"
   printf 'source /etc/network/interfaces.d/*\nauto lo\niface lo inet loopback\n' > "$DXB_INTERFACES_FILE"
   printf "aWIFI_SSID[0]=''\naWIFI_KEY[0]=''\naWIFI_KEYMGR[0]='WPA-PSK'\n" > "$DXB_DIETPI_WIFI"
   # shellcheck disable=SC2317
@@ -24,6 +33,9 @@ net_env() {
   DXB_NET_CHANGED=0
   DXB_NET_STRAY_REPORTED=0
   DXB_CONSUMED_SECRETS=''
+  DXB_NET_WIFI_OVERLAY_REMOVED=0
+  # shellcheck disable=SC2034
+  DXB_NET_REBOOT_NEEDED=0
 }
 net_cfg() { printf '%s\n' "$@" > "$TEST_TMP/dxberry.txt"; dxb_config_load "$TEST_TMP/dxberry.txt"; dxb_config_validate; }
 
@@ -365,4 +377,48 @@ test_provision_network_removes_wlan0_when_wifi_unset() {
   assert_contains "${DXB_FAILED_STEPS[*]}" "eth0 template"
   [[ -f $DXB_IFACES_DIR/eth0.conf ]] && _fail "eth0.conf should not be created when template is missing"
   DXB_TEMPLATES=$saved_templates
+}
+
+# DietPi's automated first run (AUTO_SETUP_NET_WIFI_ENABLED=0) leaves dtoverlay=disable-wifi in
+# config.txt; "wifimodules enable" alone never removes it. dxb_net_enable_wifi_hw must also run
+# "wifimodules onboard_enable", which does.
+test_wifi_hw_enable_calls_onboard_enable_and_removes_overlay() {
+  net_env
+  printf 'dtoverlay=vc4-kms-v3d\ndtoverlay=disable-wifi\n' > "$DXB_RPI_CONFIG_TXT"
+  assert_ok dxb_net_enable_wifi_hw
+  assert_file_contains "$TEST_TMP/calls" "set_hw wifimodules enable"
+  assert_file_contains "$TEST_TMP/calls" "set_hw wifimodules onboard_enable"
+  assert_file_not_contains "$DXB_RPI_CONFIG_TXT" "disable-wifi"
+  assert_file_contains "$DXB_RPI_CONFIG_TXT" "vc4-kms-v3d"
+  assert_eq "$DXB_NET_WIFI_OVERLAY_REMOVED" "1"
+}
+
+test_wifi_hw_overlay_flag_stays_zero_when_no_overlay() {
+  net_env
+  printf 'dtoverlay=vc4-kms-v3d\n' > "$DXB_RPI_CONFIG_TXT"
+  assert_ok dxb_net_enable_wifi_hw
+  assert_eq "$DXB_NET_WIFI_OVERLAY_REMOVED" "0"
+  assert_eq "$(cat "$DXB_RPI_CONFIG_TXT")" "dtoverlay=vc4-kms-v3d"
+}
+
+# In run mode, a wlan0 that is absent only because the reboot to load the just-removed overlay
+# has not happened yet must be reported as "reboot required", never as a failed step.
+test_provision_run_mode_reports_reboot_required_not_failure() {
+  net_env
+  rm -rf "$DXB_SYS_NET/wlan0"
+  printf 'dtoverlay=disable-wifi\n' > "$DXB_RPI_CONFIG_TXT"
+  net_cfg 'PASSWORD=secretpass' 'WIFI_SSID=Home' 'WIFI_PASSWORD=wifipass1' 'WIFI_COUNTRY=US'
+  DXB_MODE=run provision_network
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
+  assert_contains "${DXB_STATUS_LINES[*]}" "wlan0: reboot required"
+  assert_eq "$DXB_NET_REBOOT_NEEDED" "1"
+}
+
+test_provision_run_mode_still_fails_when_wlan0_absent_and_no_overlay() {
+  net_env
+  rm -rf "$DXB_SYS_NET/wlan0"
+  net_cfg 'PASSWORD=secretpass' 'WIFI_SSID=Home' 'WIFI_PASSWORD=wifipass1' 'WIFI_COUNTRY=US'
+  DXB_MODE=run provision_network 2> /dev/null
+  assert_contains "${DXB_FAILED_STEPS[*]}" "wlan0 not present under $DXB_SYS_NET"
+  assert_eq "$DXB_NET_REBOOT_NEEDED" "0"
 }

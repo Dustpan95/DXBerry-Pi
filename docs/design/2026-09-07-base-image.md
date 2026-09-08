@@ -281,6 +281,16 @@ driver runs them in a fixed order:
 - The network step strips DietPi's own eth0/wlan0 stanzas from the main
   `/etc/network/interfaces` file (§16) before the stray-stanza scan; a re-run
   with nothing left to strip changes nothing.
+- The network step also re-enables the onboard WiFi overlay: DietPi's
+  automated first run (with `AUTO_SETUP_NET_WIFI_ENABLED=0`) runs
+  `dietpi-set_hardware wifimodules onboard_disable`, which appends
+  `dtoverlay=disable-wifi` to `config.txt` (§16, measured on hardware). That
+  overlay only takes effect at boot, so `wifimodules enable` (the
+  kernel-module blacklist, for external dongles) alone never brings the
+  onboard adapter back. `dxb_net_enable_wifi_hw` also runs
+  `wifimodules onboard_enable`, which deletes that line; if it had to, wlan0
+  will not appear until the next reboot, which is reported as a required
+  reboot, not a failed step.
 
 ### 7.3 Failure handling
 
@@ -659,9 +669,17 @@ if the assumption is false.
    those stanzas from the main file before `dxb_net_scan_stray_stanzas` runs,
    so the scan (and the first-boot reboot gate) only ever sees stanzas from a
    genuinely foreign file under `interfaces.d/`.
-2. `wlan0` exists after `dietpi-set_hardware wifimodules enable`, and
-   `dietpi-wifidb 1` still imports `/boot/dietpi-wifi.txt` with WiFi disabled
-   in `dietpi.txt` (`AUTO_SETUP_NET_WIFI_ENABLED=0`).
+2. ~~`wlan0` exists after `dietpi-set_hardware wifimodules enable`~~ —
+   **false, confirmed on hardware (v0.1.0-rc1, 2026-09-08).** With WiFi
+   disabled in `dietpi.txt` (`AUTO_SETUP_NET_WIFI_ENABLED=0`), DietPi's
+   automated first run also runs `wifimodules onboard_disable`, which
+   appends `dtoverlay=disable-wifi` to `config.txt` — a boot-time overlay
+   that `wifimodules enable` (the kernel-module blacklist, for external
+   dongles) never touches. `dxb_net_enable_wifi_hw` now also runs
+   `wifimodules onboard_enable` to delete that line; wlan0 still does not
+   exist until the next reboot loads the change, which `provision_network`
+   now reports as a required reboot rather than a failed step.
+   `dietpi-wifidb 1` still imports `/boot/dietpi-wifi.txt` as expected.
 3. Calling `reboot` from `Automation_Custom_Script.sh` is safe: DietPi has
    finalized `.install_stage` by then, and the installer does not re-run on
    the next boot.

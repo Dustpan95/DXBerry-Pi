@@ -11,11 +11,20 @@
 : "${DXB_DIETPI_SET_HW:=/boot/dietpi/func/dietpi-set_hardware}"
 : "${DXB_DIETPI_WIFI:=/boot/dietpi-wifi.txt}"
 : "${DXB_SYS_NET:=/sys/class/net}"
+: "${DXB_RPI_CONFIG_TXT:=}"
 # shellcheck disable=SC2034
 DXB_NET_CHANGED=0
 # Set once dxb_net_scan_stray_stanzas has recorded its findings, so the second call in a run
 # (the pre-reboot gate) re-reads the files without listing the same stanzas twice.
 DXB_NET_STRAY_REPORTED=0
+# Set by dxb_net_enable_wifi_hw: 1 iff this call just deleted config.txt's dtoverlay=disable-wifi
+# line (DietPi's automated first run had disabled the onboard adapter). provision_network reads
+# it to decide whether a still-absent wlan0 means "reboot required", not "failed step".
+DXB_NET_WIFI_OVERLAY_REMOVED=0
+# Set by provision_network in run mode when the overlay above was just removed: wlan0 cannot
+# appear until the Pi reboots. dxberry-provision reads it to print the reboot reminder.
+# shellcheck disable=SC2034
+DXB_NET_REBOOT_NEEDED=0
 
 # Shared between dxb_net_scan_stray_stanzas and dxb_net_clean_main_interfaces so the two can
 # never drift apart: if one is widened without the other, the cleaner would stop removing a
@@ -70,8 +79,14 @@ dxb_net_import_wifi() {
 
 # DietPi's WiFi-disabled path blacklists the WiFi kernel modules, so wlan0 need not exist even
 # when the adapter does. Undo that, unblock rfkill, and report whether wlan0 actually appeared.
+# DietPi's automated first run (AUTO_SETUP_NET_WIFI_ENABLED=0) separately runs "wifimodules
+# onboard_disable", which appends dtoverlay=disable-wifi to config.txt; that overlay is only
+# applied at boot, so "wifimodules enable" alone (the kernel-module blacklist, for external
+# dongles) never brings the onboard adapter back on this boot. "wifimodules onboard_enable"
+# deletes that config.txt line - wlan0 still needs a reboot to actually load it.
 # 0 = wlan0 present, 1 = wlan0 absent, 2 = the modules could not be enabled (already reported).
 dxb_net_enable_wifi_hw() {
+  local config_txt before after
   if [[ ! -x $DXB_DIETPI_SET_HW ]]; then
     dxb_step_failed network "$DXB_DIETPI_SET_HW not found; cannot enable the WiFi modules"
     return 2
@@ -80,6 +95,14 @@ dxb_net_enable_wifi_hw() {
     dxb_step_failed network "dietpi-set_hardware wifimodules enable failed"
     return 2
   fi
+  config_txt=${DXB_RPI_CONFIG_TXT:-$(dxb_boot_dir)/config.txt}
+  if [[ -f $config_txt ]]; then before=$(grep -cE '^[[:blank:]]*dtoverlay=disable-wifi' "$config_txt"); else before=0; fi
+  if ! "$DXB_DIETPI_SET_HW" wifimodules onboard_enable > /dev/null 2>&1; then
+    dxb_step_failed network "dietpi-set_hardware wifimodules onboard_enable failed"
+    return 2
+  fi
+  if [[ -f $config_txt ]]; then after=$(grep -cE '^[[:blank:]]*dtoverlay=disable-wifi' "$config_txt"); else after=0; fi
+  if (( before > 0 && after == 0 )); then DXB_NET_WIFI_OVERLAY_REMOVED=1; else DXB_NET_WIFI_OVERLAY_REMOVED=0; fi
   rfkill unblock wifi 2> /dev/null || true
   [[ -d $DXB_SYS_NET/wlan0 ]]
 }
@@ -189,6 +212,13 @@ provision_network() {
         # The modules were just unblacklisted; the reboot at the end of first boot loads them.
         dxb_warn "wlan0 is not present yet; the WiFi modules were only just enabled"
         wlan_note=1
+      elif (( DXB_NET_WIFI_OVERLAY_REMOVED )); then
+        # DietPi had disabled the onboard adapter in config.txt; that overlay is now removed,
+        # but only a reboot loads it - this is an expected wait, not a failure.
+        dxb_warn "wlan0 will appear after a reboot: DietPi had disabled the onboard WiFi and it is now re-enabled"
+        dxb_status_add "wlan0: reboot required (onboard WiFi was disabled by DietPi; now enabled)"
+        # shellcheck disable=SC2034  # read by dxberry-provision after sourcing this file
+        DXB_NET_REBOOT_NEEDED=1
       else
         dxb_step_failed network "wlan0 not present under $DXB_SYS_NET after enabling the WiFi modules; check the adapter, then reboot and re-run"
       fi
