@@ -35,6 +35,24 @@ dxb_gw_fetch_to() {
   "$DXB_CURL" -fsSL --connect-timeout 15 --max-time 300 --retry 2 --retry-delay 5 -o "$1" "$2"
 }
 
+# graywolf's .deb declares no Depends (measured: `dpkg -s graywolf` has no Depends line), but
+# graywolf-modem - a child process it spawns, not a separate unit - needs libasound.so.2 and
+# crash-loops every ~30s without it; graywolf.service itself stays active regardless. The
+# package is libasound2t64 on Trixie (candidate 1.2.14-1+rpt1), libasound2 on older Debian.
+# Idempotent and silent when the library is already present, so a plain re-run heals an
+# existing box. graywolf.service works without it either way, so a failure here is reported,
+# never fatal to the rest of dxb_gw_install.
+dxb_gw_install_runtime_deps() {
+  if ldconfig -p 2> /dev/null | grep -q 'libasound\.so\.2'; then return 0; fi
+  if DEBIAN_FRONTEND=noninteractive apt-get install -y libasound2t64 > /dev/null 2>&1 \
+    || DEBIAN_FRONTEND=noninteractive apt-get install -y libasound2 > /dev/null 2>&1; then
+    dxb_info "installed ALSA runtime for graywolf-modem"
+    return 0
+  fi
+  dxb_step_failed graywolf "could not install the ALSA runtime (libasound2t64) that graywolf-modem needs"
+  return 1
+}
+
 dxb_gw_install() {
   local base arch sums line sha name tmp v
   base=$(dxb_gw_release_base)
@@ -44,6 +62,9 @@ dxb_gw_install() {
   [[ -n $line ]] || { dxb_step_failed graywolf "release has no .deb for architecture $arch"; return 1; }
   sha=${line%% *}; name=${line#* }
   v=$(sed -E 's/^graywolf_([0-9.]+)_.*/\1/' <<< "$name")
+  # Runs every time, including the "already installed" path below, so a plain dxberry-provision
+  # heals an existing box that is missing the runtime.
+  dxb_gw_install_runtime_deps
   if [[ $(dxb_gw_installed_version) == "$v" ]]; then dxb_info "graywolf $v already installed"; return 0; fi
   tmp=$(mktemp -d)
   if ! dxb_gw_fetch_to "$tmp/$name" "$base/$name"; then dxb_step_failed graywolf "download of $name failed"; rm -rf "$tmp"; return 1; fi

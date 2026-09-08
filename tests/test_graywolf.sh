@@ -123,6 +123,60 @@ test_install_skips_when_current() {
   assert_not_contains "$(calls)" "apt-get"
 }
 
+# Measured: `dpkg -s graywolf` has no Depends line, and graywolf-modem (a child process
+# graywolf spawns, not a separate unit) needs only libasound.so.2 and crash-loops without it.
+test_gw_installs_alsa_when_missing() {
+  gw_env
+  ldconfig() { :; }
+  assert_ok dxb_gw_install_runtime_deps
+  assert_contains "$(calls)" "apt-get install -y libasound2t64"
+  assert_file_contains "$DXB_LOG_FILE" "installed ALSA runtime for graywolf-modem"
+}
+
+test_gw_skips_alsa_when_present() {
+  gw_env
+  assert_ok dxb_gw_install_runtime_deps
+  assert_not_contains "$(calls)" "apt-get"
+}
+
+# Trixie's package is libasound2t64 (candidate 1.2.14-1+rpt1); older Debian names it
+# libasound2 - try the Trixie name first, then fall back.
+test_gw_alsa_falls_back_to_libasound2() {
+  gw_env
+  ldconfig() { :; }
+  apt-get() {
+    echo "apt-get $*" >> "$TEST_TMP/calls"
+    [[ "$*" == *libasound2t64* ]] && return 100
+    return 0
+  }
+  assert_ok dxb_gw_install_runtime_deps
+  assert_contains "$(calls)" "apt-get install -y libasound2t64"
+  assert_contains "$(calls)" "apt-get install -y libasound2"
+  assert_file_contains "$DXB_LOG_FILE" "installed ALSA runtime for graywolf-modem"
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
+}
+
+# The core graywolf.service works without ALSA (only graywolf-modem needs it), so a failure to
+# install the runtime must be reported, not treated as fatal to the rest of dxb_gw_install.
+test_gw_alsa_failure_is_reported_but_install_continues() {
+  gw_env
+  gw_cfg 'PASSWORD=secretpass'
+  echo "deb-bytes" > "$TEST_TMP/http/graywolf_0.14.13_arm64.deb"
+  printf '%s  graywolf_0.14.13_arm64.deb\n' "$(sha256sum "$TEST_TMP/http/graywolf_0.14.13_arm64.deb" | cut -d' ' -f1)" > "$TEST_TMP/http/checksums.txt"
+  dpkg-query() { return 1; }
+  ldconfig() { :; }
+  apt-get() {
+    echo "apt-get $*" >> "$TEST_TMP/calls"
+    [[ "$*" == *libasound* ]] && return 1
+    return 0
+  }
+  assert_ok dxb_gw_install
+  assert_contains "${DXB_FAILED_STEPS[*]}" "could not install the ALSA runtime"
+  assert_contains "$(calls)" "apt-get install -y libasound2t64"
+  assert_contains "$(calls)" "apt-get install -y libasound2"
+  assert_contains "$(calls)" "graywolf_0.14.13_arm64.deb"
+}
+
 test_seed_fresh_install_creates_admin_station_igate_beacon_digi() {
   gw_env
   gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2' 'LATITUDE=37.1' 'LONGITUDE=-101.3' 'DIGIPEATER=fillin' 'IGATE_SERVER=noam.aprs2.net' 'BEACON_INTERVAL_MIN=10' 'BEACON_COMMENT=hi'

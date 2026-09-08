@@ -301,6 +301,11 @@ upstream outage, a pinned version that does not exist) still leaves a
 reachable Pi. Graywolf download is
 retried three times with backoff; a persistent failure is recorded and the
 user is told to run `sudo dxberry-provision` once the Pi has internet.
+Graywolf's `.deb` declares no dependencies (measured: `dpkg -s graywolf` has
+no `Depends` line), so the Graywolf step also installs the ALSA runtime
+(`libasound2t64`, falling back to `libasound2`) that its `graywolf-modem`
+child process needs and otherwise crash-loops without - on every run, so an
+existing box gets healed too, and never fatal to the rest of the step.
 
 ### 7.4 Logging and status
 
