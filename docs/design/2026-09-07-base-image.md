@@ -644,9 +644,14 @@ Verified against DietPi and Graywolf source before implementation:
 
 Open, to be confirmed on the first flashed image:
 
-1. `PUT /igate/config` with a GET-then-merge body: Graywolf must ignore the
-   read-only fields the GET response carries. If it rejects them, the
-   provisioner sends only the seeded fields on a fresh install.
+1. ~~`PUT /igate/config` with a GET-then-merge body: Graywolf must ignore the
+   read-only fields the GET response carries.~~ — **resolved, measured
+   against Graywolf 0.14.13.** `id` is the only read-only field on that
+   endpoint; PUT of the GET-then-merge body rejects it with 400 `unknown
+   field "id"`, and the same body with `id` removed succeeds. The
+   provisioner strips it (`del(.id)`) from both the iGate config merge and
+   the beacon update merge (`PUT /beacons/:id`, same convention) before
+   sending; every other field it echoes back is accepted.
 2. DietPi's first-boot import of `dietpi.txt` from the FAT partition is
    mtime-based (`cp -u`). The build stamps the FAT copy older than the root
    copy, mirroring DietPi's own imager; an unmodified FAT copy must therefore
@@ -688,8 +693,11 @@ if the assumption is false.
 5. `build/build-image.sh` run as root end to end, including the DietPi
    `.sha256` file's format and the FAT timestamp behaviour the build relies on
    (`verify_fat_older`).
-6. Graywolf accepts the `PUT /igate/config` merge body — the GET response's
-   read-only fields sent back unchanged are ignored, not rejected.
+6. ~~Graywolf accepts the `PUT /igate/config` merge body — the GET response's
+   read-only fields sent back unchanged are ignored, not rejected.~~ —
+   **false, confirmed on hardware (Graywolf 0.14.13, 2026-09-08); resolved,
+   see item 1 above.** It rejects `id` specifically (400 `unknown field
+   "id"`); the provisioner now strips it before sending.
 7. Physical failover in all three network shapes — static, DHCP and
    Ethernet-only — with `ip -4 addr` checked at each step: cable pull, cable
    replug, and (Ethernet-only) that `NONE` recovers to `ETH`.

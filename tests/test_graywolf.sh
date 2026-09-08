@@ -12,11 +12,18 @@ gw_env() {
   DXB_STATUS_LINES=(); DXB_FAILED_STEPS=(); DXB_CONSUMED_SECRETS=''
   DXB_CURL=fake_curl
   apt-get() { echo "apt-get $*" >> "$TEST_TMP/calls"; }
+  # Reports libasound.so.2 present by default, so tests that don't care about the ALSA runtime
+  # (most of them) never see dxb_gw_install's unconditional dxb_gw_install_runtime_deps call
+  # reach apt-get. Fix-G2 tests override this to simulate it missing.
+  ldconfig() { echo "libasound.so.2 (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/libasound.so.2"; }
   systemctl() { echo "systemctl $*" >> "$TEST_TMP/calls"; }
   sleep() { :; }
   GW_NEEDS_SETUP=true
   GW_CHANNELS=''
   GW_FAIL_AUTH_SETUP=0
+  # GET canned responses a test can override before calling dxb_gw_seed/dxb_gw_seed_igate/etc.
+  GW_IGATE_CONFIG='{"id":1,"server":"old.example","enabled":false,"read_only_thing":"keep"}'
+  GW_BEACON_CONFIG='{"id":7,"comment":"old","enabled":true}'
 }
 # Fake curl: records "METHOD PATH BODY" per call and answers from canned responses.
 # --data-binary @- means the body was piped over stdin (never as a literal argument); read it.
@@ -56,8 +63,8 @@ fake_curl() {
   case "$m $p" in
     "GET /auth/setup")    echo "{\"needs_setup\":$GW_NEEDS_SETUP}" ;;
     "POST /beacons")      echo '{"id":7}' ;;
-    "GET /igate/config")  echo '{"id":1,"server":"old.example","enabled":false,"read_only_thing":"keep"}' ;;
-    "GET /beacons/7")     echo '{"id":7,"comment":"old","enabled":true}' ;;
+    "GET /igate/config")  echo "$GW_IGATE_CONFIG" ;;
+    "GET /beacons/7")     echo "$GW_BEACON_CONFIG" ;;
     "GET /channels")      echo "${GW_CHANNELS:-[]}" ;;
     "GET /digipeater/rules") echo '[]' ;;
     *)                    echo '{}' ;;
@@ -156,12 +163,41 @@ test_reseed_updates_existing_beacon_and_creates_rules_when_channel_exists() {
   echo "BEACON_ID=7" > "$DXB_GW_SEED_STATE"
   assert_ok dxb_gw_seed 1
   local c; c=$(calls)
-  assert_contains "$c" 'PUT /beacons/7 {"id":7,"comment":"DXBerry-Pi iGate","enabled":true,"type":"position"'
+  # id is read-only on this endpoint (G1); the merge strips it, even though the path still
+  # names the beacon by id.
+  assert_contains "$c" 'PUT /beacons/7 {"comment":"DXBerry-Pi iGate","enabled":true,"type":"position"'
+  assert_not_contains "$c" '"id":7'
   assert_contains "$c" '"send_path":"rf"'
   assert_contains "$c" '"channel":3'
   assert_contains "$c" 'POST /digipeater/rules {"from_channel":3,"to_channel":3,"alias":"N0CALL-2","alias_type":"exact","max_hops":1,"priority":1,"action":"repeat","enabled":true}'
   assert_contains "$c" 'POST /digipeater/rules {"from_channel":3,"to_channel":3,"alias":"WIDE","alias_type":"widen","max_hops":2,"priority":10,"action":"repeat","enabled":true}'
   assert_file_contains "$DXB_GW_SEED_STATE" "RULES_SEEDED=1"
+}
+
+# Graywolf 0.14.13 measured: PUT /igate/config 400s on "unknown field id" when the GET-then-merge
+# body echoes id back. id is the only read-only field on that endpoint.
+test_seed_igate_strips_read_only_id() {
+  gw_env
+  GW_IGATE_CONFIG='{"id":1,"enabled":true,"operator_note":"keep"}'
+  gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2' 'IGATE_SERVER=noam.aprs2.net'
+  assert_ok dxb_gw_seed 0
+  local c; c=$(calls)
+  assert_contains "$c" 'PUT /igate/config '
+  assert_contains "$c" '"operator_note":"keep"'
+  local put_body; put_body=$(sed -n 's/^PUT \/igate\/config //p' "$TEST_TMP/calls")
+  assert_not_contains "$put_body" '"id"'
+}
+
+# Same read-only-id convention applies to the beacon update endpoint - not yet exercised on
+# hardware (no beacon configured on the test Pi), but it is the same API.
+test_seed_beacon_update_strips_read_only_id() {
+  gw_env
+  GW_BEACON_CONFIG='{"id":7,"enabled":true,"comment":"keep-me"}'
+  gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2' 'LATITUDE=37.1' 'LONGITUDE=-101.3'
+  echo "BEACON_ID=7" > "$DXB_GW_SEED_STATE"
+  assert_ok dxb_gw_seed 0
+  local put_body; put_body=$(sed -n 's/^PUT \/beacons\/7 //p' "$TEST_TMP/calls")
+  assert_not_contains "$put_body" '"id"'
 }
 
 test_seed_rf_beacon_without_channel_falls_back_to_is_only() {

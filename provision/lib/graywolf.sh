@@ -135,7 +135,10 @@ dxb_gw_seed_igate() {
   local cur merged
   cur=$(dxb_gw_api GET /igate/config 2> /dev/null) || cur='{}'
   jq -e 'type == "object"' <<< "$cur" > /dev/null 2>&1 || cur='{}'
-  merged=$(jq -c --argjson ours "$(dxb_gw_payload_igate)" '. + $ours' <<< "$cur")
+  # id is Graywolf's only read-only field on this endpoint (measured against 0.14.13: PUT
+  # rejects it with 400 "unknown field id"); the merge otherwise keeps operator-set fields alive
+  # across a re-seed.
+  merged=$(jq -c --argjson ours "$(dxb_gw_payload_igate)" '. + $ours | del(.id)' <<< "$cur")
   dxb_gw_api PUT /igate/config "$merged" > /dev/null || dxb_step_failed graywolf "iGate config update failed"
 }
 
@@ -150,7 +153,9 @@ dxb_gw_seed_beacon() {
   fi
   id=$(dxb_gw_seed_state_get BEACON_ID)
   if [[ -n $id ]] && cur=$(dxb_gw_api GET "/beacons/$id" 2> /dev/null) && jq -e '.id' <<< "$cur" > /dev/null 2>&1; then
-    merged=$(jq -c --argjson ours "$(dxb_gw_payload_beacon "$sp" "$ch")" '. + $ours' <<< "$cur")
+    # Same read-only-id convention as the iGate endpoint (G1) - not yet exercised on hardware
+    # (no beacon configured on the test Pi), but it is the same API.
+    merged=$(jq -c --argjson ours "$(dxb_gw_payload_beacon "$sp" "$ch")" '. + $ours | del(.id)' <<< "$cur")
     dxb_gw_api PUT "/beacons/$id" "$merged" > /dev/null || dxb_step_failed graywolf "beacon $id update failed"
   else
     id=$(dxb_gw_api POST /beacons "$(dxb_gw_payload_beacon "$sp" "$ch")" | jq -r '.id // empty')
