@@ -55,6 +55,10 @@ dxb_gw_install_runtime_deps() {
 
 dxb_gw_install() {
   local base arch sums line sha name tmp v
+  # Runs first, before any network access, so an offline already-provisioned box still gets its
+  # crash-looping graywolf-modem healed by a plain dxberry-provision even when the release fetch
+  # below fails.
+  dxb_gw_install_runtime_deps
   base=$(dxb_gw_release_base)
   arch=${DXB_DPKG_ARCH:-$(dpkg --print-architecture)}
   sums=$(dxb_gw_fetch "$base/checksums.txt") || { dxb_step_failed graywolf "could not download checksums.txt from $base"; return 1; }
@@ -62,9 +66,6 @@ dxb_gw_install() {
   [[ -n $line ]] || { dxb_step_failed graywolf "release has no .deb for architecture $arch"; return 1; }
   sha=${line%% *}; name=${line#* }
   v=$(sed -E 's/^graywolf_([0-9.]+)_.*/\1/' <<< "$name")
-  # Runs every time, including the "already installed" path below, so a plain dxberry-provision
-  # heals an existing box that is missing the runtime.
-  dxb_gw_install_runtime_deps
   if [[ $(dxb_gw_installed_version) == "$v" ]]; then dxb_info "graywolf $v already installed"; return 0; fi
   tmp=$(mktemp -d)
   if ! dxb_gw_fetch_to "$tmp/$name" "$base/$name"; then dxb_step_failed graywolf "download of $name failed"; rm -rf "$tmp"; return 1; fi

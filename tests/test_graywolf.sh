@@ -156,6 +156,19 @@ test_gw_alsa_falls_back_to_libasound2() {
   assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
 }
 
+# An offline, already-provisioned box with a crash-looping graywolf-modem must still get healed
+# by a plain dxberry-provision, even though the release fetch (GitHub) fails - the ALSA runtime
+# check must run before any network access, not after it.
+test_gw_alsa_heal_runs_even_when_release_fetch_fails() {
+  gw_env
+  gw_cfg 'PASSWORD=secretpass'
+  ldconfig() { :; }
+  # No checksums.txt under $TEST_TMP/http, so the fake curl 404s the release fetch every retry.
+  assert_fails dxb_gw_install
+  assert_contains "${DXB_FAILED_STEPS[*]}" "could not download checksums.txt"
+  assert_contains "$(calls)" "apt-get install -y libasound2t64"
+}
+
 # The core graywolf.service works without ALSA (only graywolf-modem needs it), so a failure to
 # install the runtime must be reported, not treated as fatal to the rest of dxb_gw_install.
 test_gw_alsa_failure_is_reported_but_install_continues() {
@@ -174,7 +187,9 @@ test_gw_alsa_failure_is_reported_but_install_continues() {
   assert_contains "${DXB_FAILED_STEPS[*]}" "could not install the ALSA runtime"
   assert_contains "$(calls)" "apt-get install -y libasound2t64"
   assert_contains "$(calls)" "apt-get install -y libasound2"
-  assert_contains "$(calls)" "graywolf_0.14.13_arm64.deb"
+  # Specifically the .deb install line, not just any line mentioning the filename (the fake
+  # curl's FETCH log line also names it).
+  assert_ok grep -qE '^apt-get install -y .*graywolf_0\.14\.13_arm64\.deb$' "$TEST_TMP/calls"
 }
 
 test_seed_fresh_install_creates_admin_station_igate_beacon_digi() {
@@ -246,11 +261,13 @@ test_seed_igate_strips_read_only_id() {
 # hardware (no beacon configured on the test Pi), but it is the same API.
 test_seed_beacon_update_strips_read_only_id() {
   gw_env
-  GW_BEACON_CONFIG='{"id":7,"enabled":true,"comment":"keep-me"}'
+  GW_BEACON_CONFIG='{"id":7,"enabled":true,"operator_note":"keep"}'
   gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2' 'LATITUDE=37.1' 'LONGITUDE=-101.3'
   echo "BEACON_ID=7" > "$DXB_GW_SEED_STATE"
   assert_ok dxb_gw_seed 0
+  assert_contains "$(calls)" 'PUT /beacons/7 '
   local put_body; put_body=$(sed -n 's/^PUT \/beacons\/7 //p' "$TEST_TMP/calls")
+  assert_contains "$put_body" '"operator_note":"keep"'
   assert_not_contains "$put_body" '"id"'
 }
 

@@ -87,6 +87,7 @@ dxb_net_import_wifi() {
 # 0 = wlan0 present, 1 = wlan0 absent, 2 = the modules could not be enabled (already reported).
 dxb_net_enable_wifi_hw() {
   local config_txt before after
+  DXB_NET_WIFI_OVERLAY_REMOVED=0
   if [[ ! -x $DXB_DIETPI_SET_HW ]]; then
     dxb_step_failed network "$DXB_DIETPI_SET_HW not found; cannot enable the WiFi modules"
     return 2
