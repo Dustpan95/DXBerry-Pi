@@ -79,6 +79,12 @@ _dxb_same_subnet() {
   mask=$(( (0xFFFFFFFF << (32 - $3)) & 0xFFFFFFFF ))
   (( (a & mask) == (b & mask) ))
 }
+# dxb_prefix_to_mask N: print the dotted-quad netmask for prefix length N (8-30).
+dxb_prefix_to_mask() {
+  local prefix=$1 mask
+  mask=$(( (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF ))
+  printf '%d.%d.%d.%d' $(( (mask >> 24) & 255 )) $(( (mask >> 16) & 255 )) $(( (mask >> 8) & 255 )) $(( mask & 255 ))
+}
 _dxb_in_range() {
   [[ $1 =~ ^-?[0-9]+(\.[0-9]+)?$ ]] || return 1
   awk -v v="$1" -v lo="$2" -v hi="$3" 'BEGIN { exit !(v + 0 >= lo + 0 && v + 0 <= hi + 0) }'

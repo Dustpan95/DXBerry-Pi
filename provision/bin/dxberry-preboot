@@ -51,7 +51,8 @@ main() {
   dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_WIFI_ENABLED 0
   if [[ ${DXB_CFG[_MODE]} == static ]]; then
     dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_USESTATIC 1
-    dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_STATIC_IP "${DXB_CFG[STATIC_IP]}"
+    dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_STATIC_IP "${DXB_CFG[_IP]}"
+    dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_STATIC_MASK "$(dxb_prefix_to_mask "${DXB_CFG[_PREFIX]}")"
     dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_STATIC_GATEWAY "${DXB_CFG[GATEWAY]}"
     dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_STATIC_DNS "${DXB_CFG[DNS]}"
   else

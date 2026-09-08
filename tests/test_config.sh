@@ -162,6 +162,14 @@ test_validate_hostname_and_ssh_key() {
   assert_ok load_and_validate
 }
 
+test_config_prefix_to_mask() {
+  assert_eq "$(dxb_prefix_to_mask 8)" "255.0.0.0"
+  assert_eq "$(dxb_prefix_to_mask 16)" "255.255.0.0"
+  assert_eq "$(dxb_prefix_to_mask 24)" "255.255.255.0"
+  assert_eq "$(dxb_prefix_to_mask 25)" "255.255.255.128"
+  assert_eq "$(dxb_prefix_to_mask 30)" "255.255.255.252"
+}
+
 test_print_masked_hides_secrets() {
   export DXB_ZONEINFO_DIR=$TEST_TMP/no-such-dir
   write_cfg 'PASSWORD=secretpass' 'WIFI_SSID=Home' 'WIFI_PASSWORD=<applied>' 'WIFI_COUNTRY=US'

@@ -198,8 +198,11 @@ Invoked by `/boot/Automation_Custom_PreScript.sh` before any network is up.
    `AUTO_SETUP_TIMEZONE`, `AUTO_SETUP_NET_ETHERNET_ENABLED=1`,
    `AUTO_SETUP_NET_WIFI_ENABLED=0`, `AUTO_SETUP_NET_USESTATIC` (1 if
    `STATIC_IP`, else 0), `AUTO_SETUP_NET_STATIC_IP`,
-   `AUTO_SETUP_NET_STATIC_GATEWAY`, `AUTO_SETUP_NET_STATIC_DNS`,
-   `AUTO_SETUP_NET_WIFI_COUNTRY_CODE`, `CONFIG_SERIAL_CONSOLE_ENABLE`.
+   `AUTO_SETUP_NET_STATIC_MASK`, `AUTO_SETUP_NET_STATIC_GATEWAY`,
+   `AUTO_SETUP_NET_STATIC_DNS`, `AUTO_SETUP_NET_WIFI_COUNTRY_CODE`,
+   `CONFIG_SERIAL_CONSOLE_ENABLE`. DietPi's own `dietpi.txt` takes a bare
+   address plus a separate mask, not CIDR notation, so the address is
+   written from the validated `_IP` with the mask derived from `_PREFIX`.
 4. If `WIFI_SSID` is set, write slot 0 of `/boot/dietpi-wifi.txt`
    (`aWIFI_SSID[0]`, `aWIFI_KEY[0]`, `aWIFI_KEYMGR[0]='WPA-PSK'`).
 
