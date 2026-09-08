@@ -99,6 +99,45 @@ dxb_net_scan_stray_stanzas() {
   (( hits == 0 ))
 }
 
+# DietPi's automated first run leaves its own eth0/wlan0 auto/allow-hotplug lines and iface
+# stanzas in the MAIN /etc/network/interfaces file, alongside the "source interfaces.d/*"
+# drop-in include - hardware proved this, contrary to the original assumption that the main
+# file only sourced interfaces.d/*. Unlike files under interfaces.d/, the main file is DietPi's
+# own generated file, not a user's, so the provisioner owns cleaning it before the stray scan.
+# 0 = success (changed or not, including "file does not exist"). 1 = the rewrite failed
+# (reported via dxb_step_failed).
+dxb_net_clean_main_interfaces() {
+  local file=$DXB_INTERFACES_FILE
+  [[ -f $file ]] || return 0
+  local -a out=()
+  local line inblock=0 has_source=0
+  local direct_re='^[[:blank:]]*(auto|allow-hotplug)[[:blank:]].*\b(eth0|wlan0)\b'
+  local block_start_re='^[[:blank:]]*iface[[:blank:]]+(eth0|wlan0)\b'
+  local term_re='^[[:blank:]]*(iface|auto|allow-[A-Za-z0-9_-]+|source-directory|source|mapping|rename)([[:blank:]]|$)'
+  local source_re='^[[:blank:]]*(source[[:blank:]]+interfaces\.d/\*|source-directory[[:blank:]]+interfaces\.d)[[:blank:]]*$'
+  while IFS= read -r line || [[ -n $line ]]; do
+    if (( inblock )) && [[ $line =~ $term_re ]]; then inblock=0; fi
+    if (( inblock )); then continue; fi
+    if [[ $line =~ $direct_re ]]; then continue; fi
+    if [[ $line =~ $block_start_re ]]; then inblock=1; continue; fi
+    out+=("$line")
+    [[ $line =~ $source_re ]] && has_source=1
+  done < "$file"
+  (( has_source )) || out+=('source interfaces.d/*')
+  local newcontent=''
+  (( ${#out[@]} )) && newcontent=$(printf '%s\n' "${out[@]}")
+  if dxb_write_if_changed "$file" "$newcontent"; then
+    if [[ $(< "$file") == "$newcontent" ]]; then
+      DXB_NET_CHANGED=1
+      dxb_info "removed DietPi eth0/wlan0 stanzas from $file"
+    else
+      dxb_step_failed network "could not rewrite $file"
+      return 1
+    fi
+  fi
+  return 0
+}
+
 dxb_net_install_netwatch() {
   local unit="$DXB_SYSTEMD_DIR/dxberry-netwatch.service" content rc=0
   if ! content=$(dxb_render "$DXB_TEMPLATES/dxberry-netwatch.service"); then
@@ -150,6 +189,9 @@ provision_network() {
     dxb_info "removed wlan0.conf (no WIFI_SSID)"
   fi
   # Our own files are in place; anything else naming eth0/wlan0 is a failed step, never an edit.
+  # DietPi's own eth0/wlan0 stanzas in the main file are stripped first - the scan still runs
+  # even if that failed, which reports them and blocks the gate: the safe outcome.
+  dxb_net_clean_main_interfaces
   dxb_net_scan_stray_stanzas
   if [[ ${DXB_CFG[_MODE]} == static ]]; then
     # shellcheck disable=SC2086

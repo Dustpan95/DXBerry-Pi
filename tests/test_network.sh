@@ -27,6 +27,48 @@ net_env() {
 }
 net_cfg() { printf '%s\n' "$@" > "$TEST_TMP/dxberry.txt"; dxb_config_load "$TEST_TMP/dxberry.txt"; dxb_config_validate; }
 
+# The exact /etc/network/interfaces DietPi Trixie's automated first run left on the Pi
+# (v0.1.0-rc1, 2026-09-08), verbatim - source and expected output for the Fix B tests below.
+write_dietpi_main_interfaces() {
+  printf '%s\n' \
+    '# Location: /etc/network/interfaces' \
+    '# Please modify network settings via: dietpi-config' \
+    '# Or create your own drop-ins in: /etc/network/interfaces.d/' \
+    '' \
+    '# Drop-in configs' \
+    'source interfaces.d/*' \
+    '' \
+    '# Ethernet' \
+    'allow-hotplug eth0' \
+    'iface eth0 inet dhcp' \
+    'address 192.168.0.100' \
+    'netmask 255.255.255.0' \
+    'gateway 192.168.0.1' \
+    '#dns-nameservers 9.9.9.9 149.112.112.112' \
+    '' \
+    '# WiFi' \
+    '#allow-hotplug wlan0' \
+    'iface wlan0 inet dhcp' \
+    'address 192.168.0.100' \
+    'netmask 255.255.255.0' \
+    'gateway 192.168.0.1' \
+    '#dns-nameservers 9.9.9.9 149.112.112.112' \
+    'wireless-power off' \
+    'wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf' \
+    > "$1"
+}
+dietpi_main_interfaces_cleaned() {
+  printf '%s\n' \
+    '# Location: /etc/network/interfaces' \
+    '# Please modify network settings via: dietpi-config' \
+    '# Or create your own drop-ins in: /etc/network/interfaces.d/' \
+    '' \
+    '# Drop-in configs' \
+    'source interfaces.d/*' \
+    '' \
+    '# Ethernet'
+}
+
 test_render_static_and_dhcp_stanzas() {
   net_env
   net_cfg 'PASSWORD=secretpass' 'STATIC_IP=192.168.1.90/24' 'GATEWAY=192.168.1.1' 'WIFI_SSID=Home' 'WIFI_PASSWORD=wifipass1' 'WIFI_COUNTRY=US'
@@ -186,7 +228,9 @@ test_stray_stanza_scan_reports_file_and_line() {
   local before=${#DXB_FAILED_STEPS[@]}
   assert_fails dxb_net_scan_stray_stanzas 2> /dev/null
   assert_eq "${#DXB_FAILED_STEPS[@]}" "$before"
-  # /etc/network/interfaces itself is scanned too, and provision_network reports through it.
+  # /etc/network/interfaces itself is scanned too - but provision_network now strips DietPi's
+  # own eth0/wlan0 stanzas from the main file before that scan (dxb_net_clean_main_interfaces),
+  # so a main-file stanza is cleaned rather than reported.
   rm -f "$DXB_IFACES_DIR/dietpi.conf"
   # shellcheck disable=SC2034
   DXB_FAILED_STEPS=()
@@ -194,7 +238,84 @@ test_stray_stanza_scan_reports_file_and_line() {
   DXB_NET_STRAY_REPORTED=0
   printf 'source /etc/network/interfaces.d/*\nauto lo\niface lo inet loopback\n  auto wlan0\n' > "$DXB_INTERFACES_FILE"
   DXB_MODE=run provision_network 2> /dev/null
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
+  assert_file_not_contains "$DXB_INTERFACES_FILE" "auto wlan0"
+  # dxb_net_scan_stray_stanzas on its own must still flag a main-file stanza that was never
+  # run through the cleaner.
+  printf 'source /etc/network/interfaces.d/*\nauto lo\niface lo inet loopback\n  auto wlan0\n' > "$DXB_INTERFACES_FILE"
+  # shellcheck disable=SC2034
+  DXB_FAILED_STEPS=()
+  # shellcheck disable=SC2034
+  DXB_NET_STRAY_REPORTED=0
+  assert_fails dxb_net_scan_stray_stanzas 2> /dev/null
   assert_contains "${DXB_FAILED_STEPS[*]}" "stray stanza $DXB_INTERFACES_FILE:4:   auto wlan0"
+}
+
+# DietPi's generated main file is the provisioner's to clean - unlike files under
+# interfaces.d/, which are foreign and only ever reported.
+test_network_clean_main_removes_dietpi_stanzas() {
+  net_env
+  write_dietpi_main_interfaces "$DXB_INTERFACES_FILE"
+  assert_ok dxb_net_clean_main_interfaces
+  assert_eq "$(cat "$DXB_INTERFACES_FILE")" "$(dietpi_main_interfaces_cleaned)"
+  assert_ok dxb_net_scan_stray_stanzas
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
+}
+
+test_network_clean_main_is_idempotent() {
+  net_env
+  write_dietpi_main_interfaces "$DXB_INTERFACES_FILE"
+  dxb_net_clean_main_interfaces
+  local cleaned_once; cleaned_once=$(cat "$DXB_INTERFACES_FILE")
+  : > "$TEST_TMP/log"
+  assert_ok dxb_net_clean_main_interfaces
+  assert_eq "$(cat "$DXB_INTERFACES_FILE")" "$cleaned_once"
+  assert_file_not_contains "$TEST_TMP/log" "removed DietPi"
+}
+
+test_network_clean_main_leaves_clean_file_alone() {
+  net_env
+  printf '%s\n' \
+    '# Location: /etc/network/interfaces' \
+    '# Please modify network settings via: dietpi-config' \
+    '# Or create your own drop-ins in: /etc/network/interfaces.d/' \
+    '' \
+    '# Drop-in configs' \
+    'source interfaces.d/*' \
+    'auto lo' \
+    'iface lo inet loopback' \
+    > "$DXB_INTERFACES_FILE"
+  local before; before=$(cat "$DXB_INTERFACES_FILE")
+  assert_ok dxb_net_clean_main_interfaces
+  assert_eq "$(cat "$DXB_INTERFACES_FILE")" "$before"
+}
+
+test_network_clean_main_adds_source_when_missing() {
+  net_env
+  printf 'allow-hotplug eth0\niface eth0 inet dhcp\n' > "$DXB_INTERFACES_FILE"
+  assert_ok dxb_net_clean_main_interfaces
+  assert_eq "$(cat "$DXB_INTERFACES_FILE")" "source interfaces.d/*"
+}
+
+test_network_clean_main_never_touches_interfaces_d() {
+  net_env
+  write_dietpi_main_interfaces "$DXB_INTERFACES_FILE"
+  mkdir -p "$DXB_IFACES_DIR"
+  printf 'iface eth0 inet dhcp\n' > "$DXB_IFACES_DIR/foo.conf"
+  local before; before=$(cat "$DXB_IFACES_DIR/foo.conf")
+  net_cfg 'PASSWORD=secretpass'
+  DXB_MODE=run provision_network 2> /dev/null
+  assert_eq "$(cat "$DXB_IFACES_DIR/foo.conf")" "$before"
+  assert_contains "${DXB_FAILED_STEPS[*]}" "stray stanza $DXB_IFACES_DIR/foo.conf:1: iface eth0 inet dhcp"
+}
+
+test_network_provision_passes_gate_on_real_dietpi_file() {
+  net_env
+  write_dietpi_main_interfaces "$DXB_INTERFACES_FILE"
+  net_cfg 'PASSWORD=secretpass' 'STATIC_IP=192.168.1.90/24' 'GATEWAY=192.168.1.1' 'WIFI_SSID=Home' 'WIFI_PASSWORD=wifipass1' 'WIFI_COUNTRY=US'
+  DXB_MODE=first-boot provision_network
+  assert_ok dxb_net_scan_stray_stanzas
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
 }
 
 # dietpi-wifi.txt holds a plaintext WiFi PSK; it must never be left group/world-readable, even
