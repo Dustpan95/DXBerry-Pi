@@ -142,7 +142,7 @@ _dxb_radio_pin() {
 
 # _dxb_radio_build OPTS BASE: merge OPTS (candidate selectors + overrides) into BASE (an existing radio or {}).
 _dxb_radio_build() {
-  local opts=$1 base=$2 k sel pin cand defaults='{}' r old_type new_type
+  local opts=$1 base=$2 k sel pin cand defaults='{}' r old_type new_type old_model
   r=$base
   for k in audio cat hid ptt_serial; do
     sel=$(jq -r --arg k "$k" '.[$k] // empty' <<< "$opts")
@@ -182,6 +182,12 @@ _dxb_radio_build() {
     else . end' <<< "$r")
   new_type=$(jq -r '.rig.ptt_type' <<< "$r")
   [[ $old_type == "$new_type" ]] || dxb_warn "radio: ptt_type $old_type needs a serial pin; set to NONE (pin --cat or --ptt-serial, then --ptt-type $old_type)"
+  # a radio with no CAT pin has no rig to drive: hamlib's dummy model keeps PTT and the NET
+  # rigctl interface uniform for every application (spec section 7.3)
+  old_model=$(jq -r '.rig.model' <<< "$r")
+  r=$(jq -c 'if .cat == null then .rig.model = 1 else . end' <<< "$r")
+  [[ $old_model == $(jq -r '.rig.model' <<< "$r") ]] \
+    || dxb_warn "radio: model $old_model needs a CAT pin; using the dummy model 1 (pin --cat, then --model $old_model)"
   printf '%s\n' "$r"
 }
 

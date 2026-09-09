@@ -40,3 +40,11 @@ test_build_check_fails_on_non_executable_file() {
   assert_eq "$?" "1"
   assert_contains "$out" "not executable: provision/bin/dxberry-preboot"
 }
+
+test_build_symlinks_every_command_into_usr_local_sbin() {
+  local b
+  for b in dxberry-provision dxberry-netwatch dxberry-radio; do
+    grep -qF "ln -sf /opt/dxberry/bin/$b " "$DXB_ROOT/build/build-image.sh" \
+      || _fail "build-image.sh has no /usr/local/sbin symlink line for $b"
+  done
+}

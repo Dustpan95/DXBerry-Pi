@@ -374,3 +374,15 @@ test_claim_failure_after_handover_leaves_radio_released() {
   assert_eq "$(jq -r '.owner' <<< "$(dxb_radio_get r1)")" ""
   unset BETA_WIRE_RC
 }
+
+test_add_and_set_drop_the_rig_model_without_a_cat_pin() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" ic705; dxb_radio_scan_cache; dxb_radio_load
+  # the IC-705 profile carries model 3085, but audio alone gives rigctld no CAT port to drive
+  assert_ok dxb_radio_add hf '{"audio":"1"}'
+  assert_eq "$(jq -r '.rig.model' <<< "$(dxb_radio_get hf)")" "1"
+  assert_ok dxb_radio_add hf2 '{"audio":"1","cat":"1"}'
+  assert_eq "$(jq -r '.rig.model' <<< "$(dxb_radio_get hf2)")" "3085"     # a CAT pin keeps the model
+  dxb_radio_set hf2 '{"cat":"none"}' 2> "$TEST_TMP/stderr" > /dev/null
+  assert_eq "$(jq -r '.rig.model' <<< "$(dxb_radio_get hf2)")" "1"
+  assert_contains "$(cat "$TEST_TMP/stderr")" "dummy model"
+}

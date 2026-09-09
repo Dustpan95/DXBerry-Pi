@@ -28,6 +28,7 @@ test_rigctld_env_shapes() {
   assert_eq "$(dxb_rigctld_env radio1 "$R_DIGIRIG")" $'MODEL=1\nPORT=4532\nRIG_ARGS=-r /dev/dxberry/radio1-cat -s 57600\nPTT_ARGS=-P RTS -p /dev/dxberry/radio1-cat'
   assert_eq "$(dxb_rigctld_env hf "$R_IC7300")" $'MODEL=3073\nPORT=4534\nRIG_ARGS=-r /dev/dxberry/hf-cat -s 115200\nPTT_ARGS=-P RIG'
   assert_eq "$(dxb_rigctld_env ht "$R_NOCAT")" $'MODEL=1\nPORT=4536\nRIG_ARGS=\nPTT_ARGS='
+  assert_contains "$(dxb_rigctld_env ht "$R_NOCAT")" "MODEL=1"   # a cat-less radio runs the dummy model (spec 7.3)
   assert_eq "$(dxb_rigctld_env sp "$R_SPLITPTT")" $'MODEL=1\nPORT=4538\nRIG_ARGS=-r /dev/dxberry/sp-cat -s 38400\nPTT_ARGS=-P DTR -p /dev/dxberry/sp-ptt'
 }
 

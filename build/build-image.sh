@@ -301,6 +301,9 @@ fi
 if ! ln -sf /opt/dxberry/bin/dxberry-netwatch "$MNT/root/usr/local/sbin/dxberry-netwatch"; then
   die "failed to symlink dxberry-netwatch"
 fi
+if ! ln -sf /opt/dxberry/bin/dxberry-radio "$MNT/root/usr/local/sbin/dxberry-radio"; then
+  die "failed to symlink dxberry-radio"
+fi
 if ! cat > "$MNT/root/etc/dxberry-release" << EOF
 DXBERRY_VERSION=$VERSION
 DXBERRY_COMMIT=$(git -C "$ROOT" rev-parse --short HEAD 2> /dev/null || echo unknown)
