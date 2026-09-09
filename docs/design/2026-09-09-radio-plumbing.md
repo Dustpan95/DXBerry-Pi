@@ -232,7 +232,11 @@ what `status` and the console read; it never holds configuration.
 
 ### 6.2 Subcommands
 
-All require root (`dxb_require_root`). All accept `--json`. Exit codes:
+All require root (`dxb_require_root`). All accept `--json`, anywhere in the
+argument list; the commands that print nothing on success (`add`/`set` when
+their status block is not wanted, `apply`, `hotplug`, `release`, `remove`)
+answer `{"ok":true}` in that mode, so a caller never has to read an empty
+stdout as success. Exit codes:
 
 | Code | Meaning |
 |---|---|
@@ -245,9 +249,12 @@ All require root (`dxb_require_root`). All accept `--json`. Exit codes:
 | 7 | re-wiring the existing owner failed during `set` or `apply` (owner unchanged) |
 
 - `scan` — candidates with a numeric index, port, profile name, functions.
-- `add NAME --audio N|none --cat N|none [--hid N] [--ptt M] [--model K]
-  [--baud B] [--ptt-type T] [--wiring full|names] [--label S]` — validates,
-  fills defaults from the profile, allocates the port, saves, runs `apply`.
+- `add NAME --audio N|none --cat N[:K]|none [--hid N] [--ptt-serial N[:K]]
+  [--ptt M] [--model K] [--baud B] [--ptt-type T] [--gpio-line N]
+  [--wiring full|names] [--label S]` — validates, fills defaults from the
+  profile, allocates the port, saves, runs `apply`. `N` is a `scan` index and
+  `:K` picks the Kth function of that kind on the candidate (an IC-705's
+  second serial port is `--cat 1:2`).
 - `set NAME [same flags]` — changes fields; a pin change keeps the owner and
   re-wires it.
 - `remove NAME` — releases first (stops the owner's use of it), deletes the
@@ -262,7 +269,8 @@ All require root (`dxb_require_root`). All accept `--json`. Exit codes:
   clear `owner`.
 - `status [NAME]` — record + runtime + for present radios with rigctld
   active: frequency and mode from `rigctl -m 2 -r 127.0.0.1:PORT f m`
-  (500 ms timeout; failures show `?`).
+  (1 s timeout; failures show `?`), and the ALSA id the audio card carries
+  right now (§7.1).
 - `hotplug` — alias of `apply --hotplug`, the udev entry point.
 - `gps` — §8.3.
 

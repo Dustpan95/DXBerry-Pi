@@ -284,7 +284,12 @@ dxb_radio_write_state() {
 # _dxb_radio_mark_wired NAME HASH: remember that the owner was wired with these inputs. 0 ok, 6 error.
 _dxb_radio_mark_wired() {
   local n=$1 h=$2 cur j
-  cur=$(jq -c . "$DXB_RADIOS_STATE" 2> /dev/null) || cur='{"radios":{}}'
+  # a missing or unparsable mirror is regenerated in full first: merging into a bare {} would
+  # leave a radios-state.json holding a wired_hash and none of the runtime fields status reads.
+  if ! cur=$(jq -c . "$DXB_RADIOS_STATE" 2> /dev/null); then
+    dxb_radio_write_state || return 6
+    cur=$(jq -c . "$DXB_RADIOS_STATE" 2> /dev/null) || return 6
+  fi
   j=$(jq -c --arg n "$n" --arg h "$h" '.radios[$n].wired_hash = $h' <<< "$cur") || return 6
   mkdir -p "$(dirname "$DXB_RADIOS_STATE")" 2> /dev/null
   dxb_write_if_changed "$DXB_RADIOS_STATE" "$j" 644
@@ -338,6 +343,8 @@ _dxb_radio_apply() {
     if [[ -z $owner ]] || ! dxb_radio_present "$n"; then continue; fi
     h=$(dxb_radio_wire_hash "$r"); wired=$(jq -r --arg n "$n" '.radios[$n].wired_hash // ""' "$DXB_RADIOS_STATE")
     [[ $h == "$wired" ]] && continue
+    # the guard is always true in production (radio.sh defines dxb_app_rewire below); it is kept
+    # so a test can source this module alone, or stub the re-wire, without apply falling over
     if declare -F dxb_app_rewire > /dev/null; then
       if dxb_app_rewire "$n"; then
         _dxb_radio_mark_wired "$n" "$h" || dxb_warn "radio $n: could not record the wiring hash; it will be re-wired on the next apply"

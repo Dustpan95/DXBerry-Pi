@@ -419,3 +419,14 @@ test_apply_leaves_alsa_id_null_for_a_radio_with_no_audio_pin() {
   assert_eq "$(jq -r '.radios.cat1.alsa_id' "$DXB_RADIOS_STATE")" "null"
   assert_not_contains "$(cat "$TEST_TMP/stderr")" "takes effect on replug"
 }
+
+test_mark_wired_rebuilds_an_unparsable_mirror_before_merging() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
+  dxb_radio_add radio1 '{"audio":"1","cat":"2"}' > /dev/null
+  mkdir -p "$(dirname "$DXB_RADIOS_STATE")"; printf 'not json\n' > "$DXB_RADIOS_STATE"
+  assert_ok _dxb_radio_mark_wired radio1 deadbeef
+  assert_eq "$(jq -r '.radios.radio1.wired_hash' "$DXB_RADIOS_STATE")" "deadbeef"
+  assert_eq "$(jq -r '.radios.radio1.present' "$DXB_RADIOS_STATE")" "true"
+  assert_eq "$(jq -r '.radios.radio1.kernel.audio' "$DXB_RADIOS_STATE")" "card1"
+  assert_eq "$(jq -r '.generated != null' "$DXB_RADIOS_STATE")" "true"
+}

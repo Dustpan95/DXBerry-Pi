@@ -104,6 +104,21 @@ test_cli_set_and_hotplug() {
   assert_not_contains "$(cat "$TEST_TMP/calls")" "udevadm"
 }
 
+test_cli_json_mode_confirms_the_commands_that_print_nothing() {
+  cli_env
+  cli add radio1 --audio 1 --cat 2 > /dev/null
+  assert_ok cli apply --json
+  assert_eq "$(out)" '{"ok":true}'
+  assert_ok cli hotplug --json
+  assert_eq "$(out)" '{"ok":true}'
+  assert_ok cli release radio1 --json
+  assert_eq "$(out)" '{"ok":true}'
+  assert_ok cli remove radio1 --json
+  assert_eq "$(out)" '{"ok":true}'
+  assert_ok cli apply                       # without --json the commands stay silent
+  assert_eq "$(out)" ""
+}
+
 test_cli_gps_without_daemon() {
   cli_env
   assert_ok cli gps
