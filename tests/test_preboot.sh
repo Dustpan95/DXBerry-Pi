@@ -66,3 +66,23 @@ test_preboot_missing_config_writes_hint() {
   assert_ok main
   assert_file_contains "$DXB_BOOT_DIR/dxberry-ERROR.txt" "Rename dxberry.txt.example to dxberry.txt"
 }
+
+test_preboot_writes_ntp_mode_and_gps_boot_lines() {
+  preboot_env
+  printf 'PASSWORD=examplepass\nGPS_DEVICE=uart\nGPS_PPS=18\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  : > "$DXB_BOOT_DIR/config.txt"
+  main
+  assert_file_contains "$DXB_DIETPI_TXT" "CONFIG_NTP_MODE=0"
+  assert_file_contains "$DXB_BOOT_DIR/config.txt" "enable_uart=1"
+  assert_file_contains "$DXB_BOOT_DIR/config.txt" "dtoverlay=disable-bt"
+  assert_file_contains "$DXB_BOOT_DIR/config.txt" "dtoverlay=pps-gpio,gpiopin=18"
+}
+
+test_preboot_auto_gps_leaves_config_txt_alone() {
+  preboot_env
+  printf 'PASSWORD=examplepass\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  printf 'arm_64bit=1\n' > "$DXB_BOOT_DIR/config.txt"
+  main
+  assert_eq "$(cat "$DXB_BOOT_DIR/config.txt")" "arm_64bit=1"
+  assert_file_contains "$DXB_DIETPI_TXT" "CONFIG_NTP_MODE=0"
+}

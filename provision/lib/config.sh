@@ -16,9 +16,9 @@ declare -ga DXB_CFG_ERRORS=() DXB_CFG_WARNINGS=()
 # shellcheck disable=SC2034
 DXB_APPLIED='<applied>'
 
-DXB_KNOWN_KEYS='HOSTNAME PASSWORD TIMEZONE STATIC_IP GATEWAY DNS WIFI_SSID WIFI_PASSWORD WIFI_COUNTRY CALLSIGN LATITUDE LONGITUDE BEACON_COMMENT BEACON_INTERVAL_MIN IGATE_SERVER WEBUI_USER WEBUI_PASSWORD SSH_PUBKEY BEACON_SEND BEACON_PATH BEACON_SYMBOL DIGIPEATER IGATE_RF_TO_IS IGATE_IS_TO_RF GRAYWOLF_VERSION SERIAL_CONSOLE'
+DXB_KNOWN_KEYS='HOSTNAME PASSWORD TIMEZONE STATIC_IP GATEWAY DNS WIFI_SSID WIFI_PASSWORD WIFI_COUNTRY CALLSIGN LATITUDE LONGITUDE BEACON_COMMENT BEACON_INTERVAL_MIN IGATE_SERVER WEBUI_USER WEBUI_PASSWORD SSH_PUBKEY BEACON_SEND BEACON_PATH BEACON_SYMBOL DIGIPEATER IGATE_RF_TO_IS IGATE_IS_TO_RF GRAYWOLF_VERSION SERIAL_CONSOLE GPS_DEVICE GPS_BAUD GPS_PPS'
 DXB_SECRET_KEYS='PASSWORD WIFI_PASSWORD WEBUI_PASSWORD'
-DXB_RESERVED_PREFIXES='PAT_ WSJTX_ JS8CALL_ FLDIGI_ RIG_ GPS_ CONSOLE_'
+DXB_RESERVED_PREFIXES='PAT_ WSJTX_ JS8CALL_ FLDIGI_ RIG_ CONSOLE_'
 
 _dxb_key_known() { local k; for k in $DXB_KNOWN_KEYS; do [[ $k == "$1" ]] && return 0; done; return 1; }
 _dxb_key_reserved() { local p; for p in $DXB_RESERVED_PREFIXES; do [[ $1 == "$p"* ]] && return 0; done; return 1; }
@@ -189,6 +189,22 @@ dxb_config_validate() {
   if [[ -n ${DXB_CFG[SSH_PUBKEY]:-} ]]; then
     [[ ${DXB_CFG[SSH_PUBKEY]} =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]+|sk-ssh-ed25519@openssh\.com)\ [A-Za-z0-9+/=]+ ]] || _dxb_err SSH_PUBKEY 'must be a single OpenSSH public key'
   fi
+  _dxb_default GPS_DEVICE auto
+  _dxb_default GPS_BAUD 9600
+  : "${DXB_CFG[GPS_PPS]:=}"
+  v=${DXB_CFG[GPS_DEVICE]}
+  DXB_CFG[_GPS]=1; DXB_CFG[_GPS_PATH]=''
+  case $v in
+    auto) ;;
+    none) DXB_CFG[_GPS]=0 ;;
+    uart) DXB_CFG[_GPS_PATH]=/dev/ttyAMA0
+          [[ ${DXB_CFG[SERIAL_CONSOLE]} == off ]] || _dxb_err GPS_DEVICE 'uart needs SERIAL_CONSOLE=off (the GPS uses the same pins)' ;;
+    /dev/tty[A-Za-z0-9]*) DXB_CFG[_GPS_PATH]=$v ;;
+    *) _dxb_err GPS_DEVICE 'must be auto, none, uart or a /dev/tty path' ;;
+  esac
+  case ${DXB_CFG[GPS_BAUD]} in 4800|9600|19200|38400|57600|115200) ;; *) _dxb_err GPS_BAUD 'must be one of 4800 9600 19200 38400 57600 115200' ;; esac
+  v=${DXB_CFG[GPS_PPS]}
+  if [[ -n $v ]] && ! { [[ $v =~ ^[0-9]{1,2}$ ]] && (( 10#$v <= 27 )); }; then _dxb_err GPS_PPS 'must be a BCM GPIO number 0-27'; fi
   (( ${#DXB_CFG_ERRORS[@]} == 0 ))
 }
 

@@ -79,3 +79,12 @@ test_boot_dir_override_and_squote() {
   unset DXB_BOOT_DIR
   assert_eq "$(dxb_squote "it's")" "'it'\\''s'"
 }
+
+test_ensure_line_appends_once() {
+  local f=$TEST_TMP/config.txt
+  printf 'arm_64bit=1\n' > "$f"
+  assert_ok dxb_ensure_line "$f" 'enable_uart=1'
+  assert_fails dxb_ensure_line "$f" 'enable_uart=1'
+  assert_eq "$(grep -c '^enable_uart=1$' "$f")" "1"
+  assert_eq "$(head -1 "$f")" "arm_64bit=1"
+}

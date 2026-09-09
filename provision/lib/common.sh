@@ -83,6 +83,14 @@ dxb_set_kv() {
   fi
 }
 
+# dxb_ensure_line FILE LINE: append LINE unless an identical line exists. 0 appended, 1 present, 2 error.
+dxb_ensure_line() {
+  local file=$1 line=$2
+  [[ -f $file ]] || : > "$file" || return 2
+  grep -qxF -- "$line" "$file" && return 1
+  printf '%s\n' "$line" >> "$file" || return 2
+}
+
 # dxb_render TEMPLATE NAME=VALUE...: print TEMPLATE with @NAME@ placeholders replaced.
 # Placeholder names: uppercase letters, digits, and underscores (@NAME@, @IP1@, @ETH0_MAC@, etc).
 dxb_render() {

@@ -203,3 +203,40 @@ test_config_static_ip_garbage_still_rejected() {
   assert_fails dxb_config_validate
   assert_contains "${DXB_CFG_ERRORS[*]}" "STATIC_IP must be an IPv4 address"
 }
+
+test_config_gps_defaults() {
+  cfg_from 'PASSWORD=examplepass'
+  assert_ok dxb_config_validate
+  assert_eq "${DXB_CFG[GPS_DEVICE]}" "auto"; assert_eq "${DXB_CFG[GPS_BAUD]}" "9600"; assert_eq "${DXB_CFG[GPS_PPS]}" ""
+  assert_eq "${DXB_CFG[_GPS]}" "1"; assert_eq "${DXB_CFG[_GPS_PATH]}" ""
+}
+
+test_config_gps_uart_and_pps() {
+  cfg_from 'PASSWORD=examplepass' 'GPS_DEVICE=uart' 'GPS_PPS=18'
+  assert_ok dxb_config_validate
+  assert_eq "${DXB_CFG[_GPS_PATH]}" "/dev/ttyAMA0"; assert_eq "${DXB_CFG[GPS_PPS]}" "18"
+}
+
+test_config_gps_none_and_explicit_path() {
+  cfg_from 'PASSWORD=examplepass' 'GPS_DEVICE=none'
+  assert_ok dxb_config_validate; assert_eq "${DXB_CFG[_GPS]}" "0"
+  cfg_from 'PASSWORD=examplepass' 'GPS_DEVICE=/dev/ttyUSB3' 'GPS_BAUD=4800'
+  assert_ok dxb_config_validate; assert_eq "${DXB_CFG[_GPS_PATH]}" "/dev/ttyUSB3"
+}
+
+test_config_gps_rejections() {
+  cfg_from 'PASSWORD=examplepass' 'GPS_DEVICE=uart' 'SERIAL_CONSOLE=on'
+  assert_fails dxb_config_validate; assert_contains "${DXB_CFG_ERRORS[*]}" "GPS_DEVICE uart needs SERIAL_CONSOLE=off"
+  cfg_from 'PASSWORD=examplepass' 'GPS_DEVICE=ttyUSB0'
+  assert_fails dxb_config_validate; assert_contains "${DXB_CFG_ERRORS[*]}" "GPS_DEVICE must be auto, none, uart or a /dev/tty path"
+  cfg_from 'PASSWORD=examplepass' 'GPS_BAUD=1234'
+  assert_fails dxb_config_validate; assert_contains "${DXB_CFG_ERRORS[*]}" "GPS_BAUD must be one of"
+  cfg_from 'PASSWORD=examplepass' 'GPS_PPS=40'
+  assert_fails dxb_config_validate; assert_contains "${DXB_CFG_ERRORS[*]}" "GPS_PPS must be a BCM GPIO number 0-27"
+}
+
+test_config_gps_keys_are_known_not_reserved() {
+  cfg_from 'PASSWORD=examplepass' 'GPS_FOO=1'
+  assert_ok dxb_config_validate
+  assert_contains "${DXB_CFG_WARNINGS[*]}" "GPS_FOO"
+}

@@ -60,6 +60,12 @@ main() {
   fi
   [[ ${DXB_CFG[SERIAL_CONSOLE]} == on ]] && w=1 || w=0
   dxb_set_kv "$dietpi_txt" CONFIG_SERIAL_CONSOLE_ENABLE "$w"
+  dxb_set_kv "$dietpi_txt" CONFIG_NTP_MODE 0
+  local cfgtxt="$boot/config.txt"
+  if [[ ${DXB_CFG[GPS_DEVICE]} == uart ]]; then
+    dxb_ensure_line "$cfgtxt" 'enable_uart=1'; dxb_ensure_line "$cfgtxt" 'dtoverlay=disable-bt'
+  fi
+  [[ -z ${DXB_CFG[GPS_PPS]} ]] || dxb_ensure_line "$cfgtxt" "dtoverlay=pps-gpio,gpiopin=${DXB_CFG[GPS_PPS]}"
   if (( DXB_CFG[_WIFI] )); then
     dxb_set_kv "$dietpi_txt" AUTO_SETUP_NET_WIFI_COUNTRY_CODE "${DXB_CFG[WIFI_COUNTRY]}"
     [[ ${DXB_CFG[WIFI_PASSWORD]} == "$DXB_APPLIED" ]] || dxb_net_write_wifi_txt "$dietpi_wifi" "${DXB_CFG[WIFI_SSID]}" "${DXB_CFG[WIFI_PASSWORD]}"

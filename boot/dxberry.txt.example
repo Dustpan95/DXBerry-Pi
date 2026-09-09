@@ -59,3 +59,11 @@ WEBUI_PASSWORD=
 # GRAYWOLF_VERSION=
 # on keeps the console on the GPIO UART; off (default) leaves the UART free for a GPS.
 # SERIAL_CONSOLE=off
+# GPS receiver. auto (default) = a USB GPS is picked up when plugged in; none = off;
+# uart = a GPS on GPIO pins 8/10 (needs SERIAL_CONSOLE=off, turns off onboard Bluetooth);
+# or a /dev/tty path.
+#GPS_DEVICE=auto
+# Baud rate for uart or an explicit path (USB receivers are auto-detected). Default 9600.
+#GPS_BAUD=9600
+# BCM GPIO number carrying a PPS pulse from the GPS, for sub-millisecond time. Blank = none.
+#GPS_PPS=

@@ -99,7 +99,7 @@ main() {
   for w in "${DXB_CFG_WARNINGS[@]}"; do echo "warning: $w" >&2; done
   if (( check )); then
     dxb_config_print_masked
-    echo "mode: ${DXB_CFG[_MODE]}  wifi: ${DXB_CFG[_WIFI]}  beacon: ${DXB_CFG[_BEACON]}  send: ${DXB_CFG[_SEND_PATH]}"
+    echo "mode: ${DXB_CFG[_MODE]}  wifi: ${DXB_CFG[_WIFI]}  beacon: ${DXB_CFG[_BEACON]}  send: ${DXB_CFG[_SEND_PATH]}  gps: ${DXB_CFG[GPS_DEVICE]}"
     return 0
   fi
   dxb_require_root
