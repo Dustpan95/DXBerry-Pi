@@ -30,7 +30,7 @@
 |---|---|
 | `provision/lib/config.sh` | + `GPS_DEVICE/GPS_BAUD/GPS_PPS` validation, bare `STATIC_IP` |
 | `provision/lib/common.sh` | + `dxb_ensure_line FILE LINE` |
-| `provision/bin/dxberry-preboot` | + `CONFIG_NTP_MODE=0`, config.txt UART/PPS lines |
+| `provision/bin/dxberry-preboot` | + config.txt UART/PPS lines (`CONFIG_NTP_MODE=0` moved to `provision_radio` after the final review, so DietPi's own time sync covers the first-boot downloads) |
 | `provision/bin/dxberry-netwatch` | `--status` shows the live address holder |
 | `provision/share/radio-profiles.tsv` | vid:pid → defaults (data) |
 | `provision/lib/radio.sh` | record load/save/validate, scan, add/set/remove, presence, apply, claim/release, `provision_radio` |

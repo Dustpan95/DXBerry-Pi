@@ -265,11 +265,11 @@ stdout as success. Exit codes:
   re-wires it.
 - `remove NAME` — releases first (stops the owner's use of it), deletes the
   record, runs `apply`.
-- `apply [--hotplug]` — regenerates derived state (§7), starts or stops
+- `apply` — regenerates derived state (§7), starts or stops
   `rigctld@` instances by presence, refreshes the runtime mirror, and
   re-runs the current owner's wiring for present radios when the wiring
-  inputs changed. `--hotplug` is the same with quieter logging and no udev
-  reload (udev is what called it).
+  inputs changed. The `hotplug` subcommand is the same with quieter logging
+  and no udev reload (udev is what called it).
 - `claim NAME APP` — hand-over (§9).
 - `release NAME` — unwire, stop the application if it owns nothing else,
   clear `owner`.
