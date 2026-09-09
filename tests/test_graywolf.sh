@@ -67,6 +67,7 @@ fake_curl() {
     "GET /beacons/7")     echo "$GW_BEACON_CONFIG" ;;
     "GET /channels")      echo "${GW_CHANNELS:-[]}" ;;
     "GET /digipeater/rules") echo '[]' ;;
+    "PUT /gps")           echo '{}' ;;
     *)                    echo '{}' ;;
   esac
 }
@@ -307,6 +308,26 @@ test_login_prompt_reaches_the_operator() {
   line=$(grep -n 'read -rst' "$DXB_LIB/graywolf.sh")
   assert_contains "$line" 'Graywolf password for'
   assert_not_contains "$line" '2> /dev/null'
+}
+
+test_gw_seed_gps_uses_gpsd_when_enabled_once() {
+  gw_env
+  printf 'PASSWORD=examplepass\nWEBUI_PASSWORD=hunter2hunter2\n' > "$TEST_TMP/dxberry.txt"
+  dxb_config_load "$TEST_TMP/dxberry.txt"; dxb_config_validate
+  dxb_gw_seed 0 > /dev/null
+  assert_contains "$(cat "$TEST_TMP/calls")" 'PUT /gps {"enabled":true,"source_type":"gpsd","gpsd_host":"localhost","gpsd_port":2947}'
+  : > "$TEST_TMP/calls"; GW_NEEDS_SETUP=false
+  dxb_gw_seed 0 > /dev/null
+  assert_not_contains "$(cat "$TEST_TMP/calls")" 'PUT /gps'
+  dxb_gw_seed 1 > /dev/null
+  assert_contains "$(cat "$TEST_TMP/calls")" 'PUT /gps'
+}
+test_gw_seed_gps_skipped_when_none() {
+  gw_env
+  printf 'PASSWORD=examplepass\nWEBUI_PASSWORD=hunter2hunter2\nGPS_DEVICE=none\n' > "$TEST_TMP/dxberry.txt"
+  dxb_config_load "$TEST_TMP/dxberry.txt"; dxb_config_validate
+  dxb_gw_seed 0 > /dev/null
+  assert_not_contains "$(cat "$TEST_TMP/calls")" '/gps'
 }
 
 test_seed_login_prompt_without_terminal_fails_distinctly() {

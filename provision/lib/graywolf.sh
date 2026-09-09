@@ -118,6 +118,7 @@ dxb_gw_payload_beacon() {
     '{type: "position", latitude: ($lat | tonumber), longitude: ($lon | tonumber), comment: $c, interval: $i, send_path: $sp, path: $p, symbol_table: $st, symbol: $sy, enabled: true} + (if $ch == "" then {} else {channel: ($ch | tonumber)} end)'
 }
 dxb_gw_payload_digi() { jq -cn --arg c "${DXB_CFG[CALLSIGN]}" '{enabled: true, my_call: $c, dedupe_window_seconds: 30}'; }
+dxb_gw_payload_gps() { jq -cn '{enabled: true, source_type: "gpsd", gpsd_host: "localhost", gpsd_port: 2947}'; }
 # dxb_gw_payload_rule CHANNEL ALIAS TYPE MAX_HOPS PRIORITY
 dxb_gw_payload_rule() {
   jq -cn --argjson ch "$1" --arg a "$2" --arg t "$3" --argjson h "$4" --argjson p "$5" \
@@ -189,6 +190,13 @@ dxb_gw_seed_beacon() {
   fi
 }
 
+# Seeds Graywolf's position source from gpsd when a GPS is configured. Once per box; --reseed repeats it.
+dxb_gw_seed_gps() {
+  (( DXB_CFG[_GPS] )) || return 0
+  dxb_gw_api PUT /gps "$(dxb_gw_payload_gps)" > /dev/null || { dxb_step_failed graywolf "GPS source update failed"; return 1; }
+  dxb_status_add "graywolf: position from gpsd (GPS_DEVICE=${DXB_CFG[GPS_DEVICE]})"
+}
+
 dxb_gw_seed_digi() {
   local ch hops
   dxb_gw_api PUT /digipeater "$(dxb_gw_payload_digi)" > /dev/null || dxb_step_failed graywolf "digipeater config update failed"
@@ -231,6 +239,7 @@ dxb_gw_seed() {
     return 0
   fi
   dxb_gw_login || return 1
+  dxb_gw_seed_gps
   if [[ -n ${DXB_CFG[CALLSIGN]:-} ]]; then
     dxb_gw_api PUT /station/config "$(dxb_gw_payload_station)" > /dev/null || dxb_step_failed graywolf "station callsign update failed"
     dxb_gw_seed_igate
