@@ -208,3 +208,82 @@ dxb_radio_remove() {
 }
 
 _dxb_radio_set_owner() { dxb_radio_save "$(jq -c --arg n "$1" --arg a "$2" '.radios[$n].owner = $a' <<< "$DXB_RADIOS")"; }
+
+# ---- presence and runtime state ------------------------------------------------------------
+_dxb_radio_kernel_for() { jq -r --arg p "$1" --arg k "$2" '[.[].functions[] | select(.path == $p and .kind == $k)] | .[0].kernel // empty' <<< "$DXB_RADIO_SCAN"; }
+
+# dxb_radio_kernel_names NAME: {"audio":"card1","cat":"ttyUSB0","hid":null,"ptt_serial":null} for this boot.
+dxb_radio_kernel_names() {
+  local r k kind path out='{}'
+  r=$(dxb_radio_get "$1") || return 3
+  for k in audio cat hid ptt_serial; do
+    case $k in audio) kind=audio ;; hid) kind=hid ;; *) kind=serial ;; esac
+    path=$(jq -r --arg k "$k" '.[$k].path // empty' <<< "$r")
+    if [[ -n $path ]]; then
+      out=$(jq -c --arg k "$k" --arg v "$(_dxb_radio_kernel_for "$path" "$kind")" '.[$k] = (if $v == "" then null else $v end)' <<< "$out")
+    else
+      out=$(jq -c --arg k "$k" '.[$k] = null' <<< "$out")
+    fi
+  done
+  printf '%s\n' "$out"
+}
+
+# dxb_radio_present NAME: 0 when every pinned function was found in the current scan, else 4.
+dxb_radio_present() {
+  local r names
+  r=$(dxb_radio_get "$1") || return 3
+  names=$(dxb_radio_kernel_names "$1")
+  jq -e --argjson n "$names" '[["audio","cat","hid","ptt_serial"][] as $k | select(.[$k] != null) | $n[$k]] | all(. != null)' <<< "$r" > /dev/null || return 4
+}
+
+dxb_radio_wire_hash() { jq -c '{audio, cat, hid, ptt_serial, ptt, rig, rigctld_port, wiring}' <<< "$1" | sha256sum | cut -c1-16; }
+
+# dxb_radio_write_state: the runtime mirror the console and status read.
+dxb_radio_write_state() {
+  local n out='{}' present names content
+  for n in $(dxb_radio_names); do
+    if dxb_radio_present "$n"; then present=true; else present=false; fi
+    names=$(dxb_radio_kernel_names "$n")
+    out=$(jq -c --arg n "$n" --argjson p "$present" --argjson k "$names" --arg s "$(dxb_rigctld_state "$n")" \
+      --arg h "$(dxb_radio_wire_hash "$(dxb_radio_get "$n")")" --arg w "$(jq -r --arg n "$n" '.radios[$n].wired_hash // ""' "$DXB_RADIOS_STATE" 2> /dev/null)" \
+      '.[$n] = {present: $p, kernel: $k, rigctld: $s, wire_hash: $h, wired_hash: $w}' <<< "$out")
+  done
+  mkdir -p "$(dirname "$DXB_RADIOS_STATE")" 2> /dev/null
+  content=$(jq -c --argjson r "$out" '{generated: (now | todate), radios: $r}' <<< '{}')
+  dxb_write_if_changed "$DXB_RADIOS_STATE" "$content" 644
+  [[ -f $DXB_RADIOS_STATE && $(< "$DXB_RADIOS_STATE") == "$content" ]] || { dxb_error "could not write $DXB_RADIOS_STATE"; return 6; }
+  return 0
+}
+_dxb_radio_mark_wired() { # NAME HASH: remember that the owner was wired with these inputs
+  local j; j=$(jq -c --arg n "$1" --arg h "$2" '.radios[$n].wired_hash = $h' "$DXB_RADIOS_STATE" 2> /dev/null) || return 0
+  printf '%s\n' "$j" > "$DXB_RADIOS_STATE"
+}
+
+# dxb_radio_apply [hotplug]: derive everything from the record. 0 ok, 6 derived-state error, 7 re-wire error.
+dxb_radio_apply() {
+  local mode=${1:-full} n r present rc=0 wrc h wired owner
+  dxb_radio_load || return 6
+  dxb_radio_scan_cache
+  if [[ $mode != hotplug ]]; then
+    dxb_radio_udev_write "$DXB_RADIOS"; wrc=$?; (( wrc == 6 )) && rc=6
+    dxb_radio_modprobe_install > /dev/null; (( $? == 6 )) && rc=6
+  fi
+  for n in $(dxb_radio_names); do
+    r=$(dxb_radio_get "$n")
+    if dxb_radio_present "$n"; then present=1; else present=0; dxb_info "radio $n: device absent"; fi
+    dxb_rigctld_sync "$n" "$r" "$present" || rc=6
+  done
+  # shellcheck disable=SC2046
+  dxb_rigctld_stop_all_except $(dxb_radio_names)
+  dxb_radio_write_state || rc=6
+  for n in $(dxb_radio_names); do
+    r=$(dxb_radio_get "$n"); owner=$(jq -r '.owner' <<< "$r")
+    if [[ -z $owner ]] || ! dxb_radio_present "$n"; then continue; fi
+    h=$(dxb_radio_wire_hash "$r"); wired=$(jq -r --arg n "$n" '.radios[$n].wired_hash // ""' "$DXB_RADIOS_STATE")
+    [[ $h == "$wired" ]] && continue
+    if declare -F dxb_app_rewire > /dev/null; then
+      if dxb_app_rewire "$n"; then _dxb_radio_mark_wired "$n" "$h"; else dxb_error "radio $n: re-wiring owner $owner failed"; (( rc == 0 )) && rc=7; fi
+    fi
+  done
+  return $rc
+}

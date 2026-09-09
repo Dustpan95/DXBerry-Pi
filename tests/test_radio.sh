@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC1091,SC2034
+# shellcheck disable=SC1091,SC2034,SC2317
 source "$DXB_LIB/common.sh"
 source "$DXB_LIB/config.sh"
 source "$DXB_LIB/radio.sh"
+source "$DXB_LIB/radio_udev.sh"
+source "$DXB_LIB/rigctld.sh"
 source "$DXB_ROOT/tests/fixtures/sysfs.sh"
 
 radio_env() {
   export DXB_STATE_DIR=$TEST_TMP/state DXB_LOG_FILE=$TEST_TMP/state/log DXB_SYSFS_ROOT=$TEST_TMP/sys \
-    DXB_RADIO_PROFILES=$DXB_ROOT/provision/share/radio-profiles.tsv DXB_RADIOS_FILE=$TEST_TMP/state/radios.json
-  mkdir -p "$DXB_STATE_DIR"
+    DXB_RADIO_PROFILES=$DXB_ROOT/provision/share/radio-profiles.tsv DXB_RADIOS_FILE=$TEST_TMP/state/radios.json \
+    DXB_UDEV_RULES_FILE=$TEST_TMP/etc/70.rules DXB_MODPROBE_FILE=$TEST_TMP/etc/dxberry-audio.conf DXB_UDEVADM=fake_udevadm \
+    DXB_RIGCTLD_RUN_DIR=$TEST_TMP/run/rigctld DXB_SYSTEMD_DIR=$TEST_TMP/systemd DXB_TMPFILES_DIR=$TEST_TMP/tmpfiles \
+    DXB_RADIOS_STATE=$TEST_TMP/run/radios-state.json
+  mkdir -p "$DXB_STATE_DIR" "$TEST_TMP/etc"
+  : > "$TEST_TMP/calls"; : > "$TEST_TMP/active"
+  systemctl() { fx_systemctl "$@"; }
+  fake_udevadm() { echo "udevadm $*" >> "$TEST_TMP/calls"; }
+  systemd-tmpfiles() { echo "systemd-tmpfiles $*" >> "$TEST_TMP/calls"; }
   DXB_STATUS_LINES=(); DXB_FAILED_STEPS=()
 }
 
@@ -156,4 +165,64 @@ test_add_drops_serial_ptt_type_without_a_serial_pin() {
   assert_eq "$(jq -r '.rig.ptt_type' <<< "$(dxb_radio_get d)")" "NONE"
   assert_ok dxb_radio_add e '{"audio":"1","ptt_serial":"2","ptt_type":"RTS"}'
   assert_eq "$(jq -r '.rig.ptt_type' <<< "$(dxb_radio_get e)")" "RTS"
+}
+
+test_presence_follows_scan() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
+  dxb_radio_add radio1 '{"audio":"1","cat":"2"}' > /dev/null
+  assert_ok dxb_radio_present radio1
+  assert_eq "$(jq -c . <<< "$(dxb_radio_kernel_names radio1)")" '{"audio":"card1","cat":"ttyUSB0","hid":"hidraw1","ptt_serial":null}'
+  rm -rf "$DXB_SYSFS_ROOT"; fx_scene "$DXB_SYSFS_ROOT" none; dxb_radio_scan_cache
+  dxb_radio_present radio1; assert_eq "$?" "4"
+}
+
+test_apply_writes_rules_syncs_rigctld_and_state() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
+  dxb_radio_add radio1 '{"audio":"1","cat":"2"}' > /dev/null
+  assert_ok dxb_radio_apply
+  assert_file_contains "$DXB_UDEV_RULES_FILE" 'ATTR{id}="RADIO1"'
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start rigctld@radio1"
+  assert_eq "$(jq -r '.radios.radio1.present' "$DXB_RADIOS_STATE")" "true"
+  assert_eq "$(jq -r '.radios.radio1.rigctld' "$DXB_RADIOS_STATE")" "active"
+  assert_eq "$(jq -r '.radios.radio1.kernel.audio' "$DXB_RADIOS_STATE")" "card1"
+  : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_apply
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "udevadm"     # unchanged: no reload
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "start"
+}
+
+test_apply_hotplug_stops_absent_and_skips_udev() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
+  dxb_radio_add radio1 '{"audio":"1","cat":"2"}' > /dev/null; dxb_radio_apply > /dev/null
+  rm -rf "$DXB_SYSFS_ROOT"; fx_scene "$DXB_SYSFS_ROOT" none; rm -f "$DXB_UDEV_RULES_FILE"; : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_apply hotplug
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop rigctld@radio1"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "udevadm"
+  [[ -f $DXB_UDEV_RULES_FILE ]] && _fail "hotplug must not regenerate udev rules"
+  assert_eq "$(jq -r '.radios.radio1.present' "$DXB_RADIOS_STATE")" "false"
+}
+
+test_apply_rewires_owner_when_inputs_change() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
+  dxb_radio_add radio1 '{"audio":"1","cat":"2"}' > /dev/null
+  REWIRED=''; dxb_app_rewire() { REWIRED+="$1;"; return 0; }
+  dxb_radio_apply > /dev/null; assert_eq "$REWIRED" ""            # no owner: nothing to rewire
+  _dxb_radio_set_owner radio1 fakeapp > /dev/null
+  dxb_radio_apply > /dev/null; assert_eq "$REWIRED" "radio1;"    # owner set, hash new
+  dxb_radio_apply > /dev/null; assert_eq "$REWIRED" "radio1;"    # unchanged: not again
+  dxb_radio_set radio1 '{"baud":9600}' > /dev/null
+  dxb_radio_apply > /dev/null; assert_eq "$REWIRED" "radio1;radio1;"
+  dxb_app_rewire() { return 7; }
+  dxb_radio_set radio1 '{"baud":4800}' > /dev/null
+  dxb_radio_apply > /dev/null; assert_eq "$?" "7"
+  source "$DXB_LIB/radio.sh"     # restore the real dxb_app_rewire (Task 8) for later tests in this process
+}
+
+test_apply_removes_stale_rigctld() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
+  dxb_radio_add radio1 '{"audio":"1","cat":"2"}' > /dev/null; dxb_radio_apply > /dev/null
+  dxb_radio_remove radio1 > /dev/null; : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_apply
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop rigctld@radio1"
+  assert_eq "$(jq -c '.radios' "$DXB_RADIOS_STATE")" "{}"
 }
