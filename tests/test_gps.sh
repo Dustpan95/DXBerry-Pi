@@ -76,3 +76,16 @@ EOF
   assert_eq "$(dxb_gps_fix)" '{"fix":0}'
   assert_eq "$(dxb_gps_status_line)" "gps: no fix"
 }
+
+test_gps_configure_writes_nothing_when_chrony_template_missing() {
+  gps_env; gps_cfg 'GPS_DEVICE=uart'
+  local saved_templates=$DXB_TEMPLATES
+  DXB_TEMPLATES=$TEST_TMP/templates
+  mkdir -p "$DXB_TEMPLATES"
+  cp "$saved_templates/gpsd-default.tmpl" "$DXB_TEMPLATES/"
+  assert_fails dxb_gps_configure
+  assert_contains "${DXB_FAILED_STEPS[*]}" "chrony"
+  [[ -f $DXB_GPSD_DEFAULT ]] && _fail "gpsd default should not have been written when the chrony template is missing"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl"
+  DXB_TEMPLATES=$saved_templates
+}

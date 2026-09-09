@@ -23,14 +23,18 @@ dxb_gps_chrony_conf() {
 }
 
 # Writes gpsd and chrony configuration and (re)starts what changed. 0 ok, 1 a failed step was recorded.
+# Every template is rendered (and checked) before either file is written, so a missing/broken
+# template never leaves one file changed on disk while the other step never ran.
 dxb_gps_configure() {
-  local content changed=0 rc=0
-  mkdir -p "$(dirname "$DXB_GPSD_DEFAULT")" "$(dirname "$DXB_CHRONY_DROPIN")" 2> /dev/null
-  content=$(dxb_gps_gpsd_default) || { dxb_step_failed gps "gpsd template missing"; return 1; }
-  if dxb_write_if_changed "$DXB_GPSD_DEFAULT" "$content" 644; then changed=1; fi
+  local gpsd_content chrony_content='' changed=0 rc=0
+  gpsd_content=$(dxb_gps_gpsd_default) || { dxb_step_failed gps "gpsd template missing"; return 1; }
   if (( DXB_CFG[_GPS] )); then
-    content=$(dxb_gps_chrony_conf) || { dxb_step_failed gps "chrony template missing"; return 1; }
-    if dxb_write_if_changed "$DXB_CHRONY_DROPIN" "$content" 644; then changed=1; fi
+    chrony_content=$(dxb_gps_chrony_conf) || { dxb_step_failed gps "chrony template missing"; return 1; }
+  fi
+  mkdir -p "$(dirname "$DXB_GPSD_DEFAULT")" "$(dirname "$DXB_CHRONY_DROPIN")" 2> /dev/null
+  if dxb_write_if_changed "$DXB_GPSD_DEFAULT" "$gpsd_content" 644; then changed=1; fi
+  if (( DXB_CFG[_GPS] )); then
+    if dxb_write_if_changed "$DXB_CHRONY_DROPIN" "$chrony_content" 644; then changed=1; fi
     systemctl enable gpsd.socket > /dev/null 2>&1 || { dxb_step_failed gps "could not enable gpsd.socket"; rc=1; }
     if (( changed )); then
       systemctl restart gpsd > /dev/null 2>&1 || { dxb_step_failed gps "could not restart gpsd"; rc=1; }
