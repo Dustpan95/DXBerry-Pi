@@ -1,0 +1,12 @@
+[Unit]
+Description=DXBerry-Pi radio hotplug: refresh stable names, rigctld instances and runtime state
+Documentation=file:///opt/dxberry/bin/dxberry-radio
+After=local-fs.target systemd-udevd.service
+Before=graywolf.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/dxberry/bin/dxberry-radio hotplug
+
+[Install]
+WantedBy=multi-user.target

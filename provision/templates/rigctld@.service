@@ -1,0 +1,12 @@
+[Unit]
+Description=Hamlib rigctld for radio %i (DXBerry-Pi)
+Documentation=file:///opt/dxberry/bin/dxberry-radio
+After=dxberry-radio-hotplug.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+EnvironmentFile=/run/dxberry/rigctld/%i.env
+ExecStart=/usr/bin/rigctld -m $MODEL -T 127.0.0.1 -t $PORT $RIG_ARGS $PTT_ARGS
+Restart=on-failure
+RestartSec=5
