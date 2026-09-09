@@ -465,7 +465,7 @@ test_scan_digirig_two_candidates() {
 }
 
 test_scan_ic7300_one_candidate_two_serials() {
-  radio_env; fx_scene "$DXB_SYSFS_ROOT" ic7300
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" ic705
   local j; j=$(dxb_radio_scan)
   assert_eq "$(jq 'length' <<< "$j")" "1"
   assert_eq "$(jq -r '.[0].functions | map(.kind) | join(",")' <<< "$j")" "audio,serial,serial"
@@ -640,8 +640,8 @@ test_add_digirig_pins_functions_and_profile_defaults() {
   assert_eq "$(jq -r '.radios.radio1.label' "$DXB_RADIOS_FILE")" "TM-V71"
 }
 
-test_add_ic7300_second_serial_and_overrides() {
-  radio_env; fx_scene "$DXB_SYSFS_ROOT" ic7300; dxb_radio_scan_cache; dxb_radio_load
+test_add_ic705_second_serial_and_overrides() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" ic705; dxb_radio_scan_cache; dxb_radio_load
   assert_ok dxb_radio_add hf '{"audio":"1","cat":"1:2","model":3073,"baud":19200,"wiring":"names"}'
   local r; r=$(dxb_radio_get hf)
   assert_eq "$(jq -r '.cat.path' <<< "$r")" "usb-0:1.2:1.4"
