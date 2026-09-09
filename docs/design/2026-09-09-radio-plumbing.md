@@ -143,10 +143,12 @@ tests), `idVendor`, `idProduct`, `product`, `manufacturer`, `serial` (may be
 empty), and the kernel name (`card1`, `ttyUSB0`, `hidraw2`).
 
 Functions are grouped into candidates by their USB *device* port (the part
-before the interface number). A DigiRig is one candidate with an audio
-function, a serial function, and a HID function. An IC-7300 is one candidate
-with one audio and two serial functions. A SignaLink plus a separate CAT cable
-are two candidates.
+before the interface number). A DigiRig Mobile appears as two candidates: its
+CM108 codec and its CP2102 CAT/PTT port are sibling USB devices behind the
+DigiRig's internal hub, not functions of one device, so the operator pins them
+separately (`--audio N --cat M`). An IC-7300 is one candidate with one audio
+and two serial functions. A SignaLink plus a separate CAT cable are two
+candidates.
 
 Onboard audio (`vc4-hdmi*`, `bcm2835*`, anything not under a USB device) is
 never a candidate.
@@ -157,11 +159,13 @@ never a candidate.
 
 ```
 # vid:pid	name	ptt	ptt_type	cat	model	baud	notes
-0d8c:013c	DigiRig Mobile	rigctld	RTS	same	1	57600	CM108 codec + CP2102; CAT and RTS PTT on one port
-0d8c:0012	DigiRig Lite	digirig_tone	NONE	none	1	0	tone-keyed, no serial
-1209:7388	AIOC	cm108	NONE	none	1	0	all-in-one cable, HID PTT
-08bb:29b6	SignaLink USB	vox	NONE	none	1	0	Texas Instruments PCM2906
-0c26:0036	Icom USB codec	rigctld	RIG	same	3073	115200	IC-7300 default model/baud
+0d8c:013c	DigiRig Mobile	rigctld	RTS	separate	1	57600	CM108 codec; the CP2102 CAT/PTT port is a sibling USB device. Source: digirig.net product page and Digirig support forum lsusb reports (0d8c:013c, C-Media Electronics)
+0d8c:0012	DigiRig Lite	digirig_tone	NONE	none	1	0	tone keyed on the right channel; CM108B codec, same C-Media vendor id as the Mobile. Source: digirig.net Digirig Lite page
+1209:7388	AIOC	cm108	NONE	none	1	0	all-in-one cable, HID PTT. Source: pid.codes registry https://pid.codes/1209/7388/ (skuep/AIOC project)
+08bb:29b6	SignaLink USB	vox	NONE	none	1	0	TI PCM2906C codec. Source: SignaLink USB support docs and reported lsusb output identifying the device as a Texas Instruments PCM2906C
+0c26:0036	Icom IC-705	rigctld	RIG	same	3085	115200	IC-705 CI-V/audio USB interface (Prolific-chipset bridge under Icom's registered 0c26 vendor id). Source: Raspberry Pi forum thread lsusb capture ("ID 0c26:0036 Prolific Technology Inc. IC-705") and DeviceHunt vendor 0C26 listing; hamlib model 3085 = RIG_MODEL_IC705 per Hamlib's supported-radios list
+10c4:ea60	CP2102 serial	rigctld	RTS	same	1	57600	serial-only candidate (CAT cable or DigiRig port); Silicon Labs factory-default CP210x id. Source: linux kernel cp210x driver USB_DEVICE table and usb-ids.gowdy.us/read/UD/10c4/ea60
+0403:6001	FTDI serial	rigctld	RIG	same	1	38400	serial-only candidate; FTDI factory-default FT232R id. Source: FTDI Technical Note TN_100 (USB VID/PID Guidelines)
 ```
 
 Columns: `ptt` is the default PTT method (§6.1); `ptt_type` is what rigctld
@@ -169,11 +173,11 @@ keys with (`RIG` = CAT command, `RTS`/`DTR` = serial line, `NONE`); `cat` is
 `same` (the CAT serial port is on this candidate), `none`, or `separate`
 (expect a second candidate); `model` is the hamlib model number (1 = dummy);
 `baud` 0 means "not applicable". Entries are matched on `vid:pid` of the audio function
-first, then the serial function. The table above is illustrative; the
-implementation task verifies every id against the vendor's documentation or
-`lsusb` output before committing it and marks unverified rows with a note.
-Unknown hardware gets profile `generic` (`ptt=rigctld` when a serial port is
-present, else `vox`; `model=1`).
+first, then the serial function. The table above matches
+`provision/share/radio-profiles.tsv` as committed; every id was verified
+against the vendor's documentation or `lsusb` output before committing it
+(sources noted in the file). Unknown hardware gets profile `generic`
+(`ptt=rigctld` when a serial port is present, else `vox`; `model=1`).
 
 ### 5.3 Radio names
 
@@ -286,8 +290,7 @@ TAG=="dxberry-radio", ACTION=="add|remove", RUN+="/bin/systemctl --no-block star
 ```
 
 `ID_PATH` is matched with a leading wildcard because its prefix names the
-host controller (`platform-fd500000.pcie-pci-0000:01:00.0-`), which the
-scanner records once in the runtime mirror for display but does not key on.
+host controller (`platform-fd500000.pcie-pci-0000:01:00.0-`).
 A separate `-ptt` symlink is generated only when `rig.ptt_type` is RTS/DTR
 and the PTT serial function differs from the CAT function (rare; the record
 allows a `ptt_serial` pin for it).
@@ -450,8 +453,7 @@ rigctld is never touched by a hand-over; it belongs to the radio.
    /dev/gpiochip0`, `gpio_line`; `vox`/`digirig_tone`/`none` → `method`
    only. Timing fields (`dwait_ms`, `slot_time_ms`) are never sent on update
    so operator tuning survives.
-4. Verify with `GET /channels/{id}` and `GET /ptt/{id}` and log the result.
-   `POST /ptt/test-rigctld {host, port}` is used once after wiring to log
+4. `POST /ptt/test-rigctld {host, port}` is used once after wiring to log
    whether Graywolf can reach the instance; a failure is a warning, not a
    failed wire, because rigctld may be mid-restart.
 
@@ -461,6 +463,12 @@ rigctld is never touched by a hand-over; it belongs to the radio.
 device immediately. Beacons and iGate settings are untouched; a beacon bound
 to the deleted channel is re-bound by Graywolf's cascade rules, which the
 implementation task checks and records.
+
+Credentials: the Graywolf admin username and password are kept root-only in
+`/var/lib/dxberry/graywolf.secret` (0600), written by the first-boot seed and
+by any later successful login, so `dxberry-radio claim` and the console can
+log in after `dxberry.txt` has been scrubbed. `dxb_gw_login_any` tries that
+file, then `WEBUI_PASSWORD` from `dxberry.txt`, then a terminal prompt.
 
 ## 10. Provisioning integration
 
@@ -526,8 +534,7 @@ Verified while writing this design (sources in the SDD ledger):
 To verify on hardware (acceptance task):
 
 5. `ATTR{id}` rename and `snd slots=` ordering on the Trixie kernel.
-6. `ID_PATH` values for the Pi 4's USB controller and a hub; the wildcard
-   match in §7.1.
+6. Verify the `*-usb-…` wildcard matches on the Pi 4.
 7. rigctld dummy-model PTT via RTS on a DigiRig keys a real radio.
 8. Graywolf decodes through `plughw:CARD=RADIO1,DEV=0` and keys through the
    rigctld PTT method with acceptable latency.
@@ -536,6 +543,8 @@ To verify on hardware (acceptance task):
 10. USB GPS hotplug → gpsd → chrony `sources` shows GPS; `dxberry-radio gps`
     shows a fix; Graywolf beacons the live position.
 11. Unplug/replug of a radio restores names and rigctld without a reboot.
+12. DigiRig internal-hub topology as seen on the Pi 4 (§5.1: codec and
+    CP2102 as two sibling USB devices, not two functions of one).
 
 ## 13. Testing
 

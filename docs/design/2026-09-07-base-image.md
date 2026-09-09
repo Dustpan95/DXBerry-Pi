@@ -128,7 +128,7 @@ CRLF line endings are accepted (Windows editors).
 | `HOSTNAME` | no | `dxberry-pi` | RFC 1123 label: lowercase letters, digits, hyphens, 1–63 chars |
 | `PASSWORD` | yes | — | login password for `root` and `dietpi`; 8–100 chars |
 | `TIMEZONE` | no | `UTC` | must exist under `/usr/share/zoneinfo` |
-| `STATIC_IP` | no | blank = DHCP | CIDR, e.g. `192.168.1.90/24`; applies to both interfaces |
+| `STATIC_IP` | no | blank = DHCP | CIDR or a bare address (bare = /24), e.g. `192.168.1.90/24` or `192.168.1.90`; applies to both interfaces |
 | `GATEWAY` | if `STATIC_IP` | — | IPv4 within `STATIC_IP`'s subnet |
 | `DNS` | no | `GATEWAY` | one or more IPv4 addresses, space-separated |
 | `WIFI_SSID` | no | blank = Ethernet only | 1–32 chars |
@@ -158,9 +158,10 @@ Advanced seeds (blank = default):
 | `SERIAL_CONSOLE` | `off` | `on`/`off`; off leaves the GPIO UART free for GPS hardware |
 
 Reserved for later sub-projects: keys prefixed `PAT_`, `WSJTX_`, `JS8CALL_`,
-`FLDIGI_`, `RIG_`, `GPS_`, `CONSOLE_`. The parser accepts and ignores them
-today so a config written for a later image version does not error on an
-older one.
+`FLDIGI_`, `RIG_`, `CONSOLE_`. The parser accepts and ignores them today so a
+config written for a later image version does not error on an older one.
+`GPS_` is no longer reserved: sub-project 2 (`docs/design/2026-09-09-radio-plumbing.md`)
+implements `GPS_DEVICE`, `GPS_BAUD` and `GPS_PPS` as known keys.
 
 Radio hardware (audio device, PTT method and device path) is intentionally not
 in this file. It varies per rig, and Graywolf's "Detect Devices" UI handles it
@@ -575,6 +576,9 @@ about a minute and needs no QEMU.
   is reachable by anyone else: seeding happens on the first boot, before the
   user is told the Pi is ready.
 - No telemetry: DietPi survey opted out.
+- Sub-project 2 keeps the Graywolf admin credentials root-only on the Pi in
+  `/var/lib/dxberry/graywolf.secret` (0600) so later tools can log in without
+  prompting; the FAT-partition scrub rules above are unchanged.
 
 ## 14. Testing and acceptance
 

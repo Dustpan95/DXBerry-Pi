@@ -63,9 +63,14 @@ REQUIRED_FILES=(
   provision/lib/storage.sh provision/lib/graywolf.sh provision/lib/scrub.sh
   provision/templates/interfaces-eth0.tmpl provision/templates/interfaces-wlan0.tmpl
   provision/templates/journald-dxberry.conf provision/templates/dxberry-netwatch.service
+  provision/bin/dxberry-radio provision/lib/radio.sh provision/lib/radio_udev.sh provision/lib/rigctld.sh
+  provision/lib/gps.sh provision/lib/apps/graywolf.sh provision/share/radio-profiles.tsv
+  provision/templates/rigctld@.service provision/templates/dxberry-radio-hotplug.service
+  provision/templates/dxberry-radio.tmpfiles provision/templates/70-dxberry-radio.rules.head
+  provision/templates/dxberry-audio.conf provision/templates/chrony-dxberry.conf provision/templates/gpsd-default.tmpl
 )
 EXECUTABLE_FILES=(
-  provision/bin/dxberry-preboot provision/bin/dxberry-provision provision/bin/dxberry-netwatch
+  provision/bin/dxberry-preboot provision/bin/dxberry-provision provision/bin/dxberry-netwatch provision/bin/dxberry-radio
   boot/Automation_Custom_PreScript.sh boot/Automation_Custom_Script.sh
 )
 
@@ -83,7 +88,7 @@ check_tree() {
       ok=0
     fi
   done
-  for f in "$ROOT"/provision/bin/* "$ROOT"/provision/lib/*.sh "$ROOT"/boot/*.sh; do
+  for f in "$ROOT"/provision/bin/* "$ROOT"/provision/lib/*.sh "$ROOT"/provision/lib/apps/*.sh "$ROOT"/boot/*.sh; do
     if [[ -f $f ]] && ! bash -n "$f"; then
       echo "syntax error in ${f#"$ROOT"/}" >&2
       ok=0

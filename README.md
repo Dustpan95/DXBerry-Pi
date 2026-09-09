@@ -57,6 +57,23 @@ Logs and the journal live in RAM, swap is on zram, and Graywolf prunes its own p
 operation is gentle on SD cards and USB drives. Real state (Graywolf configuration, mail, logs you keep) is
 on disk.
 
+## Radio plumbing
+
+`sudo dxberry-radio scan` lists the USB sound cards, serial ports and HID PTT interfaces currently
+plugged in. `sudo dxberry-radio add radio1 --audio N --cat N` pins one as `radio1`, giving it a stable
+name (`hw:RADIO1`, `/dev/dxberry/radio1-cat`) that survives replugging into a different USB port.
+`sudo dxberry-radio claim radio1 graywolf` hands it to Graywolf, wiring an audio device, channel and PTT
+through Graywolf's API; `release` takes it back. A radio has exactly one owning application at a time,
+handed over automatically (the previous owner is unwired first); rigctld runs for every pinned radio
+regardless of ownership, since CAT control is not exclusive. `sudo dxberry-radio status` shows what is
+present and who owns it.
+
+GPS is configured through `dxberry.txt`: `GPS_DEVICE` (`auto`, `none`, or a `/dev/tty...` path),
+`GPS_BAUD`, and `GPS_PPS` (a BCM GPIO number for a 1PPS signal). gpsd feeds both chrony (system time)
+and Graywolf (beacon position); `sudo dxberry-radio gps` prints the current fix.
+
+See `docs/design/2026-09-09-radio-plumbing.md` for the full design.
+
 ## Building the image yourself
 
 ```

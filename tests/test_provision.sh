@@ -2,6 +2,11 @@
 # shellcheck disable=SC1091
 source "$DXB_LIB/common.sh"
 source "$DXB_LIB/config.sh"
+source "$DXB_LIB/radio.sh"
+source "$DXB_LIB/radio_udev.sh"
+source "$DXB_LIB/rigctld.sh"
+source "$DXB_LIB/gps.sh"
+source "$DXB_ROOT/tests/fixtures/sysfs.sh"
 
 test_example_config_validates_with_password_only() {
   export DXB_ZONEINFO_DIR=$TEST_TMP/nozone
@@ -58,8 +63,15 @@ full_env() {
     DXB_IFACES_DIR=$TEST_TMP/ifaces DXB_RESOLV_CONF=$TEST_TMP/resolv.conf DXB_SYSTEMD_DIR=$TEST_TMP/systemd \
     DXB_DIETPI_WIFIDB=$TEST_TMP/wifidb DXB_DIETPI_WIFI=$TEST_TMP/dietpi-wifi.txt \
     DXB_DIETPI_SET_HW=$TEST_TMP/set_hw DXB_SYS_NET=$TEST_TMP/sys DXB_INTERFACES_FILE=$TEST_TMP/interfaces \
-    DXB_JOURNALD_DROPIN=$TEST_TMP/journald.d/dxberry.conf
-  mkdir -p "$DXB_BOOT_DIR" "$DXB_SYSTEMD_DIR" "$DXB_ZONEINFO_DIR" "$DXB_SYS_NET/eth0" "$DXB_SYS_NET/wlan0"
+    DXB_JOURNALD_DROPIN=$TEST_TMP/journald.d/dxberry.conf \
+    DXB_SYSFS_ROOT=$TEST_TMP/radio-sys DXB_UDEV_RULES_FILE=$TEST_TMP/etc/70.rules \
+    DXB_MODPROBE_FILE=$TEST_TMP/etc/dxberry-audio.conf DXB_UDEVADM=fake_udevadm \
+    DXB_RIGCTLD_RUN_DIR=$TEST_TMP/run/rigctld DXB_TMPFILES_DIR=$TEST_TMP/tmpfiles \
+    DXB_RADIOS_STATE=$TEST_TMP/run/radios-state.json DXB_RADIOS_FILE=$TEST_TMP/state/radios.json \
+    DXB_GPSD_DEFAULT=$TEST_TMP/etc/default/gpsd DXB_CHRONY_DROPIN=$TEST_TMP/etc/chrony/conf.d/dxberry.conf \
+    DXB_RPI_CONFIG_TXT=$TEST_TMP/bootfs/config.txt DXB_GPSPIPE=fake_gpspipe
+  mkdir -p "$DXB_BOOT_DIR" "$DXB_SYSTEMD_DIR" "$DXB_ZONEINFO_DIR" "$DXB_SYS_NET/eth0" "$DXB_SYS_NET/wlan0" \
+    "$DXB_SYSFS_ROOT" "$TEST_TMP/etc" "$DXB_RIGCTLD_RUN_DIR" "$DXB_TMPFILES_DIR"
   : > "$DXB_ZONEINFO_DIR/UTC"
   echo DietPi > "$DXB_HOSTNAME_FILE"
   printf '127.0.0.1 localhost\n127.0.1.1 DietPi\n' > "$DXB_HOSTS_FILE"
@@ -88,8 +100,26 @@ full_env() {
     swapon() { echo "NAME"; echo "/dev/zram0"; }
     apt-get() { echo "apt-get $*" >> "$TEST_TMP/calls"; }
     dpkg-query() { return 1; }
+    fake_udevadm() { echo "udevadm $*" >> "$TEST_TMP/calls"; }
+    systemd-tmpfiles() { echo "systemd-tmpfiles $*" >> "$TEST_TMP/calls"; }
+    rigctl() { printf '145390000\nFM\n'; }
+    fake_gpspipe() { :; }
+    timeout() { shift; "$@"; }
   }
   : > "$TEST_TMP/calls"
+  # DXB_MODE is a plain (non-local) global in other test files (e.g. test_network.sh); reset it
+  # here too so a call to provision_radio outside run_driver's subshell (which sets its own via
+  # main()) never inherits a stale "first-boot" from an earlier test in this shared process.
+  DXB_MODE=run
+  DXB_STATUS_LINES=(); DXB_FAILED_STEPS=(); DXB_RADIO_REBOOT_NEEDED=0
+}
+
+# provision_cfg LINE...: write dxberry.txt under DXB_BOOT_DIR and load it into DXB_CFG, the way
+# net_cfg (test_network.sh) and gps_cfg (test_gps.sh) do for their own modules.
+provision_cfg() {
+  printf '%s\n' "$@" > "$DXB_BOOT_DIR/dxberry.txt"
+  dxb_config_load "$DXB_BOOT_DIR/dxberry.txt"
+  dxb_config_validate
 }
 
 # run_driver ARGS...: sources dxberry-provision and calls its main in a SUBSHELL, never the test
@@ -304,6 +334,60 @@ test_remediation_loop_survives_a_run_mode_call_between_a_blocked_and_passing_gat
   assert_eq "$rc" "0"
   [[ -f $DXB_STATE_DIR/provisioned ]] || _fail "marker must be written once --first-boot's gate passes"
   assert_eq "$(tail -2 "$TEST_TMP/calls")" $'sync\nreboot'
+}
+
+test_provision_radio_installs_and_reports() {
+  full_env; provision_cfg 'PASSWORD=examplepass' 'GPS_DEVICE=uart'
+  fx_scene "$DXB_SYSFS_ROOT" none
+  provision_radio
+  assert_contains "$(cat "$TEST_TMP/calls")" "apt-get install -y libhamlib-utils gpsd gpsd-clients chrony alsa-utils"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl disable --now systemd-timesyncd"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl mask systemd-timesyncd"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl enable chrony"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl enable dxberry-radio-hotplug.service"
+  assert_file_contains "$DXB_UDEV_RULES_FILE" "IMPORT{builtin}=\"path_id\""
+  assert_file_contains "$DXB_MODPROBE_FILE" "snd_usb_audio"
+  assert_file_contains "$DXB_GPSD_DEFAULT" 'DEVICES="/dev/ttyAMA0"'
+  assert_contains "${DXB_STATUS_LINES[*]}" "radio: 0 radios, 0 present"
+  assert_contains "${DXB_STATUS_LINES[*]}" "time: chrony"
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
+  # GPS_DEVICE=uart wrote enable_uart=1/dtoverlay=disable-bt to config.txt; in run mode (what
+  # full_env sets DXB_MODE to, since this test calls provision_radio directly rather than through
+  # main() --first-boot) that means a reboot is needed, the same way the driver warns for wlan0.
+  assert_eq "$DXB_RADIO_REBOOT_NEEDED" "1"
+}
+
+test_provision_radio_apt_failure_is_a_failed_step_not_fatal() {
+  full_env; provision_cfg 'PASSWORD=examplepass'
+  fx_scene "$DXB_SYSFS_ROOT" none
+  # shellcheck disable=SC2317  # invoked indirectly as the external apt-get command
+  apt-get() { echo "apt-get $*" >> "$TEST_TMP/calls"; return 100; }
+  provision_radio
+  assert_contains "${DXB_FAILED_STEPS[*]}" "radio: could not install"
+  assert_file_contains "$DXB_MODPROBE_FILE" "snd_usb_audio"
+  # Restore the working stub so a later test that shares this process never inherits a
+  # permanently failing apt-get from this one.
+  # shellcheck disable=SC2317
+  apt-get() { echo "apt-get $*" >> "$TEST_TMP/calls"; }
+}
+
+test_provision_driver_runs_radio_step_after_graywolf() {
+  full_env
+  printf 'PASSWORD=secretpass\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  fx_scene "$DXB_SYSFS_ROOT" none
+  (
+    # shellcheck disable=SC1091
+    source "$DXB_ROOT/provision/bin/dxberry-provision"
+    dxb_require_root() { :; }
+    dxb_gw_install() { return 0; }
+    dxb_gw_seed() { return 0; }
+    main
+  ) 2> /dev/null
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl enable dxberry-radio-hotplug.service"
+  local gw radio
+  gw=$(grep -n 'enable --now graywolf' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  radio=$(grep -n 'dxberry-radio-hotplug' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  (( gw < radio )) || _fail "radio step must run after graywolf"
 }
 
 test_run_mode_wifi_import_failure_leaves_wifi_password_intact() {

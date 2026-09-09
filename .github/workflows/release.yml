@@ -24,7 +24,7 @@ jobs:
         run: |
           for f in provision/bin/* provision/lib/*.sh build/*.sh boot/*.sh tests/*.sh; do bash -n "$f"; done
       - name: shellcheck
-        run: shellcheck -x provision/bin/* provision/lib/*.sh build/build-image.sh boot/*.sh tests/*.sh
+        run: shellcheck -x provision/bin/* provision/lib/*.sh provision/lib/apps/*.sh build/build-image.sh boot/*.sh tests/*.sh tests/fixtures/*.sh
       - name: Unit tests
         run: tests/run.sh
       - name: Build tree check

@@ -6,7 +6,7 @@
 set -uo pipefail
 
 DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
-for _m in common config system network storage graywolf scrub; do
+for _m in common config system network storage graywolf radio radio_udev rigctld gps scrub; do
   # shellcheck disable=SC1090
   source "$DXB_LIB/$_m.sh"
 done
@@ -125,6 +125,7 @@ main() {
     dxb_gw_seed "$reseed"
     dxb_status_add "graywolf: version $(dxb_gw_installed_version) at http://${DXB_CFG[_IP]:-<this-pi>}:8080 (user ${DXB_CFG[WEBUI_USER]})"
   fi
+  provision_radio
   provision_scrub
 
   # Runs before the status files are written so the operator - whose DietPi session is still up -
@@ -133,8 +134,12 @@ main() {
 
   dxb_status_write "$boot/dxberry-status.txt"
   cp "$boot/dxberry-status.txt" "$DXB_STATE_DIR/status.txt" 2> /dev/null || true
-  if [[ $DXB_MODE == run ]] && (( DXB_NET_REBOOT_NEEDED )); then
-    dxb_warn "reboot required for wlan0; run: sudo reboot"
+  if [[ $DXB_MODE == run ]] && (( DXB_NET_REBOOT_NEEDED || DXB_RADIO_REBOOT_NEEDED )); then
+    if (( DXB_NET_REBOOT_NEEDED )); then
+      dxb_warn "reboot required for wlan0; run: sudo reboot"
+    else
+      dxb_warn "reboot required; run: sudo reboot"
+    fi
   fi
   rm -f "$boot/dxberry-ERROR.txt"
   if [[ $DXB_MODE == first-boot ]] && (( gate_ok )); then touch "$DXB_STATE_DIR/provisioned"; fi

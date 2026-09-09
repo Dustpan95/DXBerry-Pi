@@ -267,6 +267,7 @@ _dxb_radio_mark_wired() {
 }
 
 # dxb_radio_apply [hotplug]: derive everything from the record. 0 ok, 6 derived-state error, 7 re-wire error.
+# shellcheck disable=SC2120,SC2119  # called with no argument (default "full") from provision_radio and the CLI's "apply"; only "hotplug" passes one
 dxb_radio_apply() {
   local mode=${1:-full} n r present rc=0 wrc h wired owner
   dxb_radio_load || return 6
@@ -375,4 +376,49 @@ dxb_radio_release() {
   _dxb_radio_set_owner "$name" "" || return 6
   dxb_app_load "$cur" 2> /dev/null && dxb_app_stop_if_idle "$cur"
   dxb_info "radio $name released"
+}
+
+# ---- provisioning step ---------------------------------------------------------------------
+DXB_RADIO_PACKAGES='libhamlib-utils gpsd gpsd-clients chrony alsa-utils'
+# Set in run mode when dxb_gps_boot_config changed config.txt (spec section 10); on first boot
+# the reboot at the end of the run happens regardless, so this is never set there.
+# shellcheck disable=SC2034
+DXB_RADIO_REBOOT_NEEDED=0
+
+# provision_radio (spec section 10): packages, units, modprobe pinning, gpsd/chrony, time
+# handoff from systemd-timesyncd to chrony, derived radio state, and the status lines. A failed
+# apt install is a failed step named "radio", never fatal - the rest of the step still runs.
+provision_radio() {
+  local n present=0 total=0 gps_state
+  # shellcheck disable=SC2086
+  if ! DEBIAN_FRONTEND=noninteractive apt-get install -y $DXB_RADIO_PACKAGES > /dev/null 2>&1; then
+    dxb_step_failed radio "could not install $DXB_RADIO_PACKAGES (no network?); rigctld and gpsd will be missing until a re-run"
+  fi
+  dxb_rigctld_install_units; (( $? == 6 )) && dxb_step_failed radio "could not install the rigctld or hotplug units"
+  dxb_radio_modprobe_install > /dev/null; (( $? == 6 )) && dxb_step_failed radio "could not write $DXB_MODPROBE_FILE"
+  systemctl disable --now systemd-timesyncd > /dev/null 2>&1 || true
+  systemctl mask systemd-timesyncd > /dev/null 2>&1 || true
+  systemctl enable chrony > /dev/null 2>&1 || dxb_step_failed radio "could not enable chrony"
+  dxb_gps_configure
+  if dxb_gps_boot_config; then
+    if [[ ${DXB_MODE:-run} == run ]]; then
+      # shellcheck disable=SC2034  # read by dxberry-provision after sourcing this file
+      DXB_RADIO_REBOOT_NEEDED=1
+      dxb_status_add "gps: reboot required (config.txt changed for GPS_DEVICE=${DXB_CFG[GPS_DEVICE]}${DXB_CFG[GPS_PPS]:+, PPS})"
+    fi
+  fi
+  dxb_radio_apply
+  case $? in
+    6) dxb_step_failed radio "apply failed; see $DXB_LOG_FILE" ;;
+    7) dxb_step_failed radio "an owner could not be re-wired; see $DXB_LOG_FILE" ;;
+  esac
+  for n in $(dxb_radio_names); do
+    total=$(( total + 1 ))
+    dxb_radio_present "$n" && present=$(( present + 1 ))
+  done
+  dxb_status_add "radio: $total radios, $present present (manage with: sudo dxberry-radio scan)"
+  if (( DXB_CFG[_GPS] )); then gps_state=$(dxb_gps_status_line); else gps_state='gps: off (GPS_DEVICE=none)'; fi
+  dxb_status_add "$gps_state"
+  dxb_status_add "time: chrony (gps $( [[ $gps_state == *fix* && $gps_state != *"no fix"* ]] && echo present || echo absent ))"
+  return 0
 }
