@@ -107,6 +107,13 @@ test_add_rejects_bad_name_duplicate_and_missing_function() {
   dxb_radio_add r9 '{"audio":"1"}'; assert_eq "$?" "2"          # duplicate
 }
 
+test_add_rejects_multiline_or_overlong_label() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
+  dxb_radio_add x '{"audio":"1","label":"bad\nlabel"}'; assert_eq "$?" "2"   # \n is a real newline once JSON-parsed
+  dxb_radio_add x "{\"audio\":\"1\",\"label\":\"$(printf 'a%.0s' $(seq 1 41))\"}"; assert_eq "$?" "2"   # 41 chars
+  assert_ok dxb_radio_add x "{\"audio\":\"1\",\"label\":\"$(printf 'a%.0s' $(seq 1 40))\"}"            # 40 chars, accepted
+}
+
 test_ports_allocate_lowest_free_even() {
   radio_env; fx_scene "$DXB_SYSFS_ROOT" two-digirigs; dxb_radio_scan_cache; dxb_radio_load
   assert_ok dxb_radio_add a '{"audio":"3","cat":"4"}'

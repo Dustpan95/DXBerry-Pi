@@ -42,6 +42,33 @@ test_udev_rules_ptt_serial_and_no_audio() {
   assert_not_contains "$out" 'ATTR{id}'
 }
 
+test_udev_rules_label_newline_is_neutralized() {
+  udev_env; digirig_record
+  DXB_RADIOS=$(jq -c '.radios.radio1.label = "bad\nlabel"' <<< "$DXB_RADIOS")
+  local out line
+  out=$(dxb_radio_udev_rules "$DXB_RADIOS")
+  # 3 head IMPORT{builtin} lines + 3 per-radio rule lines (audio, cat, hid) for the digirig record
+  assert_eq "$(grep -c '^SUBSYSTEM' <<< "$out")" "6"
+  while IFS= read -r line; do
+    [[ -z $line || $line == \#* ]] && continue
+    case $line in
+      SUBSYSTEM==*|TAG==*) ;;
+      *) _fail "unexpected rule line shape: $line" ;;
+    esac
+  done <<< "$out"
+}
+
+test_udev_write_missing_template_fails_cleanly() {
+  udev_env; digirig_record
+  local saved_templates=$DXB_TEMPLATES
+  DXB_TEMPLATES=$TEST_TMP/empty-templates
+  mkdir -p "$DXB_TEMPLATES"
+  dxb_radio_udev_write "$DXB_RADIOS"; assert_eq "$?" "6"
+  assert_eq "$(cat "$TEST_TMP/calls")" ""
+  [[ ! -f $DXB_UDEV_RULES_FILE ]] || _fail "rules file was written despite a missing template"
+  DXB_TEMPLATES=$saved_templates
+}
+
 test_udev_write_reloads_only_on_change() {
   udev_env; digirig_record
   assert_ok dxb_radio_udev_write "$DXB_RADIOS"

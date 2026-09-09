@@ -8,13 +8,16 @@
 : "${DXB_UDEVADM:=udevadm}"
 
 dxb_radio_udev_rules() {
-  cat "$DXB_TEMPLATES/70-dxberry-radio.rules.head"
-  jq -r '.radios | to_entries[] | .key as $n | .value as $r
-    | "", "# \($n) - \($r.label // "")",
+  local head rules
+  head=$(< "$DXB_TEMPLATES/70-dxberry-radio.rules.head") || return 6
+  rules=$(jq -r '.radios | to_entries[] | .key as $n | .value as $r
+    | "", "# \($n) - \($r.label // "" | gsub("[\r\n]"; " "))",
       (if $r.audio then "SUBSYSTEM==\"sound\", KERNEL==\"card*\", ENV{ID_PATH}==\"*-\($r.audio.path)\", ATTR{id}=\"\($n | ascii_upcase)\", TAG+=\"dxberry-radio\"" else empty end),
       (if $r.cat then "SUBSYSTEM==\"tty\", ENV{ID_PATH}==\"*-\($r.cat.path)\", SYMLINK+=\"dxberry/\($n)-cat\", TAG+=\"dxberry-radio\"" else empty end),
       (if $r.ptt_serial then "SUBSYSTEM==\"tty\", ENV{ID_PATH}==\"*-\($r.ptt_serial.path)\", SYMLINK+=\"dxberry/\($n)-ptt\", TAG+=\"dxberry-radio\"" else empty end),
-      (if $r.hid then "SUBSYSTEM==\"hidraw\", ENV{ID_PATH}==\"*-\($r.hid.path)\", SYMLINK+=\"dxberry/\($n)-hid\", TAG+=\"dxberry-radio\"" else empty end)' <<< "$1"
+      (if $r.hid then "SUBSYSTEM==\"hidraw\", ENV{ID_PATH}==\"*-\($r.hid.path)\", SYMLINK+=\"dxberry/\($n)-hid\", TAG+=\"dxberry-radio\"" else empty end)' <<< "$1") || return 6
+  printf '%s\n' "$head"
+  [[ -z $rules ]] || printf '%s\n' "$rules"
   printf '\nTAG=="dxberry-radio", ACTION=="add|remove", RUN+="/bin/systemctl --no-block start dxberry-radio-hotplug.service"\n'
 }
 

@@ -103,6 +103,7 @@ dxb_radio_validate() {
         (if ($r.rig.model | type) != "number" or $r.rig.model < 1 then bad($n + ": bad model") else empty end),
         (if ($r.rigctld_port | type) != "number" or $r.rigctld_port < 4532 or ($r.rigctld_port % 2) != 0 then bad($n + ": bad port") else empty end),
         (if ($r.owner | type) != "string" then bad($n + ": bad owner") else empty end),
+        (if (($r.label | type) == "string" and ($r.label | length) <= 40 and ($r.label | test("^[ -~]*$"))) then empty else bad($n + ": bad label") end),
         (["audio","cat","hid","ptt_serial"][] as $k | if ($r[$k] != null) and (($r[$k].path // "") == "") then bad($n + ": pin " + $k + " has no path") else empty end)
       ),
       (if ([.radios[].rigctld_port] | unique | length) != ([.radios[].rigctld_port] | length) then bad("duplicate rigctld ports") else empty end)
