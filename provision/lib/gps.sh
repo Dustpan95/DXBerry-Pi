@@ -62,10 +62,10 @@ dxb_gps_configure() {
 dxb_gps_boot_config() {
   local changed=1
   if [[ ${DXB_CFG[GPS_DEVICE]} == uart ]]; then
-    dxb_ensure_line "$DXB_RPI_CONFIG_TXT" 'enable_uart=1' && changed=0
-    dxb_ensure_line "$DXB_RPI_CONFIG_TXT" 'dtoverlay=disable-bt' && changed=0
+    dxb_cfgtxt_ensure_line "$DXB_RPI_CONFIG_TXT" 'enable_uart=1' && changed=0
+    dxb_cfgtxt_ensure_line "$DXB_RPI_CONFIG_TXT" 'dtoverlay=disable-bt' && changed=0
   fi
-  [[ -z ${DXB_CFG[GPS_PPS]} ]] || { dxb_ensure_line "$DXB_RPI_CONFIG_TXT" "dtoverlay=pps-gpio,gpiopin=${DXB_CFG[GPS_PPS]}" && changed=0; }
+  [[ -z ${DXB_CFG[GPS_PPS]} ]] || { dxb_cfgtxt_ensure_line "$DXB_RPI_CONFIG_TXT" "dtoverlay=pps-gpio,gpiopin=${DXB_CFG[GPS_PPS]}" && changed=0; }
   return $changed
 }
 

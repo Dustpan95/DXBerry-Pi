@@ -70,8 +70,10 @@ test_preboot_missing_config_writes_hint() {
 test_preboot_writes_gps_boot_lines_but_never_the_ntp_mode() {
   preboot_env
   printf 'PASSWORD=examplepass\nGPS_DEVICE=uart\nGPS_PPS=18\n' > "$DXB_BOOT_DIR/dxberry.txt"
-  : > "$DXB_BOOT_DIR/config.txt"
+  printf 'arm_64bit=1\n[cm4]\ndtoverlay=dwc2,dr_mode=host\n' > "$DXB_BOOT_DIR/config.txt"
   main
+  # the stock file ends in a conditional section: the GPS lines need an [all] header first
+  assert_eq "$(tail -4 "$DXB_BOOT_DIR/config.txt")" $'[all]\nenable_uart=1\ndtoverlay=disable-bt\ndtoverlay=pps-gpio,gpiopin=18'
   # CONFIG_NTP_MODE=0 belongs to provision_radio: before DietPi's first run it would leave a
   # PI with no RTC on a stale clock through apt and the Graywolf TLS download.
   assert_file_not_contains "$DXB_DIETPI_TXT" "CONFIG_NTP_MODE"

@@ -93,3 +93,22 @@ test_ensure_line_appends_once() {
   assert_eq "$(grep -c '^enable_uart=1$' "$f")" "1"
   assert_eq "$(head -1 "$f")" "arm_64bit=1"
 }
+
+test_cfgtxt_ensure_line_appends_under_an_all_section() {
+  local f=$TEST_TMP/config.txt
+  printf 'arm_64bit=1\n[cm4]\ndtoverlay=dwc2,dr_mode=host\n' > "$f"
+  assert_ok dxb_cfgtxt_ensure_line "$f" 'enable_uart=1'
+  assert_eq "$(tail -2 "$f")" $'[all]\nenable_uart=1'
+  assert_ok dxb_cfgtxt_ensure_line "$f" 'dtoverlay=disable-bt'   # the file already ends in [all]
+  assert_eq "$(grep -c '^\[all\]$' "$f")" "1"
+  assert_eq "$(tail -1 "$f")" "dtoverlay=disable-bt"
+  assert_fails dxb_cfgtxt_ensure_line "$f" 'enable_uart=1'       # already present: untouched
+  assert_eq "$(grep -c '^enable_uart=1$' "$f")" "1"
+}
+
+test_cfgtxt_ensure_line_needs_no_header_without_sections() {
+  local f=$TEST_TMP/plain-config.txt
+  printf 'arm_64bit=1\n' > "$f"
+  assert_ok dxb_cfgtxt_ensure_line "$f" 'enable_uart=1'
+  assert_eq "$(cat "$f")" $'arm_64bit=1\nenable_uart=1'
+}

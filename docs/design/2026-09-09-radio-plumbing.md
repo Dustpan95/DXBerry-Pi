@@ -359,7 +359,9 @@ New `dxberry.txt` keys (advanced seeds, blank = default):
 | `GPS_PPS` | blank | BCM GPIO number carrying a PPS pulse; adds `dtoverlay=pps-gpio,gpiopin=N` and `/dev/pps0` to gpsd |
 
 `dxberry-preboot` writes the `config.txt` changes for `uart` and `GPS_PPS`
-(both need a reboot, which first boot already does). `CONFIG_NTP_MODE=0`,
+(both need a reboot, which first boot already does). They are appended under
+an `[all]` header whenever the file's last section header is a
+model-specific one, so a line can never end up scoped to (say) `[cm4]`. `CONFIG_NTP_MODE=0`,
 DietPi's hand-off of `systemd-timesyncd`, is written into `dietpi.txt` by
 `provision_radio` instead — right after chrony is enabled and timesyncd
 masked. Written in preboot it would take effect before DietPi's own first

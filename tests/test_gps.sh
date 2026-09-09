@@ -63,6 +63,13 @@ test_gps_boot_config_lines() {
   dxb_gps_boot_config; assert_eq "$?" "1"
 }
 
+test_gps_boot_config_lines_land_in_an_all_section() {
+  gps_env; gps_cfg 'GPS_DEVICE=uart'
+  printf 'arm_64bit=1\n[pi4]\narm_boost=1\n' > "$DXB_RPI_CONFIG_TXT"
+  assert_ok dxb_gps_boot_config
+  assert_eq "$(tail -3 "$DXB_RPI_CONFIG_TXT")" $'[all]\nenable_uart=1\ndtoverlay=disable-bt'
+}
+
 test_maidenhead() {
   assert_eq "$(dxb_maidenhead 37.145833 -101.375)" "DM97hd"
   assert_eq "$(dxb_maidenhead 51.5 -0.1)" "IO91wm"

@@ -91,6 +91,20 @@ dxb_ensure_line() {
   printf '%s\n' "$line" >> "$file" || return 2
 }
 
+# dxb_cfgtxt_ensure_line FILE LINE: dxb_ensure_line for a Raspberry Pi config.txt. Everything
+# after a [section] header applies only to the models that header names, so a line appended to a
+# file ending in (say) [cm4] would never be read on a Pi 4. An [all] header is appended first
+# when the file's last header is not already [all]; a file with no header at all is still in the
+# unconditional section, so nothing is added there. 0 appended, 1 already present, 2 error.
+dxb_cfgtxt_ensure_line() {
+  local file=$1 line=$2 last
+  [[ -f $file ]] || : > "$file" || return 2
+  grep -qxF -- "$line" "$file" && return 1
+  last=$(grep -oE '^[[:blank:]]*\[[^]]*\]' "$file" | tail -1 | tr -d '[:blank:]')
+  if [[ -n $last && $last != '[all]' ]]; then printf '[all]\n' >> "$file" || return 2; fi
+  dxb_ensure_line "$file" "$line"
+}
+
 # dxb_render TEMPLATE NAME=VALUE...: print TEMPLATE with @NAME@ placeholders replaced.
 # Placeholder names: uppercase letters, digits, and underscores (@NAME@, @IP1@, @ETH0_MAC@, etc).
 dxb_render() {
