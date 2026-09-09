@@ -1,0 +1,127 @@
+#!/bin/bash
+# dxberry-radio: discover, pin, and hand radios between applications. Spec: docs/design/2026-09-09-radio-plumbing.md
+#   scan                       list USB candidates (audio / serial / HID functions grouped by port)
+#   add NAME [pins] [opts]     pin a radio: --audio N --cat N[:K] [--hid N] [--ptt-serial N[:K]]
+#   set NAME [pins] [opts]     change a radio ( --audio none clears a pin )
+#   remove NAME                forget a radio
+#   apply                      regenerate udev rules, rigctld instances and runtime state
+#   claim NAME APP             give the radio to an application (stops the previous owner's use)
+#   release NAME               take the radio away from its owner
+#   status [NAME]              record + live state; frequency and mode from rigctld
+#   hotplug                    udev entry point (apply without touching udev)
+#   gps                        GPS fix, satellites and grid square
+# Options: --ptt M --ptt-type T --model K --baud B --wiring full|names --label S --gpio-line N; --json on any subcommand.
+set -uo pipefail
+
+DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
+for _m in common config graywolf radio radio_udev rigctld gps; do
+  # shellcheck disable=SC1090
+  source "$DXB_LIB/$_m.sh"
+done
+
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
+JSON=0
+
+# Loads dxberry.txt when present (GPS keys, Graywolf credentials fallback); absence is fine.
+load_config_if_any() {
+  local f; f="$(dxb_boot_dir)/dxberry.txt"
+  # shellcheck disable=SC2034  # GPS_* keys are read by gps.sh helpers reached indirectly (apps/*, later tasks), not in this file
+  [[ -f $f ]] || { DXB_CFG[_GPS]=1; DXB_CFG[GPS_DEVICE]=auto; DXB_CFG[GPS_PPS]=''; DXB_CFG[_GPS_PATH]=''; DXB_CFG[GPS_BAUD]=9600; return 0; }
+  dxb_config_load "$f"; dxb_config_validate > /dev/null 2>&1 || true
+}
+
+# parse_opts ARGS... -> prints an OPTS JSON object; returns 2 on a bad flag.
+parse_opts() {
+  local o='{}' k v
+  while (( $# )); do
+    case $1 in
+      --audio|--cat|--hid|--ptt-serial|--ptt|--ptt-type|--wiring|--label)
+        [[ $# -ge 2 ]] || { echo "$1 needs a value" >&2; return 2; }
+        k=${1#--}; k=${k//-/_}; v=$2; shift
+        o=$(jq -c --arg k "$k" --arg v "$v" '.[$k] = $v' <<< "$o") ;;
+      --model|--baud|--gpio-line)
+        [[ $# -ge 2 && $2 =~ ^[0-9]+$ ]] || { echo "$1 needs a whole number" >&2; return 2; }
+        k=${1#--}; k=${k//-/_}
+        o=$(jq -c --arg k "$k" --argjson v "$2" '.[$k] = $v' <<< "$o"); shift ;;
+      *) echo "unknown option: $1" >&2; return 2 ;;
+    esac
+    shift
+  done
+  printf '%s\n' "$o"
+}
+
+cmd_scan() {
+  dxb_radio_scan_cache
+  if (( JSON )); then printf '%s\n' "$DXB_RADIO_SCAN"; return 0; fi
+  [[ $DXB_RADIO_SCAN == '[]' ]] && { echo "no USB audio, serial or HID devices found"; return 0; }
+  jq -r '.[] | "\(.index)  \(.port)  \(.name) [\(.profile)]", (.functions[] | "     \(.kind): \(.kernel) \(.path) \(.vidpid)\(if .serial != "" then " serial " + .serial else "" end) \(.product)")' <<< "$DXB_RADIO_SCAN"
+}
+
+cmd_status() {
+  local only=${1:-} out n r st
+  dxb_radio_load || return 6
+  dxb_radio_scan_cache
+  dxb_radio_write_state > /dev/null || return 6
+  out='{}'
+  for n in $(dxb_radio_names); do
+    [[ -z $only || $only == "$n" ]] || continue
+    r=$(dxb_radio_get "$n"); st=$(jq -c --arg n "$n" '.radios[$n]' "$DXB_RADIOS_STATE")
+    if [[ $(jq -r .rigctld <<< "$st") == active ]]; then read -r f m < <(dxb_rigctld_query "$(jq -r .rigctld_port <<< "$r")"); else f='?'; m='?'; fi
+    out=$(jq -c --arg n "$n" --argjson r "$r" --argjson s "$st" --arg f "$f" --arg m "$m" '.[$n] = ($r + $s + {freq: $f, mode: $m})' <<< "$out")
+  done
+  [[ -n $only ]] && [[ $(jq 'length' <<< "$out") == 0 ]] && { echo "no such radio: $only" >&2; return 3; }
+  if (( JSON )); then jq -cn --argjson r "$out" --argjson g "$(dxb_gps_fix)" '{radios: $r, gps: $g}'; return 0; fi
+  [[ $out == '{}' ]] && { echo "no radios pinned; run: dxberry-radio scan"; }
+  jq -r 'to_entries[] | "\(.key)  \(.value.label)  \(if .value.present then "present" else "ABSENT" end)  rigctld:\(.value.rigctld) port \(.value.rigctld_port)  owner:\(if .value.owner == "" then "-" else .value.owner end)  \(.value.freq) \(.value.mode)  ptt:\(.value.ptt.method)"' <<< "$out"
+  dxb_gps_status_line
+}
+
+cmd_gps() { if (( JSON )); then dxb_gps_fix; else local j; j=$(dxb_gps_fix); if [[ $(jq -r .fix <<< "$j") == 0 ]]; then echo "no fix"; else dxb_gps_status_line | sed 's/^gps: //'; fi; fi; }
+
+main() {
+  local cmd='' args=() a rc opts
+  for a in "$@"; do case $a in --json) JSON=1 ;; *) args+=("$a") ;; esac; done
+  cmd=${args[0]:-}; args=("${args[@]:1}")
+  case $cmd in
+    -h|--help) usage; return 0 ;;
+    scan|add|set|remove|apply|claim|release|status|hotplug|gps) ;;
+    '') usage >&2; return 2 ;;
+    *) echo "unknown subcommand: $cmd" >&2; usage >&2; return 2 ;;
+  esac
+  dxb_require_root
+  mkdir -p "$DXB_STATE_DIR" 2> /dev/null; chmod 700 "$DXB_STATE_DIR" 2> /dev/null
+  DXB_LOG_FILE=${DXB_RADIO_LOG:-$DXB_STATE_DIR/radio.log}; : >> "$DXB_LOG_FILE" 2> /dev/null; chmod 600 "$DXB_LOG_FILE" 2> /dev/null
+  load_config_if_any
+  case $cmd in
+    scan) cmd_scan ;;
+    add|set)
+      [[ ${#args[@]} -ge 1 ]] || { echo "usage: dxberry-radio $cmd NAME [options]" >&2; return 2; }
+      opts=$(parse_opts "${args[@]:1}") || return 2
+      dxb_radio_load || return 6; dxb_radio_scan_cache
+      "dxb_radio_$cmd" "${args[0]}" "$opts" || return $?
+      dxb_radio_apply; rc=$?
+      (( JSON )) && cmd_status "${args[0]}"
+      return $rc ;;
+    remove)
+      [[ ${#args[@]} -eq 1 ]] || { echo "usage: dxberry-radio remove NAME" >&2; return 2; }
+      dxb_radio_load || return 6; dxb_radio_scan_cache
+      dxb_radio_release "${args[0]}" || return $?
+      dxb_radio_remove "${args[0]}" || return $?
+      dxb_radio_apply ;;
+    apply) dxb_radio_apply ;;
+    hotplug) dxb_radio_apply hotplug ;;
+    claim)
+      [[ ${#args[@]} -eq 2 ]] || { echo "usage: dxberry-radio claim NAME APP" >&2; return 2; }
+      dxb_radio_load || return 6; dxb_radio_scan_cache
+      dxb_radio_claim "${args[0]}" "${args[1]}" || return $?
+      (( JSON )) && cmd_status "${args[0]}"; return 0 ;;
+    release)
+      [[ ${#args[@]} -eq 1 ]] || { echo "usage: dxberry-radio release NAME" >&2; return 2; }
+      dxb_radio_load || return 6; dxb_radio_scan_cache
+      dxb_radio_release "${args[0]}" ;;
+    status) cmd_status "${args[0]:-}" ;;
+    gps) cmd_gps ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; exit $?; fi
