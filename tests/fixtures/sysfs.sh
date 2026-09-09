@@ -45,7 +45,7 @@ fx_systemctl() {
   return 0
 }
 
-# fx_scene ROOT NAME: digirig | ic7300 | split | two-digirigs | none
+# fx_scene ROOT NAME: digirig | ic705 | split | two-digirigs | none
 fx_scene() {
   local r=$1
   mkdir -p "$r/class/sound" "$r/class/tty" "$r/class/hidraw"
@@ -57,8 +57,8 @@ fx_scene() {
       fx_usb_function "$r" 1-1.3 3 hid hidraw1
       fx_usb_device "$r" 1-1.4 10c4 ea60 0001 "CP2102 USB to UART Bridge Controller"
       fx_usb_function "$r" 1-1.4 0 serial ttyUSB0 ;;
-    ic7300)
-      fx_usb_device "$r" 1-1.2 0c26 0036 IC-7300_02011234 "IC-7300"
+    ic705)
+      fx_usb_device "$r" 1-1.2 0c26 0036 IC-705_12345678 "IC-705"
       fx_usb_function "$r" 1-1.2 0 audio card1
       fx_usb_function "$r" 1-1.2 2 serial ttyUSB0
       fx_usb_function "$r" 1-1.2 4 serial ttyUSB1 ;;

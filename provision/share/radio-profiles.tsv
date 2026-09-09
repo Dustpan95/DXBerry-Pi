@@ -3,6 +3,6 @@
 0d8c:0012	DigiRig Lite	digirig_tone	NONE	none	1	0	tone keyed on the right channel; CM108B codec, same C-Media vendor id as the Mobile. Source: digirig.net Digirig Lite page
 1209:7388	AIOC	cm108	NONE	none	1	0	all-in-one cable, HID PTT. Source: pid.codes registry https://pid.codes/1209/7388/ (skuep/AIOC project)
 08bb:29b6	SignaLink USB	vox	NONE	none	1	0	TI PCM2906C codec. Source: SignaLink USB support docs and reported lsusb output identifying the device as a Texas Instruments PCM2906C
-0c26:0036	Icom USB codec	rigctld	RIG	same	3073	115200	IC-7300 default model and baud; unverified - published lsusb output for 0c26:0036 (Raspberry Pi forum thread, DeviceHunt vendor 0C26 listing) identifies this id as an IC-705, not the IC-7300; no IC-7300-specific lsusb capture was found to confirm or replace it
+0c26:0036	Icom IC-705	rigctld	RIG	same	3085	115200	IC-705 CI-V/audio USB interface (Prolific-chipset bridge under Icom's registered 0c26 vendor id). Source: Raspberry Pi forum thread lsusb capture ("ID 0c26:0036 Prolific Technology Inc. IC-705") and DeviceHunt vendor 0C26 listing; hamlib model 3085 = RIG_MODEL_IC705 per Hamlib's supported-radios list
 10c4:ea60	CP2102 serial	rigctld	RTS	same	1	57600	serial-only candidate (CAT cable or DigiRig port); Silicon Labs factory-default CP210x id. Source: linux kernel cp210x driver USB_DEVICE table and usb-ids.gowdy.us/read/UD/10c4/ea60
 0403:6001	FTDI serial	rigctld	RIG	same	1	38400	serial-only candidate; FTDI factory-default FT232R id. Source: FTDI Technical Note TN_100 (USB VID/PID Guidelines)
