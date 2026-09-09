@@ -86,3 +86,11 @@ test_rigctld_install_units_and_stop_stale() {
   assert_not_contains "$(cat "$TEST_TMP/calls")" "rigctld@keep"
   [[ -f $DXB_RIGCTLD_RUN_DIR/old.env ]] && _fail "stale env file not removed"
 }
+
+test_rigctld_install_units_fails_when_the_tmpfiles_conf_cannot_be_written() {
+  rig_env
+  : > "$TEST_TMP/blocker"
+  DXB_TMPFILES_DIR=$TEST_TMP/blocker                 # the parent is a file: the write cannot land
+  dxb_rigctld_install_units 2> /dev/null; assert_eq "$?" "6"
+  [[ -f $DXB_TMPFILES_DIR/dxberry-radio.conf ]] && _fail "the tmpfiles conf cannot exist here"
+}

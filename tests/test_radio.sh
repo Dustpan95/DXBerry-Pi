@@ -12,7 +12,7 @@ radio_env() {
     DXB_RADIO_PROFILES=$DXB_ROOT/provision/share/radio-profiles.tsv DXB_RADIOS_FILE=$TEST_TMP/state/radios.json \
     DXB_UDEV_RULES_FILE=$TEST_TMP/etc/70.rules DXB_MODPROBE_FILE=$TEST_TMP/etc/dxberry-audio.conf DXB_UDEVADM=fake_udevadm \
     DXB_RIGCTLD_RUN_DIR=$TEST_TMP/run/rigctld DXB_SYSTEMD_DIR=$TEST_TMP/systemd DXB_TMPFILES_DIR=$TEST_TMP/tmpfiles \
-    DXB_RADIOS_STATE=$TEST_TMP/run/radios-state.json
+    DXB_RADIOS_STATE=$TEST_TMP/run/radios-state.json DXB_RUN_DIR=$TEST_TMP/run
   mkdir -p "$DXB_STATE_DIR" "$TEST_TMP/etc"
   : > "$TEST_TMP/calls"; : > "$TEST_TMP/active"
   systemctl() { fx_systemctl "$@"; }
@@ -236,7 +236,7 @@ test_apply_marks_wiring_hash_atomically() {
   local h; h=$(dxb_radio_wire_hash "$(dxb_radio_get radio1)")
   assert_eq "$(jq -r '.radios.radio1.wired_hash' "$DXB_RADIOS_STATE")" "$h"
   jq empty "$DXB_RADIOS_STATE" 2> /dev/null; assert_eq "$?" "0"
-  [[ -z $(find "$(dirname "$DXB_RADIOS_STATE")" -maxdepth 1 -name '*.dxbtmp') ]] || _fail "leftover .dxbtmp file"
+  [[ -z $(find "$(dirname "$DXB_RADIOS_STATE")" -maxdepth 1 -name '*.dxbtmp*') ]] || _fail "leftover .dxbtmp file"
   source "$DXB_LIB/radio.sh"     # restore the real dxb_app_rewire (Task 8) for later tests in this process
 }
 
@@ -385,4 +385,16 @@ test_add_and_set_drop_the_rig_model_without_a_cat_pin() {
   dxb_radio_set hf2 '{"cat":"none"}' 2> "$TEST_TMP/stderr" > /dev/null
   assert_eq "$(jq -r '.rig.model' <<< "$(dxb_radio_get hf2)")" "1"
   assert_contains "$(cat "$TEST_TMP/stderr")" "dummy model"
+}
+
+test_apply_holds_a_lock_while_it_runs_and_frees_it_afterwards() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
+  dxb_radio_add radio1 '{"audio":"1","cat":"2"}' > /dev/null
+  # probes the lock from inside the apply: udev's hotplug apply must wait there, not interleave
+  dxb_rigctld_sync() { flock -n "$DXB_RUN_DIR/apply.lock" true; echo "$?" > "$TEST_TMP/lockprobe"; return 0; }
+  assert_ok dxb_radio_apply
+  source "$DXB_LIB/rigctld.sh"     # restore the real dxb_rigctld_sync for later tests in this process
+  [[ -f $DXB_RUN_DIR/apply.lock ]] || _fail "apply did not create $DXB_RUN_DIR/apply.lock"
+  assert_eq "$(cat "$TEST_TMP/lockprobe")" "1"
+  assert_ok flock -n "$DXB_RUN_DIR/apply.lock" true      # nothing running now: the lock is free again
 }

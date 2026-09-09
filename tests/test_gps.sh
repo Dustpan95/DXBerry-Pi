@@ -89,3 +89,12 @@ test_gps_configure_writes_nothing_when_chrony_template_missing() {
   assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl"
   DXB_TEMPLATES=$saved_templates
 }
+
+test_gps_configure_records_a_failed_step_when_a_file_cannot_be_written() {
+  gps_env; gps_cfg 'GPS_DEVICE=uart'
+  : > "$TEST_TMP/blocker"
+  DXB_GPSD_DEFAULT=$TEST_TMP/blocker/gpsd            # the parent is a file: the write cannot land
+  dxb_gps_configure 2> /dev/null; assert_eq "$?" "1"
+  assert_contains "${DXB_FAILED_STEPS[*]}" "could not write $DXB_GPSD_DEFAULT"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl"
+}

@@ -69,7 +69,7 @@ full_env() {
     DXB_RIGCTLD_RUN_DIR=$TEST_TMP/run/rigctld DXB_TMPFILES_DIR=$TEST_TMP/tmpfiles \
     DXB_RADIOS_STATE=$TEST_TMP/run/radios-state.json DXB_RADIOS_FILE=$TEST_TMP/state/radios.json \
     DXB_GPSD_DEFAULT=$TEST_TMP/etc/default/gpsd DXB_CHRONY_DROPIN=$TEST_TMP/etc/chrony/conf.d/dxberry.conf \
-    DXB_RPI_CONFIG_TXT=$TEST_TMP/bootfs/config.txt DXB_GPSPIPE=fake_gpspipe
+    DXB_RPI_CONFIG_TXT=$TEST_TMP/bootfs/config.txt DXB_GPSPIPE=fake_gpspipe DXB_RUN_DIR=$TEST_TMP/run
   mkdir -p "$DXB_BOOT_DIR" "$DXB_SYSTEMD_DIR" "$DXB_ZONEINFO_DIR" "$DXB_SYS_NET/eth0" "$DXB_SYS_NET/wlan0" \
     "$DXB_SYSFS_ROOT" "$TEST_TMP/etc" "$DXB_RIGCTLD_RUN_DIR" "$DXB_TMPFILES_DIR"
   : > "$DXB_ZONEINFO_DIR/UTC"

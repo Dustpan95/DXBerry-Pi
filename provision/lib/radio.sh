@@ -273,8 +273,30 @@ _dxb_radio_mark_wired() {
 }
 
 # dxb_radio_apply [hotplug]: derive everything from the record. 0 ok, 6 derived-state error, 7 re-wire error.
+# udev can start a hotplug apply at any moment, so the whole run is serialized on
+# $DXB_RUN_DIR/apply.lock (fd 9); a second apply waits there instead of interleaving its writes.
+# Without flock (or without the lock file) the run goes ahead with a warning: apply is idempotent,
+# so the worst an interleaved run can do is write the same files twice.
 # shellcheck disable=SC2120,SC2119  # called with no argument (default "full") from provision_radio and the CLI's "apply"; only "hotplug" passes one
 dxb_radio_apply() {
+  local mode=${1:-full} rc
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  if ! exec 9> "$DXB_RUN_DIR/apply.lock"; then
+    dxb_warn "could not open $DXB_RUN_DIR/apply.lock; applying without the apply lock"
+    _dxb_radio_apply "$mode"
+    return $?
+  fi
+  if command -v flock > /dev/null 2>&1; then
+    flock 9 || dxb_warn "could not lock $DXB_RUN_DIR/apply.lock; applying without the apply lock"
+  else
+    dxb_warn "flock is not installed; a concurrent hotplug apply could interleave with this one"
+  fi
+  _dxb_radio_apply "$mode"; rc=$?
+  exec 9>&-
+  return $rc
+}
+
+_dxb_radio_apply() {
   local mode=${1:-full} n r present rc=0 wrc h wired owner
   dxb_radio_load || return 6
   dxb_radio_scan_cache

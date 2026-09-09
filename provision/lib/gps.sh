@@ -32,9 +32,15 @@ dxb_gps_configure() {
     chrony_content=$(dxb_gps_chrony_conf) || { dxb_step_failed gps "chrony template missing"; return 1; }
   fi
   mkdir -p "$(dirname "$DXB_GPSD_DEFAULT")" "$(dirname "$DXB_CHRONY_DROPIN")" 2> /dev/null
-  if dxb_write_if_changed "$DXB_GPSD_DEFAULT" "$gpsd_content" 644; then changed=1; fi
+  if dxb_write_if_changed "$DXB_GPSD_DEFAULT" "$gpsd_content" 644; then
+    if [[ -f $DXB_GPSD_DEFAULT && $(< "$DXB_GPSD_DEFAULT") == "$gpsd_content" ]]; then changed=1
+    else dxb_step_failed gps "could not write $DXB_GPSD_DEFAULT"; return 1; fi
+  fi
   if (( DXB_CFG[_GPS] )); then
-    if dxb_write_if_changed "$DXB_CHRONY_DROPIN" "$chrony_content" 644; then changed=1; fi
+    if dxb_write_if_changed "$DXB_CHRONY_DROPIN" "$chrony_content" 644; then
+      if [[ -f $DXB_CHRONY_DROPIN && $(< "$DXB_CHRONY_DROPIN") == "$chrony_content" ]]; then changed=1
+      else dxb_step_failed gps "could not write $DXB_CHRONY_DROPIN"; return 1; fi
+    fi
     systemctl enable gpsd.socket > /dev/null 2>&1 || { dxb_step_failed gps "could not enable gpsd.socket"; rc=1; }
     if (( changed )); then
       systemctl restart gpsd > /dev/null 2>&1 || { dxb_step_failed gps "could not restart gpsd"; rc=1; }

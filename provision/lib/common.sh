@@ -107,19 +107,23 @@ dxb_render() {
 }
 
 # dxb_write_if_changed FILE CONTENT [MODE]: 0 = written, 1 = already identical.
-# Atomic write: temp file + rename. Returns 0 if written, 1 if unchanged.
+# Atomic write: temp file + rename. Returns 0 if written, 1 if unchanged. The temp name carries
+# the writer's pid so two processes writing the same file (an apply and a udev hotplug apply)
+# cannot share one temp file; the rename is still what makes the result atomic. A write can fail
+# silently here (a full or read-only filesystem), so every caller re-reads FILE and compares.
 dxb_write_if_changed() {
-  local dest=$1 content=$2 mode=${3:-} existing_mode
+  local dest=$1 content=$2 mode=${3:-} existing_mode tmp
   if [[ -f $dest && ! -L $dest && $(< "$dest") == "$content" ]]; then return 1; fi
   if [[ -f $dest && ! -L $dest ]]; then existing_mode=$(stat -c %a "$dest"); fi
-  printf '%s\n' "$content" > "$dest.dxbtmp"
+  tmp="$dest.dxbtmp.$$"
+  printf '%s\n' "$content" > "$tmp"
   if [[ -n $mode ]]; then
-    chmod "$mode" "$dest.dxbtmp"
+    chmod "$mode" "$tmp"
   elif [[ -n ${existing_mode:-} ]]; then
-    chmod "$existing_mode" "$dest.dxbtmp"
+    chmod "$existing_mode" "$tmp"
   else
-    chmod 644 "$dest.dxbtmp"
+    chmod 644 "$tmp"
   fi || { dxb_warn "chmod failed for $dest (vfat?), continuing"; }
-  mv -f "$dest.dxbtmp" "$dest"
+  mv -f "$tmp" "$dest"
   return 0
 }

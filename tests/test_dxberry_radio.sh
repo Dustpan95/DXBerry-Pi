@@ -8,7 +8,7 @@ cli_env() {
     DXB_MODPROBE_FILE=$TEST_TMP/etc/audio.conf DXB_RIGCTLD_RUN_DIR=$TEST_TMP/run/rigctld DXB_SYSTEMD_DIR=$TEST_TMP/systemd \
     DXB_TMPFILES_DIR=$TEST_TMP/tmpfiles DXB_RADIOS_STATE=$TEST_TMP/run/radios-state.json DXB_APPS_DIR=$TEST_TMP/apps \
     DXB_BOOT_DIR=$TEST_TMP/boot DXB_GPSD_DEFAULT=$TEST_TMP/etc/gpsd DXB_CHRONY_DROPIN=$TEST_TMP/etc/chrony.conf DXB_ZONEINFO_DIR=$TEST_TMP/nozone \
-    DXB_RADIOS_FILE=$TEST_TMP/state/radios.json
+    DXB_RADIOS_FILE=$TEST_TMP/state/radios.json DXB_RUN_DIR=$TEST_TMP/run
   mkdir -p "$DXB_STATE_DIR" "$TEST_TMP/etc" "$DXB_APPS_DIR" "$DXB_BOOT_DIR"; : > "$TEST_TMP/calls"; : > "$TEST_TMP/active"
   cat > "$DXB_APPS_DIR/alpha.sh" <<'EOF'
 app_alpha_unit() { echo alpha.service; }

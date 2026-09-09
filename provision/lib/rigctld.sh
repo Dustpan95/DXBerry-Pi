@@ -90,7 +90,11 @@ dxb_rigctld_install_units() {
     fi
   done
   content=$(< "$DXB_TEMPLATES/dxberry-radio.tmpfiles") || return 6
-  if dxb_write_if_changed "$DXB_TMPFILES_DIR/dxberry-radio.conf" "$content" 644; then rc=0; fi
+  dest="$DXB_TMPFILES_DIR/dxberry-radio.conf"
+  if dxb_write_if_changed "$dest" "$content" 644; then
+    [[ -f $dest && $(< "$dest") == "$content" ]] || { dxb_error "could not write $dest"; return 6; }
+    rc=0
+  fi
   if (( rc == 0 )); then
     systemctl daemon-reload || { dxb_error "systemctl daemon-reload failed"; return 6; }
     systemd-tmpfiles --create "$DXB_TMPFILES_DIR/dxberry-radio.conf" 2> /dev/null || mkdir -p "$DXB_RIGCTLD_RUN_DIR"
