@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- License GPL-2.0-or-later. **No author or attribution lines of any kind** in files or commit messages: never "Claude", "Anthropic", "Co-Authored-By", "Claude-Session", "Generated with". CI greps for it and fails. Commit messages: imperative subject + plain body, nothing else.
+- License GPL-2.0-or-later. **No author or attribution lines of any kind** in files or commit messages: no AI-assistant or model-vendor names, no co-author or session trailers, no "Generated with" footers. CI greps for them and fails. Commit messages: imperative subject + plain body, nothing else.
 - No secrets in the tree. **No version pins** (packages installed by name only). Nothing runs against a Pi from a test.
 - All scripts `#!/bin/bash`, `set -uo pipefail` (no `set -e`), shellcheck-clean: `shellcheck -x provision/bin/* provision/lib/*.sh provision/lib/apps/*.sh build/build-image.sh boot/*.sh tests/*.sh`. `build/build-image.sh --check` prints `tree ok`. `tests/run.sh` prints `ok` for every test and `0 failures` with no stray stderr.
 - Tests need only bash 5, awk, jq; every external command (`udevadm`, `systemctl`, `rigctl`, `gpspipe`, `apt-get`, `ip`, `curl`) is stubbed as a shell function or by `DXB_*` overrides. Tests must not need root.
