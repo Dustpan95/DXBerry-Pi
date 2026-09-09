@@ -55,6 +55,16 @@ test_cli_add_applies_and_status_shows_radio() {
   assert_contains "$(out)" "145390000"
 }
 
+test_cli_status_shows_the_current_alsa_card_id() {
+  cli_env
+  cli add radio1 --audio 1 --cat 2 > /dev/null
+  assert_contains "$(cat "$TEST_TMP/err")" "radio1: audio id takes effect on replug or reboot"
+  assert_ok cli status --json
+  assert_eq "$(jq -r '.radios.radio1.alsa_id' "$TEST_TMP/out")" "Device"
+  assert_ok cli status
+  assert_contains "$(out)" "alsa:Device"
+}
+
 test_cli_usage_and_error_codes() {
   cli_env
   cli; assert_eq "$?" "2"
@@ -97,9 +107,9 @@ test_cli_set_and_hotplug() {
 test_cli_gps_without_daemon() {
   cli_env
   assert_ok cli gps
-  assert_eq "$(out)" "no fix"
+  assert_eq "$(out)" "no receiver"
   assert_ok cli gps --json
-  assert_eq "$(out)" '{"fix":0}'
+  assert_eq "$(out)" '{"fix":0,"receiver":false}'
 }
 
 test_cli_help_and_bare_usage() {

@@ -399,11 +399,20 @@ validation error.
 
 ### 8.3 Readout
 
-`dxberry-radio gps [--json]` reads one `TPV` and one `SKY` report through
-`gpspipe -w -n 20` (3 s timeout), and prints: fix mode (none/2D/3D),
-latitude, longitude, altitude in feet, speed in mph, satellites used/seen,
-UTC time, and the 6-character Maidenhead grid computed in awk. With no gpsd
-or no fix it prints `no fix` and exits 0; the JSON carries `"fix": 0`.
+`dxberry-radio gps [--json]` reads the `DEVICES` report gpsd sends on
+connect plus one `TPV` and one `SKY` report through `gpspipe -w -n 20`
+(3 s timeout). The JSON carries fix mode, `receiver`, latitude, longitude,
+altitude in feet, speed in mph, satellites used/seen, UTC time, and the
+6-character Maidenhead grid computed in awk. The text form is the state line
+`status` and the status file use:
+
+- `no receiver` — gpsd is unreachable, or it answers with an empty `DEVICES`
+  list (nothing plugged in, or the uart/explicit path is not there);
+- `no fix` — a receiver is present but has not reached mode 2 yet;
+- `3D fix DM97hd (37.145833, -101.375), 8/12 satellites`.
+
+With no gpsd, no receiver or no fix it still exits 0; the JSON then carries
+`"fix": 0` with `"receiver": false` or `true`.
 
 ## 9. Ownership and application wiring
 
@@ -491,8 +500,11 @@ and before `provision_scrub`. It:
 4. Runs `dxberry-radio apply` (no radios on first boot: this installs the
    rules head and the empty runtime mirror).
 5. Seeds Graywolf's GPS source (§8.2).
-6. Status lines: `radio: N radios, M present`, `gps: <device policy>,
-   <fix state or "no receiver">`, `time: chrony (gps <present|absent>)`.
+6. Status lines: `radio: N radios, M present`; `gps: <GPS_DEVICE policy>,
+   <state>` with the three states of §8.3 (`gps: off (GPS_DEVICE=none)` when
+   GPS is off); `time: chrony (gps <present|absent>)`, where present means
+   the fix mode read in the same call was 2 or 3 — the line is derived from
+   the fix, never by matching the text of the gps line.
 
 `--check` validates the new keys. `--reseed` re-applies the GPS seed.
 `boot/dietpi.overrides.txt` adds the new packages to

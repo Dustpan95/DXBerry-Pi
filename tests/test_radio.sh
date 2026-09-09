@@ -398,3 +398,24 @@ test_apply_holds_a_lock_while_it_runs_and_frees_it_afterwards() {
   assert_eq "$(cat "$TEST_TMP/lockprobe")" "1"
   assert_ok flock -n "$DXB_RUN_DIR/apply.lock" true      # nothing running now: the lock is free again
 }
+
+test_apply_reports_the_pending_alsa_id_until_the_card_is_renamed() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
+  dxb_radio_add radio1 '{"audio":"1","cat":"2"}' > /dev/null
+  dxb_radio_apply 2> "$TEST_TMP/stderr"
+  assert_contains "$(cat "$TEST_TMP/stderr")" "radio1: audio id takes effect on replug or reboot"
+  assert_eq "$(jq -r '.radios.radio1.alsa_id' "$DXB_RADIOS_STATE")" "Device"
+  # the udev rule renamed the card (or it was replugged): nothing pending any more
+  printf 'RADIO1\n' > "$DXB_SYSFS_ROOT/$FX_USB_BASE/1-1.3/1-1.3:1.0/sound/card1/id"
+  dxb_radio_apply 2> "$TEST_TMP/stderr"
+  assert_not_contains "$(cat "$TEST_TMP/stderr")" "takes effect on replug"
+  assert_eq "$(jq -r '.radios.radio1.alsa_id' "$DXB_RADIOS_STATE")" "RADIO1"
+}
+
+test_apply_leaves_alsa_id_null_for_a_radio_with_no_audio_pin() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
+  dxb_radio_add cat1 '{"cat":"2"}' > /dev/null
+  dxb_radio_apply 2> "$TEST_TMP/stderr"
+  assert_eq "$(jq -r '.radios.cat1.alsa_id' "$DXB_RADIOS_STATE")" "null"
+  assert_not_contains "$(cat "$TEST_TMP/stderr")" "takes effect on replug"
+}

@@ -236,6 +236,24 @@ dxb_radio_kernel_names() {
   printf '%s\n' "$out"
 }
 
+# dxb_radio_alsa_id KERNEL: the ALSA id card KERNEL carries right now (empty when unknown).
+# udev's ATTR{id}= only applies at card registration, so an already-registered card keeps the
+# id it was born with until it is replugged or the Pi reboots.
+dxb_radio_alsa_id() {
+  local v=''
+  [[ -n $1 && -f $DXB_SYSFS_ROOT/class/sound/$1/id ]] && read -r v < "$DXB_SYSFS_ROOT/class/sound/$1/id"
+  printf '%s' "$v"
+}
+
+# _dxb_radio_report_alsa_id NAME: say so once per apply while the card still answers to its old id.
+_dxb_radio_report_alsa_id() {
+  local kernel id
+  kernel=$(jq -r '.audio // empty' <<< "$(dxb_radio_kernel_names "$1")")
+  [[ -n $kernel ]] || return 0
+  id=$(dxb_radio_alsa_id "$kernel")
+  [[ -z $id || $id == "${1^^}" ]] || dxb_info "radio $1: audio id takes effect on replug or reboot"
+}
+
 # dxb_radio_present NAME: 0 when every pinned function was found in the current scan, else 4.
 dxb_radio_present() {
   local r names
@@ -253,8 +271,9 @@ dxb_radio_write_state() {
     if dxb_radio_present "$n"; then present=true; else present=false; fi
     names=$(dxb_radio_kernel_names "$n")
     out=$(jq -c --arg n "$n" --argjson p "$present" --argjson k "$names" --arg s "$(dxb_rigctld_state "$n")" \
+      --arg a "$(dxb_radio_alsa_id "$(jq -r '.audio // empty' <<< "$names")")" \
       --arg h "$(dxb_radio_wire_hash "$(dxb_radio_get "$n")")" --arg w "$(jq -r --arg n "$n" '.radios[$n].wired_hash // ""' "$DXB_RADIOS_STATE" 2> /dev/null)" \
-      '.[$n] = {present: $p, kernel: $k, rigctld: $s, wire_hash: $h, wired_hash: $w}' <<< "$out")
+      '.[$n] = {present: $p, kernel: $k, rigctld: $s, alsa_id: (if $a == "" then null else $a end), wire_hash: $h, wired_hash: $w}' <<< "$out")
   done
   mkdir -p "$(dirname "$DXB_RADIOS_STATE")" 2> /dev/null
   content=$(jq -c --argjson r "$out" '{generated: (now | todate), radios: $r}' <<< '{}')
@@ -308,6 +327,7 @@ _dxb_radio_apply() {
   for n in $(dxb_radio_names); do
     r=$(dxb_radio_get "$n")
     if dxb_radio_present "$n"; then present=1; else present=0; dxb_info "radio $n: device absent"; fi
+    (( present )) && _dxb_radio_report_alsa_id "$n"
     dxb_rigctld_sync "$n" "$r" "$present" || rc=6
   done
   # shellcheck disable=SC2046
@@ -418,7 +438,7 @@ DXB_RADIO_REBOOT_NEEDED=0
 # handoff from systemd-timesyncd to chrony, derived radio state, and the status lines. A failed
 # apt install is a failed step named "radio", never fatal - the rest of the step still runs.
 provision_radio() {
-  local n present=0 total=0 gps_state
+  local n present=0 total=0 fix='{"fix":0,"receiver":false}'
   # shellcheck disable=SC2086
   if ! DEBIAN_FRONTEND=noninteractive apt-get install -y $DXB_RADIO_PACKAGES > /dev/null 2>&1; then
     dxb_step_failed radio "could not install $DXB_RADIO_PACKAGES (no network?); rigctld and gpsd will be missing until a re-run"
@@ -451,8 +471,13 @@ provision_radio() {
     dxb_radio_present "$n" && present=$(( present + 1 ))
   done
   dxb_status_add "radio: $total radios, $present present (manage with: sudo dxberry-radio scan)"
-  if (( DXB_CFG[_GPS] )); then gps_state=$(dxb_gps_status_line); else gps_state='gps: off (GPS_DEVICE=none)'; fi
-  dxb_status_add "$gps_state"
-  dxb_status_add "time: chrony (gps $( [[ $gps_state == *fix* && $gps_state != *"no fix"* ]] && echo present || echo absent ))"
+  if (( DXB_CFG[_GPS] )); then
+    fix=$(dxb_gps_fix)
+    dxb_status_add "$(dxb_gps_status_line "$fix")"
+  else
+    dxb_status_add 'gps: off (GPS_DEVICE=none)'
+  fi
+  # the time line reads the fix mode, never the status text: a 2D/3D fix is what chrony can use
+  dxb_status_add "time: chrony (gps $( [[ $(jq -r '.fix >= 2' <<< "$fix") == true ]] && echo present || echo absent ))"
   return 0
 }

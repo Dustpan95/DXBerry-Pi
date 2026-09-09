@@ -73,18 +73,37 @@ test_gps_fix_parses_tpv_and_sky() {
   gps_env
   cat > "$TEST_TMP/gpspipe.out" <<'EOF'
 {"class":"VERSION","release":"3.25"}
+{"class":"DEVICES","devices":[{"path":"/dev/ttyACM0","driver":"u-blox"}]}
 {"class":"TPV","mode":3,"time":"2026-09-09T02:00:00.000Z","lat":37.145833,"lon":-101.375,"altHAE":1000.0,"speed":2.0}
 {"class":"SKY","nSat":12,"uSat":8}
 EOF
   local j; j=$(dxb_gps_fix)
   assert_eq "$(jq -r '.fix' <<< "$j")" "3"
+  assert_eq "$(jq -r '.receiver' <<< "$j")" "true"
   assert_eq "$(jq -r '.grid' <<< "$j")" "DM97hd"
   assert_eq "$(jq -r '.alt_ft' <<< "$j")" "3281"
   assert_eq "$(jq -r '.speed_mph' <<< "$j")" "4.5"
   assert_eq "$(jq -r '.sats_used, .sats_seen' <<< "$j" | tr '\n' ' ')" "8 12 "
   rm -f "$TEST_TMP/gpspipe.out"
-  assert_eq "$(dxb_gps_fix)" '{"fix":0}'
-  assert_eq "$(dxb_gps_status_line)" "gps: no fix"
+  assert_eq "$(dxb_gps_fix)" '{"fix":0,"receiver":false}'
+}
+
+test_gps_states_no_receiver_no_fix_and_fix() {
+  gps_env; gps_cfg 'GPS_DEVICE=uart'
+  rm -f "$TEST_TMP/gpspipe.out"                         # no gpsd at all
+  assert_eq "$(dxb_gps_state)" "no receiver"
+  assert_eq "$(dxb_gps_status_line)" "gps: uart, no receiver"
+  printf '%s\n' '{"class":"DEVICES","devices":[]}' > "$TEST_TMP/gpspipe.out"
+  assert_eq "$(dxb_gps_state)" "no receiver"            # gpsd answers, nothing plugged in
+  { echo '{"class":"DEVICES","devices":[{"path":"/dev/ttyAMA0"}]}'; echo '{"class":"TPV","mode":1}'; } > "$TEST_TMP/gpspipe.out"
+  assert_eq "$(jq -r '.receiver' <<< "$(dxb_gps_fix)")" "true"
+  assert_eq "$(dxb_gps_state)" "no fix"                 # receiver present, still searching
+  assert_eq "$(dxb_gps_status_line)" "gps: uart, no fix"
+  { echo '{"class":"DEVICES","devices":[{"path":"/dev/ttyAMA0"}]}'
+    echo '{"class":"TPV","mode":3,"lat":37.145833,"lon":-101.375}'
+    echo '{"class":"SKY","nSat":12,"uSat":8}'; } > "$TEST_TMP/gpspipe.out"
+  assert_eq "$(dxb_gps_state)" "3D fix DM97hd (37.145833, -101.375), 8/12 satellites"
+  assert_eq "$(dxb_gps_status_line)" "gps: uart, 3D fix DM97hd (37.145833, -101.375), 8/12 satellites"
 }
 
 test_gps_configure_writes_nothing_when_chrony_template_missing() {

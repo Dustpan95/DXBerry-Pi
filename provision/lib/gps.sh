@@ -77,22 +77,32 @@ dxb_maidenhead() {
       97 + int(((lon % 20) % 2) * 12), 97 + int((lat % 1) * 24) }'
 }
 
-# dxb_gps_fix: one JSON object from gpsd, {"fix":0} when there is no daemon or no fix.
+# dxb_gps_fix: one JSON object from gpsd, {"fix":0,"receiver":false} when there is no daemon or
+# no fix. "receiver" comes from the DEVICES report gpsd sends on connect: it separates "gpsd is
+# not running / has nothing plugged in" from "the receiver is there but has not found the sky yet".
 dxb_gps_fix() {
-  local raw tpv sky
+  local raw tpv sky recv=false
   raw=$(timeout 3 "$DXB_GPSPIPE" -w -n 20 2> /dev/null) || raw=''
+  jq -se 'map(select(.class == "DEVICES")) | last // empty | (.devices // []) | length > 0' <<< "$raw" > /dev/null 2>&1 && recv=true
   tpv=$(jq -cs 'map(select(.class == "TPV" and (.mode // 0) >= 2)) | last // empty' <<< "$raw" 2> /dev/null)
-  [[ -n $tpv ]] || { echo '{"fix":0}'; return 0; }
+  [[ -n $tpv ]] || { printf '{"fix":0,"receiver":%s}\n' "$recv"; return 0; }
   sky=$(jq -cs 'map(select(.class == "SKY")) | last // {}' <<< "$raw" 2> /dev/null)
-  jq -cn --argjson t "$tpv" --argjson s "$sky" --arg grid "$(dxb_maidenhead "$(jq -r .lat <<< "$tpv")" "$(jq -r .lon <<< "$tpv")")" '
-    {fix: $t.mode, lat: $t.lat, lon: $t.lon,
+  jq -cn --argjson t "$tpv" --argjson s "$sky" --argjson recv "$recv" --arg grid "$(dxb_maidenhead "$(jq -r .lat <<< "$tpv")" "$(jq -r .lon <<< "$tpv")")" '
+    {fix: $t.mode, receiver: $recv, lat: $t.lat, lon: $t.lon,
      alt_ft: (((($t.altHAE // $t.altMSL // $t.alt // 0) * 3.28084) + 0.5) | floor),
      speed_mph: ((($t.speed // 0) * 2.23694 * 10 + 0.5) | floor / 10),
      sats_used: ($s.uSat // 0), sats_seen: ($s.nSat // 0), time: ($t.time // ""), grid: $grid}'
 }
 
-dxb_gps_status_line() {
-  local j; j=$(dxb_gps_fix)
-  if [[ $(jq -r .fix <<< "$j") == 0 ]]; then echo "gps: no fix"
-  else jq -r '"gps: " + (.fix|tostring) + "D fix " + .grid + " (" + (.lat|tostring) + ", " + (.lon|tostring) + "), " + (.sats_used|tostring) + "/" + (.sats_seen|tostring) + " satellites"' <<< "$j"; fi
+# dxb_gps_state [FIX_JSON]: "no receiver", "no fix", or "3D fix DM97hd (lat, lon), 8/12 satellites".
+dxb_gps_state() {
+  local j=${1:-}
+  [[ -n $j ]] || j=$(dxb_gps_fix)
+  if [[ $(jq -r '.fix >= 2' <<< "$j") == true ]]; then
+    jq -r '(.fix|tostring) + "D fix " + .grid + " (" + (.lat|tostring) + ", " + (.lon|tostring) + "), " + (.sats_used|tostring) + "/" + (.sats_seen|tostring) + " satellites"' <<< "$j"
+  elif [[ $(jq -r '.receiver' <<< "$j") == true ]]; then echo "no fix"
+  else echo "no receiver"; fi
 }
+
+# dxb_gps_status_line [FIX_JSON]: the status-file line - the configured policy, then the state.
+dxb_gps_status_line() { printf 'gps: %s, %s\n' "${DXB_CFG[GPS_DEVICE]:-auto}" "$(dxb_gps_state "${1:-}")"; }

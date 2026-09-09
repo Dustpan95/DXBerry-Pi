@@ -21,6 +21,9 @@ fx_usb_function() {
     hid) leaf="$base/0003:0D8C:013C.0002/hidraw/$kernel"; cls="hidraw" ;;
   esac
   mkdir -p "$leaf" "$root/class/$cls"
+  # a sound card carries the ALSA id udev's ATTR{id}= rewrites; "Device" is what the kernel
+  # gives a USB codec before any rename, so a test can prove apply reports the pending rename
+  [[ $kind != audio ]] || printf 'Device\n' > "$leaf/id"
   ln -sfn "$(realpath --relative-to="$root/class/$cls" "$leaf")" "$root/class/$cls/$kernel"
 }
 # fx_onboard_card ROOT KERNEL NAME: a non-USB sound card (vc4-hdmi, bcm2835)

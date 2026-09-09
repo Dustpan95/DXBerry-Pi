@@ -72,11 +72,15 @@ cmd_status() {
   [[ -n $only ]] && [[ $(jq 'length' <<< "$out") == 0 ]] && { echo "no such radio: $only" >&2; return 3; }
   if (( JSON )); then jq -cn --argjson r "$out" --argjson g "$(dxb_gps_fix)" '{radios: $r, gps: $g}'; return 0; fi
   [[ $out == '{}' ]] && { echo "no radios pinned; run: dxberry-radio scan"; }
-  jq -r 'to_entries[] | "\(.key)  \(.value.label)  \(if .value.present then "present" else "ABSENT" end)  rigctld:\(.value.rigctld) port \(.value.rigctld_port)  owner:\(if .value.owner == "" then "-" else .value.owner end)  \(.value.freq) \(.value.mode)  ptt:\(.value.ptt.method)"' <<< "$out"
+  jq -r 'to_entries[] | "\(.key)  \(.value.label)  \(if .value.present then "present" else "ABSENT" end)  rigctld:\(.value.rigctld) port \(.value.rigctld_port)  owner:\(if .value.owner == "" then "-" else .value.owner end)  \(.value.freq) \(.value.mode)  ptt:\(.value.ptt.method)  alsa:\(.value.alsa_id // "-")"' <<< "$out"
   dxb_gps_status_line
 }
 
-cmd_gps() { if (( JSON )); then dxb_gps_fix; else local j; j=$(dxb_gps_fix); if [[ $(jq -r .fix <<< "$j") == 0 ]]; then echo "no fix"; else dxb_gps_status_line | sed 's/^gps: //'; fi; fi; }
+cmd_gps() {
+  local j; j=$(dxb_gps_fix)
+  if (( JSON )); then printf '%s\n' "$j"; return 0; fi
+  dxb_gps_state "$j"
+}
 
 main() {
   local cmd='' args=() a rc opts
