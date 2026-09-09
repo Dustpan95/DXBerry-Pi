@@ -68,7 +68,8 @@ handed over automatically (the previous owner is unwired first); rigctld runs fo
 regardless of ownership, since CAT control is not exclusive. `sudo dxberry-radio status` shows what is
 present and who owns it.
 
-GPS is configured through `dxberry.txt`: `GPS_DEVICE` (`auto`, `none`, or a `/dev/tty...` path),
+GPS is configured through `dxberry.txt`: `GPS_DEVICE` (`auto`, `none`, `uart` for a receiver on
+the GPIO serial pins, or a `/dev/tty...` path),
 `GPS_BAUD`, and `GPS_PPS` (a BCM GPIO number for a 1PPS signal). gpsd feeds both chrony (system time)
 and Graywolf (beacon position); `sudo dxberry-radio gps` prints the current fix.
 

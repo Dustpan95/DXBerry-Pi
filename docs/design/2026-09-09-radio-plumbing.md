@@ -137,10 +137,10 @@ directory; nothing in `radio.sh` names an application.
   is also a sound card (same `idVendor:idProduct` and port).
 
 For each function it reads from sysfs: the USB port path (the `devpath`
-chain rendered the way udev's `ID_PATH` does, e.g. `usb-0:1.3:1.0`, taken
-from `udevadm info -q property` when available and from sysfs directly in
-tests), `idVendor`, `idProduct`, `product`, `manufacturer`, `serial` (may be
-empty), and the kernel name (`card1`, `ttyUSB0`, `hidraw2`).
+chain rendered the way udev's `ID_PATH` does, e.g. `usb-0:1.3:1.0`),
+`idVendor`, `idProduct`, `product`, `serial` (may be empty), and the kernel
+name (`card1`, `ttyUSB0`, `hidraw2`). Nothing is read from `udevadm`: the
+scanner derives the path itself, so it works the same on a fixture tree.
 
 Functions are grouped into candidates by their USB *device* port (the part
 before the interface number). A DigiRig Mobile appears as two candidates: its
@@ -201,6 +201,7 @@ Root-owned, mode 0600, written via `dxb_write_if_changed` after validation.
       "audio": {"path": "usb-0:1.3:1.0", "vidpid": "0d8c:013c", "serial": ""},
       "cat":   {"path": "usb-0:1.3:1.1", "vidpid": "10c4:ea60", "serial": "0001"},
       "hid":   null,
+      "ptt_serial": null,
       "ptt":   {"method": "rigctld", "gpio_line": null},
       "rig":   {"model": 1, "baud": 57600, "ptt_type": "RTS"},
       "rigctld_port": 4532,
@@ -212,8 +213,9 @@ Root-owned, mode 0600, written via `dxb_write_if_changed` after validation.
 }
 ```
 
-- `audio`/`cat`/`hid` are function pins: `path` is the USB interface port
-  path; `null` when the radio has no such function.
+- `audio`/`cat`/`hid`/`ptt_serial` are function pins: `path` is the USB
+  interface port path; `null` when the radio has no such function.
+  `ptt_serial` pins a second serial port for PTT when it is not the CAT port.
 - `ptt.method` ∈ `rigctld`, `cm108`, `gpio`, `vox`, `digirig_tone`, `none`.
   `serial_rts`/`serial_dtr` are deliberately absent: serial PTT is rigctld's
   job (`rig.ptt_type` ∈ `RIG`, `RTS`, `DTR`, `NONE`).
@@ -227,15 +229,19 @@ Root-owned, mode 0600, written via `dxb_write_if_changed` after validation.
 
 `/run/dxberry/radios-state.json` is the runtime mirror written by `apply` and
 `hotplug`: per radio `present` (all pinned functions found), `rigctld`
-(`active`/`inactive`/`failed`), and the kernel names resolved this boot. It is
-what `status` and the console read; it never holds configuration.
+(`active`/`inactive`/`failed`), the kernel names resolved this boot,
+`alsa_id` (the id the audio card answers to right now, §7.1), `wire_hash`
+(the hash of the wiring inputs in the record) and `wired_hash` (the hash the
+owner was last wired with — when the two differ, `apply` re-wires the owner).
+It is what `status` and the console read; it never holds configuration.
 
 ### 6.2 Subcommands
 
 All require root (`dxb_require_root`). All accept `--json`, anywhere in the
-argument list; the commands that print nothing on success (`add`/`set` when
-their status block is not wanted, `apply`, `hotplug`, `release`, `remove`)
-answer `{"ok":true}` in that mode, so a caller never has to read an empty
+argument list. `scan`, `status`, `gps` and, in JSON mode, `add`/`set`/`claim`
+(which print the radio's status block) answer with their own object; the
+four that otherwise print nothing on success — `apply`, `hotplug`, `release`,
+`remove` — answer `{"ok":true}`, so a caller never has to read an empty
 stdout as success. Exit codes:
 
 | Code | Meaning |
@@ -306,9 +312,9 @@ subsystems costs nothing, because `apply hotplug` is idempotent.
 
 `ID_PATH` is matched with a leading wildcard because its prefix names the
 host controller (`platform-fd500000.pcie-pci-0000:01:00.0-`).
-A separate `-ptt` symlink is generated only when `rig.ptt_type` is RTS/DTR
-and the PTT serial function differs from the CAT function (rare; the record
-allows a `ptt_serial` pin for it).
+A separate `-ptt` symlink is generated whenever a `ptt_serial` pin is set,
+which is that pin's only purpose: a radio whose PTT serial line is a
+different device from its CAT port (rare).
 
 After writing, `apply` runs `udevadm control --reload` and
 `udevadm trigger --subsystem-match=sound --subsystem-match=tty
@@ -336,24 +342,32 @@ readable and avoids Graywolf's detector listing HDMI first.
 
 ```
 [Unit]
-Description=Hamlib rigctld for %i
+Description=Hamlib rigctld for radio %i (DXBerry-Pi)
+Documentation=file:///opt/dxberry/bin/dxberry-radio
 After=dxberry-radio-hotplug.service
 StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
 EnvironmentFile=/run/dxberry/rigctld/%i.env
-ExecStart=/usr/bin/rigctld -m ${MODEL} ${RIG_ARGS} -T 127.0.0.1 -t ${PORT} ${PTT_ARGS}
+ExecStart=/usr/bin/rigctld -m $MODEL -T 127.0.0.1 -t $PORT $RIG_ARGS $PTT_ARGS
 Restart=on-failure
 RestartSec=5
 ```
 
 `apply` writes `/run/dxberry/rigctld/radio1.env` from the record:
-`MODEL=1`, `PORT=4532`, `RIG_ARGS="-r /dev/dxberry/radio1-cat -s 57600"`
-(empty when there is no CAT function), `PTT_ARGS="-P RTS -p
-/dev/dxberry/radio1-cat"` (or `-P RIG` for CAT PTT, empty for NONE). It then
-starts the instance when the radio is present and stops it when absent.
-Instances are never `enable`d: `dxberry-radio-hotplug.service` (a oneshot,
+`MODEL=1`, `PORT=4532`, `RIG_ARGS=-r /dev/dxberry/radio1-cat -s 57600`
+(empty when there is no CAT function), `PTT_ARGS=-P RTS -p
+/dev/dxberry/radio1-cat` (or `-P RIG` for CAT PTT, empty for NONE).
+
+The variables are unbraced and the env values unquoted on purpose: systemd
+splits an unbraced `$RIG_ARGS` into separate arguments, while `${RIG_ARGS}`
+would hand rigctld the whole string as one argument, and an unquoted empty
+value drops off the command line entirely — which is what a radio with no
+CAT port or no PTT needs.
+
+`apply` then starts the instance when the radio is present and stops it when
+absent. Instances are never `enable`d: `dxberry-radio-hotplug.service` (a oneshot,
 `WantedBy=multi-user.target`, `After=local-fs.target systemd-udevd.service`)
 runs `apply` once at boot, which starts the instances for radios already
 present, and udev re-runs it on every later add or remove.
@@ -376,12 +390,12 @@ New `dxberry.txt` keys (advanced seeds, blank = default):
 `dxberry-preboot` writes the `config.txt` changes for `uart` and `GPS_PPS`
 (both need a reboot, which first boot already does). They are appended under
 an `[all]` header whenever the file's last section header is a
-model-specific one, so a line can never end up scoped to (say) `[cm4]`. `CONFIG_NTP_MODE=0`,
-DietPi's hand-off of `systemd-timesyncd`, is written into `dietpi.txt` by
-`provision_radio` instead — right after chrony is enabled and timesyncd
-masked. Written in preboot it would take effect before DietPi's own first
-run, leaving a Pi with no RTC on a stale clock through DietPi's apt run and
-the Graywolf TLS download. `GPS_DEVICE=uart` with `SERIAL_CONSOLE=on` is a
+model-specific one, so a line can never end up scoped to (say) `[cm4]`.
+`CONFIG_NTP_MODE=0`, DietPi's hand-off of `systemd-timesyncd`, is written
+into `dietpi.txt` by `provision_radio` instead — right after chrony is
+enabled and timesyncd masked. Written in preboot it would take effect before
+DietPi's own first run, leaving a Pi with no RTC on a stale clock through
+DietPi's apt run and the Graywolf TLS download. `GPS_DEVICE=uart` with `SERIAL_CONSOLE=on` is a
 validation error.
 
 ### 8.2 Services
@@ -447,6 +461,11 @@ With no gpsd, no receiver or no fix it still exits 0; the JSON then carries
 
 Applications with `wiring: names` skip `wire`/`unwire`; the core still
 starts and stops the unit.
+
+Every module is sourced into the same shell as the core, and a single run may
+source several, so a module's private helpers must carry its own prefix
+(`dxb_gwapp_*` for Graywolf): an unprefixed helper silently replaces the
+same-named helper of another module.
 
 ### 9.2 Hand-over (`claim NAME APP`)
 
@@ -516,7 +535,9 @@ and before `provision_scrub`. It:
    `gpsd.socket`; writes `CONFIG_NTP_MODE=0` into `dietpi.txt` (§8.1).
 4. Runs `dxberry-radio apply` (no radios on first boot: this installs the
    rules head and the empty runtime mirror).
-5. Seeds Graywolf's GPS source (§8.2).
+5. Nothing for Graywolf: the GPS source is seeded by `dxb_gw_seed`
+   (`provision_graywolf`, §8.2) under the same seed-state rules as the other
+   seeds — written once per box, re-applied only by `--reseed`.
 6. Status lines: `radio: N radios, M present`; `gps: <GPS_DEVICE policy>,
    <state>` with the three states of §8.3 (`gps: off (GPS_DEVICE=none)` when
    GPS is off); `time: chrony (gps <present|absent>)`, where present means
@@ -576,14 +597,26 @@ To verify on hardware (acceptance task):
    rigctld PTT method with acceptable latency.
 9. Hand-over `claim`/`release` leaves no process holding the ALSA device
    (`fuser /dev/snd/*`).
-10. USB GPS hotplug → gpsd → chrony `sources` shows GPS; `dxberry-radio gps`
-    shows a fix; Graywolf beacons the live position.
+10. USB GPS hotplug → gpsd → `chronyc sources` must list GPS as reachable
+    (not merely present in the config; see the SHM risk below);
+    `dxberry-radio gps` shows a fix; Graywolf beacons the live position.
 11. Unplug/replug of a radio restores names and rigctld without a reboot.
 12. DigiRig internal-hub topology as seen on the Pi 4 (§5.1: codec and
     CP2102 as two sibling USB devices, not two functions of one).
 13. `TAG==` matches on remove events (udev restores the tags from its
     database); the fallback rule of §7.1 covers the removal either way, so
     check that a replug does not run the apply twice for one event.
+
+Named risk — chrony may not be able to read gpsd's SHM refclocks. gpsd
+creates SHM units 0 and 1 for the user it runs as (root on Debian), while
+chrony's daemon runs as `_chrony`, so the drop-in of §8.2 can end up pointing
+at segments chrony cannot open — with no error beyond GPS never appearing in
+`chronyc sources`. The two mitigations, in order of preference: point the
+drop-in at gpsd's units 2 and 3, which gpsd creates world-readable for
+exactly this case (`refclock SHM 2` / `SHM 3`), or run chrony as root
+(`-u root`). Neither is applied pre-emptively — the acceptance run (item 10)
+is what decides, and whichever it needs is a one-line change to the chrony
+template.
 
 ## 13. Testing
 
