@@ -6,7 +6,8 @@ source "$DXB_LIB/graywolf.sh"
 
 gw_env() {
   export DXB_STATE_DIR=$TEST_TMP/state DXB_LOG_FILE=$TEST_TMP/state/log DXB_GW_COOKIES=$TEST_TMP/cookies \
-    DXB_GW_SEED_STATE=$TEST_TMP/state/graywolf-seed.env DXB_GW_API=http://gw/api DXB_GW_RELEASES=http://rel DXB_DPKG_ARCH=arm64 DXB_ZONEINFO_DIR=$TEST_TMP/nozone
+    DXB_GW_SEED_STATE=$TEST_TMP/state/graywolf-seed.env DXB_GW_API=http://gw/api DXB_GW_RELEASES=http://rel DXB_DPKG_ARCH=arm64 DXB_ZONEINFO_DIR=$TEST_TMP/nozone \
+    DXB_GW_SECRET_FILE=$TEST_TMP/state/graywolf.secret
   mkdir -p "$DXB_STATE_DIR" "$TEST_TMP/http"
   : > "$TEST_TMP/calls"
   DXB_STATUS_LINES=(); DXB_FAILED_STEPS=(); DXB_CONSUMED_SECRETS=''
@@ -328,6 +329,28 @@ test_gw_seed_gps_skipped_when_none() {
   dxb_config_load "$TEST_TMP/dxberry.txt"; dxb_config_validate
   dxb_gw_seed 0 > /dev/null
   assert_not_contains "$(cat "$TEST_TMP/calls")" '/gps'
+}
+
+test_gw_seed_saves_admin_secret() {
+  gw_env
+  printf 'PASSWORD=examplepass\nWEBUI_PASSWORD=hunter2hunter2\nCALLSIGN=W0BTE\n' > "$TEST_TMP/dxberry.txt"
+  dxb_config_load "$TEST_TMP/dxberry.txt"; dxb_config_validate
+  dxb_gw_seed 0 > /dev/null
+  assert_eq "$(stat -c %a "$DXB_GW_SECRET_FILE")" "600"
+  assert_eq "$(cat "$DXB_GW_SECRET_FILE")" $'USER=admin\nPASSWORD=hunter2hunter2'
+}
+
+test_gw_login_any_prefers_secret_file_then_config() {
+  gw_env
+  printf 'USER=admin\nPASSWORD=fromfile12\n' > "$DXB_GW_SECRET_FILE"; chmod 600 "$DXB_GW_SECRET_FILE"
+  assert_ok dxb_gw_login_any
+  assert_contains "$(cat "$TEST_TMP/calls")" 'POST /auth/login {"username":"admin","password":"fromfile12"}'
+  rm -f "$DXB_GW_SECRET_FILE"; : > "$TEST_TMP/calls"
+  printf 'PASSWORD=examplepass\nWEBUI_PASSWORD=fromconfig1\n' > "$TEST_TMP/dxberry.txt"
+  dxb_config_load "$TEST_TMP/dxberry.txt"; dxb_config_validate
+  assert_ok dxb_gw_login_any
+  assert_contains "$(cat "$TEST_TMP/calls")" '"password":"fromconfig1"'
+  assert_eq "$(cat "$DXB_GW_SECRET_FILE")" $'USER=admin\nPASSWORD=fromconfig1'   # a successful config login is saved too
 }
 
 test_seed_login_prompt_without_terminal_fails_distinctly() {

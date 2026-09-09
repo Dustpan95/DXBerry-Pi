@@ -6,8 +6,28 @@
 : "${DXB_GW_RELEASES:=https://github.com/chrissnell/graywolf/releases}"
 : "${DXB_GW_COOKIES:=/run/dxberry-graywolf.cookies}"
 : "${DXB_GW_SEED_STATE:=$DXB_STATE_DIR/graywolf-seed.env}"
+: "${DXB_GW_SECRET_FILE:=$DXB_STATE_DIR/graywolf.secret}"
 : "${DXB_CURL:=curl}"
 : "${DXB_TTY:=/dev/tty}"
+
+# The admin credentials stay root-only on the Pi so dxberry-radio and the console can log in
+# without prompting after dxberry.txt has been scrubbed.
+dxb_gw_secret_save() {
+  ( umask 077; printf 'USER=%s\nPASSWORD=%s\n' "$1" "$2" > "$DXB_GW_SECRET_FILE.tmp" ) && mv -f "$DXB_GW_SECRET_FILE.tmp" "$DXB_GW_SECRET_FILE" && chmod 600 "$DXB_GW_SECRET_FILE"
+}
+
+# dxb_gw_login_any: the stored secret file, else the config's WEBUI_PASSWORD (dxb_gw_login
+# prompts on a terminal when that value was scrubbed to <applied>). 0 logged in, 1 failed.
+dxb_gw_login_any() {
+  local u pw
+  if [[ -r $DXB_GW_SECRET_FILE ]]; then
+    u=$(sed -n 's/^USER=//p' "$DXB_GW_SECRET_FILE" | head -1); pw=$(sed -n 's/^PASSWORD=//p' "$DXB_GW_SECRET_FILE" | head -1)
+    if [[ -n $u && -n $pw ]] && dxb_gw_api POST /auth/login "$(PW=$pw jq -cn --arg u "$u" '{username: $u, password: env.PW}')" > /dev/null; then return 0; fi
+    dxb_warn "stored Graywolf credentials were rejected; trying dxberry.txt"
+  fi
+  [[ -n ${DXB_CFG[WEBUI_USER]:-} ]] || { dxb_error "no Graywolf credentials available (no $DXB_GW_SECRET_FILE and no dxberry.txt loaded)"; return 1; }
+  dxb_gw_login
+}
 
 dxb_gw_release_base() {
   local v=${DXB_CFG[GRAYWOLF_VERSION]:-}
@@ -152,6 +172,7 @@ dxb_gw_login() {
   dxb_gw_api POST /auth/login "$(PW=$pw jq -cn --arg u "${DXB_CFG[WEBUI_USER]}" '{username: $u, password: env.PW}')" > /dev/null \
     || { dxb_step_failed graywolf "login as ${DXB_CFG[WEBUI_USER]} failed"; return 1; }
   dxb_secret_consumed WEBUI_PASSWORD
+  dxb_gw_secret_save "${DXB_CFG[WEBUI_USER]}" "$pw" || dxb_warn "could not save Graywolf credentials to $DXB_GW_SECRET_FILE"
 }
 
 dxb_gw_seed_igate() {
@@ -233,6 +254,7 @@ dxb_gw_seed() {
       || { dxb_step_failed graywolf "creating admin ${DXB_CFG[WEBUI_USER]} failed"; return 1; }
     dxb_info "graywolf admin '${DXB_CFG[WEBUI_USER]}' created"
     dxb_secret_consumed WEBUI_PASSWORD
+    dxb_gw_secret_save "${DXB_CFG[WEBUI_USER]}" "${DXB_CFG[WEBUI_PASSWORD]}" || dxb_warn "could not save Graywolf credentials to $DXB_GW_SECRET_FILE"
   elif (( ! reseed )); then
     dxb_info "graywolf already set up; not reseeding (use --reseed)"
     dxb_status_add "graywolf: already configured (not reseeded)"
