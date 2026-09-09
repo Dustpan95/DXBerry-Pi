@@ -23,6 +23,16 @@ test_gpsd_default_shapes() {
   gps_cfg 'GPS_DEVICE=none'; assert_eq "$(dxb_gps_gpsd_default | grep '^START_DAEMON=')" 'START_DAEMON="false"'
 }
 
+test_gpsd_options_carry_the_baud_only_for_a_wired_receiver() {
+  gps_env
+  # auto: gpsd hotplugs USB receivers and probes their speed itself
+  gps_cfg ''; assert_eq "$(dxb_gps_gpsd_default | grep '^GPSD_OPTIONS=')" 'GPSD_OPTIONS="-n"'
+  gps_cfg 'GPS_DEVICE=uart' 'GPS_BAUD=38400'
+  assert_eq "$(dxb_gps_gpsd_default | grep '^GPSD_OPTIONS=')" 'GPSD_OPTIONS="-n -s 38400"'
+  gps_cfg 'GPS_DEVICE=/dev/ttyS0'
+  assert_eq "$(dxb_gps_gpsd_default | grep '^GPSD_OPTIONS=')" 'GPSD_OPTIONS="-n -s 9600"'
+}
+
 test_chrony_conf_noselect_only_with_pps() {
   gps_env
   gps_cfg ''; assert_eq "$(dxb_gps_chrony_conf | grep 'SHM 0')" "refclock SHM 0 refid GPS precision 1e-1 offset 0.2 delay 0.2"

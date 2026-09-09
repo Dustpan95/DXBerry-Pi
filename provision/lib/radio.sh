@@ -9,6 +9,7 @@
 : "${DXB_RUN_DIR:=/run/dxberry}"
 : "${DXB_RADIOS_STATE:=$DXB_RUN_DIR/radios-state.json}"
 : "${DXB_APPS_DIR:=${DXB_LIB:-/opt/dxberry/lib}/apps}"
+: "${DXB_DIETPI_TXT:=/boot/dietpi.txt}"
 # DXB_RADIO_SCAN / DXB_RADIOS are the module's public interface state, filled by
 # dxb_radio_scan_cache and (in a later task) dxb_radio_load - read by other modules, not this one.
 # shellcheck disable=SC2034
@@ -427,6 +428,11 @@ provision_radio() {
   systemctl disable --now systemd-timesyncd > /dev/null 2>&1 || true
   systemctl mask systemd-timesyncd > /dev/null 2>&1 || true
   systemctl enable chrony > /dev/null 2>&1 || dxb_step_failed radio "could not enable chrony"
+  # DietPi drives systemd-timesyncd through CONFIG_NTP_MODE; hand the clock over only now that
+  # chrony is in place. Writing it in dxberry-preboot would leave a Pi with no RTC on a stale
+  # clock through DietPi's own first-run apt and the Graywolf TLS download.
+  dxb_set_kv "$DXB_DIETPI_TXT" CONFIG_NTP_MODE 0 \
+    || dxb_step_failed radio "could not set CONFIG_NTP_MODE=0 in $DXB_DIETPI_TXT"
   dxb_gps_configure
   if dxb_gps_boot_config; then
     if [[ ${DXB_MODE:-run} == run ]]; then

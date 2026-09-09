@@ -358,10 +358,14 @@ New `dxberry.txt` keys (advanced seeds, blank = default):
 | `GPS_BAUD` | `9600` | used only for `uart` and explicit paths; USB receivers are auto-detected |
 | `GPS_PPS` | blank | BCM GPIO number carrying a PPS pulse; adds `dtoverlay=pps-gpio,gpiopin=N` and `/dev/pps0` to gpsd |
 
-`dxberry-preboot` writes `CONFIG_NTP_MODE=0` into `dietpi.txt` so DietPi
-stops managing `systemd-timesyncd`, and the `config.txt` changes for `uart`
-and `GPS_PPS` (both need a reboot, which first boot already does).
-`GPS_DEVICE=uart` with `SERIAL_CONSOLE=on` is a validation error.
+`dxberry-preboot` writes the `config.txt` changes for `uart` and `GPS_PPS`
+(both need a reboot, which first boot already does). `CONFIG_NTP_MODE=0`,
+DietPi's hand-off of `systemd-timesyncd`, is written into `dietpi.txt` by
+`provision_radio` instead — right after chrony is enabled and timesyncd
+masked. Written in preboot it would take effect before DietPi's own first
+run, leaving a Pi with no RTC on a stale clock through DietPi's apt run and
+the Graywolf TLS download. `GPS_DEVICE=uart` with `SERIAL_CONSOLE=on` is a
+validation error.
 
 ### 8.2 Services
 
@@ -370,7 +374,9 @@ and `GPS_PPS` (both need a reboot, which first boot already does).
 `systemd-timesyncd`, and configures:
 
 - `/etc/default/gpsd`: `USBAUTO="true"`, `DEVICES` = the uart/explicit path
-  plus `/dev/pps0` when set, `GPSD_OPTIONS="-n"`. gpsd's own
+  plus `/dev/pps0` when set, `GPSD_OPTIONS="-n"` — `-n -s GPS_BAUD` when
+  `DEVICES` names a receiver, since `GPS_BAUD` only applies to a port
+  DXBerry names itself. gpsd's own
   `60-gpsd.rules` handles USB hotplug; DXBerry adds no GPS udev rules.
 - `/etc/chrony/conf.d/dxberry.conf`:
 
@@ -480,7 +486,8 @@ and before `provision_scrub`. It:
 2. Installs the templates: `rigctld@.service`, `dxberry-radio-hotplug.service`
    (enabled), `dxberry-audio.conf`, the chrony drop-in, `/etc/default/gpsd`,
    and creates `/run/dxberry/rigctld` via a `tmpfiles.d` entry.
-3. Disables and masks `systemd-timesyncd`; enables `chrony` and `gpsd.socket`.
+3. Disables and masks `systemd-timesyncd`; enables `chrony` and
+   `gpsd.socket`; writes `CONFIG_NTP_MODE=0` into `dietpi.txt` (§8.1).
 4. Runs `dxberry-radio apply` (no radios on first boot: this installs the
    rules head and the empty runtime mirror).
 5. Seeds Graywolf's GPS source (§8.2).

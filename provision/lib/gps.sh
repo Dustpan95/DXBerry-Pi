@@ -8,12 +8,15 @@
 : "${DXB_GPSPIPE:=gpspipe}"
 : "${DXB_RPI_CONFIG_TXT:=$(dxb_boot_dir)/config.txt}"
 
+# GPS_BAUD applies to a receiver DXBerry names itself (uart or an explicit /dev/tty path);
+# a hotplugged USB receiver is gpsd's own business, so -s is left off there.
 dxb_gps_gpsd_default() {
-  local start=true devices=''
+  local start=true devices='' options='-n'
   (( DXB_CFG[_GPS] )) || start=false
   devices=${DXB_CFG[_GPS_PATH]}
+  [[ -z ${DXB_CFG[_GPS_PATH]} ]] || options="-n -s ${DXB_CFG[GPS_BAUD]}"
   [[ -z ${DXB_CFG[GPS_PPS]} ]] || devices="${devices:+$devices }/dev/pps0"
-  dxb_render "$DXB_TEMPLATES/gpsd-default.tmpl" "START=$start" "DEVICES=$devices"
+  dxb_render "$DXB_TEMPLATES/gpsd-default.tmpl" "START=$start" "DEVICES=$devices" "OPTIONS=$options"
 }
 
 dxb_gps_chrony_conf() {
