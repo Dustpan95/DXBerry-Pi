@@ -265,7 +265,7 @@ app_alpha_wait_ready() { echo "alpha ready" >> "$TEST_TMP/appcalls"; return "${A
 EOF
   cat > "$DXB_APPS_DIR/beta.sh" <<'EOF'
 app_beta_unit() { echo beta.service; }
-app_beta_wire() { echo "beta wire $1" >> "$TEST_TMP/appcalls"; }
+app_beta_wire() { echo "beta wire $1" >> "$TEST_TMP/appcalls"; return "${BETA_WIRE_RC:-0}"; }
 app_beta_unwire() { echo "beta unwire $1" >> "$TEST_TMP/appcalls"; }
 app_beta_needs_service_restart() { echo yes; }
 EOF
@@ -349,4 +349,28 @@ test_app_list_and_rewire() {
   assert_ok dxb_app_rewire r1
   assert_eq "$(appcalls)" "alpha wire r1;"
   dxb_app_rewire r2; assert_eq "$?" "0"                               # no owner: nothing to do
+}
+
+test_claim_warns_when_wiring_hash_cannot_be_recorded() {
+  radio_env; fake_apps; two_radios
+  local blocker=$TEST_TMP/blocker
+  : > "$blocker"
+  DXB_RADIOS_STATE=$blocker/radios-state.json
+  dxb_radio_claim r1 alpha 2> "$TEST_TMP/stderr"; assert_eq "$?" "0"
+  assert_eq "$(jq -r '.owner' <<< "$(dxb_radio_get r1)")" "alpha"
+  assert_contains "$(cat "$TEST_TMP/stderr")" "could not record the wiring hash"
+}
+
+test_claim_failure_after_handover_leaves_radio_released() {
+  radio_env; fake_apps; two_radios
+  unset ALPHA_WIRE_RC
+  dxb_radio_claim r1 alpha > /dev/null                                # alpha owns only r1
+  : > "$TEST_TMP/calls"; : > "$TEST_TMP/appcalls"
+  BETA_WIRE_RC=7
+  dxb_radio_claim r1 beta; assert_eq "$?" "5"
+  assert_eq "$(appcalls)" "alpha unwire r1;beta wire r1;beta unwire r1;"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop alpha.service"   # idle after losing r1
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop beta.service"   # rollback
+  assert_eq "$(jq -r '.owner' <<< "$(dxb_radio_get r1)")" ""
+  unset BETA_WIRE_RC
 }
