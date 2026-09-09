@@ -226,3 +226,30 @@ test_apply_removes_stale_rigctld() {
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop rigctld@radio1"
   assert_eq "$(jq -c '.radios' "$DXB_RADIOS_STATE")" "{}"
 }
+
+test_apply_marks_wiring_hash_atomically() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
+  dxb_radio_add radio1 '{"audio":"1","cat":"2"}' > /dev/null
+  _dxb_radio_set_owner radio1 fakeapp > /dev/null
+  dxb_app_rewire() { return 0; }
+  assert_ok dxb_radio_apply
+  local h; h=$(dxb_radio_wire_hash "$(dxb_radio_get radio1)")
+  assert_eq "$(jq -r '.radios.radio1.wired_hash' "$DXB_RADIOS_STATE")" "$h"
+  jq empty "$DXB_RADIOS_STATE" 2> /dev/null; assert_eq "$?" "0"
+  [[ -z $(find "$(dirname "$DXB_RADIOS_STATE")" -maxdepth 1 -name '*.dxbtmp') ]] || _fail "leftover .dxbtmp file"
+  source "$DXB_LIB/radio.sh"     # restore the real dxb_app_rewire (Task 8) for later tests in this process
+}
+
+test_mark_wired_fails_when_state_parent_is_not_a_directory() {
+  radio_env
+  local blocker=$TEST_TMP/blocker
+  : > "$blocker"
+  DXB_RADIOS_STATE=$blocker/radios-state.json
+  _dxb_radio_mark_wired radio1 deadbeef; assert_eq "$?" "6"
+}
+
+test_add_rejects_radio_with_no_pinned_function() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
+  local err; err=$(dxb_radio_add e '{"label":"nothing"}' 2>&1); assert_eq "$?" "2"
+  assert_contains "$err" "e: needs at least one pinned function"
+}

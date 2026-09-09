@@ -104,7 +104,8 @@ dxb_radio_validate() {
         (if ($r.rigctld_port | type) != "number" or $r.rigctld_port < 4532 or ($r.rigctld_port % 2) != 0 then bad($n + ": bad port") else empty end),
         (if ($r.owner | type) != "string" then bad($n + ": bad owner") else empty end),
         (if (($r.label | type) == "string" and ($r.label | length) <= 40 and ($r.label | test("^[ -~]*$"))) then empty else bad($n + ": bad label") end),
-        (["audio","cat","hid","ptt_serial"][] as $k | if ($r[$k] != null) and (($r[$k].path // "") == "") then bad($n + ": pin " + $k + " has no path") else empty end)
+        (["audio","cat","hid","ptt_serial"][] as $k | if ($r[$k] != null) and (($r[$k].path // "") == "") then bad($n + ": pin " + $k + " has no path") else empty end),
+        (if (["audio","cat","hid","ptt_serial"] | map($r[.]) | map(select(. != null)) | length) == 0 then bad($n + ": needs at least one pinned function") else empty end)
       ),
       (if ([.radios[].rigctld_port] | unique | length) != ([.radios[].rigctld_port] | length) then bad("duplicate rigctld ports") else empty end)
     ] | .[]' <<< "$1" 2>&1)
@@ -254,9 +255,15 @@ dxb_radio_write_state() {
   [[ -f $DXB_RADIOS_STATE && $(< "$DXB_RADIOS_STATE") == "$content" ]] || { dxb_error "could not write $DXB_RADIOS_STATE"; return 6; }
   return 0
 }
-_dxb_radio_mark_wired() { # NAME HASH: remember that the owner was wired with these inputs
-  local j; j=$(jq -c --arg n "$1" --arg h "$2" '.radios[$n].wired_hash = $h' "$DXB_RADIOS_STATE" 2> /dev/null) || return 0
-  printf '%s\n' "$j" > "$DXB_RADIOS_STATE"
+# _dxb_radio_mark_wired NAME HASH: remember that the owner was wired with these inputs. 0 ok, 6 error.
+_dxb_radio_mark_wired() {
+  local n=$1 h=$2 cur j
+  cur=$(jq -c . "$DXB_RADIOS_STATE" 2> /dev/null) || cur='{"radios":{}}'
+  j=$(jq -c --arg n "$n" --arg h "$h" '.radios[$n].wired_hash = $h' <<< "$cur") || return 6
+  mkdir -p "$(dirname "$DXB_RADIOS_STATE")" 2> /dev/null
+  dxb_write_if_changed "$DXB_RADIOS_STATE" "$j" 644
+  [[ -f $DXB_RADIOS_STATE && $(< "$DXB_RADIOS_STATE") == "$j" ]] || { dxb_error "could not write $DXB_RADIOS_STATE"; return 6; }
+  return 0
 }
 
 # dxb_radio_apply [hotplug]: derive everything from the record. 0 ok, 6 derived-state error, 7 re-wire error.
@@ -282,7 +289,11 @@ dxb_radio_apply() {
     h=$(dxb_radio_wire_hash "$r"); wired=$(jq -r --arg n "$n" '.radios[$n].wired_hash // ""' "$DXB_RADIOS_STATE")
     [[ $h == "$wired" ]] && continue
     if declare -F dxb_app_rewire > /dev/null; then
-      if dxb_app_rewire "$n"; then _dxb_radio_mark_wired "$n" "$h"; else dxb_error "radio $n: re-wiring owner $owner failed"; (( rc == 0 )) && rc=7; fi
+      if dxb_app_rewire "$n"; then
+        _dxb_radio_mark_wired "$n" "$h" || dxb_warn "radio $n: could not record the wiring hash; it will be re-wired on the next apply"
+      else
+        dxb_error "radio $n: re-wiring owner $owner failed"; (( rc == 0 )) && rc=7
+      fi
     fi
   done
   return $rc
