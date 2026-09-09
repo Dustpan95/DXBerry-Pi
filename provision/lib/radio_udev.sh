@@ -18,7 +18,11 @@ dxb_radio_udev_rules() {
       (if $r.hid then "SUBSYSTEM==\"hidraw\", ENV{ID_PATH}==\"*-\($r.hid.path)\", SYMLINK+=\"dxberry/\($n)-hid\", TAG+=\"dxberry-radio\"" else empty end)' <<< "$1") || return 6
   printf '%s\n' "$head"
   [[ -z $rules ]] || printf '%s\n' "$rules"
+  # Second rule: on remove, udev replays the tags from its database, which cannot be verified
+  # off-hardware. The fallback catches every remove in the three subsystems we care about
+  # regardless; apply is idempotent, so the extra runs cost nothing.
   printf '\nTAG=="dxberry-radio", ACTION=="add|remove", RUN+="/bin/systemctl --no-block start dxberry-radio-hotplug.service"\n'
+  printf 'ACTION=="remove", SUBSYSTEM=="sound|tty|hidraw", RUN+="/bin/systemctl --no-block start dxberry-radio-hotplug.service"\n'
 }
 
 # 0 written (udev reloaded and re-triggered), 1 unchanged, 6 could not write.

@@ -283,11 +283,18 @@ SUBSYSTEM=="tty", ENV{ID_PATH}=="*-usb-0:1.3:1.1", SYMLINK+="dxberry/radio1-cat"
 SUBSYSTEM=="hidraw", ENV{ID_PATH}=="*-usb-0:1.3:1.3", SYMLINK+="dxberry/radio1-hid", TAG+="dxberry-radio"
 ```
 
-and one trailer rule:
+and two trailer rules:
 
 ```
 TAG=="dxberry-radio", ACTION=="add|remove", RUN+="/bin/systemctl --no-block start dxberry-radio-hotplug.service"
+ACTION=="remove", SUBSYSTEM=="sound|tty|hidraw", RUN+="/bin/systemctl --no-block start dxberry-radio-hotplug.service"
 ```
+
+The second is a fallback: on a remove event udev replays the tags it stored
+in its database, which is exactly the behaviour that cannot be checked
+without hardware, and a missed remove would leave a `rigctld` instance
+running against a device that is gone. Catching every remove in the three
+subsystems costs nothing, because `apply hotplug` is idempotent.
 
 `ID_PATH` is matched with a leading wildcard because its prefix names the
 host controller (`platform-fd500000.pcie-pci-0000:01:00.0-`).
@@ -566,6 +573,9 @@ To verify on hardware (acceptance task):
 11. Unplug/replug of a radio restores names and rigctld without a reboot.
 12. DigiRig internal-hub topology as seen on the Pi 4 (§5.1: codec and
     CP2102 as two sibling USB devices, not two functions of one).
+13. `TAG==` matches on remove events (udev restores the tags from its
+    database); the fallback rule of §7.1 covers the removal either way, so
+    check that a replug does not run the apply twice for one event.
 
 ## 13. Testing
 

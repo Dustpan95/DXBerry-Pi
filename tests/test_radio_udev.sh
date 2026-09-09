@@ -30,6 +30,8 @@ test_udev_rules_empty_record_has_head_and_trailer_only() {
   local out; out=$(dxb_radio_udev_rules "$DXB_RADIOS")
   assert_contains "$out" 'IMPORT{builtin}="path_id"'
   assert_contains "$out" 'TAG=="dxberry-radio", ACTION=="add|remove"'
+  # the fallback: a remove event whose db-restored tags cannot be relied on still runs the apply
+  assert_contains "$out" 'ACTION=="remove", SUBSYSTEM=="sound|tty|hidraw", RUN+="/bin/systemctl --no-block start dxberry-radio-hotplug.service"'
   assert_not_contains "$out" 'SYMLINK'
 }
 
@@ -52,7 +54,7 @@ test_udev_rules_label_newline_is_neutralized() {
   while IFS= read -r line; do
     [[ -z $line || $line == \#* ]] && continue
     case $line in
-      SUBSYSTEM==*|TAG==*) ;;
+      SUBSYSTEM==*|TAG==*|ACTION==*) ;;
       *) _fail "unexpected rule line shape: $line" ;;
     esac
   done <<< "$out"

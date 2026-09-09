@@ -11,3 +11,4 @@ SUBSYSTEM=="tty", ENV{ID_PATH}=="*-usb-0:1.4:1.0", SYMLINK+="dxberry/radio1-cat"
 SUBSYSTEM=="hidraw", ENV{ID_PATH}=="*-usb-0:1.3:1.3", SYMLINK+="dxberry/radio1-hid", TAG+="dxberry-radio"
 
 TAG=="dxberry-radio", ACTION=="add|remove", RUN+="/bin/systemctl --no-block start dxberry-radio-hotplug.service"
+ACTION=="remove", SUBSYSTEM=="sound|tty|hidraw", RUN+="/bin/systemctl --no-block start dxberry-radio-hotplug.service"
