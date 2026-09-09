@@ -19,7 +19,7 @@ for _m in common config graywolf radio radio_udev rigctld gps; do
   source "$DXB_LIB/$_m.sh"
 done
 
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 JSON=0
 
 # Loads dxberry.txt when present (GPS keys, Graywolf credentials fallback); absence is fine.
@@ -36,7 +36,7 @@ parse_opts() {
   while (( $# )); do
     case $1 in
       --audio|--cat|--hid|--ptt-serial|--ptt|--ptt-type|--wiring|--label)
-        [[ $# -ge 2 ]] || { echo "$1 needs a value" >&2; return 2; }
+        [[ $# -ge 2 && $2 != --* ]] || { echo "$1 needs a value" >&2; return 2; }
         k=${1#--}; k=${k//-/_}; v=$2; shift
         o=$(jq -c --arg k "$k" --arg v "$v" '.[$k] = $v' <<< "$o") ;;
       --model|--baud|--gpio-line)

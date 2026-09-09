@@ -101,3 +101,20 @@ test_cli_gps_without_daemon() {
   assert_ok cli gps --json
   assert_eq "$(out)" '{"fix":0}'
 }
+
+test_cli_help_and_bare_usage() {
+  cli_env
+  assert_ok cli -h
+  assert_contains "$(out)" "claim NAME APP"
+  assert_contains "$(out)" "scan"
+  cli; assert_eq "$?" "2"
+  assert_contains "$(cat "$TEST_TMP/err")" "claim NAME APP"
+}
+
+test_cli_add_rejects_flag_shaped_option_value() {
+  cli_env
+  cli add radio1 --audio 1 --cat 2 --label --wiring names
+  assert_eq "$?" "2"
+  assert_contains "$(cat "$TEST_TMP/err")" "--label needs a value"
+  assert_ok cli add radio1 --audio 1 --cat 2 --label ""
+}
