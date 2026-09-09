@@ -61,6 +61,14 @@ test_rigctld_query_and_failure() {
   assert_eq "$(dxb_rigctld_query 4532)" "? ?"
 }
 
+test_rigctld_stands_alone_with_templates_default() {
+  rig_env
+  local out
+  # shellcheck disable=SC2016  # single-quoted on purpose: expands inside the child bash -c, not here
+  out=$(env -u DXB_TEMPLATES bash -c 'set -u; source "$1/common.sh"; source "$1/rigctld.sh"; echo "$DXB_TEMPLATES"' _ "$DXB_LIB")
+  assert_eq "$out" "/opt/dxberry/templates"
+}
+
 test_rigctld_install_units_and_stop_stale() {
   rig_env
   assert_ok dxb_rigctld_install_units

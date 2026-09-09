@@ -6,6 +6,7 @@
 : "${DXB_SYSTEMD_DIR:=/etc/systemd/system}"
 : "${DXB_TMPFILES_DIR:=/etc/tmpfiles.d}"
 : "${DXB_RIGCTL:=rigctl}"
+: "${DXB_TEMPLATES:=/opt/dxberry/templates}"
 
 # dxb_rigctld_env NAME RADIO_JSON: the EnvironmentFile content for rigctld@NAME.
 dxb_rigctld_env() {
