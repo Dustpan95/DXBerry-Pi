@@ -73,7 +73,8 @@ fake_curl() {
   esac
 }
 gw_cfg() { printf '%s\n' "$@" > "$TEST_TMP/dxberry.txt"; dxb_config_load "$TEST_TMP/dxberry.txt"; dxb_config_validate; }
-calls() { cat "$TEST_TMP/calls"; }
+# named for this file (see the note in tests/test_app_graywolf.sh)
+gw_calls() { cat "$TEST_TMP/calls"; }
 
 test_release_base_latest_and_pinned() {
   gw_env
@@ -96,9 +97,9 @@ test_install_downloads_verifies_and_installs() {
   printf '%s  graywolf_0.14.13_arm64.deb\n' "$(sha256sum "$TEST_TMP/http/graywolf_0.14.13_arm64.deb" | cut -d' ' -f1)" > "$TEST_TMP/http/checksums.txt"
   dpkg-query() { return 1; }
   assert_ok dxb_gw_install
-  assert_contains "$(calls)" "apt-get install -y"
-  assert_contains "$(calls)" "graywolf_0.14.13_arm64.deb"
-  assert_contains "$(calls)" "FETCH graywolf_0.14.13_arm64.deb ->"
+  assert_contains "$(gw_calls)" "apt-get install -y"
+  assert_contains "$(gw_calls)" "graywolf_0.14.13_arm64.deb"
+  assert_contains "$(gw_calls)" "FETCH graywolf_0.14.13_arm64.deb ->"
   assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
 }
 
@@ -110,7 +111,7 @@ test_install_rejects_checksum_mismatch_and_missing_release() {
   dpkg-query() { return 1; }
   assert_fails dxb_gw_install
   assert_contains "${DXB_FAILED_STEPS[0]}" "checksum mismatch"
-  assert_not_contains "$(calls)" "apt-get"
+  assert_not_contains "$(gw_calls)" "apt-get"
   rm "$TEST_TMP/http/checksums.txt"; DXB_FAILED_STEPS=()
   assert_fails dxb_gw_install
   assert_contains "${DXB_FAILED_STEPS[0]}" "could not download checksums.txt"
@@ -122,7 +123,7 @@ test_install_skips_when_current() {
   printf 'x  graywolf_0.14.13_arm64.deb\n' > "$TEST_TMP/http/checksums.txt"
   dpkg-query() { echo "0.14.13"; }
   assert_ok dxb_gw_install
-  assert_not_contains "$(calls)" "apt-get"
+  assert_not_contains "$(gw_calls)" "apt-get"
 }
 
 # Measured: `dpkg -s graywolf` has no Depends line, and graywolf-modem (a child process
@@ -131,14 +132,14 @@ test_gw_installs_alsa_when_missing() {
   gw_env
   ldconfig() { :; }
   assert_ok dxb_gw_install_runtime_deps
-  assert_contains "$(calls)" "apt-get install -y libasound2t64"
+  assert_contains "$(gw_calls)" "apt-get install -y libasound2t64"
   assert_file_contains "$DXB_LOG_FILE" "installed ALSA runtime for graywolf-modem"
 }
 
 test_gw_skips_alsa_when_present() {
   gw_env
   assert_ok dxb_gw_install_runtime_deps
-  assert_not_contains "$(calls)" "apt-get"
+  assert_not_contains "$(gw_calls)" "apt-get"
 }
 
 # Trixie's package is libasound2t64 (candidate 1.2.14-1+rpt1); older Debian names it
@@ -152,8 +153,8 @@ test_gw_alsa_falls_back_to_libasound2() {
     return 0
   }
   assert_ok dxb_gw_install_runtime_deps
-  assert_contains "$(calls)" "apt-get install -y libasound2t64"
-  assert_contains "$(calls)" "apt-get install -y libasound2"
+  assert_contains "$(gw_calls)" "apt-get install -y libasound2t64"
+  assert_contains "$(gw_calls)" "apt-get install -y libasound2"
   assert_file_contains "$DXB_LOG_FILE" "installed ALSA runtime for graywolf-modem"
   assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
 }
@@ -168,7 +169,7 @@ test_gw_alsa_heal_runs_even_when_release_fetch_fails() {
   # No checksums.txt under $TEST_TMP/http, so the fake curl 404s the release fetch every retry.
   assert_fails dxb_gw_install
   assert_contains "${DXB_FAILED_STEPS[*]}" "could not download checksums.txt"
-  assert_contains "$(calls)" "apt-get install -y libasound2t64"
+  assert_contains "$(gw_calls)" "apt-get install -y libasound2t64"
 }
 
 # The core graywolf.service works without ALSA (only graywolf-modem needs it), so a failure to
@@ -187,8 +188,8 @@ test_gw_alsa_failure_is_reported_but_install_continues() {
   }
   assert_ok dxb_gw_install
   assert_contains "${DXB_FAILED_STEPS[*]}" "could not install the ALSA runtime"
-  assert_contains "$(calls)" "apt-get install -y libasound2t64"
-  assert_contains "$(calls)" "apt-get install -y libasound2"
+  assert_contains "$(gw_calls)" "apt-get install -y libasound2t64"
+  assert_contains "$(gw_calls)" "apt-get install -y libasound2"
   # Specifically the .deb install line, not just any line mentioning the filename (the fake
   # curl's FETCH log line also names it).
   assert_ok grep -qE '^apt-get install -y .*graywolf_0\.14\.13_arm64\.deb$' "$TEST_TMP/calls"
@@ -198,7 +199,7 @@ test_seed_fresh_install_creates_admin_station_igate_beacon_digi() {
   gw_env
   gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2' 'LATITUDE=37.1' 'LONGITUDE=-101.3' 'DIGIPEATER=fillin' 'IGATE_SERVER=noam.aprs2.net' 'BEACON_INTERVAL_MIN=10' 'BEACON_COMMENT=hi'
   assert_ok dxb_gw_seed 0
-  local c; c=$(calls)
+  local c; c=$(gw_calls)
   assert_contains "$c" 'POST /auth/setup {"username":"admin","password":"secretpass"}'
   assert_contains "$c" 'POST /auth/login {"username":"admin","password":"secretpass"}'
   assert_contains "$c" 'PUT /station/config {"callsign":"N0CALL-2"}'
@@ -220,10 +221,10 @@ test_seed_skips_when_already_set_up_unless_reseed() {
   GW_NEEDS_SETUP=false
   gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2'
   assert_ok dxb_gw_seed 0
-  assert_not_contains "$(calls)" "/auth/login"
+  assert_not_contains "$(gw_calls)" "/auth/login"
   assert_ok dxb_gw_seed 1
-  assert_contains "$(calls)" "/auth/login"
-  assert_contains "$(calls)" "PUT /station/config"
+  assert_contains "$(gw_calls)" "/auth/login"
+  assert_contains "$(gw_calls)" "PUT /station/config"
 }
 
 test_reseed_updates_existing_beacon_and_creates_rules_when_channel_exists() {
@@ -233,7 +234,7 @@ test_reseed_updates_existing_beacon_and_creates_rules_when_channel_exists() {
   gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2' 'LATITUDE=37.1' 'LONGITUDE=-101.3' 'DIGIPEATER=wide' 'BEACON_SEND=rf'
   echo "BEACON_ID=7" > "$DXB_GW_SEED_STATE"
   assert_ok dxb_gw_seed 1
-  local c; c=$(calls)
+  local c; c=$(gw_calls)
   # id is read-only on this endpoint (G1); the merge strips it, even though the path still
   # names the beacon by id.
   assert_contains "$c" 'PUT /beacons/7 {"comment":"DXBerry-Pi iGate","enabled":true,"type":"position"'
@@ -252,7 +253,7 @@ test_seed_igate_strips_read_only_id() {
   GW_IGATE_CONFIG='{"id":1,"enabled":true,"operator_note":"keep"}'
   gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2' 'IGATE_SERVER=noam.aprs2.net'
   assert_ok dxb_gw_seed 0
-  local c; c=$(calls)
+  local c; c=$(gw_calls)
   assert_contains "$c" 'PUT /igate/config '
   assert_contains "$c" '"operator_note":"keep"'
   local put_body; put_body=$(sed -n 's/^PUT \/igate\/config //p' "$TEST_TMP/calls")
@@ -267,7 +268,7 @@ test_seed_beacon_update_strips_read_only_id() {
   gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2' 'LATITUDE=37.1' 'LONGITUDE=-101.3'
   echo "BEACON_ID=7" > "$DXB_GW_SEED_STATE"
   assert_ok dxb_gw_seed 0
-  assert_contains "$(calls)" 'PUT /beacons/7 '
+  assert_contains "$(gw_calls)" 'PUT /beacons/7 '
   local put_body; put_body=$(sed -n 's/^PUT \/beacons\/7 //p' "$TEST_TMP/calls")
   assert_contains "$put_body" '"operator_note":"keep"'
   assert_not_contains "$put_body" '"id"'
@@ -277,7 +278,7 @@ test_seed_rf_beacon_without_channel_falls_back_to_is_only() {
   gw_env
   gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2' 'LATITUDE=37.1' 'LONGITUDE=-101.3' 'BEACON_SEND=both'
   assert_ok dxb_gw_seed 0
-  assert_contains "$(calls)" '"send_path":"is_only"'
+  assert_contains "$(gw_calls)" '"send_path":"is_only"'
   assert_contains "${DXB_STATUS_LINES[*]}" "APRS-IS only until a radio channel exists"
 }
 
@@ -285,8 +286,8 @@ test_seed_without_callsign_only_creates_admin() {
   gw_env
   gw_cfg 'PASSWORD=secretpass'
   assert_ok dxb_gw_seed 0
-  assert_contains "$(calls)" "POST /auth/setup"
-  assert_not_contains "$(calls)" "/station/config"
+  assert_contains "$(gw_calls)" "POST /auth/setup"
+  assert_not_contains "$(gw_calls)" "/station/config"
   assert_contains "${DXB_STATUS_LINES[*]}" "no CALLSIGN"
 }
 
@@ -296,8 +297,8 @@ test_seed_fails_when_auth_setup_query_is_unusable() {
   gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2'
   assert_fails dxb_gw_seed 0
   assert_contains "${DXB_FAILED_STEPS[*]}" "/auth/setup"
-  assert_not_contains "$(calls)" "POST /auth/setup"
-  assert_not_contains "$(calls)" "POST /auth/login"
+  assert_not_contains "$(gw_calls)" "POST /auth/setup"
+  assert_not_contains "$(gw_calls)" "POST /auth/login"
   assert_not_contains "$DXB_CONSUMED_SECRETS" "WEBUI_PASSWORD"
 }
 
@@ -362,6 +363,6 @@ test_seed_login_prompt_without_terminal_fails_distinctly() {
   assert_fails dxb_gw_seed 1 2> /dev/null
   DXB_TTY=$saved_tty
   assert_contains "${DXB_FAILED_STEPS[*]}" "no terminal is available"
-  assert_not_contains "$(calls)" "/auth/login"
+  assert_not_contains "$(gw_calls)" "/auth/login"
   assert_not_contains "$DXB_CONSUMED_SECRETS" "WEBUI_PASSWORD"
 }

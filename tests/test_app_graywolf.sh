@@ -48,17 +48,19 @@ gwapp_curl() {
     *) return 22 ;;
   esac
 }
-calls() { cat "$TEST_TMP/calls"; }
+# named for this file: every tests/test_*.sh is sourced into one process, so a bare calls()
+# here would be silently replaced by another file's helper of the same name
+gwapp_calls() { cat "$TEST_TMP/calls"; }
 
 test_gwapp_wire_creates_device_channel_and_rigctld_ptt() {
   gwapp_env
   assert_ok app_graywolf_wire radio1
-  assert_contains "$(calls)" 'POST /auth/login {"username":"admin","password":"hunter2hunter2"}'
-  assert_contains "$(calls)" 'POST /audio-devices {"name":"radio1","source_type":"soundcard","source_path":"plughw:CARD=RADIO1,DEV=0","sample_rate":48000}'
-  assert_contains "$(calls)" 'POST /channels {"name":"radio1","input_device_id":11,"output_device_id":11,"input_channel":0,"output_channel":0}'
-  assert_contains "$(calls)" 'POST /ptt {"channel_id":21,"method":"rigctld","device_path":"127.0.0.1:4532","invert":false,"persist":true}'
-  assert_contains "$(calls)" 'POST /ptt/test-rigctld {"host":"127.0.0.1","port":4532}'
-  assert_contains "$(calls)" 'POST /auth/logout'
+  assert_contains "$(gwapp_calls)" 'POST /auth/login {"username":"admin","password":"hunter2hunter2"}'
+  assert_contains "$(gwapp_calls)" 'POST /audio-devices {"name":"radio1","source_type":"soundcard","source_path":"plughw:CARD=RADIO1,DEV=0","sample_rate":48000}'
+  assert_contains "$(gwapp_calls)" 'POST /channels {"name":"radio1","input_device_id":11,"output_device_id":11,"input_channel":0,"output_channel":0}'
+  assert_contains "$(gwapp_calls)" 'POST /ptt {"channel_id":21,"method":"rigctld","device_path":"127.0.0.1:4532","invert":false,"persist":true}'
+  assert_contains "$(gwapp_calls)" 'POST /ptt/test-rigctld {"host":"127.0.0.1","port":4532}'
+  assert_contains "$(gwapp_calls)" 'POST /auth/logout'
 }
 
 test_gwapp_wire_updates_existing_by_name_and_keeps_tuning() {
@@ -67,10 +69,10 @@ test_gwapp_wire_updates_existing_by_name_and_keeps_tuning() {
   GW_CHANNELS='[{"id":21,"name":"radio1","input_device_id":5,"output_device_id":5,"modem_type":"afsk1200","num_slicers":5}]'
   GW_PTT_404=0
   assert_ok app_graywolf_wire radio1
-  assert_contains "$(calls)" 'PUT /audio-devices/11 {"name":"radio1","source_path":"plughw:CARD=RADIO1,DEV=0","gain_db":-6,"source_type":"soundcard","sample_rate":48000}'
-  assert_contains "$(calls)" 'PUT /channels/21 {"name":"radio1","input_device_id":11,"output_device_id":11,"modem_type":"afsk1200","num_slicers":5,"input_channel":0,"output_channel":0}'
-  assert_contains "$(calls)" 'PUT /ptt/21 {"channel_id":21,"method":"rigctld","dwait_ms":30,"device_path":"127.0.0.1:4532","invert":false,"persist":true}'
-  assert_not_contains "$(calls)" 'POST /audio-devices'
+  assert_contains "$(gwapp_calls)" 'PUT /audio-devices/11 {"name":"radio1","source_path":"plughw:CARD=RADIO1,DEV=0","gain_db":-6,"source_type":"soundcard","sample_rate":48000}'
+  assert_contains "$(gwapp_calls)" 'PUT /channels/21 {"name":"radio1","input_device_id":11,"output_device_id":11,"modem_type":"afsk1200","num_slicers":5,"input_channel":0,"output_channel":0}'
+  assert_contains "$(gwapp_calls)" 'PUT /ptt/21 {"channel_id":21,"method":"rigctld","dwait_ms":30,"device_path":"127.0.0.1:4532","invert":false,"persist":true}'
+  assert_not_contains "$(gwapp_calls)" 'POST /audio-devices'
 }
 
 test_gwapp_ptt_payloads_per_method() {
@@ -93,7 +95,7 @@ test_gwapp_wire_fails_on_failed_list_fetch_without_duplicating() {
   GW_FAIL_PATH=/audio-devices; GW_FAIL_ON_CALL=1
   app_graywolf_wire radio1
   assert_eq "$?" "7"
-  assert_not_contains "$(calls)" "POST /audio-devices"
+  assert_not_contains "$(gwapp_calls)" "POST /audio-devices"
 }
 
 test_gwapp_wire_put_bodies_are_never_empty() {
@@ -102,23 +104,27 @@ test_gwapp_wire_put_bodies_are_never_empty() {
   GW_CHANNELS='[{"id":21,"name":"radio1","input_device_id":11,"output_device_id":11}]'
   GW_PTT_404=0
   assert_ok app_graywolf_wire radio1
-  local line m p body
+  local line m p body puts=0
   while IFS= read -r line; do
     [[ $line == PUT\ * ]] || continue
+    puts=$(( puts + 1 ))
     read -r m p body <<< "$line"
     assert_eq "${body:0:1}" "{"
-  done <<< "$(calls)"
+  done <<< "$(gwapp_calls)"
+  # the audio device and the channel are both updates here: a loop that inspected nothing would
+  # otherwise pass silently (it did, while a helper named calls() from another test file won)
+  (( puts >= 2 )) || _fail "expected at least 2 PUT calls to inspect, saw $puts"
 }
 
 test_gwapp_unwire_deletes_by_name_and_tolerates_absence() {
   gwapp_env
   GW_AUDIO='[{"id":11,"name":"radio1"}]'; GW_CHANNELS='[{"id":21,"name":"radio1"}]'
   assert_ok app_graywolf_unwire radio1
-  assert_contains "$(calls)" 'DELETE /channels/21?cascade=true'
-  assert_contains "$(calls)" 'DELETE /audio-devices/11'
+  assert_contains "$(gwapp_calls)" 'DELETE /channels/21?cascade=true'
+  assert_contains "$(gwapp_calls)" 'DELETE /audio-devices/11'
   gwapp_env
   assert_ok app_graywolf_unwire radio1
-  assert_not_contains "$(calls)" 'DELETE'
+  assert_not_contains "$(gwapp_calls)" 'DELETE'
 }
 
 test_gwapp_contract_functions() {

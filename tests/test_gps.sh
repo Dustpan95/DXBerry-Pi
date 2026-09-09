@@ -115,15 +115,13 @@ test_gps_states_no_receiver_no_fix_and_fix() {
 
 test_gps_configure_writes_nothing_when_chrony_template_missing() {
   gps_env; gps_cfg 'GPS_DEVICE=uart'
-  local saved_templates=$DXB_TEMPLATES
-  DXB_TEMPLATES=$TEST_TMP/templates
-  mkdir -p "$DXB_TEMPLATES"
-  cp "$saved_templates/gpsd-default.tmpl" "$DXB_TEMPLATES/"
-  assert_fails dxb_gps_configure
+  mkdir -p "$TEST_TMP/templates"
+  cp "$DXB_TEMPLATES/gpsd-default.tmpl" "$TEST_TMP/templates/"
+  # scoped to the call (see tests/test_radio_udev.sh): a failure below cannot leak the override
+  DXB_TEMPLATES=$TEST_TMP/templates assert_fails dxb_gps_configure
   assert_contains "${DXB_FAILED_STEPS[*]}" "chrony"
   [[ -f $DXB_GPSD_DEFAULT ]] && _fail "gpsd default should not have been written when the chrony template is missing"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl"
-  DXB_TEMPLATES=$saved_templates
 }
 
 test_gps_configure_records_a_failed_step_when_a_file_cannot_be_written() {

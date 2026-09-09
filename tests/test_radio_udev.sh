@@ -62,13 +62,12 @@ test_udev_rules_label_newline_is_neutralized() {
 
 test_udev_write_missing_template_fails_cleanly() {
   udev_env; digirig_record
-  local saved_templates=$DXB_TEMPLATES
-  DXB_TEMPLATES=$TEST_TMP/empty-templates
-  mkdir -p "$DXB_TEMPLATES"
-  dxb_radio_udev_write "$DXB_RADIOS"; assert_eq "$?" "6"
+  mkdir -p "$TEST_TMP/empty-templates"
+  # the override is scoped to this one call: bash restores DXB_TEMPLATES when it returns, so a
+  # failing assertion below can never leak an empty template directory into the next test
+  DXB_TEMPLATES=$TEST_TMP/empty-templates dxb_radio_udev_write "$DXB_RADIOS"; assert_eq "$?" "6"
   assert_eq "$(cat "$TEST_TMP/calls")" ""
   [[ ! -f $DXB_UDEV_RULES_FILE ]] || _fail "rules file was written despite a missing template"
-  DXB_TEMPLATES=$saved_templates
 }
 
 test_udev_write_reloads_only_on_change() {
