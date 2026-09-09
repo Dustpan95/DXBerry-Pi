@@ -118,8 +118,12 @@ dxb_config_validate() {
 
   if [[ -n ${DXB_CFG[STATIC_IP]:-} ]]; then
     DXB_CFG[_MODE]=static
-    if [[ ${DXB_CFG[STATIC_IP]} =~ ^([0-9.]+)/([0-9]{1,2})$ ]]; then ip=${BASH_REMATCH[1]}; prefix=$(( 10#${BASH_REMATCH[2]} )); fi
+    ip='' prefix=''
+    if [[ ${DXB_CFG[STATIC_IP]} =~ ^([0-9.]+)(/([0-9]{1,2}))?$ ]]; then
+      ip=${BASH_REMATCH[1]}; prefix=$(( 10#${BASH_REMATCH[3]:-24} ))
+    fi
     if [[ -n $ip ]] && _dxb_is_ipv4 "$ip" && (( prefix >= 8 && prefix <= 30 )); then
+      DXB_CFG[STATIC_IP]="$ip/$prefix"
       DXB_CFG[_IP]=$ip
       DXB_CFG[_PREFIX]=$prefix
       v=${DXB_CFG[GATEWAY]:-}
@@ -129,7 +133,7 @@ dxb_config_validate() {
       [[ -n ${DXB_CFG[DNS]:-} ]] || DXB_CFG[DNS]=${DXB_CFG[GATEWAY]:-}
       for v in ${DXB_CFG[DNS]}; do _dxb_is_ipv4 "$v" || _dxb_err DNS "'$v' is not a valid IPv4 address"; done
     else
-      _dxb_err STATIC_IP 'must be an IPv4 address with prefix length, e.g. 192.168.1.90/24'
+      _dxb_err STATIC_IP 'must be an IPv4 address, optionally with a prefix length, e.g. 192.168.1.90 or 192.168.1.90/24'
     fi
   else
     DXB_CFG[_MODE]=dhcp

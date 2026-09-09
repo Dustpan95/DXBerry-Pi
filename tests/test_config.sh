@@ -100,8 +100,8 @@ test_validate_static_ip_rules() {
   assert_fails load_and_validate
   assert_contains "$(errors_text)" "GATEWAY is not inside 192.168.1.90/24"
   write_cfg 'PASSWORD=secretpass' 'STATIC_IP=192.168.1.90' 'GATEWAY=192.168.1.1'
-  assert_fails load_and_validate
-  assert_contains "$(errors_text)" "STATIC_IP must be an IPv4 address with prefix length"
+  assert_ok load_and_validate
+  assert_eq "${DXB_CFG[STATIC_IP]}" "192.168.1.90/24"
   write_cfg 'PASSWORD=secretpass' 'STATIC_IP=192.168.1.90/24' 'GATEWAY=192.168.1.1' 'DNS=1.1.1.1 999.1.1.1'
   assert_fails load_and_validate
   assert_contains "$(errors_text)" "DNS '999.1.1.1' is not a valid IPv4 address"
@@ -179,4 +179,27 @@ test_print_masked_hides_secrets() {
   assert_contains "$out" "WIFI_PASSWORD=<applied>"
   assert_contains "$out" "WEBUI_PASSWORD=********"
   assert_not_contains "$out" "secretpass"
+}
+
+cfg_from() { printf '%s\n' "$@" > "$TEST_TMP/dxberry.txt"; dxb_config_load "$TEST_TMP/dxberry.txt"; export DXB_ZONEINFO_DIR=$TEST_TMP/nozone; }
+
+test_config_bare_static_ip_defaults_to_24() {
+  cfg_from 'PASSWORD=examplepass' 'STATIC_IP=10.0.0.90' 'GATEWAY=10.0.0.1'
+  assert_ok dxb_config_validate
+  assert_eq "${DXB_CFG[STATIC_IP]}" "10.0.0.90/24"
+  assert_eq "${DXB_CFG[_IP]}" "10.0.0.90"
+  assert_eq "${DXB_CFG[_PREFIX]}" "24"
+}
+
+test_config_static_ip_with_prefix_unchanged() {
+  cfg_from 'PASSWORD=examplepass' 'STATIC_IP=10.0.0.90/16' 'GATEWAY=10.0.1.1'
+  assert_ok dxb_config_validate
+  assert_eq "${DXB_CFG[STATIC_IP]}" "10.0.0.90/16"
+  assert_eq "${DXB_CFG[_PREFIX]}" "16"
+}
+
+test_config_static_ip_garbage_still_rejected() {
+  cfg_from 'PASSWORD=examplepass' 'STATIC_IP=10.0.0' 'GATEWAY=10.0.0.1'
+  assert_fails dxb_config_validate
+  assert_contains "${DXB_CFG_ERRORS[*]}" "STATIC_IP must be an IPv4 address"
 }

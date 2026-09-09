@@ -205,3 +205,17 @@ test_startup_with_both_configured_heals_to_eth_only() {
   assert_eq "$NW_STATE" "ETH"
   assert_contains "$(calls)" "ifdown wlan0"
 }
+
+test_status_reports_live_holder() {
+  nw_env
+  echo WIFI > "$STATE_FILE"
+  ip() { echo '2: eth0    inet 10.0.0.90/24 brd 10.0.0.255 scope global eth0'; }
+  assert_eq "$(nw_status)" "WIFI (eth0 holds the address)"
+}
+
+test_status_without_holder_prints_state_only() {
+  nw_env
+  echo NONE > "$STATE_FILE"
+  ip() { :; }
+  assert_eq "$(nw_status)" "NONE"
+}

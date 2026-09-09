@@ -11,7 +11,7 @@ PASSWORD=
 TIMEZONE=UTC
 
 # ---------------------------------------------------------------- Network
-# Fixed address with prefix length (/8-/30), e.g. 192.168.1.90/24. Leave blank to use DHCP.
+# Fixed address, optionally with prefix length (/8-/30). A bare address means /24, e.g. 192.168.1.90. Leave blank to use DHCP.
 # Ethernet is primary; WiFi (if set below) takes over the same address when the cable is unplugged.
 STATIC_IP=
 # Required when STATIC_IP is set.

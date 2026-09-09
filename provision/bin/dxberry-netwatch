@@ -108,6 +108,15 @@ nw_tick() {
   nw_set_state "$new"
 }
 
+# Interface (eth0/wlan0) currently carrying an IPv4 address, or nothing.
+nw_holder() { ip -o -4 addr show up 2> /dev/null | awk -v e="$ETH" -v w="$WLAN" '$2 == e || $2 == w { print $2; exit }'; }
+nw_status() {
+  local st holder
+  st=$(cat "$STATE_FILE" 2> /dev/null || echo unknown)
+  holder=$(nw_holder)
+  if [[ -n $holder ]]; then echo "$st ($holder holds the address)"; else echo "$st"; fi
+}
+
 nw_startup() {
   ip link set "$ETH" up 2> /dev/null || true
   if nw_configured "$ETH"; then
@@ -188,7 +197,7 @@ main() {
   case ${1:-run} in
     run)        nw_run ;;
     --simulate) nw_simulate "${@:2}" ;;
-    --status)   cat "$STATE_FILE" 2> /dev/null || echo unknown ;;
+    --status)   nw_status ;;
     -h|--help)  echo "usage: dxberry-netwatch [run | --simulate eth0-down|eth0-up|off [--force] | --status]" ;;
     *)          echo "unknown argument: $1" >&2; exit 2 ;;
   esac
