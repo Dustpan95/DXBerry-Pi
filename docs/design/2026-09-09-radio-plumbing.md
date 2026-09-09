@@ -408,6 +408,7 @@ or no fix it prints `no fix` and exits 0; the JSON carries `"fix": 0`.
 | `app_<app>_wire RADIO` | configure the application to use RADIO's devices; idempotent; returns 0/7 |
 | `app_<app>_unwire RADIO` | remove that configuration so the application no longer opens the devices; idempotent |
 | `app_<app>_needs_service_restart` | prints `yes` when wire/unwire only take effect after a restart (Graywolf prints `no`: its API applies live) |
+| `app_<app>_wait_ready` | optional; blocks until the application accepts configuration (Graywolf: its API answers); failure makes `claim` return 5 |
 
 Applications with `wiring: names` skip `wire`/`unwire`; the core still
 starts and stops the unit.

@@ -253,3 +253,100 @@ test_add_rejects_radio_with_no_pinned_function() {
   local err; err=$(dxb_radio_add e '{"label":"nothing"}' 2>&1); assert_eq "$?" "2"
   assert_contains "$err" "e: needs at least one pinned function"
 }
+
+fake_apps() {
+  export DXB_APPS_DIR=$TEST_TMP/apps; mkdir -p "$DXB_APPS_DIR"; : > "$TEST_TMP/appcalls"
+  cat > "$DXB_APPS_DIR/alpha.sh" <<'EOF'
+app_alpha_unit() { echo alpha.service; }
+app_alpha_wire() { echo "alpha wire $1" >> "$TEST_TMP/appcalls"; return "${ALPHA_WIRE_RC:-0}"; }
+app_alpha_unwire() { echo "alpha unwire $1" >> "$TEST_TMP/appcalls"; }
+app_alpha_needs_service_restart() { echo no; }
+app_alpha_wait_ready() { echo "alpha ready" >> "$TEST_TMP/appcalls"; return "${ALPHA_READY_RC:-0}"; }
+EOF
+  cat > "$DXB_APPS_DIR/beta.sh" <<'EOF'
+app_beta_unit() { echo beta.service; }
+app_beta_wire() { echo "beta wire $1" >> "$TEST_TMP/appcalls"; }
+app_beta_unwire() { echo "beta unwire $1" >> "$TEST_TMP/appcalls"; }
+app_beta_needs_service_restart() { echo yes; }
+EOF
+}
+appcalls() { tr '\n' ';' < "$TEST_TMP/appcalls"; }
+two_radios() {
+  fx_scene "$DXB_SYSFS_ROOT" two-digirigs; dxb_radio_scan_cache; dxb_radio_load
+  dxb_radio_add r1 '{"audio":"3","cat":"4"}' > /dev/null; dxb_radio_add r2 '{"audio":"1","cat":"2"}' > /dev/null
+}
+
+test_claim_starts_wires_and_records_owner() {
+  radio_env; fake_apps; two_radios
+  assert_ok dxb_radio_claim r1 alpha
+  assert_eq "$(appcalls)" "alpha ready;alpha wire r1;"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start alpha.service"
+  assert_eq "$(jq -r '.owner' <<< "$(dxb_radio_get r1)")" "alpha"
+  assert_eq "$(jq -r '.radios.r1.wired_hash' "$DXB_RADIOS_STATE")" "$(dxb_radio_wire_hash "$(dxb_radio_get r1)")"
+  : > "$TEST_TMP/calls"; : > "$TEST_TMP/appcalls"
+  assert_ok dxb_radio_claim r1 alpha                                 # same owner: re-wire only
+  assert_eq "$(appcalls)" "alpha wire r1;"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "start"
+}
+
+test_claim_hands_over_and_stops_idle_old_owner() {
+  radio_env; fake_apps; two_radios
+  dxb_radio_claim r1 alpha > /dev/null; dxb_radio_claim r2 alpha > /dev/null
+  : > "$TEST_TMP/calls"; : > "$TEST_TMP/appcalls"
+  assert_ok dxb_radio_claim r1 beta
+  assert_eq "$(appcalls)" "alpha unwire r1;beta wire r1;"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "stop alpha.service"   # alpha still owns r2
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl restart beta.service"  # needs_service_restart yes
+  : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_claim r2 beta
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop alpha.service"
+  assert_eq "$(jq -r '[.radios[].owner] | join(",")' <<< "$DXB_RADIOS")" "beta,beta"
+}
+
+test_claim_failure_rolls_back_to_released() {
+  radio_env; fake_apps; two_radios
+  ALPHA_WIRE_RC=7
+  dxb_radio_claim r1 alpha; assert_eq "$?" "5"
+  assert_eq "$(jq -r '.owner' <<< "$(dxb_radio_get r1)")" ""
+  assert_contains "$(appcalls)" "alpha unwire r1;"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop alpha.service"
+  unset ALPHA_WIRE_RC; ALPHA_READY_RC=1
+  dxb_radio_claim r1 alpha; assert_eq "$?" "5"
+  unset ALPHA_READY_RC
+}
+
+test_claim_errors_absent_radio_unknown_app() {
+  radio_env; fake_apps; two_radios
+  dxb_radio_claim nope alpha; assert_eq "$?" "3"
+  dxb_radio_claim r1 gamma; assert_eq "$?" "3"
+  rm -rf "$DXB_SYSFS_ROOT"; fx_scene "$DXB_SYSFS_ROOT" none; dxb_radio_scan_cache
+  dxb_radio_claim r1 alpha; assert_eq "$?" "4"
+}
+
+test_release_unwires_and_stops_when_idle() {
+  radio_env; fake_apps; two_radios
+  dxb_radio_claim r1 alpha > /dev/null; : > "$TEST_TMP/calls"; : > "$TEST_TMP/appcalls"
+  assert_ok dxb_radio_release r1
+  assert_eq "$(appcalls)" "alpha unwire r1;"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop alpha.service"
+  assert_eq "$(jq -r '.owner' <<< "$(dxb_radio_get r1)")" ""
+  assert_ok dxb_radio_release r1                                      # already released: no-op
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "rigctld"           # rigctld untouched by hand-over
+}
+
+test_names_wiring_skips_wire_but_starts_unit() {
+  radio_env; fake_apps; two_radios
+  dxb_radio_set r1 '{"wiring":"names"}' > /dev/null
+  assert_ok dxb_radio_claim r1 alpha
+  assert_eq "$(appcalls)" "alpha ready;"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start alpha.service"
+}
+
+test_app_list_and_rewire() {
+  radio_env; fake_apps; two_radios
+  assert_eq "$(dxb_app_list | tr '\n' ' ')" "alpha beta "
+  dxb_radio_claim r1 alpha > /dev/null; : > "$TEST_TMP/appcalls"
+  assert_ok dxb_app_rewire r1
+  assert_eq "$(appcalls)" "alpha wire r1;"
+  dxb_app_rewire r2; assert_eq "$?" "0"                               # no owner: nothing to do
+}

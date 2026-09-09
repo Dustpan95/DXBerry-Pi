@@ -298,3 +298,79 @@ dxb_radio_apply() {
   done
   return $rc
 }
+
+# ---- applications --------------------------------------------------------------------------
+dxb_app_list() { local f; for f in "$DXB_APPS_DIR"/*.sh; do [[ -f $f ]] || continue; f=${f##*/}; echo "${f%.sh}"; done; }
+dxb_app_load() {
+  [[ $1 =~ ^[a-z][a-z0-9_]{0,15}$ && -f $DXB_APPS_DIR/$1.sh ]] || { dxb_error "no such application: $1 (available: $(dxb_app_list | tr '\n' ' '))"; return 3; }
+  # shellcheck disable=SC1090
+  source "$DXB_APPS_DIR/$1.sh"
+}
+dxb_app_owned() { jq -r --arg a "$1" '[.radios[] | select(.owner == $a)] | length' <<< "$DXB_RADIOS"; }
+dxb_app_unit() { "app_$1_unit"; }
+dxb_app_wire() {
+  [[ $(jq -r --arg n "$2" '.radios[$n].wiring' <<< "$DXB_RADIOS") == names ]] && return 0
+  "app_$1_wire" "$2" || return 7
+  if [[ $("app_$1_needs_service_restart") == yes ]]; then systemctl restart "$(dxb_app_unit "$1")" || return 7; fi
+  return 0
+}
+dxb_app_unwire() { [[ $(jq -r --arg n "$2" '.radios[$n].wiring' <<< "$DXB_RADIOS") == names ]] && return 0; "app_$1_unwire" "$2"; }
+dxb_app_start() {
+  local u; u=$(dxb_app_unit "$1")
+  systemctl is-active --quiet "$u" || systemctl start "$u" || { dxb_error "could not start $u"; return 5; }
+  if declare -F "app_$1_wait_ready" > /dev/null; then "app_$1_wait_ready" || { dxb_error "$u did not become ready"; return 5; }; fi
+  return 0
+}
+dxb_app_stop_if_idle() { (( $(dxb_app_owned "$1") == 0 )) || return 0; systemctl stop "$(dxb_app_unit "$1")" && dxb_info "$1 stopped (owns no radio)"; }
+
+# dxb_app_rewire NAME: re-run the current owner's wiring (apply calls this when the inputs changed).
+dxb_app_rewire() {
+  local owner; owner=$(jq -r --arg n "$1" '.radios[$n].owner // ""' <<< "$DXB_RADIOS")
+  [[ -n $owner ]] || return 0
+  dxb_app_load "$owner" || return 3
+  dxb_app_wire "$owner" "$1"
+}
+
+# dxb_radio_claim NAME APP (spec section 9.2). 0 ok, 3 unknown, 4 absent, 5 failed (released), 6 record error.
+# rigctld is never touched here (spec 9.2): it belongs to the radio, not the hand-over, so this
+# function only ever runs the two apps' unit and app_<app>_* functions, never dxb_radio_write_state.
+dxb_radio_claim() {
+  local name=$1 app=$2 cur
+  dxb_radio_get "$name" > /dev/null || return 3
+  dxb_app_load "$app" || return 3
+  dxb_radio_present "$name" || { dxb_error "radio $name is not plugged in"; return 4; }
+  cur=$(jq -r --arg n "$name" '.radios[$n].owner' <<< "$DXB_RADIOS")
+  if [[ $cur == "$app" ]]; then
+    dxb_app_wire "$app" "$name" || return 5
+    _dxb_radio_mark_wired "$name" "$(dxb_radio_wire_hash "$(dxb_radio_get "$name")")"
+    return 0
+  fi
+  if [[ -n $cur ]]; then
+    if dxb_app_load "$cur"; then dxb_app_unwire "$cur" "$name"; fi
+    _dxb_radio_set_owner "$name" "" || return 6
+    dxb_app_load "$cur" 2> /dev/null && dxb_app_stop_if_idle "$cur"
+    dxb_info "radio $name released by $cur"
+  fi
+  _dxb_radio_set_owner "$name" "$app" || return 6
+  if ! dxb_app_start "$app" || ! dxb_app_wire "$app" "$name"; then
+    dxb_app_unwire "$app" "$name"
+    _dxb_radio_set_owner "$name" ""
+    dxb_app_stop_if_idle "$app"
+    dxb_error "radio $name: $app could not take it; left released"
+    return 5
+  fi
+  _dxb_radio_mark_wired "$name" "$(dxb_radio_wire_hash "$(dxb_radio_get "$name")")"
+  dxb_info "radio $name now owned by $app"
+}
+
+# dxb_radio_release NAME (spec section 9.2, steps 3-4 with an empty owner). rigctld untouched, as above.
+dxb_radio_release() {
+  local name=$1 cur
+  dxb_radio_get "$name" > /dev/null || return 3
+  cur=$(jq -r --arg n "$name" '.radios[$n].owner' <<< "$DXB_RADIOS")
+  [[ -n $cur ]] || return 0
+  dxb_app_load "$cur" && dxb_app_unwire "$cur" "$name"
+  _dxb_radio_set_owner "$name" "" || return 6
+  dxb_app_load "$cur" 2> /dev/null && dxb_app_stop_if_idle "$cur"
+  dxb_info "radio $name released"
+}
