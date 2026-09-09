@@ -124,7 +124,29 @@ test_set_changes_fields_keeps_port_and_owner() {
   assert_ok _dxb_radio_set_owner radio1 graywolf
   assert_ok dxb_radio_set radio1 '{"ptt":"cm108","label":"HT","cat":"none"}'
   local r; r=$(dxb_radio_get radio1)
-  assert_eq "$(jq -r '.ptt.method + " " + .label + " " + (.cat|tostring) + " " + .owner + " " + (.rigctld_port|tostring)' <<< "$r")" "cm108 HT null graywolf 4532"
+  assert_eq "$(jq -r '.ptt.method + " " + .label + " " + (.cat|tostring) + " " + .owner + " " + (.rigctld_port|tostring) + " " + .rig.ptt_type' <<< "$r")" "cm108 HT null graywolf 4532 NONE"
   dxb_radio_set radio1 '{"wiring":"sideways"}'; assert_eq "$?" "2"
   dxb_radio_set nope '{"label":"x"}'; assert_eq "$?" "3"
+}
+
+test_pin_selector_rejects_zero_and_out_of_range_k() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" ic705; dxb_radio_scan_cache; dxb_radio_load
+  dxb_radio_add x '{"cat":"1:0"}'; assert_eq "$?" "2"          # K < 1
+  dxb_radio_add x '{"cat":"1:3"}'; assert_eq "$?" "2"          # only two serial functions
+}
+
+test_add_explicit_audio_none_falls_back_to_cat_profile() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" split; dxb_radio_scan_cache; dxb_radio_load
+  assert_ok dxb_radio_add c '{"audio":"none","cat":"2"}'
+  local r; r=$(dxb_radio_get c)
+  assert_eq "$(jq -r '.profile' <<< "$r")" "0403:6001"
+  assert_eq "$(jq -r '.rig.ptt_type' <<< "$r")" "RIG"
+}
+
+test_add_drops_serial_ptt_type_without_a_serial_pin() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
+  assert_ok dxb_radio_add d '{"audio":"1"}'
+  assert_eq "$(jq -r '.rig.ptt_type' <<< "$(dxb_radio_get d)")" "NONE"
+  assert_ok dxb_radio_add e '{"audio":"1","ptt_serial":"2","ptt_type":"RTS"}'
+  assert_eq "$(jq -r '.rig.ptt_type' <<< "$(dxb_radio_get e)")" "RTS"
 }

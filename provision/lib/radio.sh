@@ -132,6 +132,7 @@ _dxb_radio_pin() {
   [[ $sel == none || -z $sel ]] && { echo null; return 0; }
   [[ $sel =~ ^([0-9]+)(:([0-9]+))?$ ]] || { dxb_error "bad candidate selector '$sel' (use N or N:K)"; return 2; }
   n=${BASH_REMATCH[1]}; k=${BASH_REMATCH[3]:-1}
+  (( k >= 1 )) || { dxb_error "bad candidate selector '$sel' (K must be >= 1)"; return 2; }
   jq -ce --argjson n "$n" --argjson k "$k" --arg kind "$kind" \
     '(.[] | select(.index == $n) | .functions | map(select(.kind == $kind)) | .[$k - 1]) // empty | {path, vidpid, serial}' <<< "$DXB_RADIO_SCAN" \
     || { dxb_error "candidate $sel has no $kind function"; return 2; }
@@ -139,7 +140,7 @@ _dxb_radio_pin() {
 
 # _dxb_radio_build OPTS BASE: merge OPTS (candidate selectors + overrides) into BASE (an existing radio or {}).
 _dxb_radio_build() {
-  local opts=$1 base=$2 k sel pin cand defaults='{}' r
+  local opts=$1 base=$2 k sel pin cand defaults='{}' r old_type new_type
   r=$base
   for k in audio cat hid ptt_serial; do
     sel=$(jq -r --arg k "$k" '.[$k] // empty' <<< "$opts")
@@ -149,7 +150,8 @@ _dxb_radio_build() {
   done
   # profile defaults come from the audio candidate, else the cat candidate, only when creating
   if [[ $(jq -r '.profile // empty' <<< "$r") == "" ]]; then
-    cand=$(jq -r '.audio // .cat // empty' <<< "$opts"); cand=${cand%%:*}
+    # the profile candidate is the audio selector unless it is absent or "none", then the cat selector
+    cand=$(jq -r 'if (.audio // "none") != "none" then .audio else (.cat // empty) end' <<< "$opts"); cand=${cand%%:*}
     if [[ -n $cand && $cand != none ]]; then
       defaults=$(jq -c --argjson n "$cand" '.[] | select(.index == $n) | {profile: .profile, defaults: .defaults}' <<< "$DXB_RADIO_SCAN")
     fi
@@ -165,12 +167,20 @@ _dxb_radio_build() {
       [[ -n $cand && $cand != none ]] && pin=$(_dxb_radio_pin "$cand" hid 2> /dev/null) && r=$(jq -c --argjson p "$pin" '.hid = $p' <<< "$r")
     fi
   fi
-  jq -c --argjson o "$opts" '
+  r=$(jq -c --argjson o "$opts" '
     . + (if $o.label != null then {label: $o.label} else {} end)
       + (if $o.wiring != null then {wiring: $o.wiring} else {} end)
     | .ptt.method = ($o.ptt // .ptt.method) | .ptt.gpio_line = (if $o.gpio_line != null then $o.gpio_line else .ptt.gpio_line end)
-    | .rig.model = ($o.model // .rig.model) | .rig.baud = ($o.baud // .rig.baud) | .rig.ptt_type = ($o.ptt_type // .rig.ptt_type)
-    | if .cat == null and .rig.ptt_type == "RIG" then .rig.ptt_type = "NONE" else . end' <<< "$r"
+    | .rig.model = ($o.model // .rig.model) | .rig.baud = ($o.baud // .rig.baud) | .rig.ptt_type = ($o.ptt_type // .rig.ptt_type)' <<< "$r")
+  # rigctld's ptt_type must not point at a serial line or CAT socket that has no pin behind it
+  old_type=$(jq -r '.rig.ptt_type' <<< "$r")
+  r=$(jq -c '
+    if .cat == null and .rig.ptt_type == "RIG" then .rig.ptt_type = "NONE"
+    elif .cat == null and .ptt_serial == null and (.rig.ptt_type == "RTS" or .rig.ptt_type == "DTR") then .rig.ptt_type = "NONE"
+    else . end' <<< "$r")
+  new_type=$(jq -r '.rig.ptt_type' <<< "$r")
+  [[ $old_type == "$new_type" ]] || dxb_warn "radio: ptt_type $old_type needs a serial pin; set to NONE (pin --cat or --ptt-serial, then --ptt-type $old_type)"
+  printf '%s\n' "$r"
 }
 
 dxb_radio_add() {
