@@ -12,17 +12,24 @@ gwapp_env() {
   mkdir -p "$DXB_STATE_DIR"; : > "$TEST_TMP/calls"
   printf 'USER=admin\nPASSWORD=hunter2hunter2\n' > "$DXB_GW_SECRET_FILE"
   DXB_CURL=gwapp_curl; sleep() { :; }
-  GW_AUDIO='[]'; GW_CHANNELS='[]'; GW_PTT_404=1; GW_FAIL_PATH=''
+  GW_AUDIO='[]'; GW_CHANNELS='[]'; GW_PTT_404=1; GW_FAIL_PATH=''; GW_FAIL_ON_CALL=''
+  declare -gA GW_CALL_COUNT=()
   DXB_RADIOS='{"version":1,"radios":{"radio1":{"label":"TM-V71","audio":{"path":"usb-0:1.3:1.0"},"cat":{"path":"usb-0:1.4:1.0"},"hid":{"path":"usb-0:1.3:1.3"},"ptt_serial":null,"ptt":{"method":"rigctld","gpio_line":null},"rig":{"model":1,"baud":57600,"ptt_type":"RTS"},"rigctld_port":4532,"wiring":"full","owner":""}},"gps":{}}'
 }
-# Records "METHOD PATH BODY"; answers from GW_AUDIO / GW_CHANNELS; POST returns {"id":N}; GW_FAIL_PATH forces one path to fail.
+# Records "METHOD PATH BODY"; answers from GW_AUDIO / GW_CHANNELS; POST returns {"id":N}. GW_FAIL_PATH forces one path
+# to fail; with GW_FAIL_ON_CALL unset every call to that path fails, otherwise only the GW_FAIL_ON_CALL'th call to it does.
 gwapp_curl() {
   local url='' m=GET data='' via=0
   while (( $# )); do case $1 in -X) m=$2; shift ;; --data-binary) data=$2; shift ;; -b|-c) via=1 ;; http*) url=$1 ;; esac; shift; done
   [[ $data == @-* ]] && data=$(cat)
   local p=${url#"$DXB_GW_API"}
   echo "$m $p $data" >> "$TEST_TMP/calls"
-  [[ -n $GW_FAIL_PATH && $p == "$GW_FAIL_PATH" ]] && return 22
+  if [[ -n $GW_FAIL_PATH && $p == "$GW_FAIL_PATH" ]]; then
+    GW_CALL_COUNT[$p]=$(( ${GW_CALL_COUNT[$p]:-0} + 1 ))
+    if [[ -z $GW_FAIL_ON_CALL ]] || (( GW_CALL_COUNT[$p] == GW_FAIL_ON_CALL )); then
+      return 22
+    fi
+  fi
   case "$m $p" in
     "GET /auth/setup") echo '{"needs_setup":false}' ;;
     "POST /auth/login"|"POST /auth/logout") echo '{}' ;;
@@ -79,6 +86,28 @@ test_gwapp_wire_fails_with_7_on_api_error() {
   app_graywolf_wire radio1; assert_eq "$?" "7"
   gwapp_env; GW_FAIL_PATH=/ptt/test-rigctld
   assert_ok app_graywolf_wire radio1                                   # connectivity test failure is a warning only
+}
+
+test_gwapp_wire_fails_on_failed_list_fetch_without_duplicating() {
+  gwapp_env
+  GW_FAIL_PATH=/audio-devices; GW_FAIL_ON_CALL=1
+  app_graywolf_wire radio1
+  assert_eq "$?" "7"
+  assert_not_contains "$(calls)" "POST /audio-devices"
+}
+
+test_gwapp_wire_put_bodies_are_never_empty() {
+  gwapp_env
+  GW_AUDIO='[{"id":11,"name":"radio1","source_path":"plughw:0,0"}]'
+  GW_CHANNELS='[{"id":21,"name":"radio1","input_device_id":11,"output_device_id":11}]'
+  GW_PTT_404=0
+  assert_ok app_graywolf_wire radio1
+  local line m p body
+  while IFS= read -r line; do
+    [[ $line == PUT\ * ]] || continue
+    read -r m p body <<< "$line"
+    assert_eq "${body:0:1}" "{"
+  done <<< "$(calls)"
 }
 
 test_gwapp_unwire_deletes_by_name_and_tolerates_absence() {
