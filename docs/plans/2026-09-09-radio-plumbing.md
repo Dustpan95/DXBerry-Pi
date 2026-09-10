@@ -2022,7 +2022,7 @@ test_gw_seed_gps_uses_gpsd_when_enabled_once() {
   printf 'PASSWORD=examplepass\nWEBUI_PASSWORD=hunter2hunter2\n' > "$TEST_TMP/dxberry.txt"
   dxb_config_load "$TEST_TMP/dxberry.txt"; dxb_config_validate
   dxb_gw_seed 0 > /dev/null
-  assert_contains "$(cat "$TEST_TMP/calls")" 'PUT /gps {"enabled":true,"source_type":"gpsd","gpsd_host":"localhost","gpsd_port":2947}'
+  assert_contains "$(cat "$TEST_TMP/calls")" 'PUT /gps {"source":"gpsd","gpsd_host":"localhost","gpsd_port":2947}'
   : > "$TEST_TMP/calls"; GW_NEEDS_SETUP=false
   dxb_gw_seed 0 > /dev/null
   assert_not_contains "$(cat "$TEST_TMP/calls")" 'PUT /gps'
@@ -2134,7 +2134,7 @@ dxb_gps_status_line() {
 `graywolf.sh`:
 
 ```bash
-dxb_gw_payload_gps() { jq -cn '{enabled: true, source_type: "gpsd", gpsd_host: "localhost", gpsd_port: 2947}'; }
+dxb_gw_payload_gps() { jq -cn '{source: "gpsd", gpsd_host: "localhost", gpsd_port: 2947}'; }
 # Seeds Graywolf's position source from gpsd when a GPS is configured. Once per box; --reseed repeats it.
 dxb_gw_seed_gps() {
   (( DXB_CFG[_GPS] )) || return 0

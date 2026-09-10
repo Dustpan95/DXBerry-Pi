@@ -422,8 +422,9 @@ validation error.
   and GPS are both sources and chrony picks by quality; without internet GPS
   alone keeps the clock. SHM is used instead of SOCK because SOCK paths embed
   the device name, which changes with USB hotplug.
-- Graywolf: `dxb_gw_seed_gps` PUTs `/gps` with `{enabled: true, source_type:
-  "gpsd", gpsd_host: "localhost", gpsd_port: 2947}` when `GPS_DEVICE` is not
+- Graywolf: `dxb_gw_seed_gps` PUTs `/gps` with `{source: "gpsd", gpsd_host:
+  "localhost", gpsd_port: 2947}` (Graywolf derives `enabled` from `source`
+  and rejects unknown fields) when `GPS_DEVICE` is not
   `none`, otherwise the existing fixed-position seed (base spec §9.2)
   stands. Same seed-state rules as the other Graywolf seeds: written once,
   re-applied only by `--reseed`.
@@ -578,8 +579,10 @@ Verified while writing this design (sources in the SDD ledger):
    over TCP and checks `RPRT 0`. The Go API does not validate the
    `host:port` format; a bad value only fails when the channel keys, so the
    wiring module validates it itself.
-2. Graywolf's `/gps` accepts `source_type: gpsd` with host and port, and its
-   handbook recommends gpsd on the Pi.
+2. Graywolf's `/gps` accepts `source: gpsd` with `gpsd_host`/`gpsd_port`
+   (field verified on hardware 2026-09-10 against 0.14.13: the request struct
+   is `source`, not `source_type`, and has no `enabled`), and its handbook
+   recommends gpsd on the Pi.
 3. Trixie ships `libhamlib-utils` 4.6.2 (`rigctld` supports `-T`, `-t`,
    `-P`, `-p`), `gpsd` 3.25 with `60-gpsd.rules`, and `chrony` with SHM and
    SOCK refclocks. DietPi's `CONFIG_NTP_MODE` only ever drives

@@ -138,7 +138,9 @@ dxb_gw_payload_beacon() {
     '{type: "position", latitude: ($lat | tonumber), longitude: ($lon | tonumber), comment: $c, interval: $i, send_path: $sp, path: $p, symbol_table: $st, symbol: $sy, enabled: true} + (if $ch == "" then {} else {channel: ($ch | tonumber)} end)'
 }
 dxb_gw_payload_digi() { jq -cn --arg c "${DXB_CFG[CALLSIGN]}" '{enabled: true, my_call: $c, dedupe_window_seconds: 30}'; }
-dxb_gw_payload_gps() { jq -cn '{enabled: true, source_type: "gpsd", gpsd_host: "localhost", gpsd_port: 2947}'; }
+# Graywolf 0.14.13 PUT /gps accepts only source/serial_port/baud_rate/gpsd_host/gpsd_port and derives
+# "enabled" from source itself; any other field is rejected with 400 "unknown field".
+dxb_gw_payload_gps() { jq -cn '{source: "gpsd", gpsd_host: "localhost", gpsd_port: 2947}'; }
 # dxb_gw_payload_rule CHANNEL ALIAS TYPE MAX_HOPS PRIORITY
 dxb_gw_payload_rule() {
   jq -cn --argjson ch "$1" --arg a "$2" --arg t "$3" --argjson h "$4" --argjson p "$5" \
