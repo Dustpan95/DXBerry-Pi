@@ -7,6 +7,13 @@ Flash it, edit one text file, boot. Minutes later the Pi is on your network at a
 stock [DietPi](https://dietpi.com) with SSH; every application keeps its own real configuration surface;
 every default this image applies lives in this repository.
 
+## About this project
+
+DXBerry-Pi is something W0BTE (Dustin) put together for fun: one Pi, one text file, a working
+digital-modes station. It is not a product and has no roadmap promises. If you have a
+better way to do any of it, or something is broken, open an issue or a pull request.
+Suggestions are welcome.
+
 ## Quick start
 
 1. Download `DXBerry-Pi-<version>-rpi234-arm64.img.xz` from the Releases page (Raspberry Pi 2/3/4, 64-bit).
@@ -24,6 +31,8 @@ every default this image applies lives in this repository.
 
 If `dxberry.txt` is missing or has errors, the Pi boots on DietPi defaults instead (DHCP, hostname
 `dxberry-pi`, login `root` / `dietpi`) and writes `dxberry-ERROR.txt` on the boot partition explaining why.
+Until a valid `dxberry.txt` is applied, the Pi is reachable on your LAN with the stock DietPi
+password, so fix the file and re-run rather than leaving it that way.
 After a run, `dxberry-status.txt` on the boot partition says what was applied and what, if anything, failed;
 if a step failed for a fixable reason (for example no internet on first boot), the secrets that step needed
 are left in place in `dxberry.txt` so `sudo dxberry-provision` can be re-run over SSH once the problem is
@@ -96,5 +105,13 @@ Output goes to `out/DXBerry-Pi-<version>-rpi234-arm64.img.xz` and a matching `.s
 
 ## Credits and license
 
-Built on [DietPi](https://github.com/MichaIng/DietPi) and [Graywolf](https://github.com/chrissnell/graywolf),
-both GPL-2.0. DXBerry-Pi is licensed GPL-2.0-or-later; see `LICENSE`.
+DXBerry-Pi is a thin layer over other people's work:
+
+- [DietPi](https://dietpi.com) by MichaIng and contributors is the operating system. The image
+  is the official DietPi Raspberry Pi 2/3/4 64-bit Trixie image with DXBerry-Pi's automation
+  files added; DietPi does the installing.
+- [Graywolf](https://github.com/chrissnell/graywolf) by Chris Snell provides APRS, the TNC and the web UI.
+- [Hamlib](https://hamlib.github.io) (`rigctld`), [gpsd](https://gpsd.io) and
+  [chrony](https://chrony-project.org) handle CAT control, GPS and time.
+
+DietPi and Graywolf are GPL-2.0. DXBerry-Pi is licensed GPL-2.0-or-later; see `LICENSE`.

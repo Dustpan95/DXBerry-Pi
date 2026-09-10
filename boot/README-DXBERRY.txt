@@ -11,3 +11,6 @@ list what was found, "sudo dxberry-radio add radio1 --audio N --cat N" to pin on
 "sudo dxberry-radio claim radio1 graywolf" to hand it to Graywolf. A pinned radio always appears as
 sound card hw:RADIO1 and, when it has a CAT port, /dev/dxberry/radio1-cat. "sudo dxberry-radio status"
 shows what is plugged in and who owns it.
+
+DXBerry-Pi is built on DietPi (dietpi.com) and Graywolf (github.com/chrissnell/graywolf), both GPL-2.0.
+Put together for fun by W0BTE; suggestions welcome at github.com/Dustpan95/DXBerry-Pi.
