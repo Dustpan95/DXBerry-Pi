@@ -65,7 +65,8 @@ This design reserves the hooks those sub-projects need (§15) without implementi
    device detection. Everything else is already seeded.
 
 If `dxberry.txt` is missing or invalid, the Pi still boots — with DietPi's
-defaults (DHCP, hostname `DietPi`, password `dietpi`) — and writes
+defaults (DHCP, hostname `dxberry-pi` from the build-time overrides, password
+`dietpi`) — and writes
 `dxberry-ERROR.txt` to the boot partition explaining exactly what was wrong.
 
 ## 4. Repository layout
@@ -226,7 +227,10 @@ AUTO_SETUP_SWAPFILE_LOCATION=zram
 AUTO_SETUP_LOCALE=en_US.UTF-8
 AUTO_SETUP_KEYBOARD_LAYOUT=us
 AUTO_SETUP_CUSTOM_SCRIPT_EXEC=0         # run /boot/Automation_Custom_Script.sh
-AUTO_SETUP_APT_INSTALLS=curl ca-certificates jq wpasupplicant
+AUTO_SETUP_APT_INSTALLS=curl ca-certificates jq wpasupplicant   # radio plumbing adds hamlib, gpsd, chrony, alsa-utils
+AUTO_SETUP_NET_ETHERNET_ENABLED=1
+AUTO_SETUP_NET_WIFI_ENABLED=0           # preboot enables it when WIFI_SSID is set
+AUTO_SETUP_NET_HOSTNAME=dxberry-pi
 SURVEY_OPTED_IN=0
 CONFIG_SERIAL_CONSOLE_ENABLE=0
 ```
@@ -527,7 +531,8 @@ Overlay-root mode with a persistent-state list is sub-project 5.
 1. Download `https://dietpi.com/downloads/images/DietPi_RPi234-ARMv8-Trixie.img.xz`
    and its published SHA-256 into `build/work/`; verify; skip download if the
    verified file is already present.
-2. Decompress to `build/work/base.img`; `losetup -P` to expose partitions.
+2. Decompress to `build/work/DXBerry-Pi-<version>-rpi234-arm64.img`; `losetup -P`
+   to expose partitions.
 3. Mount partition 1 (boot, FAT) and partition 2 (root, ext4).
 4. Copy `boot/*` to the boot partition. Copy `provision/` to `/opt/dxberry/`
    on the root partition with `bin/*` mode 0755 and everything else 0644,
@@ -547,7 +552,7 @@ about a minute and needs no QEMU.
 ## 12. CI/CD
 
 - `ci.yml` — on every push and pull request: `shellcheck` over all scripts,
-  `bash -n` on every script, `bats tests/`, and `build-image.sh --check`
+  `bash -n` on every script, `tests/run.sh`, and `build-image.sh --check`
   (validates that every file `boot/` and `provision/` reference exists, without
   downloading anything).
 - `release.yml` — on tags matching `v*`: runs the build on `ubuntu-latest`
