@@ -336,6 +336,15 @@ USB cards take indexes 0–3; `vc4-hdmi` and `bcm2835` land after them.
 Applications never address cards by index anyway; this keeps `aplay -l`
 readable and avoids Graywolf's detector listing HDMI first.
 
+Playback levels: every wire (`claim`, or a re-wire after the record changed)
+first puts each playback control of the radio's card at 0 dB (full scale when
+the card has no dB range) and unmuted, then `alsactl store`s that card so the
+level survives a reboot (`dxb_radio_alsa_levels`). The rc2 Pi's codec came up
+with PCM at 69 % under Graywolf's own −12 dB and test transmit never keyed the
+radio. Capture controls are never touched: the operator sets the RX level. A
+plain `apply` (boot, hotplug) does not re-assert the levels, so a level turned
+down on purpose stays down.
+
 ### 7.3 rigctld instances
 
 `provision/templates/rigctld@.service`:
@@ -516,11 +525,23 @@ device immediately. Beacons and iGate settings are untouched; a beacon bound
 to the deleted channel is re-bound by Graywolf's cascade rules, which the
 implementation task checks and records.
 
+Restarts: Graywolf's modem reads the channel table at start (measured on
+0.14.13: channels deleted through the API kept receiving, every frame arrived
+once per channel that had ever existed, and the digipeater's dedup swallowed
+the real copy). So `wire` ends with `systemctl restart graywolf.service` when
+it *created* the channel (after the API session is closed, then
+`dxb_gw_wait_ready` again so `claim` returns to a live API), and `unwire`
+ends with `systemctl try-restart` when it deleted one. An update of an
+existing channel applies live and needs no restart, which is why
+`app_graywolf_needs_service_restart` still prints `no`.
+
 Credentials: the Graywolf admin username and password are kept root-only in
 `/var/lib/dxberry/graywolf.secret` (0600), written by the first-boot seed and
 by any later successful login, so `dxberry-radio claim` and the console can
 log in after `dxberry.txt` has been scrubbed. `dxb_gw_login_any` tries that
-file, then `WEBUI_PASSWORD` from `dxberry.txt`, then a terminal prompt.
+file, then `WEBUI_PASSWORD` from `dxberry.txt`, then a terminal prompt. The
+provisioner's own seed (`dxb_gw_seed`, including `--reseed`) logs in the same
+way.
 
 ## 10. Provisioning integration
 

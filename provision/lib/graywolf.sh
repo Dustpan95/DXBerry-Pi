@@ -129,18 +129,25 @@ dxb_gw_payload_igate() {
   jq -cn --arg s "${DXB_CFG[IGATE_SERVER]}" --argjson r "$(_dxb_bool "${DXB_CFG[IGATE_RF_TO_IS]}")" --argjson t "$(_dxb_bool "${DXB_CFG[IGATE_IS_TO_RF]}")" \
     '{enabled: true, server: $s, port: 14580, gate_rf_to_is: $r, gate_is_to_rf: $t}'
 }
-# dxb_gw_payload_beacon SEND_PATH [CHANNEL_ID]
+# dxb_gw_payload_beacon SEND_PATH CHANNEL_ID. The whole beacon, every time: channel is always
+# present (0 = none, which Graywolf accepts for APRS-IS-only beacons; leaving it out made an
+# update re-send the stored default, channel 1, which 400s once that channel is gone) and
+# alt_ft is pinned to 0 so a value typed into the UI cannot ride along as /A=NNNNNN.
 dxb_gw_payload_beacon() {
-  local sp=$1 ch=${2:-}
+  local sp=$1 ch=${2:-0}
   jq -cn --arg lat "${DXB_CFG[LATITUDE]}" --arg lon "${DXB_CFG[LONGITUDE]}" --arg c "${DXB_CFG[BEACON_COMMENT]}" \
     --argjson i "${DXB_CFG[_INTERVAL_S]}" --arg sp "$sp" --arg p "${DXB_CFG[BEACON_PATH]}" \
-    --arg st "${DXB_CFG[_SYMBOL_TABLE]}" --arg sy "${DXB_CFG[_SYMBOL]}" --arg ch "$ch" \
-    '{type: "position", latitude: ($lat | tonumber), longitude: ($lon | tonumber), comment: $c, interval: $i, send_path: $sp, path: $p, symbol_table: $st, symbol: $sy, enabled: true} + (if $ch == "" then {} else {channel: ($ch | tonumber)} end)'
+    --arg st "${DXB_CFG[_SYMBOL_TABLE]}" --arg sy "${DXB_CFG[_SYMBOL]}" --argjson ch "$ch" \
+    '{type: "position", channel: $ch, latitude: ($lat | tonumber), longitude: ($lon | tonumber), alt_ft: 0, comment: $c, interval: $i, send_path: $sp, path: $p, symbol_table: $st, symbol: $sy, enabled: true}'
 }
 dxb_gw_payload_digi() { jq -cn --arg c "${DXB_CFG[CALLSIGN]}" '{enabled: true, my_call: $c, dedupe_window_seconds: 30}'; }
 # Graywolf 0.14.13 PUT /gps accepts only source/serial_port/baud_rate/gpsd_host/gpsd_port and derives
 # "enabled" from source itself; any other field is rejected with 400 "unknown field".
 dxb_gw_payload_gps() { jq -cn '{source: "gpsd", gpsd_host: "localhost", gpsd_port: 2947}'; }
+# Graywolf's IS->RF filter engine denies a packet no rule matches, so gate_is_to_rf alone never
+# transmits (measured on 0.14.13). This one rule lets messages through for any addressee; the
+# engine still requires that addressee to have been heard direct on RF in the last 30 minutes.
+dxb_gw_payload_isrf_rule() { jq -cn '{channel: 0, type: "message_dest", pattern: "*", action: "allow", priority: 10, enabled: true}'; }
 # dxb_gw_payload_rule CHANNEL ALIAS TYPE MAX_HOPS PRIORITY
 dxb_gw_payload_rule() {
   jq -cn --argjson ch "$1" --arg a "$2" --arg t "$3" --argjson h "$4" --argjson p "$5" \
@@ -189,20 +196,19 @@ dxb_gw_seed_igate() {
 }
 
 dxb_gw_seed_beacon() {
-  local sp=${DXB_CFG[_SEND_PATH]} ch='' id cur merged
+  local sp=${DXB_CFG[_SEND_PATH]} ch=0 id cur
   if [[ $sp != is_only ]]; then
     ch=$(dxb_gw_first_channel)
     if [[ -z $ch ]]; then
-      sp=is_only
+      ch=0; sp=is_only
       dxb_status_add "beacon: created as APRS-IS only until a radio channel exists (BEACON_SEND=${DXB_CFG[BEACON_SEND]} needs one)"
     fi
   fi
   id=$(dxb_gw_seed_state_get BEACON_ID)
+  # The GET only checks the beacon still exists (an operator may have deleted it); nothing from
+  # it is sent back - the seed owns this beacon and PUTs it whole.
   if [[ -n $id ]] && cur=$(dxb_gw_api GET "/beacons/$id" 2> /dev/null) && jq -e '.id' <<< "$cur" > /dev/null 2>&1; then
-    # Same read-only-id convention as the iGate endpoint (G1) - not yet exercised on hardware
-    # (no beacon configured on the test Pi), but it is the same API.
-    merged=$(jq -c --argjson ours "$(dxb_gw_payload_beacon "$sp" "$ch")" '. + $ours | del(.id)' <<< "$cur")
-    dxb_gw_api PUT "/beacons/$id" "$merged" > /dev/null || dxb_step_failed graywolf "beacon $id update failed"
+    dxb_gw_api PUT "/beacons/$id" "$(dxb_gw_payload_beacon "$sp" "$ch")" > /dev/null || dxb_step_failed graywolf "beacon $id update failed"
   else
     id=$(dxb_gw_api POST /beacons "$(dxb_gw_payload_beacon "$sp" "$ch")" | jq -r '.id // empty')
     if [[ -n $id ]]; then
@@ -211,6 +217,20 @@ dxb_gw_seed_beacon() {
       dxb_step_failed graywolf "beacon creation failed"
     fi
   fi
+}
+
+# IGATE_IS_TO_RF=on needs at least one allow rule (see dxb_gw_payload_isrf_rule); off leaves the
+# operator's rules alone, because gate_is_to_rf=false already blocks everything.
+dxb_gw_seed_isrf_rule() {
+  [[ ${DXB_CFG[IGATE_IS_TO_RF]} == on ]] || return 0
+  local list
+  if ! list=$(dxb_gw_api GET /igate/filters 2> /dev/null) || ! jq -e 'type == "array"' <<< "$list" > /dev/null 2>&1; then
+    dxb_step_failed graywolf "could not list the IS-to-RF filters"
+    return 1
+  fi
+  jq -e 'any(.[]; .type == "message_dest" and .pattern == "*" and .action == "allow")' <<< "$list" > /dev/null 2>&1 && return 0
+  dxb_gw_api POST /igate/filters "$(dxb_gw_payload_isrf_rule)" > /dev/null || { dxb_step_failed graywolf "IS-to-RF message rule creation failed"; return 1; }
+  dxb_status_add "igate: IS-to-RF allows messages to any station heard on RF"
 }
 
 # Seeds Graywolf's position source from gpsd when a GPS is configured. Once per box; --reseed repeats it.
@@ -262,11 +282,14 @@ dxb_gw_seed() {
     dxb_status_add "graywolf: already configured (not reseeded)"
     return 0
   fi
-  dxb_gw_login || return 1
+  # the stored secret first: after the first boot WEBUI_PASSWORD is scrubbed, and a headless
+  # --reseed must not stall on a /dev/tty prompt (it did on rc2)
+  dxb_gw_login_any || return 1
   dxb_gw_seed_gps
   if [[ -n ${DXB_CFG[CALLSIGN]:-} ]]; then
     dxb_gw_api PUT /station/config "$(dxb_gw_payload_station)" > /dev/null || dxb_step_failed graywolf "station callsign update failed"
     dxb_gw_seed_igate
+    dxb_gw_seed_isrf_rule
     (( DXB_CFG[_BEACON] )) && dxb_gw_seed_beacon
     [[ ${DXB_CFG[DIGIPEATER]} == off ]] || dxb_gw_seed_digi
     dxb_status_add "graywolf: seeded station ${DXB_CFG[CALLSIGN]}, iGate ${DXB_CFG[IGATE_SERVER]}"

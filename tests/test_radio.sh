@@ -12,10 +12,23 @@ radio_env() {
     DXB_RADIO_PROFILES=$DXB_ROOT/provision/share/radio-profiles.tsv DXB_RADIOS_FILE=$TEST_TMP/state/radios.json \
     DXB_UDEV_RULES_FILE=$TEST_TMP/etc/70.rules DXB_MODPROBE_FILE=$TEST_TMP/etc/dxberry-audio.conf DXB_UDEVADM=fake_udevadm \
     DXB_RIGCTLD_RUN_DIR=$TEST_TMP/run/rigctld DXB_SYSTEMD_DIR=$TEST_TMP/systemd DXB_TMPFILES_DIR=$TEST_TMP/tmpfiles \
-    DXB_RADIOS_STATE=$TEST_TMP/run/radios-state.json DXB_RUN_DIR=$TEST_TMP/run
+    DXB_RADIOS_STATE=$TEST_TMP/run/radios-state.json DXB_RUN_DIR=$TEST_TMP/run DXB_AMIXER=fake_amixer DXB_ALSACTL=fake_alsactl
   mkdir -p "$DXB_STATE_DIR" "$TEST_TMP/etc"
   : > "$TEST_TMP/calls"; : > "$TEST_TMP/active"
   systemctl() { fx_systemctl "$@"; }
+  FAKE_AMIXER_NO_DB=0
+  # a two-control card: PCM is playback, Mic is capture-only and must be left alone
+  fake_amixer() {
+    echo "amixer $*" >> "$TEST_TMP/calls"
+    case " $* " in
+      *" scontrols "*) printf "Simple mixer control 'PCM',0\nSimple mixer control 'Mic',0\n" ;;
+      *" sget PCM "*) echo "  Capabilities: pvolume pswitch pswitch-joined" ;;
+      *" sget Mic "*) echo "  Capabilities: cvolume cswitch" ;;
+      *" sset "*dB*) (( FAKE_AMIXER_NO_DB )) && return 1 ;;
+    esac
+    return 0
+  }
+  fake_alsactl() { echo "alsactl $*" >> "$TEST_TMP/calls"; }
   fake_udevadm() { echo "udevadm $*" >> "$TEST_TMP/calls"; }
   systemd-tmpfiles() { echo "systemd-tmpfiles $*" >> "$TEST_TMP/calls"; }
   DXB_STATUS_LINES=(); DXB_FAILED_STEPS=()
@@ -287,6 +300,25 @@ test_claim_starts_wires_and_records_owner() {
   assert_ok dxb_radio_claim r1 alpha                                 # same owner: re-wire only
   assert_eq "$(appcalls)" "alpha wire r1;"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "start"
+}
+
+# The rc2 Pi's codec came up with PCM playback at 69 % (-20 dB) on top of Graywolf's default
+# -12 dB, so test transmit never keyed the radio. Wiring puts every playback control at 0 dB,
+# unmuted, and saves it so the level survives a reboot. Capture controls belong to the operator.
+test_wire_sets_playback_levels_and_saves_them() {
+  radio_env; fake_apps; two_radios
+  assert_ok dxb_radio_claim r1 alpha
+  assert_contains "$(cat "$TEST_TMP/calls")" "amixer -q -c 1 sset PCM playback 0dB unmute"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "sset Mic"
+  assert_contains "$(cat "$TEST_TMP/calls")" "alsactl store 1"
+  assert_eq "$(grep -c 'sset PCM' "$TEST_TMP/calls")" "1"
+}
+
+test_wire_falls_back_to_full_scale_without_db_info() {
+  radio_env; fake_apps; two_radios
+  FAKE_AMIXER_NO_DB=1
+  assert_ok dxb_radio_claim r1 alpha
+  assert_contains "$(cat "$TEST_TMP/calls")" "amixer -q -c 1 sset PCM playback 100% unmute"
 }
 
 test_claim_hands_over_and_stops_idle_old_owner() {

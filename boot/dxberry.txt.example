@@ -54,6 +54,7 @@ WEBUI_PASSWORD=
 # off, fillin (WIDE1-1 only, home stations) or wide (WIDE1-1 + WIDE2-2, high sites only).
 # DIGIPEATER=off
 # IGATE_RF_TO_IS=on
+# on also adds the Graywolf filter rule that lets APRS-IS messages reach a station heard on RF.
 # IGATE_IS_TO_RF=off
 # Pin a Graywolf release instead of installing the latest, e.g. v0.14.13.
 # GRAYWOLF_VERSION=

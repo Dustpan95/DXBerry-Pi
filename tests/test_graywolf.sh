@@ -25,6 +25,7 @@ gw_env() {
   # GET canned responses a test can override before calling dxb_gw_seed/dxb_gw_seed_igate/etc.
   GW_IGATE_CONFIG='{"id":1,"server":"old.example","enabled":false,"read_only_thing":"keep"}'
   GW_BEACON_CONFIG='{"id":7,"comment":"old","enabled":true}'
+  GW_ISRF_FILTERS='[]'
 }
 # Fake curl: records "METHOD PATH BODY" per call and answers from canned responses.
 # --data-binary @- means the body was piped over stdin (never as a literal argument); read it.
@@ -68,6 +69,7 @@ fake_curl() {
     "GET /beacons/7")     echo "$GW_BEACON_CONFIG" ;;
     "GET /channels")      echo "${GW_CHANNELS:-[]}" ;;
     "GET /digipeater/rules") echo '[]' ;;
+    "GET /igate/filters")  echo "$GW_ISRF_FILTERS" ;;
     "PUT /gps")           echo '{}' ;;
     *)                    echo '{}' ;;
   esac
@@ -206,8 +208,9 @@ test_seed_fresh_install_creates_admin_station_igate_beacon_digi() {
   assert_contains "$c" '"server":"noam.aprs2.net"'
   assert_contains "$c" '"read_only_thing":"keep"'
   assert_contains "$c" '"gate_rf_to_is":true,"gate_is_to_rf":false'
-  assert_contains "$c" 'POST /beacons {"type":"position","latitude":37.1,"longitude":-101.3,"comment":"hi","interval":600,"send_path":"is_only","path":"WIDE1-1,WIDE2-1","symbol_table":"R","symbol":"&","enabled":true}'
+  assert_contains "$c" 'POST /beacons {"type":"position","channel":0,"latitude":37.1,"longitude":-101.3,"alt_ft":0,"comment":"hi","interval":600,"send_path":"is_only","path":"WIDE1-1,WIDE2-1","symbol_table":"R","symbol":"&","enabled":true}'
   assert_contains "$c" 'PUT /digipeater {"enabled":true,"my_call":"N0CALL-2","dedupe_window_seconds":30}'
+  assert_not_contains "$c" '/igate/filters'                          # IGATE_IS_TO_RF defaults to off
   assert_not_contains "$c" "/digipeater/rules {"
   assert_contains "$c" "POST /auth/logout"
   assert_file_contains "$DXB_GW_SEED_STATE" "BEACON_ID=7"
@@ -235,12 +238,10 @@ test_reseed_updates_existing_beacon_and_creates_rules_when_channel_exists() {
   echo "BEACON_ID=7" > "$DXB_GW_SEED_STATE"
   assert_ok dxb_gw_seed 1
   local c; c=$(gw_calls)
-  # id is read-only on this endpoint (G1); the merge strips it, even though the path still
-  # names the beacon by id.
-  assert_contains "$c" 'PUT /beacons/7 {"comment":"DXBerry-Pi iGate","enabled":true,"type":"position"'
+  # the update is a whole beacon, never a merge of what Graywolf stored (see the test below)
+  assert_contains "$c" 'PUT /beacons/7 {"type":"position","channel":3,"latitude":37.1,"longitude":-101.3,"alt_ft":0,"comment":"DXBerry-Pi iGate"'
   assert_not_contains "$c" '"id":7'
   assert_contains "$c" '"send_path":"rf"'
-  assert_contains "$c" '"channel":3'
   assert_contains "$c" 'POST /digipeater/rules {"from_channel":3,"to_channel":3,"alias":"N0CALL-2","alias_type":"exact","max_hops":1,"priority":1,"action":"repeat","enabled":true}'
   assert_contains "$c" 'POST /digipeater/rules {"from_channel":3,"to_channel":3,"alias":"WIDE","alias_type":"widen","max_hops":2,"priority":10,"action":"repeat","enabled":true}'
   assert_file_contains "$DXB_GW_SEED_STATE" "RULES_SEEDED=1"
@@ -260,18 +261,22 @@ test_seed_igate_strips_read_only_id() {
   assert_not_contains "$put_body" '"id"'
 }
 
-# Same read-only-id convention applies to the beacon update endpoint - not yet exercised on
-# hardware (no beacon configured on the test Pi), but it is the same API.
-test_seed_beacon_update_strips_read_only_id() {
+# Measured on the rc2 Pi: a GET-then-merge update re-sent whatever Graywolf had stored - the
+# default channel 1 (a deleted channel, so PUT failed with 400 "channel 1 does not exist") and an
+# alt_ft an operator had typed into the UI (the beacon grew a bogus /A=000040). The seed owns
+# this beacon, so every field it cares about is sent explicitly and nothing is read back.
+test_seed_beacon_update_sends_the_whole_beacon() {
   gw_env
-  GW_BEACON_CONFIG='{"id":7,"enabled":true,"operator_note":"keep"}'
+  GW_BEACON_CONFIG='{"id":7,"enabled":true,"channel":1,"alt_ft":40,"operator_note":"stored"}'
   gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2' 'LATITUDE=37.1' 'LONGITUDE=-101.3'
   echo "BEACON_ID=7" > "$DXB_GW_SEED_STATE"
   assert_ok dxb_gw_seed 0
-  assert_contains "$(gw_calls)" 'PUT /beacons/7 '
   local put_body; put_body=$(sed -n 's/^PUT \/beacons\/7 //p' "$TEST_TMP/calls")
-  assert_contains "$put_body" '"operator_note":"keep"'
+  assert_contains "$put_body" '"channel":0'
+  assert_contains "$put_body" '"alt_ft":0'
+  assert_not_contains "$put_body" '"operator_note"'
   assert_not_contains "$put_body" '"id"'
+  assert_not_contains "$put_body" '"alt_ft":40'
 }
 
 test_seed_rf_beacon_without_channel_falls_back_to_is_only() {
@@ -279,7 +284,58 @@ test_seed_rf_beacon_without_channel_falls_back_to_is_only() {
   gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2' 'LATITUDE=37.1' 'LONGITUDE=-101.3' 'BEACON_SEND=both'
   assert_ok dxb_gw_seed 0
   assert_contains "$(gw_calls)" '"send_path":"is_only"'
+  assert_contains "$(gw_calls)" '"channel":0'                       # 0 = none; a channel id would 400
   assert_contains "${DXB_STATUS_LINES[*]}" "APRS-IS only until a radio channel exists"
+}
+
+# Graywolf's IS->RF filter engine denies a packet no rule matches, so gate_is_to_rf alone
+# transmits nothing (measured on 0.14.13: WTSAPP acks stayed on the APRS-IS side until an allow
+# rule existed). IGATE_IS_TO_RF=on therefore seeds one message_dest * allow rule, once.
+test_seed_is_to_rf_on_adds_message_rule_once() {
+  gw_env
+  gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2' 'IGATE_IS_TO_RF=on'
+  assert_ok dxb_gw_seed 0
+  assert_contains "$(gw_calls)" '"gate_is_to_rf":true'
+  assert_contains "$(gw_calls)" 'POST /igate/filters {"channel":0,"type":"message_dest","pattern":"*","action":"allow","priority":10,"enabled":true}'
+  assert_contains "${DXB_STATUS_LINES[*]}" "IS-to-RF"
+  : > "$TEST_TMP/calls"; GW_NEEDS_SETUP=false
+  GW_ISRF_FILTERS='[{"id":9,"channel":0,"type":"message_dest","pattern":"*","action":"allow","priority":100,"enabled":true}]'
+  assert_ok dxb_gw_seed 1
+  assert_contains "$(gw_calls)" 'GET /igate/filters'
+  assert_not_contains "$(gw_calls)" 'POST /igate/filters'
+}
+
+test_seed_is_to_rf_off_leaves_filters_alone() {
+  gw_env
+  gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2' 'IGATE_IS_TO_RF=off'
+  assert_ok dxb_gw_seed 0
+  assert_not_contains "$(gw_calls)" '/igate/filters'
+}
+
+test_seed_is_to_rf_reports_an_unlistable_filter_set() {
+  gw_env
+  GW_ISRF_FILTERS='not json'
+  gw_cfg 'PASSWORD=secretpass' 'CALLSIGN=N0CALL-2' 'IGATE_IS_TO_RF=on'
+  dxb_gw_seed 0 > /dev/null
+  assert_not_contains "$(gw_calls)" 'POST /igate/filters'
+  assert_contains "${DXB_FAILED_STEPS[*]}" "IS-to-RF"
+}
+
+# --reseed on the rc2 Pi prompted for the admin password on /dev/tty although the first boot
+# had saved it: the seed logged in with dxb_gw_login (config or prompt) instead of
+# dxb_gw_login_any (stored secret first). Headless re-runs must work without a terminal.
+test_reseed_logs_in_with_the_stored_secret_without_a_prompt() {
+  gw_env
+  GW_NEEDS_SETUP=false
+  printf 'USER=admin\nPASSWORD=fromfile12\n' > "$DXB_GW_SECRET_FILE"; chmod 600 "$DXB_GW_SECRET_FILE"
+  gw_cfg 'PASSWORD=secretpass' 'WEBUI_PASSWORD=<applied>' 'CALLSIGN=N0CALL-2'
+  local saved_tty=$DXB_TTY
+  DXB_TTY=/dev/null
+  assert_ok dxb_gw_seed 1
+  DXB_TTY=$saved_tty
+  assert_contains "$(gw_calls)" 'POST /auth/login {"username":"admin","password":"fromfile12"}'
+  assert_contains "$(gw_calls)" 'PUT /station/config'
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
 }
 
 test_seed_without_callsign_only_creates_admin() {

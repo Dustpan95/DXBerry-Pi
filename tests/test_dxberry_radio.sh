@@ -28,6 +28,8 @@ cli() {
     systemd-tmpfiles() { :; }
     rigctl() { printf '145390000\nFM\n'; }
     gpspipe() { :; }
+    amixer() { echo "amixer $*" >> "$TEST_TMP/calls"; }
+    alsactl() { :; }
     timeout() { shift; "$@"; }
     main "$@"
   ) > "$TEST_TMP/out" 2> "$TEST_TMP/err"

@@ -3,6 +3,8 @@
 # Radio plumbing: discovery, the radio record, derived state, ownership. Spec: docs/design/2026-09-09-radio-plumbing.md
 
 : "${DXB_SYSFS_ROOT:=/sys}"
+: "${DXB_AMIXER:=amixer}"
+: "${DXB_ALSACTL:=alsactl}"
 : "${DXB_SHARE:=/opt/dxberry/share}"
 : "${DXB_RADIO_PROFILES:=$DXB_SHARE/radio-profiles.tsv}"
 : "${DXB_RADIOS_FILE:=$DXB_STATE_DIR/radios.json}"
@@ -254,6 +256,28 @@ _dxb_radio_report_alsa_id() {
   [[ -z $id || $id == "${1^^}" ]] || dxb_info "radio $1: audio id takes effect on replug or reboot"
 }
 
+# dxb_radio_alsa_levels NAME: every playback control on NAME's sound card at 0 dB (full scale
+# when the card reports no dB range) and unmuted, then saved with alsactl so the level survives
+# a reboot. The rc2 Pi's codec enumerated with PCM at 69 % under Graywolf's own -12 dB, and test
+# transmit never keyed the radio. Capture controls are the operator's: they set the RX level.
+# Runs on every wire (claim or re-wire), not on every apply, so a level an operator turned down
+# on purpose is not undone by a hotplug.
+dxb_radio_alsa_levels() {
+  local name=$1 kernel num ctl
+  kernel=$(jq -r '.audio // empty' <<< "$(dxb_radio_kernel_names "$name")")
+  [[ -n $kernel ]] || return 0
+  num=${kernel#card}
+  command -v "$DXB_AMIXER" > /dev/null 2>&1 || { dxb_warn "radio $name: amixer is not installed; playback levels left as they are"; return 0; }
+  while IFS= read -r ctl; do
+    [[ -n $ctl ]] || continue
+    "$DXB_AMIXER" -c "$num" sget "$ctl" 2> /dev/null | grep -q 'Capabilities:.*pvolume' || continue
+    "$DXB_AMIXER" -q -c "$num" sset "$ctl" playback 0dB unmute > /dev/null 2>&1 \
+      || "$DXB_AMIXER" -q -c "$num" sset "$ctl" playback 100% unmute > /dev/null 2>&1 \
+      || dxb_warn "radio $name: could not set $ctl on sound card $num"
+  done <<< "$("$DXB_AMIXER" -c "$num" scontrols 2> /dev/null | sed -n "s/^Simple mixer control '\(.*\)',[0-9]*$/\1/p")"
+  "$DXB_ALSACTL" store "$num" > /dev/null 2>&1 || dxb_warn "radio $name: could not save the mixer levels (alsactl store $num)"
+}
+
 # dxb_radio_present NAME: 0 when every pinned function was found in the current scan, else 4.
 dxb_radio_present() {
   local r names
@@ -366,6 +390,7 @@ dxb_app_load() {
 dxb_app_owned() { jq -r --arg a "$1" '[.radios[] | select(.owner == $a)] | length' <<< "$DXB_RADIOS"; }
 dxb_app_unit() { "app_$1_unit"; }
 dxb_app_wire() {
+  dxb_radio_alsa_levels "$2"
   [[ $(jq -r --arg n "$2" '.radios[$n].wiring' <<< "$DXB_RADIOS") == names ]] && return 0
   "app_$1_wire" "$2" || return 7
   if [[ $("app_$1_needs_service_restart") == yes ]]; then systemctl restart "$(dxb_app_unit "$1")" || return 7; fi

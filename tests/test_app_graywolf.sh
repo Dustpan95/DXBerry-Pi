@@ -12,6 +12,7 @@ gwapp_env() {
   mkdir -p "$DXB_STATE_DIR"; : > "$TEST_TMP/calls"
   printf 'USER=admin\nPASSWORD=hunter2hunter2\n' > "$DXB_GW_SECRET_FILE"
   DXB_CURL=gwapp_curl; sleep() { :; }
+  systemctl() { echo "systemctl $*" >> "$TEST_TMP/calls"; }
   GW_AUDIO='[]'; GW_CHANNELS='[]'; GW_PTT_404=1; GW_FAIL_PATH=''; GW_FAIL_ON_CALL=''
   declare -gA GW_CALL_COUNT=()
   DXB_RADIOS='{"version":1,"radios":{"radio1":{"label":"TM-V71","audio":{"path":"usb-0:1.3:1.0"},"cat":{"path":"usb-0:1.4:1.0"},"hid":{"path":"usb-0:1.3:1.3"},"ptt_serial":null,"ptt":{"method":"rigctld","gpio_line":null},"rig":{"model":1,"baud":57600,"ptt_type":"RTS"},"rigctld_port":4532,"wiring":"full","owner":""}},"gps":{}}'
@@ -61,6 +62,11 @@ test_gwapp_wire_creates_device_channel_and_rigctld_ptt() {
   assert_contains "$(gwapp_calls)" 'POST /ptt {"channel_id":21,"method":"rigctld","device_path":"127.0.0.1:4532","invert":false,"persist":true}'
   assert_contains "$(gwapp_calls)" 'POST /ptt/test-rigctld {"host":"127.0.0.1","port":4532}'
   assert_contains "$(gwapp_calls)" 'POST /auth/logout'
+  # a new channel is only fully live after a restart (the rc2 Pi kept deleted channels in the
+  # modem and delivered every frame once per channel that had ever existed); the restart comes
+  # after the session is closed, and the API is waited for again so claim returns to a live one
+  assert_eq "$(grep -n 'systemctl restart graywolf.service\|POST /auth/logout' "$TEST_TMP/calls" | cut -d: -f2 | tr '\n' ';')" 'POST /auth/logout ;systemctl restart graywolf.service;'
+  assert_contains "$(gwapp_calls)" 'GET /auth/setup'
 }
 
 test_gwapp_wire_updates_existing_by_name_and_keeps_tuning() {
@@ -73,6 +79,7 @@ test_gwapp_wire_updates_existing_by_name_and_keeps_tuning() {
   assert_contains "$(gwapp_calls)" 'PUT /channels/21 {"name":"radio1","input_device_id":11,"output_device_id":11,"modem_type":"afsk1200","num_slicers":5,"input_channel":0,"output_channel":0}'
   assert_contains "$(gwapp_calls)" 'PUT /ptt/21 {"channel_id":21,"method":"rigctld","dwait_ms":30,"device_path":"127.0.0.1:4532","invert":false,"persist":true}'
   assert_not_contains "$(gwapp_calls)" 'POST /audio-devices'
+  assert_not_contains "$(gwapp_calls)" 'systemctl'                    # an update applies live; no restart
 }
 
 test_gwapp_ptt_payloads_per_method() {
@@ -122,9 +129,11 @@ test_gwapp_unwire_deletes_by_name_and_tolerates_absence() {
   assert_ok app_graywolf_unwire radio1
   assert_contains "$(gwapp_calls)" 'DELETE /channels/21?cascade=true'
   assert_contains "$(gwapp_calls)" 'DELETE /audio-devices/11'
+  assert_contains "$(gwapp_calls)" 'systemctl try-restart graywolf.service'   # deleted channels linger in the modem until then
   gwapp_env
   assert_ok app_graywolf_unwire radio1
   assert_not_contains "$(gwapp_calls)" 'DELETE'
+  assert_not_contains "$(gwapp_calls)" 'systemctl'
 }
 
 test_gwapp_contract_functions() {

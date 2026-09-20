@@ -21,7 +21,8 @@ dxb_gwapp_find_id() {
 }
 
 # dxb_gwapp_upsert PATH NAME BODY: PUT over the existing item (merged, id stripped) or POST a new
-# one. Prints the id. Fetches the list exactly once, so a transient GET failure can never fall
+# one. Prints "ID created" after a POST, "ID updated" after a PUT (it runs in a command
+# substitution, so a flag variable would never reach the caller). Fetches the list exactly once, so a transient GET failure can never fall
 # through to a duplicating POST, and the PUT is always built from the object this call actually
 # read (never from a second, possibly-failed, GET).
 dxb_gwapp_upsert() {
@@ -32,11 +33,11 @@ dxb_gwapp_upsert() {
   if [[ -n $cur ]]; then
     id=$(jq -r '.id' <<< "$cur")
     dxb_gw_api PUT "$path/$id" "$(jq -c --argjson o "$body" '. + $o | del(.id)' <<< "$cur")" > /dev/null || return 7
-    printf '%s\n' "$id"
+    printf '%s updated\n' "$id"
   else
     id=$(dxb_gw_api POST "$path" "$body" | jq -r '.id // empty') || return 7
     [[ -n $id ]] || return 7
-    printf '%s\n' "$id"
+    printf '%s created\n' "$id"
   fi
 }
 
@@ -52,12 +53,18 @@ dxb_gwapp_ptt_payload() {
     + {invert: false, persist: true}'
 }
 
+# Graywolf's modem only picks up the channel table at start (measured on 0.14.13: channels
+# deleted through the API kept receiving, so every frame arrived once per channel that had ever
+# existed and the digipeater's dedup swallowed the real one). A created or deleted channel is
+# therefore followed by a restart; an update of an existing channel applies live.
 app_graywolf_wire() {
-  local name=$1 r dev ch cur port
+  local name=$1 r dev ch cur port state
   r=$(dxb_radio_get "$name") || return 3
   _dxb_gwapp_session || { _dxb_gwapp_end; return 7; }
   dev=$(dxb_gwapp_upsert /audio-devices "$name" "$(jq -cn --arg n "$name" --arg p "plughw:CARD=$(tr '[:lower:]' '[:upper:]' <<< "$name"),DEV=0" '{name: $n, source_type: "soundcard", source_path: $p, sample_rate: 48000}')") || { _dxb_gwapp_end; return 7; }
+  dev=${dev%% *}
   ch=$(dxb_gwapp_upsert /channels "$name" "$(jq -cn --arg n "$name" --argjson d "$dev" '{name: $n, input_device_id: $d, output_device_id: $d, input_channel: 0, output_channel: 0}')") || { _dxb_gwapp_end; return 7; }
+  state=${ch#* }; ch=${ch%% *}
   if cur=$(dxb_gw_api GET "/ptt/$ch" 2> /dev/null) && jq -e '.channel_id' <<< "$cur" > /dev/null 2>&1; then
     dxb_gw_api PUT "/ptt/$ch" "$(jq -c --argjson o "$(dxb_gwapp_ptt_payload "$name" "$r" "$ch")" '. + $o | del(.id)' <<< "$cur")" > /dev/null || { _dxb_gwapp_end; return 7; }
   else
@@ -71,14 +78,20 @@ app_graywolf_wire() {
   fi
   dxb_info "graywolf wired to $name (audio device $dev, channel $ch)"
   _dxb_gwapp_end
+  if [[ $state == created ]]; then
+    systemctl restart "$(app_graywolf_unit)" || { dxb_error "graywolf did not restart after adding channel $name"; return 7; }
+    dxb_gw_wait_ready || dxb_warn "graywolf's API has not come back after the restart"
+  fi
   return 0
 }
 
 app_graywolf_unwire() {
-  local name=$1 id
+  local name=$1 id deleted=0
   _dxb_gwapp_session || { _dxb_gwapp_end; return 7; }
   if id=$(dxb_gwapp_find_id /channels "$name"); then
-    [[ -z $id ]] || dxb_gw_api DELETE "/channels/$id?cascade=true" > /dev/null || dxb_warn "could not delete graywolf channel $name"
+    if [[ -n $id ]]; then
+      if dxb_gw_api DELETE "/channels/$id?cascade=true" > /dev/null; then deleted=1; else dxb_warn "could not delete graywolf channel $name"; fi
+    fi
   else
     dxb_warn "could not list graywolf channels to unwire $name"
   fi
@@ -88,5 +101,7 @@ app_graywolf_unwire() {
     dxb_warn "could not list graywolf audio devices to unwire $name"
   fi
   _dxb_gwapp_end
+  # try-restart: only if it is running; a hand-over that leaves graywolf idle stops it right after
+  (( deleted )) && { systemctl try-restart "$(app_graywolf_unit)" || dxb_warn "graywolf did not restart after removing channel $name"; }
   return 0
 }

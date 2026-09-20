@@ -472,9 +472,10 @@ All calls go to `http://127.0.0.1:8080/api` with a session cookie.
 5. `PUT /igate/config {enabled: true, server, port: 14580, gate_rf_to_is,
    gate_is_to_rf}` — when `CALLSIGN` is set.
 6. `POST /beacons` — when `LATITUDE`/`LONGITUDE` are set: a `position` beacon
-   with `latitude`, `longitude`, `comment`, `interval` (seconds; minutes × 60),
-   `send_path` (`is_only`, `rf` or `both`), `path`, `symbol_table`, `symbol`,
-   `enabled: true`. The beacon inherits the station callsign. `rf`/`both`
+   with `channel` (the first radio channel for `rf`/`both`, else 0 = none),
+   `latitude`, `longitude`, `alt_ft: 0`, `comment`, `interval` (seconds;
+   minutes × 60), `send_path` (`is_only`, `rf` or `both`), `path`,
+   `symbol_table`, `symbol`, `enabled: true`. The beacon inherits the station callsign. `rf`/`both`
    require a radio channel; if none exists yet the beacon is created as
    `is_only` and the status file says so — switching it is one click in the
    UI once a channel is configured. The beacon's id is remembered in
@@ -492,10 +493,24 @@ All calls go to `http://127.0.0.1:8080/api` with a session cookie.
    The status file tells the user this step is pending until a channel exists.
 8. `POST /auth/logout`.
 
-All writes to existing Graywolf objects (`igate/config`, an existing beacon)
-read the current object first and merge the seeded fields into it, so
-settings the user changed in the UI that the file does not cover survive a
-`--reseed`.
+`PUT /igate/config` reads the current object first and merges the seeded
+fields into it, so iGate settings the user changed in the UI that the file
+does not cover survive a `--reseed`. The beacon is the exception: the seed
+owns it and sends it whole (`channel` always present, 0 = none; `alt_ft`
+pinned to 0), because a merge re-sent whatever Graywolf had stored — the
+default channel 1 after that channel was deleted (400), and an altitude typed
+into the UI (`/A=000040` on the air). The `GET /beacons/:id` before the
+update only checks that the beacon still exists.
+
+With `IGATE_IS_TO_RF=on`, step 5 also adds one IS→RF filter rule
+(`message_dest * allow`, once, unless such a rule exists) — Graywolf's filter
+engine denies whatever no rule matches, so `gate_is_to_rf` alone transmits
+nothing.
+
+Every login after the admin is created goes through `dxb_gw_login_any`: the
+stored secret (`/var/lib/dxberry/graywolf.secret`) first, then
+`WEBUI_PASSWORD`, then a terminal prompt — so a headless `--reseed` after
+the scrub never stalls on `/dev/tty`.
 
 With `CALLSIGN` blank, steps 4–7 are skipped: Graywolf is installed with an
 admin account and the user completes station setup in the UI.
@@ -663,9 +678,9 @@ Open, to be confirmed on the first flashed image:
    against Graywolf 0.14.13.** `id` is the only read-only field on that
    endpoint; PUT of the GET-then-merge body rejects it with 400 `unknown
    field "id"`, and the same body with `id` removed succeeds. The
-   provisioner strips it (`del(.id)`) from both the iGate config merge and
-   the beacon update merge (`PUT /beacons/:id`, same convention) before
-   sending; every other field it echoes back is accepted.
+   provisioner strips it (`del(.id)`) from the iGate config merge before
+   sending; every other field it echoes back is accepted. (The beacon update
+   no longer merges at all — see step 6 above.)
 2. DietPi's first-boot import of `dietpi.txt` from the FAT partition is
    mtime-based (`cp -u`). The build stamps the FAT copy older than the root
    copy, mirroring DietPi's own imager; an unmodified FAT copy must therefore
