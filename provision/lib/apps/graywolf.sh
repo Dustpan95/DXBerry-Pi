@@ -56,15 +56,20 @@ dxb_gwapp_ptt_payload() {
 # Graywolf's modem only picks up the channel table at start (measured on 0.14.13: channels
 # deleted through the API kept receiving, so every frame arrived once per channel that had ever
 # existed and the digipeater's dedup swallowed the real one). A created or deleted channel is
-# therefore followed by a restart; an update of an existing channel applies live.
+# therefore followed by a restart (a re-created audio device too: the channel would keep the
+# old device id in the modem); an update of an existing channel applies live. The restart is
+# --no-block: this can run inside dxberry-radio-hotplug.service, which graywolf.service is
+# ordered After=, and a blocking restart from there waits on itself.
 app_graywolf_wire() {
-  local name=$1 r dev ch cur port state
+  local name=$1 r dev ch cur port restart=0
   r=$(dxb_radio_get "$name") || return 3
   _dxb_gwapp_session || { _dxb_gwapp_end; return 7; }
   dev=$(dxb_gwapp_upsert /audio-devices "$name" "$(jq -cn --arg n "$name" --arg p "plughw:CARD=$(tr '[:lower:]' '[:upper:]' <<< "$name"),DEV=0" '{name: $n, source_type: "soundcard", source_path: $p, sample_rate: 48000}')") || { _dxb_gwapp_end; return 7; }
+  [[ ${dev#* } == created ]] && restart=1
   dev=${dev%% *}
   ch=$(dxb_gwapp_upsert /channels "$name" "$(jq -cn --arg n "$name" --argjson d "$dev" '{name: $n, input_device_id: $d, output_device_id: $d, input_channel: 0, output_channel: 0}')") || { _dxb_gwapp_end; return 7; }
-  state=${ch#* }; ch=${ch%% *}
+  [[ ${ch#* } == created ]] && restart=1
+  ch=${ch%% *}
   if cur=$(dxb_gw_api GET "/ptt/$ch" 2> /dev/null) && jq -e '.channel_id' <<< "$cur" > /dev/null 2>&1; then
     dxb_gw_api PUT "/ptt/$ch" "$(jq -c --argjson o "$(dxb_gwapp_ptt_payload "$name" "$r" "$ch")" '. + $o | del(.id)' <<< "$cur")" > /dev/null || { _dxb_gwapp_end; return 7; }
   else
@@ -78,9 +83,9 @@ app_graywolf_wire() {
   fi
   dxb_info "graywolf wired to $name (audio device $dev, channel $ch)"
   _dxb_gwapp_end
-  if [[ $state == created ]]; then
-    systemctl restart "$(app_graywolf_unit)" || { dxb_error "graywolf did not restart after adding channel $name"; return 7; }
-    dxb_gw_wait_ready || dxb_warn "graywolf's API has not come back after the restart"
+  if (( restart )); then
+    systemctl --no-block restart "$(app_graywolf_unit)" || { dxb_error "could not restart graywolf after adding channel $name"; return 7; }
+    dxb_info "graywolf restarting so the modem opens channel $name"
   fi
   return 0
 }
@@ -102,6 +107,6 @@ app_graywolf_unwire() {
   fi
   _dxb_gwapp_end
   # try-restart: only if it is running; a hand-over that leaves graywolf idle stops it right after
-  (( deleted )) && { systemctl try-restart "$(app_graywolf_unit)" || dxb_warn "graywolf did not restart after removing channel $name"; }
+  (( deleted )) && { systemctl --no-block try-restart "$(app_graywolf_unit)" || dxb_warn "could not restart graywolf after removing channel $name"; }
   return 0
 }

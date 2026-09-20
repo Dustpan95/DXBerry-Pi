@@ -10,6 +10,7 @@ gwapp_env() {
   export DXB_STATE_DIR=$TEST_TMP/state DXB_LOG_FILE=$TEST_TMP/state/log DXB_GW_COOKIES=$TEST_TMP/cookies \
     DXB_GW_API=http://gw/api DXB_GW_SECRET_FILE=$TEST_TMP/state/graywolf.secret DXB_RADIOS_FILE=$TEST_TMP/state/radios.json
   mkdir -p "$DXB_STATE_DIR"; : > "$TEST_TMP/calls"
+  DXB_CFG=()   # dxberry-radio never loads dxberry.txt; a config left by another test file must not either
   printf 'USER=admin\nPASSWORD=hunter2hunter2\n' > "$DXB_GW_SECRET_FILE"
   DXB_CURL=gwapp_curl; sleep() { :; }
   systemctl() { echo "systemctl $*" >> "$TEST_TMP/calls"; }
@@ -64,9 +65,19 @@ test_gwapp_wire_creates_device_channel_and_rigctld_ptt() {
   assert_contains "$(gwapp_calls)" 'POST /auth/logout'
   # a new channel is only fully live after a restart (the rc2 Pi kept deleted channels in the
   # modem and delivered every frame once per channel that had ever existed); the restart comes
-  # after the session is closed, and the API is waited for again so claim returns to a live one
-  assert_eq "$(grep -n 'systemctl restart graywolf.service\|POST /auth/logout' "$TEST_TMP/calls" | cut -d: -f2 | tr '\n' ';')" 'POST /auth/logout ;systemctl restart graywolf.service;'
-  assert_contains "$(gwapp_calls)" 'GET /auth/setup'
+  # after the session is closed and never blocks: from inside dxberry-radio-hotplug.service,
+  # which graywolf.service is ordered After=, a blocking restart would wait on itself
+  assert_eq "$(grep -n 'systemctl --no-block restart graywolf.service\|POST /auth/logout' "$TEST_TMP/calls" | cut -d: -f2 | tr '\n' ';')" 'POST /auth/logout ;systemctl --no-block restart graywolf.service;'
+}
+
+test_gwapp_wire_restarts_when_only_the_audio_device_is_new() {
+  gwapp_env
+  GW_CHANNELS='[{"id":21,"name":"radio1","input_device_id":5,"output_device_id":5}]'
+  GW_PTT_404=0
+  assert_ok app_graywolf_wire radio1
+  assert_contains "$(gwapp_calls)" 'POST /audio-devices'
+  assert_contains "$(gwapp_calls)" 'PUT /channels/21'
+  assert_contains "$(gwapp_calls)" 'systemctl --no-block restart graywolf.service'
 }
 
 test_gwapp_wire_updates_existing_by_name_and_keeps_tuning() {
@@ -129,7 +140,7 @@ test_gwapp_unwire_deletes_by_name_and_tolerates_absence() {
   assert_ok app_graywolf_unwire radio1
   assert_contains "$(gwapp_calls)" 'DELETE /channels/21?cascade=true'
   assert_contains "$(gwapp_calls)" 'DELETE /audio-devices/11'
-  assert_contains "$(gwapp_calls)" 'systemctl try-restart graywolf.service'   # deleted channels linger in the modem until then
+  assert_contains "$(gwapp_calls)" 'systemctl --no-block try-restart graywolf.service'   # deleted channels linger in the modem until then
   gwapp_env
   assert_ok app_graywolf_unwire radio1
   assert_not_contains "$(gwapp_calls)" 'DELETE'

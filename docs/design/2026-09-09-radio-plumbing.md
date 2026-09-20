@@ -341,9 +341,12 @@ first puts each playback control of the radio's card at 0 dB (full scale when
 the card has no dB range) and unmuted, then `alsactl store`s that card so the
 level survives a reboot (`dxb_radio_alsa_levels`). The rc2 Pi's codec came up
 with PCM at 69 % under Graywolf's own −12 dB and test transmit never keyed the
-radio. Capture controls are never touched: the operator sets the RX level. A
-plain `apply` (boot, hotplug) does not re-assert the levels, so a level turned
-down on purpose stays down.
+radio. Capture controls are never touched: the operator sets the RX level.
+The pass runs for every wiring mode (`names` apps play through the card too)
+and on every wire — which includes every boot, because the wiring mark lives
+in `/run` and the boot-time hotplug apply re-wires each owned radio. TX drive
+is therefore Graywolf's output gain, never the mixer; a mixer level turned
+down by hand does not survive the next wire.
 
 ### 7.3 rigctld instances
 
@@ -528,20 +531,23 @@ implementation task checks and records.
 Restarts: Graywolf's modem reads the channel table at start (measured on
 0.14.13: channels deleted through the API kept receiving, every frame arrived
 once per channel that had ever existed, and the digipeater's dedup swallowed
-the real copy). So `wire` ends with `systemctl restart graywolf.service` when
-it *created* the channel (after the API session is closed, then
-`dxb_gw_wait_ready` again so `claim` returns to a live API), and `unwire`
-ends with `systemctl try-restart` when it deleted one. An update of an
-existing channel applies live and needs no restart, which is why
+the real copy). So `wire` ends with `systemctl --no-block restart
+graywolf.service` when it *created* the channel or the audio device (after
+the API session is closed), and `unwire` ends with `systemctl --no-block
+try-restart` when it deleted a channel. `--no-block` because a wire can run
+inside `dxberry-radio-hotplug.service`, which `graywolf.service` is ordered
+`After=`: a blocking restart from there waits on its own unit. An update of
+an existing channel applies live and needs no restart, which is why
 `app_graywolf_needs_service_restart` still prints `no`.
 
 Credentials: the Graywolf admin username and password are kept root-only in
 `/var/lib/dxberry/graywolf.secret` (0600), written by the first-boot seed and
 by any later successful login, so `dxberry-radio claim` and the console can
-log in after `dxberry.txt` has been scrubbed. `dxb_gw_login_any` tries that
-file, then `WEBUI_PASSWORD` from `dxberry.txt`, then a terminal prompt. The
-provisioner's own seed (`dxb_gw_seed`, including `--reseed`) logs in the same
-way.
+log in after `dxberry.txt` has been scrubbed. `dxb_gw_login_any` tries a
+real `WEBUI_PASSWORD` from `dxberry.txt` first (the way to set a new
+password: it is consumed, scrubbed and saved as the new secret), then that
+file, then a terminal prompt. The provisioner's own seed (`dxb_gw_seed`,
+including `--reseed`) logs in the same way.
 
 ## 10. Provisioning integration
 

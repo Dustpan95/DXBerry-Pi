@@ -16,10 +16,14 @@ dxb_gw_secret_save() {
   ( umask 077; printf 'USER=%s\nPASSWORD=%s\n' "$1" "$2" > "$DXB_GW_SECRET_FILE.tmp" ) && mv -f "$DXB_GW_SECRET_FILE.tmp" "$DXB_GW_SECRET_FILE" && chmod 600 "$DXB_GW_SECRET_FILE"
 }
 
-# dxb_gw_login_any: the stored secret file, else the config's WEBUI_PASSWORD (dxb_gw_login
-# prompts on a terminal when that value was scrubbed to <applied>). 0 logged in, 1 failed.
+# dxb_gw_login_any: a real WEBUI_PASSWORD in dxberry.txt first (dxb_gw_login consumes it so the
+# scrub blanks it, and saves it as the new stored secret), else the stored secret file, else
+# dxb_gw_login's terminal prompt (the scrubbed value is <applied>). 0 logged in, 1 failed.
 dxb_gw_login_any() {
   local u pw
+  if [[ -n ${DXB_CFG[WEBUI_PASSWORD]:-} && ${DXB_CFG[WEBUI_PASSWORD]} != "$DXB_APPLIED" ]]; then
+    dxb_gw_login; return
+  fi
   if [[ -r $DXB_GW_SECRET_FILE ]]; then
     u=$(sed -n 's/^USER=//p' "$DXB_GW_SECRET_FILE" | head -1); pw=$(sed -n 's/^PASSWORD=//p' "$DXB_GW_SECRET_FILE" | head -1)
     if [[ -n $u && -n $pw ]] && dxb_gw_api POST /auth/login "$(PW=$pw jq -cn --arg u "$u" '{username: $u, password: env.PW}')" > /dev/null; then return 0; fi
@@ -135,6 +139,7 @@ dxb_gw_payload_igate() {
 # alt_ft is pinned to 0 so a value typed into the UI cannot ride along as /A=NNNNNN.
 dxb_gw_payload_beacon() {
   local sp=$1 ch=${2:-0}
+  [[ $ch =~ ^[0-9]+$ ]] || ch=0
   jq -cn --arg lat "${DXB_CFG[LATITUDE]}" --arg lon "${DXB_CFG[LONGITUDE]}" --arg c "${DXB_CFG[BEACON_COMMENT]}" \
     --argjson i "${DXB_CFG[_INTERVAL_S]}" --arg sp "$sp" --arg p "${DXB_CFG[BEACON_PATH]}" \
     --arg st "${DXB_CFG[_SYMBOL_TABLE]}" --arg sy "${DXB_CFG[_SYMBOL]}" --argjson ch "$ch" \
@@ -147,6 +152,8 @@ dxb_gw_payload_gps() { jq -cn '{source: "gpsd", gpsd_host: "localhost", gpsd_por
 # Graywolf's IS->RF filter engine denies a packet no rule matches, so gate_is_to_rf alone never
 # transmits (measured on 0.14.13). This one rule lets messages through for any addressee; the
 # engine still requires that addressee to have been heard direct on RF in the last 30 minutes.
+# channel 0 here means any channel (measured: the rc2 Pi's rules are all channel 0 and gate to
+# its channel 3), which is why the rule needs no radio channel to exist yet.
 dxb_gw_payload_isrf_rule() { jq -cn '{channel: 0, type: "message_dest", pattern: "*", action: "allow", priority: 10, enabled: true}'; }
 # dxb_gw_payload_rule CHANNEL ALIAS TYPE MAX_HOPS PRIORITY
 dxb_gw_payload_rule() {
@@ -228,7 +235,11 @@ dxb_gw_seed_isrf_rule() {
     dxb_step_failed graywolf "could not list the IS-to-RF filters"
     return 1
   fi
-  jq -e 'any(.[]; .type == "message_dest" and .pattern == "*" and .action == "allow")' <<< "$list" > /dev/null 2>&1 && return 0
+  # a rule the operator disabled in the UI still counts as present: their call, not ours
+  if jq -e 'any(.[]; .type == "message_dest" and .pattern == "*" and .action == "allow")' <<< "$list" > /dev/null 2>&1; then
+    dxb_status_add "igate: IS-to-RF message rule present"
+    return 0
+  fi
   dxb_gw_api POST /igate/filters "$(dxb_gw_payload_isrf_rule)" > /dev/null || { dxb_step_failed graywolf "IS-to-RF message rule creation failed"; return 1; }
   dxb_status_add "igate: IS-to-RF allows messages to any station heard on RF"
 }

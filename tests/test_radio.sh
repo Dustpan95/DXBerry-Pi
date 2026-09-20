@@ -17,13 +17,15 @@ radio_env() {
   : > "$TEST_TMP/calls"; : > "$TEST_TMP/active"
   systemctl() { fx_systemctl "$@"; }
   FAKE_AMIXER_NO_DB=0
-  # a two-control card: PCM is playback, Mic is capture-only and must be left alone
+  # a card with: PCM (playback volume+switch), Mic (capture-only, left alone), a bare playback
+  # mute switch 'Auto Gain Control',0 and a second-index playback control 'PCM',1
   fake_amixer() {
     echo "amixer $*" >> "$TEST_TMP/calls"
     case " $* " in
-      *" scontrols "*) printf "Simple mixer control 'PCM',0\nSimple mixer control 'Mic',0\n" ;;
-      *" sget PCM "*) echo "  Capabilities: pvolume pswitch pswitch-joined" ;;
-      *" sget Mic "*) echo "  Capabilities: cvolume cswitch" ;;
+      *" scontrols "*) printf "Simple mixer control 'PCM',0\nSimple mixer control 'Mic',0\nSimple mixer control 'Auto Gain Control',0\nSimple mixer control 'PCM',1\n" ;;
+      *" sget PCM,0 "*|*" sget PCM,1 "*) echo "  Capabilities: pvolume pswitch pswitch-joined" ;;
+      *" sget Mic,0 "*) echo "  Capabilities: cvolume cswitch" ;;
+      *" sget Auto Gain Control,0 "*) echo "  Capabilities: pswitch pswitch-joined" ;;
       *" sset "*dB*) (( FAKE_AMIXER_NO_DB )) && return 1 ;;
     esac
     return 0
@@ -308,17 +310,20 @@ test_claim_starts_wires_and_records_owner() {
 test_wire_sets_playback_levels_and_saves_them() {
   radio_env; fake_apps; two_radios
   assert_ok dxb_radio_claim r1 alpha
-  assert_contains "$(cat "$TEST_TMP/calls")" "amixer -q -c 1 sset PCM playback 0dB unmute"
+  assert_contains "$(cat "$TEST_TMP/calls")" "amixer -q -c 1 sset PCM,0 playback 0dB unmute"
+  assert_contains "$(cat "$TEST_TMP/calls")" "amixer -q -c 1 sset PCM,1 playback 0dB unmute"
+  assert_contains "$(cat "$TEST_TMP/calls")" "amixer -q -c 1 sset Auto Gain Control,0 playback unmute"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "sset Mic"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "sset Auto Gain Control,0 playback 0dB"
   assert_contains "$(cat "$TEST_TMP/calls")" "alsactl store 1"
-  assert_eq "$(grep -c 'sset PCM' "$TEST_TMP/calls")" "1"
+  assert_eq "$(grep -c 'sset PCM,0' "$TEST_TMP/calls")" "1"
 }
 
 test_wire_falls_back_to_full_scale_without_db_info() {
   radio_env; fake_apps; two_radios
   FAKE_AMIXER_NO_DB=1
   assert_ok dxb_radio_claim r1 alpha
-  assert_contains "$(cat "$TEST_TMP/calls")" "amixer -q -c 1 sset PCM playback 100% unmute"
+  assert_contains "$(cat "$TEST_TMP/calls")" "amixer -q -c 1 sset PCM,0 playback 100% unmute"
 }
 
 test_claim_hands_over_and_stops_idle_old_owner() {

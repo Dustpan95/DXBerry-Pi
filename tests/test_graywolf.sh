@@ -10,7 +10,7 @@ gw_env() {
     DXB_GW_SECRET_FILE=$TEST_TMP/state/graywolf.secret
   mkdir -p "$DXB_STATE_DIR" "$TEST_TMP/http"
   : > "$TEST_TMP/calls"
-  DXB_STATUS_LINES=(); DXB_FAILED_STEPS=(); DXB_CONSUMED_SECRETS=''
+  DXB_STATUS_LINES=(); DXB_FAILED_STEPS=(); DXB_CONSUMED_SECRETS=''; DXB_CFG=()
   DXB_CURL=fake_curl
   apt-get() { echo "apt-get $*" >> "$TEST_TMP/calls"; }
   # Reports libasound.so.2 present by default, so tests that don't care about the ALSA runtime
@@ -303,6 +303,7 @@ test_seed_is_to_rf_on_adds_message_rule_once() {
   assert_ok dxb_gw_seed 1
   assert_contains "$(gw_calls)" 'GET /igate/filters'
   assert_not_contains "$(gw_calls)" 'POST /igate/filters'
+  assert_contains "${DXB_STATUS_LINES[*]}" "IS-to-RF message rule present"
 }
 
 test_seed_is_to_rf_off_leaves_filters_alone() {
@@ -408,6 +409,20 @@ test_gw_login_any_prefers_secret_file_then_config() {
   assert_ok dxb_gw_login_any
   assert_contains "$(cat "$TEST_TMP/calls")" '"password":"fromconfig1"'
   assert_eq "$(cat "$DXB_GW_SECRET_FILE")" $'USER=admin\nPASSWORD=fromconfig1'   # a successful config login is saved too
+}
+
+# A real WEBUI_PASSWORD in dxberry.txt beats the stored secret: it is the operator's way to set a
+# new password, it must be consumed so the scrub blanks it, and it becomes the stored secret.
+test_gw_login_any_prefers_a_real_config_password_over_the_secret_file() {
+  gw_env
+  printf 'USER=admin\nPASSWORD=fromfile12\n' > "$DXB_GW_SECRET_FILE"; chmod 600 "$DXB_GW_SECRET_FILE"
+  gw_cfg 'PASSWORD=secretpass' 'WEBUI_PASSWORD=fromconfig1' 'CALLSIGN=N0CALL-2'
+  GW_NEEDS_SETUP=false
+  assert_ok dxb_gw_seed 1
+  assert_contains "$(gw_calls)" '"password":"fromconfig1"'
+  assert_not_contains "$(gw_calls)" '"password":"fromfile12"'
+  assert_contains "$DXB_CONSUMED_SECRETS" "WEBUI_PASSWORD"
+  assert_eq "$(cat "$DXB_GW_SECRET_FILE")" $'USER=admin\nPASSWORD=fromconfig1'
 }
 
 test_seed_login_prompt_without_terminal_fails_distinctly() {

@@ -260,21 +260,26 @@ _dxb_radio_report_alsa_id() {
 # when the card reports no dB range) and unmuted, then saved with alsactl so the level survives
 # a reboot. The rc2 Pi's codec enumerated with PCM at 69 % under Graywolf's own -12 dB, and test
 # transmit never keyed the radio. Capture controls are the operator's: they set the RX level.
-# Runs on every wire (claim or re-wire), not on every apply, so a level an operator turned down
-# on purpose is not undone by a hotplug.
+# Runs on every wire - claim, and the re-wire apply does when the wiring mark (kept in /run) is
+# missing, so at every boot too. TX drive is Graywolf's output gain, never the mixer.
 dxb_radio_alsa_levels() {
-  local name=$1 kernel num ctl
+  local name=$1 kernel num ctl caps
   kernel=$(jq -r '.audio // empty' <<< "$(dxb_radio_kernel_names "$name")")
   [[ -n $kernel ]] || return 0
   num=${kernel#card}
   command -v "$DXB_AMIXER" > /dev/null 2>&1 || { dxb_warn "radio $name: amixer is not installed; playback levels left as they are"; return 0; }
+  # "NAME,INDEX" is how amixer names a control with a non-zero index ('PCM',1 -> PCM,1)
   while IFS= read -r ctl; do
     [[ -n $ctl ]] || continue
-    "$DXB_AMIXER" -c "$num" sget "$ctl" 2> /dev/null | grep -q 'Capabilities:.*pvolume' || continue
-    "$DXB_AMIXER" -q -c "$num" sset "$ctl" playback 0dB unmute > /dev/null 2>&1 \
-      || "$DXB_AMIXER" -q -c "$num" sset "$ctl" playback 100% unmute > /dev/null 2>&1 \
-      || dxb_warn "radio $name: could not set $ctl on sound card $num"
-  done <<< "$("$DXB_AMIXER" -c "$num" scontrols 2> /dev/null | sed -n "s/^Simple mixer control '\(.*\)',[0-9]*$/\1/p")"
+    caps=$("$DXB_AMIXER" -c "$num" sget "$ctl" 2> /dev/null | sed -n 's/^ *Capabilities: //p')
+    if [[ " $caps " == *" pvolume "* ]]; then
+      "$DXB_AMIXER" -q -c "$num" sset "$ctl" playback 0dB unmute > /dev/null 2>&1 \
+        || "$DXB_AMIXER" -q -c "$num" sset "$ctl" playback 100% unmute > /dev/null 2>&1 \
+        || dxb_warn "radio $name: could not set $ctl on sound card $num"
+    elif [[ " $caps " == *" pswitch "* ]]; then
+      "$DXB_AMIXER" -q -c "$num" sset "$ctl" playback unmute > /dev/null 2>&1 || dxb_warn "radio $name: could not unmute $ctl on sound card $num"
+    fi
+  done <<< "$("$DXB_AMIXER" -c "$num" scontrols 2> /dev/null | sed -n "s/^Simple mixer control '\(.*\)',\([0-9]*\)$/\1,\2/p")"
   "$DXB_ALSACTL" store "$num" > /dev/null 2>&1 || dxb_warn "radio $name: could not save the mixer levels (alsactl store $num)"
 }
 
@@ -390,7 +395,7 @@ dxb_app_load() {
 dxb_app_owned() { jq -r --arg a "$1" '[.radios[] | select(.owner == $a)] | length' <<< "$DXB_RADIOS"; }
 dxb_app_unit() { "app_$1_unit"; }
 dxb_app_wire() {
-  dxb_radio_alsa_levels "$2"
+  dxb_radio_alsa_levels "$2"   # the card's level, whatever the wiring mode - a names app plays through it too
   [[ $(jq -r --arg n "$2" '.radios[$n].wiring' <<< "$DXB_RADIOS") == names ]] && return 0
   "app_$1_wire" "$2" || return 7
   if [[ $("app_$1_needs_service_restart") == yes ]]; then systemctl restart "$(dxb_app_unit "$1")" || return 7; fi

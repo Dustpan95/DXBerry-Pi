@@ -507,10 +507,11 @@ With `IGATE_IS_TO_RF=on`, step 5 also adds one IS→RF filter rule
 engine denies whatever no rule matches, so `gate_is_to_rf` alone transmits
 nothing.
 
-Every login after the admin is created goes through `dxb_gw_login_any`: the
-stored secret (`/var/lib/dxberry/graywolf.secret`) first, then
-`WEBUI_PASSWORD`, then a terminal prompt — so a headless `--reseed` after
-the scrub never stalls on `/dev/tty`.
+Every login after the admin is created goes through `dxb_gw_login_any`: a
+real `WEBUI_PASSWORD` in `dxberry.txt` first (consumed, scrubbed, and saved
+as the new stored secret — the way to set a new password), then the stored
+secret (`/var/lib/dxberry/graywolf.secret`), then a terminal prompt — so a
+headless `--reseed` after the scrub never stalls on `/dev/tty`.
 
 With `CALLSIGN` blank, steps 4–7 are skipped: Graywolf is installed with an
 admin account and the user completes station setup in the UI.
