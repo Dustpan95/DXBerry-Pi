@@ -477,6 +477,8 @@ dxb_radio_claim() {
   dxb_radio_present "$name" || { dxb_error "radio $name is not plugged in"; return 4; }
   cur=$(jq -r --arg n "$name" '.radios[$n].owner' <<< "$DXB_RADIOS")
   if [[ $cur == "$app" ]]; then
+    # the unit may be stopped (a re-wire skipped at boot tells the operator to run this)
+    dxb_app_start "$app" || return 5
     dxb_app_wire "$app" "$name" || return 5
     _dxb_radio_mark_wired "$name" "$(dxb_radio_wire_hash "$(dxb_radio_get "$name")")" \
       || dxb_warn "radio $name: could not record the wiring hash; it will be re-wired on the next apply"

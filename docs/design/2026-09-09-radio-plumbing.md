@@ -108,6 +108,7 @@ provision/
 └── templates/
     ├── rigctld@.service
     ├── dxberry-radio-hotplug.service
+    ├── dxberry-radio-wire.service
     ├── 70-dxberry-radio.rules.head    # static part of the generated rules file
     ├── dxberry-audio.conf             # /etc/modprobe.d slot pinning
     └── chrony-dxberry.conf            # /etc/chrony/conf.d drop-in
@@ -499,7 +500,8 @@ same-named helper of another module.
 ### 9.2 Hand-over (`claim NAME APP`)
 
 1. Validate: radio exists, app module exists, radio present (else exit 4).
-2. If the current owner is APP: re-run `wire` and exit 0.
+2. If the current owner is APP: start its unit if inactive (as in step 5),
+   re-run `wire` and exit 0.
 3. If another app owns it: `unwire` that app for this radio; if that app now
    owns no radio, `systemctl stop` its unit and wait for it to exit.
 4. Set `owner` = APP and save the record.

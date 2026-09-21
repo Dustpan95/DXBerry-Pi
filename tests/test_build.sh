@@ -19,6 +19,11 @@ test_build_required_files_names_radio_plumbing() {
     assert_contains "$required" "$f"
   done
   assert_contains "$executable" "provision/bin/dxberry-radio"
+  # the wire unit exists to run after graywolf; the hotplug unit must stay before it
+  assert_file_contains "$DXB_ROOT/provision/templates/dxberry-radio-wire.service" "After=dxberry-radio-hotplug.service graywolf.service"
+  assert_file_contains "$DXB_ROOT/provision/templates/dxberry-radio-hotplug.service" "Before=graywolf.service"
+  assert_file_contains "$DXB_ROOT/provision/templates/dxberry-radio-wire.service" "TimeoutStartSec="
+  assert_file_contains "$DXB_ROOT/provision/templates/dxberry-radio-hotplug.service" "TimeoutStartSec="
 }
 
 test_build_check_fails_on_missing_file() {

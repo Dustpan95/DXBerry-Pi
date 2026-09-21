@@ -306,8 +306,11 @@ test_claim_starts_wires_and_records_owner() {
   assert_eq "$(jq -r '.radios.r1.wired_hash' "$DXB_RADIOS_STATE")" "$(dxb_radio_wire_hash "$(dxb_radio_get r1)")"
   : > "$TEST_TMP/calls"; : > "$TEST_TMP/appcalls"
   assert_ok dxb_radio_claim r1 alpha                                 # same owner: re-wire only
-  assert_eq "$(appcalls)" "alpha wire r1;"
-  assert_not_contains "$(cat "$TEST_TMP/calls")" "start"
+  assert_eq "$(appcalls)" "alpha ready;alpha wire r1;"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl start"
+  : > "$TEST_TMP/active"; : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_claim r1 alpha                                 # same owner, unit stopped: start it first
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start alpha.service"
 }
 
 # The rc2 Pi's codec came up with PCM playback at 69 % (-20 dB) on top of Graywolf's default
@@ -394,7 +397,7 @@ test_apply_reasserts_playback_levels_without_rewiring() {
   assert_not_contains "$(appcalls)" "alpha wire"
   assert_contains "$(cat "$TEST_TMP/calls")" "amixer -q -c 1 sset PCM,0 playback 0dB unmute"
   assert_contains "$(cat "$TEST_TMP/calls")" "alsactl store 1"
-  assert_not_contains "$(cat "$TEST_TMP/calls")" "sset"$'\n'"amixer -q -c 2"   # r2 has no owner
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "amixer -q -c 2"    # r2 has no owner
   assert_eq "$(grep -c 'alsactl store' "$TEST_TMP/calls")" "1"
 }
 
