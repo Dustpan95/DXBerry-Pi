@@ -251,16 +251,22 @@ test_apply_marks_wiring_hash_atomically() {
   local h; h=$(dxb_radio_wire_hash "$(dxb_radio_get radio1)")
   assert_eq "$(jq -r '.radios.radio1.wired_hash' "$DXB_RADIOS_STATE")" "$h"
   jq empty "$DXB_RADIOS_STATE" 2> /dev/null; assert_eq "$?" "0"
-  [[ -z $(find "$(dirname "$DXB_RADIOS_STATE")" -maxdepth 1 -name '*.dxbtmp*') ]] || _fail "leftover .dxbtmp file"
+  [[ -z $(find "$(dirname "$DXB_RADIOS_STATE")" "$DXB_STATE_DIR" -maxdepth 1 -name '*.dxbtmp*') ]] || _fail "leftover .dxbtmp file"
+  assert_eq "$(jq -r '.radio1' "$DXB_WIRED_FILE")" "$h"
   source "$DXB_LIB/radio.sh"     # restore the real dxb_app_rewire (Task 8) for later tests in this process
 }
 
-test_mark_wired_fails_when_state_parent_is_not_a_directory() {
-  radio_env
+test_mark_wired_fails_when_the_marks_parent_is_not_a_directory() {
+  radio_env; fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
+  dxb_radio_add radio1 '{"audio":"1","cat":"2"}' > /dev/null
   local blocker=$TEST_TMP/blocker
   : > "$blocker"
-  DXB_RADIOS_STATE=$blocker/radios-state.json
-  _dxb_radio_mark_wired radio1 deadbeef; assert_eq "$?" "6"
+  DXB_WIRED_FILE=$blocker/wired.json
+  _dxb_radio_mark_wired radio1 deadbeef 2> /dev/null; assert_eq "$?" "6"
+  DXB_WIRED_FILE=$TEST_TMP/state/wired.json
+  DXB_RADIOS_STATE=$blocker/radios-state.json                       # only the mirror blocked: recorded, warned, 0
+  _dxb_radio_mark_wired radio1 deadbeef 2> /dev/null; assert_eq "$?" "0"
+  assert_eq "$(jq -r '.radio1' "$DXB_WIRED_FILE")" "deadbeef"
 }
 
 test_add_rejects_radio_with_no_pinned_function() {
@@ -350,8 +356,61 @@ test_apply_skips_the_rewire_while_the_owner_is_not_running() {
   assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl start alpha.service"   # apply never starts units
   echo alpha.service >> "$TEST_TMP/active"; : > "$TEST_TMP/appcalls"
   assert_ok dxb_radio_apply hotplug
-  assert_eq "$(appcalls)" "alpha wire r1;"
+  assert_eq "$(appcalls)" "alpha ready;alpha wire r1;"                # ready first: the owner may still be starting
   assert_eq "$(jq -r '.r1' "$DXB_STATE_DIR/wired.json")" "$(dxb_radio_wire_hash "$(dxb_radio_get r1)")"
+  : > "$TEST_TMP/active"; dxb_radio_set r1 '{"ptt":"none"}' > /dev/null
+  dxb_radio_apply 2> "$TEST_TMP/stderr"; assert_eq "$?" "0"          # a hand-run apply says so louder
+  assert_contains "$(cat "$TEST_TMP/stderr")" "[WARN]"
+  assert_contains "$(cat "$TEST_TMP/stderr")" "wiring was not updated"
+}
+
+test_apply_reports_a_failed_owner_unit_with_7() {
+  radio_env; fake_apps; two_radios
+  assert_ok dxb_radio_claim r1 alpha
+  dxb_radio_set r1 '{"ptt":"vox"}' > /dev/null
+  : > "$TEST_TMP/active"; echo alpha.service > "$TEST_TMP/failed"; : > "$TEST_TMP/appcalls"
+  dxb_radio_apply hotplug 2> "$TEST_TMP/stderr"; assert_eq "$?" "7"
+  assert_contains "$(cat "$TEST_TMP/stderr")" "unit has failed"
+  assert_not_contains "$(appcalls)" "alpha wire"
+}
+
+test_apply_reports_an_owner_that_never_becomes_ready_with_7() {
+  radio_env; fake_apps; two_radios
+  assert_ok dxb_radio_claim r1 alpha
+  dxb_radio_set r1 '{"ptt":"vox"}' > /dev/null; : > "$TEST_TMP/appcalls"
+  ALPHA_READY_RC=1 dxb_radio_apply hotplug 2> "$TEST_TMP/stderr"; assert_eq "$?" "7"
+  assert_contains "$(cat "$TEST_TMP/stderr")" "did not become ready"
+  assert_not_contains "$(appcalls)" "alpha wire"
+}
+
+# The levels are derived state: every apply re-asserts them for a present, owned radio, so a
+# reboot (whose hotplug apply no longer re-wires an unchanged record) still gets 0 dB and a
+# fresh alsactl store under the card's final id.
+test_apply_reasserts_playback_levels_without_rewiring() {
+  radio_env; fake_apps; two_radios
+  assert_ok dxb_radio_claim r1 alpha
+  : > "$TEST_TMP/calls"; : > "$TEST_TMP/appcalls"
+  assert_ok dxb_radio_apply hotplug
+  assert_not_contains "$(appcalls)" "alpha wire"
+  assert_contains "$(cat "$TEST_TMP/calls")" "amixer -q -c 1 sset PCM,0 playback 0dB unmute"
+  assert_contains "$(cat "$TEST_TMP/calls")" "alsactl store 1"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "sset"$'\n'"amixer -q -c 2"   # r2 has no owner
+  assert_eq "$(grep -c 'alsactl store' "$TEST_TMP/calls")" "1"
+}
+
+test_wired_marks_are_pruned_and_a_corrupt_file_is_replaced() {
+  radio_env; fake_apps; two_radios
+  mkdir -p "$DXB_STATE_DIR"; printf '{"ghost":"deadbeef"}\n' > "$DXB_STATE_DIR/wired.json"
+  assert_ok dxb_radio_claim r1 alpha
+  assert_eq "$(jq -c 'keys' "$DXB_STATE_DIR/wired.json")" '["r1"]'
+  assert_eq "$(stat -c %a "$DXB_STATE_DIR/wired.json")" "600"
+  dxb_radio_claim r2 alpha > /dev/null
+  printf '[1,2]\n' > "$DXB_STATE_DIR/wired.json"                     # corrupt: not an object
+  assert_ok dxb_radio_remove r1
+  assert_eq "$(cat "$DXB_STATE_DIR/wired.json")" '{}'               # replaced, never truncated to nothing
+  printf 'not json\n' > "$DXB_STATE_DIR/wired.json"
+  assert_ok dxb_radio_claim r2 alpha
+  assert_eq "$(jq -c 'keys' "$DXB_STATE_DIR/wired.json")" '["r2"]'
 }
 
 test_remove_drops_the_wired_mark() {
@@ -427,10 +486,21 @@ test_claim_warns_when_wiring_hash_cannot_be_recorded() {
   radio_env; fake_apps; two_radios
   local blocker=$TEST_TMP/blocker
   : > "$blocker"
-  DXB_RADIOS_STATE=$blocker/radios-state.json
+  DXB_WIRED_FILE=$blocker/wired.json
   dxb_radio_claim r1 alpha 2> "$TEST_TMP/stderr"; assert_eq "$?" "0"
   assert_eq "$(jq -r '.owner' <<< "$(dxb_radio_get r1)")" "alpha"
   assert_contains "$(cat "$TEST_TMP/stderr")" "could not record the wiring hash"
+}
+
+test_claim_only_warns_softly_when_the_mirror_cannot_be_refreshed() {
+  radio_env; fake_apps; two_radios
+  local blocker=$TEST_TMP/blocker
+  : > "$blocker"
+  DXB_RADIOS_STATE=$blocker/radios-state.json
+  dxb_radio_claim r1 alpha 2> "$TEST_TMP/stderr"; assert_eq "$?" "0"
+  assert_eq "$(jq -r '.r1' "$DXB_STATE_DIR/wired.json")" "$(dxb_radio_wire_hash "$(dxb_radio_get r1)")"   # the mark itself is recorded
+  assert_contains "$(cat "$TEST_TMP/stderr")" "status mirror could not be refreshed"
+  assert_not_contains "$(cat "$TEST_TMP/stderr")" "could not record the wiring hash"
 }
 
 test_claim_failure_after_handover_leaves_radio_released() {

@@ -65,7 +65,7 @@ REQUIRED_FILES=(
   provision/templates/journald-dxberry.conf provision/templates/dxberry-netwatch.service
   provision/bin/dxberry-radio provision/lib/radio.sh provision/lib/radio_udev.sh provision/lib/rigctld.sh
   provision/lib/gps.sh provision/lib/apps/graywolf.sh provision/share/radio-profiles.tsv
-  provision/templates/rigctld@.service provision/templates/dxberry-radio-hotplug.service
+  provision/templates/rigctld@.service provision/templates/dxberry-radio-hotplug.service provision/templates/dxberry-radio-wire.service
   provision/templates/dxberry-radio.tmpfiles provision/templates/70-dxberry-radio.rules.head
   provision/templates/dxberry-audio.conf provision/templates/chrony-dxberry.conf provision/templates/gpsd-default.tmpl
 )

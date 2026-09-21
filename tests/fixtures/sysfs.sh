@@ -42,6 +42,7 @@ fx_systemctl() {
     is-active)
       if grep -qx "$u" "$TEST_TMP/active" 2> /dev/null; then [[ $2 == --quiet ]] || echo active; return 0
       else [[ $2 == --quiet ]] || echo inactive; return 3; fi ;;
+    is-failed) if grep -qx "$u" "$TEST_TMP/failed" 2> /dev/null; then return 0; else return 1; fi ;;
     start|restart) grep -qx "$u" "$TEST_TMP/active" 2> /dev/null || echo "$u" >> "$TEST_TMP/active" ;;
     stop) grep -vx "$u" "$TEST_TMP/active" > "$TEST_TMP/active.n" 2> /dev/null; mv -f "$TEST_TMP/active.n" "$TEST_TMP/active" ;;
   esac

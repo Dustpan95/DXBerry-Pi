@@ -81,7 +81,7 @@ dxb_rigctld_query() {
 dxb_rigctld_install_units() {
   local rc=1 t dest content
   mkdir -p "$DXB_SYSTEMD_DIR" "$DXB_TMPFILES_DIR" 2> /dev/null
-  for t in rigctld@.service dxberry-radio-hotplug.service; do
+  for t in rigctld@.service dxberry-radio-hotplug.service dxberry-radio-wire.service; do
     content=$(< "$DXB_TEMPLATES/$t") || return 6
     dest="$DXB_SYSTEMD_DIR/$t"
     if dxb_write_if_changed "$dest" "$content" 644; then
@@ -98,8 +98,12 @@ dxb_rigctld_install_units() {
   if (( rc == 0 )); then
     systemctl daemon-reload || { dxb_error "systemctl daemon-reload failed"; return 6; }
     systemd-tmpfiles --create "$DXB_TMPFILES_DIR/dxberry-radio.conf" 2> /dev/null || mkdir -p "$DXB_RIGCTLD_RUN_DIR"
-    dxb_info "rigctld@ and dxberry-radio-hotplug units installed"
+    dxb_info "rigctld@, dxberry-radio-hotplug and dxberry-radio-wire units installed"
   fi
   systemctl enable dxberry-radio-hotplug.service > /dev/null 2>&1 || { dxb_error "systemctl enable dxberry-radio-hotplug.service failed"; return 6; }
+  # the wire unit runs the same apply again after graywolf.service is up: the hotplug unit is
+  # ordered before graywolf (rigctld and stable names first), so a re-wire that is due at boot
+  # (record changed while the owner was stopped) has no owner to talk to until then
+  systemctl enable dxberry-radio-wire.service > /dev/null 2>&1 || { dxb_error "systemctl enable dxberry-radio-wire.service failed"; return 6; }
   return $rc
 }

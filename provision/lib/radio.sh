@@ -266,8 +266,10 @@ _dxb_radio_report_alsa_id() {
 # when the card reports no dB range) and unmuted, then saved with alsactl so the level survives
 # a reboot. The rc2 Pi's codec enumerated with PCM at 69 % under Graywolf's own -12 dB, and test
 # transmit never keyed the radio. Capture controls are the operator's: they set the RX level.
-# Runs on every wire - claim, and the re-wire apply does when the wiring mark (kept in /run) is
-# missing, so at every boot too. TX drive is Graywolf's output gain, never the mixer.
+# Runs on every wire (claim, re-wire) and on every apply for a present, owned radio - so at every
+# boot, which also re-saves the levels under the card's final id (the udev rename only applies
+# at registration, so the first claim's store may be under the old id). TX drive is Graywolf's
+# output gain, never the mixer.
 dxb_radio_alsa_levels() {
   local name=$1 kernel num ctl caps
   kernel=$(jq -r '.audio // empty' <<< "$(dxb_radio_kernel_names "$name")")
@@ -319,31 +321,37 @@ dxb_radio_write_state() {
 # _dxb_radio_wired_get NAME: the hash NAME's owner was last wired with, or empty.
 _dxb_radio_wired_get() { jq -r --arg n "$1" '.[$n] // ""' "$DXB_WIRED_FILE" 2> /dev/null; }
 
+# _dxb_radio_wired_load: the marks file as a JSON object; {} when missing, unparsable or not an
+# object (a corrupt file is replaced, never merged into).
+_dxb_radio_wired_load() {
+  local cur
+  if cur=$(jq -c . "$DXB_WIRED_FILE" 2> /dev/null) && jq -e 'type == "object"' <<< "$cur" > /dev/null 2>&1; then printf '%s\n' "$cur"; else echo '{}'; fi
+}
+
 # _dxb_radio_wired_write JSON: the marks file, pruned to radios that still exist. 0 ok, 6 error.
+# Refuses anything but a JSON object: an empty or failed jq result must never truncate the file.
 _dxb_radio_wired_write() {
   local j
+  jq -e 'type == "object"' <<< "$1" > /dev/null 2>&1 || { dxb_error "refusing to write $DXB_WIRED_FILE: not an object"; return 6; }
   j=$(jq -c --argjson names "$(jq -c '.radios | keys' <<< "$DXB_RADIOS")" 'with_entries(select(.key as $k | $names | index($k)))' <<< "$1") || return 6
   mkdir -p "$(dirname "$DXB_WIRED_FILE")" 2> /dev/null
-  dxb_write_if_changed "$DXB_WIRED_FILE" "$j" 644
+  dxb_write_if_changed "$DXB_WIRED_FILE" "$j" 600
   [[ -f $DXB_WIRED_FILE && $(< "$DXB_WIRED_FILE") == "$j" ]] || { dxb_error "could not write $DXB_WIRED_FILE"; return 6; }
 }
 
 # _dxb_radio_mark_wired NAME HASH: remember that the owner was wired with these inputs, then
-# refresh the mirror so status shows it. 0 ok, 6 error (either file).
+# refresh the mirror so status shows it. 0 ok (a mirror that could not be refreshed is only a
+# warning: the next apply rewrites it), 6 when the mark itself could not be written.
 _dxb_radio_mark_wired() {
-  local cur
-  cur=$(jq -c . "$DXB_WIRED_FILE" 2> /dev/null) || cur='{}'
-  jq -e 'type == "object"' <<< "$cur" > /dev/null 2>&1 || cur='{}'
-  _dxb_radio_wired_write "$(jq -c --arg n "$1" --arg h "$2" '.[$n] = $h' <<< "$cur")" || return 6
-  dxb_radio_write_state || return 6
+  _dxb_radio_wired_write "$(jq -c --arg n "$1" --arg h "$2" '.[$n] = $h' <<< "$(_dxb_radio_wired_load)")" || return 6
+  dxb_radio_write_state || dxb_warn "radio $1: wiring recorded, but the status mirror could not be refreshed"
   return 0
 }
 
 # _dxb_radio_unmark_wired NAME: forget the mark (the radio is gone). 0 ok, 6 error.
 _dxb_radio_unmark_wired() {
-  local cur
-  cur=$(jq -c . "$DXB_WIRED_FILE" 2> /dev/null) || return 0
-  _dxb_radio_wired_write "$(jq -c --arg n "$1" 'del(.[$n])' <<< "$cur")"
+  [[ -f $DXB_WIRED_FILE ]] || return 0
+  _dxb_radio_wired_write "$(jq -c --arg n "$1" 'del(.[$n])' <<< "$(_dxb_radio_wired_load)")"
 }
 
 # dxb_radio_apply [hotplug]: derive everything from the record. 0 ok, 6 derived-state error, 7 re-wire error.
@@ -390,13 +398,27 @@ _dxb_radio_apply() {
   for n in $(dxb_radio_names); do
     r=$(dxb_radio_get "$n"); owner=$(jq -r '.owner' <<< "$r")
     if [[ -z $owner ]] || ! dxb_radio_present "$n"; then continue; fi
+    dxb_radio_alsa_levels "$n"
     h=$(dxb_radio_wire_hash "$r"); wired=$(_dxb_radio_wired_get "$n")
     [[ $h == "$wired" ]] && continue
-    # apply never starts units, and wiring needs the owner's API: at boot the hotplug apply runs
-    # before graywolf.service, so the re-wire waits for the next apply after the owner is up
-    if dxb_app_load "$owner" 2> /dev/null && ! systemctl is-active --quiet "$(dxb_app_unit "$owner")"; then
-      dxb_info "radio $n: $owner is not running; it will be wired on the next apply"
-      continue
+    # apply never starts units, and wiring needs the owner's API. At boot the hotplug apply runs
+    # before graywolf.service, so a due re-wire is left for dxberry-radio-wire.service (the same
+    # apply, ordered after graywolf) or the next udev event; a hand-run apply says so louder.
+    if dxb_app_load "$owner" 2> /dev/null; then
+      if systemctl is-failed --quiet "$(dxb_app_unit "$owner")"; then
+        dxb_error "radio $n: owner $owner's unit has failed; not re-wired"; (( rc == 0 )) && rc=7
+        continue
+      fi
+      if ! systemctl is-active --quiet "$(dxb_app_unit "$owner")"; then
+        if [[ $mode == hotplug ]]; then dxb_info "radio $n: $owner is not running; it will be wired once it is up"
+        else dxb_warn "radio $n: $owner is not running, so its wiring was not updated; start it (dxberry-radio claim $n $owner) or it will be wired at the next boot"; fi
+        continue
+      fi
+      # the owner may still be starting (this apply runs right after graywolf.service at boot)
+      if declare -F "app_${owner}_wait_ready" > /dev/null && ! "app_${owner}_wait_ready"; then
+        dxb_error "radio $n: $owner did not become ready; not re-wired"; (( rc == 0 )) && rc=7
+        continue
+      fi
     fi
     # the guard is always true in production (radio.sh defines dxb_app_rewire below); it is kept
     # so a test can source this module alone, or stub the re-wire, without apply falling over
@@ -446,7 +468,8 @@ dxb_app_rewire() {
 
 # dxb_radio_claim NAME APP (spec section 9.2). 0 ok, 3 unknown, 4 absent, 5 failed (released), 6 record error.
 # rigctld is never touched here (spec 9.2): it belongs to the radio, not the hand-over, so this
-# function only ever runs the two apps' unit and app_<app>_* functions, never dxb_radio_write_state.
+# function only ever runs the two apps' unit and app_<app>_* functions; the mirror is refreshed
+# only as a side effect of recording the wiring mark.
 dxb_radio_claim() {
   local name=$1 app=$2 cur
   dxb_radio_get "$name" > /dev/null || return 3

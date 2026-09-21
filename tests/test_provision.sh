@@ -346,6 +346,7 @@ test_provision_radio_installs_and_reports() {
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl enable chrony"
   assert_file_contains "$DXB_DIETPI_TXT" "CONFIG_NTP_MODE=0"     # the time hand-off, after chrony is up
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl enable dxberry-radio-hotplug.service"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl enable dxberry-radio-wire.service"
   assert_file_contains "$DXB_UDEV_RULES_FILE" "IMPORT{builtin}=\"path_id\""
   assert_file_contains "$DXB_MODPROBE_FILE" "snd_usb_audio"
   assert_file_contains "$DXB_GPSD_DEFAULT" 'DEVICES="/dev/ttyAMA0"'

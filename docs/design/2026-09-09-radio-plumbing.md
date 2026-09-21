@@ -276,9 +276,13 @@ stdout as success. Exit codes:
   `rigctld@` instances by presence, refreshes the runtime mirror, and
   re-runs the current owner's wiring for present radios when the wiring
   inputs changed — unless the owner's unit is not running, in which case it
-  logs so and leaves the mark unset, because `apply` never starts units and
-  wiring needs the owner's API (at boot the hotplug apply runs before
-  `graywolf.service`); the next apply after the owner is up wires it. The
+  logs so (an info line from `hotplug`, a warning from a hand-run `apply`)
+  and leaves the mark unchanged, because `apply` never starts units and
+  wiring needs the owner's API. A failed owner unit, or one that does not
+  become ready (`app_<app>_wait_ready` runs before every re-wire), is exit
+  7. At boot the hotplug apply runs before `graywolf.service`, so
+  `dxberry-radio-wire.service` — the same `hotplug` apply, ordered after
+  `graywolf.service` — does the re-wire once the owner is up. The
   `hotplug` subcommand is the same with quieter logging and no udev reload
   (udev is what called it).
 - `claim NAME APP` — hand-over (§9).
@@ -347,17 +351,18 @@ USB cards take indexes 0–3; `vc4-hdmi` and `bcm2835` land after them.
 Applications never address cards by index anyway; this keeps `aplay -l`
 readable and avoids Graywolf's detector listing HDMI first.
 
-Playback levels: every wire (`claim`, or a re-wire after the record changed)
-first puts each playback control of the radio's card at 0 dB (full scale when
+Playback levels: every wire first puts each playback control of the radio's card at 0 dB (full scale when
 the card has no dB range) and unmuted, then `alsactl store`s that card so the
 level survives a reboot (`dxb_radio_alsa_levels`). The rc2 Pi's codec came up
 with PCM at 69 % under Graywolf's own −12 dB and test transmit never keyed the
 radio. Capture controls are never touched: the operator sets the RX level.
-The pass runs for every wiring mode (`names` apps play through the card too)
-and on every wire: a `claim`, or the re-wire `apply` does after the record
-changed (the mark survives reboots, §6.1, so an unchanged record is not
-re-wired at boot). TX drive is Graywolf's output gain, never the mixer; a
-mixer level turned down by hand does not survive the next wire.
+The pass runs for every wiring mode (`names` apps play through the card too),
+and `apply` also runs it for every present, owned radio whether or not a
+re-wire is due — so every boot re-asserts the levels and re-saves them under
+the card's final id (the udev rename only applies at registration, so the
+first `claim` may have stored them under the old id). TX drive is Graywolf's
+output gain, never the mixer; a mixer level turned down by hand does not
+survive the next apply.
 
 ### 7.3 rigctld instances
 
@@ -568,7 +573,7 @@ and before `provision_scrub`. It:
 1. Installs the packages (§8.2) — a failed install is a failed step named
    `radio`; the rest continues.
 2. Installs the templates: `rigctld@.service`, `dxberry-radio-hotplug.service`
-   (enabled), `dxberry-audio.conf`, the chrony drop-in, `/etc/default/gpsd`,
+   and `dxberry-radio-wire.service` (both enabled), `dxberry-audio.conf`, the chrony drop-in, `/etc/default/gpsd`,
    and creates `/run/dxberry/rigctld` via a `tmpfiles.d` entry.
 3. Disables and masks `systemd-timesyncd`; enables `chrony` and
    `gpsd.socket`; writes `CONFIG_NTP_MODE=0` into `dietpi.txt` (§8.1).
