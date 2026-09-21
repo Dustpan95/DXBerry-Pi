@@ -12,7 +12,7 @@ radio_env() {
     DXB_RADIO_PROFILES=$DXB_ROOT/provision/share/radio-profiles.tsv DXB_RADIOS_FILE=$TEST_TMP/state/radios.json \
     DXB_UDEV_RULES_FILE=$TEST_TMP/etc/70.rules DXB_MODPROBE_FILE=$TEST_TMP/etc/dxberry-audio.conf DXB_UDEVADM=fake_udevadm \
     DXB_RIGCTLD_RUN_DIR=$TEST_TMP/run/rigctld DXB_SYSTEMD_DIR=$TEST_TMP/systemd DXB_TMPFILES_DIR=$TEST_TMP/tmpfiles \
-    DXB_RADIOS_STATE=$TEST_TMP/run/radios-state.json DXB_RUN_DIR=$TEST_TMP/run DXB_AMIXER=fake_amixer DXB_ALSACTL=fake_alsactl
+    DXB_RADIOS_STATE=$TEST_TMP/run/radios-state.json DXB_RUN_DIR=$TEST_TMP/run DXB_WIRED_FILE=$TEST_TMP/state/wired.json DXB_AMIXER=fake_amixer DXB_ALSACTL=fake_alsactl
   mkdir -p "$DXB_STATE_DIR" "$TEST_TMP/etc"
   : > "$TEST_TMP/calls"; : > "$TEST_TMP/active"
   systemctl() { fx_systemctl "$@"; }
@@ -324,6 +324,41 @@ test_wire_falls_back_to_full_scale_without_db_info() {
   FAKE_AMIXER_NO_DB=1
   assert_ok dxb_radio_claim r1 alpha
   assert_contains "$(cat "$TEST_TMP/calls")" "amixer -q -c 1 sset PCM,0 playback 100% unmute"
+}
+
+# The wiring mark used to live only in the /run mirror, so every boot re-wired every owned radio
+# before graywolf.service was up (the hotplug unit is ordered before it) and the unit failed.
+test_wired_mark_survives_a_reboot() {
+  radio_env; fake_apps; two_radios
+  assert_ok dxb_radio_claim r1 alpha
+  local h; h=$(dxb_radio_wire_hash "$(dxb_radio_get r1)")
+  assert_eq "$(jq -r '.r1' "$DXB_STATE_DIR/wired.json")" "$h"
+  rm -rf "$DXB_RUN_DIR"; : > "$TEST_TMP/appcalls"                 # reboot: tmpfs gone, record and mark kept
+  assert_ok dxb_radio_apply hotplug
+  assert_not_contains "$(appcalls)" "alpha wire"
+  assert_eq "$(jq -r '.radios.r1.wired_hash' "$DXB_RADIOS_STATE")" "$h"
+}
+
+test_apply_skips_the_rewire_while_the_owner_is_not_running() {
+  radio_env; fake_apps; two_radios
+  assert_ok dxb_radio_claim r1 alpha
+  dxb_radio_set r1 '{"ptt":"vox"}' > /dev/null                         # record changed: a re-wire is due
+  : > "$TEST_TMP/active"; : > "$TEST_TMP/appcalls"; : > "$TEST_TMP/calls"   # ... but alpha is stopped (boot order)
+  dxb_radio_apply hotplug 2> "$TEST_TMP/stderr"; assert_eq "$?" "0"
+  assert_not_contains "$(appcalls)" "alpha wire"
+  assert_contains "$(cat "$TEST_TMP/stderr")" "alpha is not running"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl start alpha.service"   # apply never starts units
+  echo alpha.service >> "$TEST_TMP/active"; : > "$TEST_TMP/appcalls"
+  assert_ok dxb_radio_apply hotplug
+  assert_eq "$(appcalls)" "alpha wire r1;"
+  assert_eq "$(jq -r '.r1' "$DXB_STATE_DIR/wired.json")" "$(dxb_radio_wire_hash "$(dxb_radio_get r1)")"
+}
+
+test_remove_drops_the_wired_mark() {
+  radio_env; fake_apps; two_radios
+  dxb_radio_claim r1 alpha > /dev/null; dxb_radio_claim r2 alpha > /dev/null
+  assert_ok dxb_radio_remove r1
+  assert_eq "$(jq -c 'keys' "$DXB_STATE_DIR/wired.json")" '["r2"]'
 }
 
 test_claim_hands_over_and_stops_idle_old_owner() {

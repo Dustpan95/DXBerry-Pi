@@ -235,6 +235,13 @@ Root-owned, mode 0600, written via `dxb_write_if_changed` after validation.
 owner was last wired with — when the two differ, `apply` re-wires the owner).
 It is what `status` and the console read; it never holds configuration.
 
+The wiring marks themselves live in `/var/lib/dxberry/wired.json`
+(`{"radio1": "<hash>"}`), next to the record, and the mirror only copies
+them. They must survive a reboot: kept only in `/run`, every boot made the
+hotplug apply (ordered before `graywolf.service`) re-wire every owned radio
+against an owner that was not up yet, and the unit failed. `remove` drops a
+radio's mark.
+
 ### 6.2 Subcommands
 
 All require root (`dxb_require_root`). All accept `--json`, anywhere in the
@@ -268,8 +275,12 @@ stdout as success. Exit codes:
 - `apply` — regenerates derived state (§7), starts or stops
   `rigctld@` instances by presence, refreshes the runtime mirror, and
   re-runs the current owner's wiring for present radios when the wiring
-  inputs changed. The `hotplug` subcommand is the same with quieter logging
-  and no udev reload (udev is what called it).
+  inputs changed — unless the owner's unit is not running, in which case it
+  logs so and leaves the mark unset, because `apply` never starts units and
+  wiring needs the owner's API (at boot the hotplug apply runs before
+  `graywolf.service`); the next apply after the owner is up wires it. The
+  `hotplug` subcommand is the same with quieter logging and no udev reload
+  (udev is what called it).
 - `claim NAME APP` — hand-over (§9).
 - `release NAME` — unwire, stop the application if it owns nothing else,
   clear `owner`.
@@ -343,10 +354,10 @@ level survives a reboot (`dxb_radio_alsa_levels`). The rc2 Pi's codec came up
 with PCM at 69 % under Graywolf's own −12 dB and test transmit never keyed the
 radio. Capture controls are never touched: the operator sets the RX level.
 The pass runs for every wiring mode (`names` apps play through the card too)
-and on every wire — which includes every boot, because the wiring mark lives
-in `/run` and the boot-time hotplug apply re-wires each owned radio. TX drive
-is therefore Graywolf's output gain, never the mixer; a mixer level turned
-down by hand does not survive the next wire.
+and on every wire: a `claim`, or the re-wire `apply` does after the record
+changed (the mark survives reboots, §6.1, so an unchanged record is not
+re-wired at boot). TX drive is Graywolf's output gain, never the mixer; a
+mixer level turned down by hand does not survive the next wire.
 
 ### 7.3 rigctld instances
 

@@ -10,6 +10,10 @@
 : "${DXB_RADIOS_FILE:=$DXB_STATE_DIR/radios.json}"
 : "${DXB_RUN_DIR:=/run/dxberry}"
 : "${DXB_RADIOS_STATE:=$DXB_RUN_DIR/radios-state.json}"
+# the wiring marks ({"NAME": "hash the owner was last wired with"}) live next to the record, not
+# in the /run mirror: a mark that vanished at every boot made the boot-time hotplug apply re-wire
+# every owned radio before its owner's unit was up, and fail
+: "${DXB_WIRED_FILE:=$DXB_STATE_DIR/wired.json}"
 : "${DXB_APPS_DIR:=${DXB_LIB:-/opt/dxberry/lib}/apps}"
 : "${DXB_DIETPI_TXT:=/boot/dietpi.txt}"
 # DXB_RADIO_SCAN / DXB_RADIOS are the module's public interface state, filled by
@@ -214,7 +218,9 @@ dxb_radio_set() {
 
 dxb_radio_remove() {
   dxb_radio_get "$1" > /dev/null || return 3
-  dxb_radio_save "$(jq -c --arg n "$1" 'del(.radios[$n])' <<< "$DXB_RADIOS")" && dxb_info "radio $1 removed"
+  dxb_radio_save "$(jq -c --arg n "$1" 'del(.radios[$n])' <<< "$DXB_RADIOS")" || return $?
+  _dxb_radio_unmark_wired "$1" || dxb_warn "radio $1: could not drop its wiring mark from $DXB_WIRED_FILE"
+  dxb_info "radio $1 removed"
 }
 
 _dxb_radio_set_owner() { dxb_radio_save "$(jq -c --arg n "$1" --arg a "$2" '.radios[$n].owner = $a' <<< "$DXB_RADIOS")"; }
@@ -301,7 +307,7 @@ dxb_radio_write_state() {
     names=$(dxb_radio_kernel_names "$n")
     out=$(jq -c --arg n "$n" --argjson p "$present" --argjson k "$names" --arg s "$(dxb_rigctld_state "$n")" \
       --arg a "$(dxb_radio_alsa_id "$(jq -r '.audio // empty' <<< "$names")")" \
-      --arg h "$(dxb_radio_wire_hash "$(dxb_radio_get "$n")")" --arg w "$(jq -r --arg n "$n" '.radios[$n].wired_hash // ""' "$DXB_RADIOS_STATE" 2> /dev/null)" \
+      --arg h "$(dxb_radio_wire_hash "$(dxb_radio_get "$n")")" --arg w "$(_dxb_radio_wired_get "$n")" \
       '.[$n] = {present: $p, kernel: $k, rigctld: $s, alsa_id: (if $a == "" then null else $a end), wire_hash: $h, wired_hash: $w}' <<< "$out")
   done
   mkdir -p "$(dirname "$DXB_RADIOS_STATE")" 2> /dev/null
@@ -310,20 +316,34 @@ dxb_radio_write_state() {
   [[ -f $DXB_RADIOS_STATE && $(< "$DXB_RADIOS_STATE") == "$content" ]] || { dxb_error "could not write $DXB_RADIOS_STATE"; return 6; }
   return 0
 }
-# _dxb_radio_mark_wired NAME HASH: remember that the owner was wired with these inputs. 0 ok, 6 error.
+# _dxb_radio_wired_get NAME: the hash NAME's owner was last wired with, or empty.
+_dxb_radio_wired_get() { jq -r --arg n "$1" '.[$n] // ""' "$DXB_WIRED_FILE" 2> /dev/null; }
+
+# _dxb_radio_wired_write JSON: the marks file, pruned to radios that still exist. 0 ok, 6 error.
+_dxb_radio_wired_write() {
+  local j
+  j=$(jq -c --argjson names "$(jq -c '.radios | keys' <<< "$DXB_RADIOS")" 'with_entries(select(.key as $k | $names | index($k)))' <<< "$1") || return 6
+  mkdir -p "$(dirname "$DXB_WIRED_FILE")" 2> /dev/null
+  dxb_write_if_changed "$DXB_WIRED_FILE" "$j" 644
+  [[ -f $DXB_WIRED_FILE && $(< "$DXB_WIRED_FILE") == "$j" ]] || { dxb_error "could not write $DXB_WIRED_FILE"; return 6; }
+}
+
+# _dxb_radio_mark_wired NAME HASH: remember that the owner was wired with these inputs, then
+# refresh the mirror so status shows it. 0 ok, 6 error (either file).
 _dxb_radio_mark_wired() {
-  local n=$1 h=$2 cur j
-  # a missing or unparsable mirror is regenerated in full first: merging into a bare {} would
-  # leave a radios-state.json holding a wired_hash and none of the runtime fields status reads.
-  if ! cur=$(jq -c . "$DXB_RADIOS_STATE" 2> /dev/null); then
-    dxb_radio_write_state || return 6
-    cur=$(jq -c . "$DXB_RADIOS_STATE" 2> /dev/null) || return 6
-  fi
-  j=$(jq -c --arg n "$n" --arg h "$h" '.radios[$n].wired_hash = $h' <<< "$cur") || return 6
-  mkdir -p "$(dirname "$DXB_RADIOS_STATE")" 2> /dev/null
-  dxb_write_if_changed "$DXB_RADIOS_STATE" "$j" 644
-  [[ -f $DXB_RADIOS_STATE && $(< "$DXB_RADIOS_STATE") == "$j" ]] || { dxb_error "could not write $DXB_RADIOS_STATE"; return 6; }
+  local cur
+  cur=$(jq -c . "$DXB_WIRED_FILE" 2> /dev/null) || cur='{}'
+  jq -e 'type == "object"' <<< "$cur" > /dev/null 2>&1 || cur='{}'
+  _dxb_radio_wired_write "$(jq -c --arg n "$1" --arg h "$2" '.[$n] = $h' <<< "$cur")" || return 6
+  dxb_radio_write_state || return 6
   return 0
+}
+
+# _dxb_radio_unmark_wired NAME: forget the mark (the radio is gone). 0 ok, 6 error.
+_dxb_radio_unmark_wired() {
+  local cur
+  cur=$(jq -c . "$DXB_WIRED_FILE" 2> /dev/null) || return 0
+  _dxb_radio_wired_write "$(jq -c --arg n "$1" 'del(.[$n])' <<< "$cur")"
 }
 
 # dxb_radio_apply [hotplug]: derive everything from the record. 0 ok, 6 derived-state error, 7 re-wire error.
@@ -370,8 +390,14 @@ _dxb_radio_apply() {
   for n in $(dxb_radio_names); do
     r=$(dxb_radio_get "$n"); owner=$(jq -r '.owner' <<< "$r")
     if [[ -z $owner ]] || ! dxb_radio_present "$n"; then continue; fi
-    h=$(dxb_radio_wire_hash "$r"); wired=$(jq -r --arg n "$n" '.radios[$n].wired_hash // ""' "$DXB_RADIOS_STATE")
+    h=$(dxb_radio_wire_hash "$r"); wired=$(_dxb_radio_wired_get "$n")
     [[ $h == "$wired" ]] && continue
+    # apply never starts units, and wiring needs the owner's API: at boot the hotplug apply runs
+    # before graywolf.service, so the re-wire waits for the next apply after the owner is up
+    if dxb_app_load "$owner" 2> /dev/null && ! systemctl is-active --quiet "$(dxb_app_unit "$owner")"; then
+      dxb_info "radio $n: $owner is not running; it will be wired on the next apply"
+      continue
+    fi
     # the guard is always true in production (radio.sh defines dxb_app_rewire below); it is kept
     # so a test can source this module alone, or stub the re-wire, without apply falling over
     if declare -F dxb_app_rewire > /dev/null; then
