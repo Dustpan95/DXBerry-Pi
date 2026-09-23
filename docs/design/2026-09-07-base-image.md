@@ -269,7 +269,7 @@ driver runs them in a fixed order:
 |---|---|
 | `dxberry-provision --first-boot` | full run, then reboot |
 | `dxberry-provision` | full run, no reboot; for re-applying an edited `dxberry.txt` over SSH |
-| `dxberry-provision --reseed` | as above, and re-applies station/iGate/beacon/digipeater values to Graywolf even if it was already set up |
+| `dxberry-provision --reseed` | as above, and re-applies station/iGate/beacon/digipeater/position-log values to Graywolf even if it was already set up |
 | `dxberry-provision --check` | parse and validate only; prints the effective configuration with secrets masked |
 
 ### 7.2 Idempotency rules
@@ -465,14 +465,19 @@ Always the latest upstream release unless `GRAYWOLF_VERSION` pins a tag.
    `/var/lib/graywolf/graywolf-history.db` (the card or stick). The drop-in
    `/etc/systemd/system/graywolf.service.d/dxberry-history.conf` copies the
    packaged `ExecStart` (read through `systemctl show -p FragmentPath`) with
-   only that value changed to `/run/graywolf/history.db` — the flag is appended
-   if the package passes none, so flags a later release adds survive — and sets
-   `RuntimeDirectory=graywolf`, `RuntimeDirectoryPreserve=yes`: kept across
-   service restarts, cleared at reboot. It is rebuilt on every run; when it
-   changes, systemd is reloaded and a running Graywolf restarted onto it. It is
-   written whether or not `POSITION_LOG` is on, so the UI switch never writes
-   the stick. A Graywolf upgraded by hand keeps the old command line in the
-   drop-in until the next `dxberry-provision` run.
+   only that value changed to `/run/graywolf/history.db`, so flags a later
+   release adds survive, and sets `RuntimeDirectory=graywolf`,
+   `RuntimeDirectoryPreserve=yes`: kept across service restarts, cleared at
+   reboot. A command line it cannot rewrite with certainty — not exactly one
+   one-line `ExecStart`, quotes, or `-history-db` missing (releases before the
+   flag crash-loop on it) or given twice — is a failed step and nothing is
+   written. It is rebuilt on every run where Graywolf is installed, including
+   an offline run whose release check failed; a write that does not read back
+   is a failed step. When it changes, systemd is reloaded and a running
+   Graywolf restarted onto it. It is written whether or not `POSITION_LOG` is
+   on, so the UI switch never writes the stick. A Graywolf upgraded by hand
+   keeps the old command line in the drop-in until the next
+   `dxberry-provision` run.
 6. Start the service and wait for `GET /api/auth/setup` to answer.
 
 ### 9.2 Seeding
@@ -519,9 +524,11 @@ update only checks that the beacon still exists.
 After the login, with or without `CALLSIGN`, the position log follows
 `POSITION_LOG`: `on` reads `GET /position-log` and sends
 `PUT /position-log {enabled: true}` only when Graywolf reports `db_path`
-`/run/graywolf/history.db` — any other path is a failed step and the log stays
-off, since it would write every station heard to the stick; `off` sends
-`{enabled: false}`.
+`/run/graywolf/history.db`. Any other path, or no readable answer, sends
+`{enabled: false}` — whoever switched the log on, it would be writing every
+station heard to the stick — and is a failed step. `off` sends
+`{enabled: false}`. Like the other seeded values, a changed `POSITION_LOG`
+reaches an already set-up Graywolf only through `--reseed`.
 
 With `IGATE_IS_TO_RF=on`, step 5 also adds one IS→RF filter rule
 (`message_dest * allow`, once, unless such a rule exists) — Graywolf's filter

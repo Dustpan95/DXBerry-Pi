@@ -460,7 +460,16 @@ test_history_execstart_swaps_only_the_history_path() {
     '/usr/bin/graywolf -config /var/lib/graywolf/graywolf.db -history-db /run/graywolf/history.db -tile-cache-dir /var/lib/graywolf/tiles -modem /usr/bin/graywolf-modem -http 0.0.0.0:8080'
   assert_eq "$(dxb_gw_history_execstart '/usr/bin/graywolf -history-db=/x/h.db -http :8080')" '/usr/bin/graywolf -history-db=/run/graywolf/history.db -http :8080'
   assert_eq "$(dxb_gw_history_execstart '/usr/bin/graywolf --history-db /x/h.db')" '/usr/bin/graywolf --history-db /run/graywolf/history.db'
-  assert_eq "$(dxb_gw_history_execstart '/usr/bin/graywolf -config /c.db')" '/usr/bin/graywolf -config /c.db -history-db /run/graywolf/history.db'
+}
+
+# A command line it cannot rewrite with certainty is refused, never guessed at: an unbalanced quote
+# or a lost flag leaves Graywolf unable to start. No -history-db at all is refused too - releases
+# before the flag existed crash-loop on an unknown flag.
+test_history_execstart_refuses_what_it_cannot_rewrite_safely() {
+  assert_fails dxb_gw_history_execstart '/usr/bin/graywolf -config /c.db'
+  assert_fails dxb_gw_history_execstart '/usr/bin/graywolf -history-db "/a b.db" -http :8080'
+  assert_fails dxb_gw_history_execstart "/usr/bin/graywolf -history-db '/a b.db'"
+  assert_fails dxb_gw_history_execstart '/usr/bin/graywolf -history-db /a.db -history-db=/b.db'
 }
 
 test_history_dropin_puts_the_database_in_ram_and_restarts_graywolf() {
@@ -469,6 +478,7 @@ test_history_dropin_puts_the_database_in_ram_and_restarts_graywolf() {
   assert_ok dxb_gw_history_in_ram
   assert_contains "$(cat "$DXB_GW_DROPIN")" $'ExecStart=\nExecStart=/usr/bin/graywolf -config /var/lib/graywolf/graywolf.db -history-db /run/graywolf/history.db -http 0.0.0.0:8080\n'
   assert_file_contains "$DXB_GW_DROPIN" "RuntimeDirectory=graywolf"
+  assert_file_contains "$DXB_GW_DROPIN" "RuntimeDirectoryMode=0750"
   assert_file_contains "$DXB_GW_DROPIN" "RuntimeDirectoryPreserve=yes"
   assert_contains "$(gw_calls)" "systemctl daemon-reload"
   assert_contains "$(gw_calls)" "systemctl try-restart graywolf.service"
@@ -501,6 +511,45 @@ test_history_dropin_fails_without_a_packaged_start_command() {
   assert_not_contains "$(gw_calls)" "restart"
 }
 
+# Measured with systemd-analyze: a wrapped ExecStart copied as its first physical line loses every
+# packaged flag, and a quoted value becomes an unbalanced quote - either way Graywolf never starts.
+test_history_dropin_refuses_a_start_command_it_cannot_copy() {
+  gw_env
+  gw_unit '/usr/bin/graywolf'
+  printf '[Service]\nExecStart=/usr/bin/graywolf \\\n  -history-db /var/lib/graywolf/graywolf-history.db -http 0.0.0.0:8080\n' > "$TEST_TMP/lib/graywolf.service"
+  assert_fails dxb_gw_history_in_ram
+  assert_contains "${DXB_FAILED_STEPS[*]}" "graywolf: "
+  assert_ok test ! -e "$DXB_GW_DROPIN"
+  DXB_FAILED_STEPS=()
+  gw_unit '/usr/bin/graywolf -history-db "/var/lib/graywolf/graywolf history.db"'
+  assert_fails dxb_gw_history_in_ram
+  assert_contains "${DXB_FAILED_STEPS[*]}" "graywolf: "
+  assert_ok test ! -e "$DXB_GW_DROPIN"
+  assert_not_contains "$(gw_calls)" "restart"
+}
+
+# dxb_write_if_changed can fail silently (a full or read-only filesystem): a drop-in that did not
+# land must be reported, not followed by a reload and a restart that pretend it worked.
+test_history_dropin_reports_a_write_that_did_not_land() {
+  gw_env
+  gw_unit '/usr/bin/graywolf -history-db /var/lib/graywolf/graywolf-history.db'
+  : > "$TEST_TMP/graywolf.service.d"                      # a file where the drop-in directory goes
+  assert_fails dxb_gw_history_in_ram 2> /dev/null
+  assert_contains "${DXB_FAILED_STEPS[*]}" "could not write"
+  assert_not_contains "$(gw_calls)" "daemon-reload"
+  assert_not_contains "$(gw_calls)" "restart"
+}
+
+# The drop-in is what keeps the UI switch from ever writing the stick, so it does not depend on
+# POSITION_LOG.
+test_history_dropin_is_written_with_the_position_log_off() {
+  gw_env
+  gw_cfg 'PASSWORD=secretpass' 'POSITION_LOG=off'
+  gw_unit '/usr/bin/graywolf -history-db /var/lib/graywolf/graywolf-history.db'
+  assert_ok dxb_gw_history_in_ram
+  assert_file_contains "$DXB_GW_DROPIN" "-history-db /run/graywolf/history.db"
+}
+
 # The log is switched on only once Graywolf itself reports its history under /run: if the drop-in
 # did not take, logging would write every station heard to the stick.
 test_seed_position_log_on_when_the_history_is_in_ram() {
@@ -512,13 +561,24 @@ test_seed_position_log_on_when_the_history_is_in_ram() {
   assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
 }
 
-test_seed_position_log_stays_off_while_the_history_is_on_the_stick() {
+# Whoever switched it on (the UI, an earlier run), a log writing the stick is switched off.
+test_seed_position_log_is_switched_off_while_the_history_is_on_the_stick() {
   gw_env
-  GW_POSITION_LOG='{"enabled":false,"db_path":"/var/lib/graywolf/graywolf-history.db"}'
+  GW_POSITION_LOG='{"enabled":true,"db_path":"/var/lib/graywolf/graywolf-history.db"}'
   gw_cfg 'PASSWORD=secretpass'
   dxb_gw_seed 0 > /dev/null
-  assert_not_contains "$(gw_calls)" 'PUT /position-log'
+  assert_contains "$(gw_calls)" 'PUT /position-log {"enabled":false}'
+  assert_not_contains "$(gw_calls)" '{"enabled":true}'
   assert_contains "${DXB_FAILED_STEPS[*]}" "/var/lib/graywolf/graywolf-history.db"
+}
+
+test_seed_position_log_unreadable_is_a_failed_step_and_never_switched_on() {
+  gw_env
+  GW_POSITION_LOG='not json'
+  gw_cfg 'PASSWORD=secretpass'
+  dxb_gw_seed 0 > /dev/null
+  assert_not_contains "$(gw_calls)" '{"enabled":true}'
+  assert_contains "${DXB_FAILED_STEPS[*]}" "position log"
 }
 
 test_seed_position_log_off_switches_it_off() {

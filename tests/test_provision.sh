@@ -421,6 +421,27 @@ test_provision_driver_moves_graywolf_history_to_ram_before_seeding() {
   fi
 }
 
+# An offline re-run fails the release check but must still rebuild the drop-in for the Graywolf
+# already installed (after a hand upgrade it carries the old command line until then).
+test_provision_driver_rebuilds_the_history_dropin_when_the_release_check_fails() {
+  full_env
+  printf 'PASSWORD=secretpass\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  fx_scene "$DXB_SYSFS_ROOT" none
+  (
+    # shellcheck disable=SC1091
+    source "$DXB_ROOT/provision/bin/dxberry-provision"
+    dxb_require_root() { :; }
+    dxb_gw_install() { dxb_step_failed graywolf "simulated offline release check"; return 1; }
+    dxb_gw_installed_version() { echo 0.14.13; }
+    dxb_gw_history_in_ram() { echo "history-in-ram" >> "$TEST_TMP/calls"; }
+    dxb_gw_seed() { echo "seed" >> "$TEST_TMP/calls"; }
+    main
+  ) 2> /dev/null
+  assert_contains "$(cat "$TEST_TMP/calls")" "history-in-ram"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "enable --now graywolf"
+  assert_fails grep -qx seed "$TEST_TMP/calls"
+}
+
 test_run_mode_wifi_import_failure_leaves_wifi_password_intact() {
   full_env
   printf 'PASSWORD=secretpass\nWIFI_SSID=Home\nWIFI_PASSWORD=wifipass1\nWIFI_COUNTRY=US\n' > "$DXB_BOOT_DIR/dxberry.txt"

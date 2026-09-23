@@ -48,7 +48,8 @@ digipeater preset). See `boot/dxberry.txt.example` — every line is documented.
 It is a bootstrap, not a ceiling: Graywolf's web UI owns station configuration after first boot, and
 `sudo dxberry-provision` re-applies an edited file without touching anything you changed in the UI.
 `dxberry-provision --check` validates the config and prints it with secrets masked, without changing
-anything; `--reseed` pushes the file's station/iGate/beacon/digipeater values into Graywolf again.
+anything; `--reseed` pushes the file's station/iGate/beacon/digipeater/position-log values into Graywolf
+again.
 
 ## Networking
 
@@ -64,8 +65,8 @@ refused there unless you add `--force` from the console.
 
 Logs and the journal live in RAM, swap is on zram, and Graywolf's position log (on by default,
 `POSITION_LOG=off` to disable) is kept in RAM too, so routine operation is gentle on SD cards and USB
-drives. The position log survives a Graywolf restart but starts empty after a reboot. Real state (Graywolf configuration, mail, logs you keep) is
-on disk.
+drives. The position log survives a Graywolf restart but starts empty after a reboot. Real state
+(Graywolf configuration, mail, logs you keep) is on disk.
 
 ## Radio plumbing
 

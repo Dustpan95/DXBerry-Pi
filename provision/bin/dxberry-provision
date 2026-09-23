@@ -70,7 +70,7 @@ dxb_first_boot_gate() {
 }
 
 main() {
-  local reseed=0 check=0 gate_ok=1 boot cfg w
+  local reseed=0 check=0 gate_ok=1 gw_ok=0 boot cfg w
   DXB_MODE=run
   for a in "$@"; do
     case $a in
@@ -120,8 +120,11 @@ main() {
   provision_network
   provision_storage
   command -v jq > /dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y jq > /dev/null 2>&1 || dxb_step_failed system "jq is not installed"
-  if dxb_gw_install; then
-    dxb_gw_history_in_ram
+  dxb_gw_install && gw_ok=1
+  # also when the release check failed (offline) but Graywolf is installed: the drop-in is rebuilt
+  # from whatever unit the installed package carries
+  if (( gw_ok )) || [[ -n $(dxb_gw_installed_version) ]]; then dxb_gw_history_in_ram; fi
+  if (( gw_ok )); then
     systemctl enable --now graywolf > /dev/null 2>&1 || dxb_step_failed graywolf "could not start graywolf.service"
     dxb_gw_seed "$reseed"
     dxb_status_add "graywolf: version $(dxb_gw_installed_version) at http://${DXB_CFG[_IP]:-<this-pi>}:8080 (user ${DXB_CFG[WEBUI_USER]})"

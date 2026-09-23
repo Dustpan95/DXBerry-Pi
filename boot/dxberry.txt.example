@@ -57,7 +57,7 @@ WEBUI_PASSWORD=
 # on also adds the Graywolf filter rule that lets APRS-IS messages reach a station heard on RF.
 # IGATE_IS_TO_RF=off
 # Graywolf's position log (the live map survives a Graywolf restart). Kept in RAM, never on the
-# card or stick, so it starts empty after every reboot.
+# card or stick, so it starts empty after every reboot. A change reaches a running Pi with --reseed.
 # POSITION_LOG=on
 # Pin a Graywolf release instead of installing the latest, e.g. v0.14.13.
 # GRAYWOLF_VERSION=
