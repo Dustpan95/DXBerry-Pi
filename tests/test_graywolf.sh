@@ -525,7 +525,26 @@ test_history_dropin_refuses_a_start_command_it_cannot_copy() {
   assert_fails dxb_gw_history_in_ram
   assert_contains "${DXB_FAILED_STEPS[*]}" "graywolf: "
   assert_ok test ! -e "$DXB_GW_DROPIN"
+  DXB_FAILED_STEPS=()
+  printf '[Service]\nExecStart=/usr/bin/graywolf -history-db /a.db\nExecStart=/usr/bin/graywolf -history-db /b.db\n' > "$TEST_TMP/lib/graywolf.service"
+  assert_fails dxb_gw_history_in_ram
+  assert_contains "${DXB_FAILED_STEPS[*]}" "graywolf: "
+  assert_ok test ! -e "$DXB_GW_DROPIN"
   assert_not_contains "$(gw_calls)" "restart"
+}
+
+# When a later package is refused, the earlier drop-in stays in effect (history still in RAM, older
+# command line) - deleting it would put an enabled log back on the stick. The failed step says so.
+test_history_dropin_refusal_keeps_and_names_the_previous_dropin() {
+  gw_env
+  gw_unit '/usr/bin/graywolf -history-db /var/lib/graywolf/graywolf-history.db'
+  assert_ok dxb_gw_history_in_ram
+  local before; before=$(cat "$DXB_GW_DROPIN")
+  printf '[Service]\nExecStart=/usr/bin/graywolf -history-db "/var/lib/graywolf/h.db"\n' > "$TEST_TMP/lib/graywolf.service"
+  assert_fails dxb_gw_history_in_ram
+  assert_contains "${DXB_FAILED_STEPS[*]}" "previous drop-in"
+  assert_not_contains "${DXB_FAILED_STEPS[*]}" "left where the package puts it"
+  assert_eq "$(cat "$DXB_GW_DROPIN")" "$before"
 }
 
 # dxb_write_if_changed can fail silently (a full or read-only filesystem): a drop-in that did not
@@ -570,6 +589,15 @@ test_seed_position_log_is_switched_off_while_the_history_is_on_the_stick() {
   assert_contains "$(gw_calls)" 'PUT /position-log {"enabled":false}'
   assert_not_contains "$(gw_calls)" '{"enabled":true}'
   assert_contains "${DXB_FAILED_STEPS[*]}" "/var/lib/graywolf/graywolf-history.db"
+}
+
+test_seed_position_log_never_on_is_reported_as_kept_off() {
+  gw_env
+  GW_POSITION_LOG='{"enabled":false,"db_path":"/var/lib/graywolf/graywolf-history.db"}'
+  gw_cfg 'PASSWORD=secretpass'
+  dxb_gw_seed 0 > /dev/null
+  assert_contains "${DXB_FAILED_STEPS[*]}" "position log kept off"
+  assert_not_contains "$(gw_calls)" '{"enabled":true}'
 }
 
 test_seed_position_log_unreadable_is_a_failed_step_and_never_switched_on() {

@@ -125,20 +125,22 @@ dxb_gw_history_execstart() {
 # dxb_gw_history_in_ram: write the drop-in; on a change reload systemd and restart a running
 # graywolf onto it (a stopped one picks it up when started). 0 in place, 1 failed.
 dxb_gw_history_in_ram() {
-  local unit exec new content
+  local unit exec new content left="position history left where the package puts it"
+  # a refusal keeps an earlier drop-in: removing it would put an enabled log back on the stick
+  [[ -f $DXB_GW_DROPIN ]] && left="the previous drop-in $DXB_GW_DROPIN (an older command line) stays in effect"
   unit=$(systemctl show -p FragmentPath --value graywolf.service 2> /dev/null)
   if [[ -z $unit || ! -r $unit ]]; then
-    dxb_step_failed graywolf "could not find the packaged graywolf.service; position history left where the package puts it"
+    dxb_step_failed graywolf "could not find the packaged graywolf.service; $left"
     return 1
   fi
   # exactly one ExecStart on one line: a wrapped one would be copied as its first line only
   if [[ $(grep -c '^ExecStart=' "$unit") != 1 ]] || grep -q '^ExecStart=.*\\$' "$unit"; then
-    dxb_step_failed graywolf "$unit has no single one-line ExecStart; position history left where the package puts it"
+    dxb_step_failed graywolf "$unit has no single one-line ExecStart; $left"
     return 1
   fi
   exec=$(sed -n 's/^ExecStart=//p' "$unit")
   if ! new=$(dxb_gw_history_execstart "$exec"); then
-    dxb_step_failed graywolf "cannot safely move -history-db in '$exec'; position history left where the package puts it"
+    dxb_step_failed graywolf "cannot safely move -history-db in '$exec'; $left"
     return 1
   fi
   content="# Written by dxberry-provision: Graywolf's position history in RAM, kept across service
@@ -315,17 +317,19 @@ dxb_gw_seed_gps() {
 # POSITION_LOG=on switches the log on only once Graywolf itself reports its history database at
 # $DXB_GW_HISTORY_DB: had the drop-in not taken, logging would write every station heard to the stick.
 dxb_gw_seed_position_log() {
-  local path
+  local resp path state
   if [[ ${DXB_CFG[POSITION_LOG]} == off ]]; then
     dxb_gw_api PUT /position-log '{"enabled":false}' > /dev/null || { dxb_step_failed graywolf "position log update failed"; return 1; }
     dxb_status_add "graywolf: position log off"
     return 0
   fi
-  path=$(dxb_gw_api GET /position-log 2> /dev/null | jq -r 'if type == "object" then .db_path // "" else "" end' 2> /dev/null)
+  resp=$(dxb_gw_api GET /position-log 2> /dev/null)
+  path=$(jq -r 'if type == "object" then .db_path // "" else "" end' <<< "$resp" 2> /dev/null)
   if [[ $path != "$DXB_GW_HISTORY_DB" ]]; then
     # switched off whoever switched it on (the UI, an earlier run): it would be writing the stick
+    state=$(jq -r 'if type == "object" and .enabled == false then "kept off" else "switched off" end' <<< "$resp" 2> /dev/null) || state='switched off'
     if dxb_gw_api PUT /position-log '{"enabled":false}' > /dev/null; then
-      dxb_step_failed graywolf "position log switched off: Graywolf keeps its history at ${path:-an unknown path}, not in RAM at $DXB_GW_HISTORY_DB"
+      dxb_step_failed graywolf "position log $state: Graywolf keeps its history at ${path:-an unknown path}, not in RAM at $DXB_GW_HISTORY_DB"
     else
       dxb_step_failed graywolf "position log: Graywolf keeps its history at ${path:-an unknown path}, not in RAM at $DXB_GW_HISTORY_DB, and switching it off failed"
     fi
