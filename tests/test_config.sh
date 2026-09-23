@@ -73,6 +73,19 @@ test_validate_minimal_valid_config_applies_defaults() {
   assert_eq "${DXB_CFG[SERIAL_CONSOLE]}" "off"
 }
 
+test_validate_position_log_defaults_on_and_takes_only_on_or_off() {
+  export DXB_ZONEINFO_DIR=$TEST_TMP/no-such-dir
+  write_cfg 'PASSWORD=secretpass'
+  assert_ok load_and_validate
+  assert_eq "${DXB_CFG[POSITION_LOG]:-}" "on"
+  write_cfg 'PASSWORD=secretpass' 'POSITION_LOG=off'
+  assert_ok load_and_validate
+  assert_eq "${DXB_CFG[POSITION_LOG]:-}" "off"
+  write_cfg 'PASSWORD=secretpass' 'POSITION_LOG=yes'
+  assert_fails load_and_validate
+  assert_contains "$(errors_text)" "POSITION_LOG must be on or off"
+}
+
 test_validate_password_required_and_length() {
   export DXB_ZONEINFO_DIR=$TEST_TMP/no-such-dir
   write_cfg 'HOSTNAME=x'

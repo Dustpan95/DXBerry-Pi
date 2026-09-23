@@ -7,7 +7,7 @@ source "$DXB_LIB/graywolf.sh"
 gw_env() {
   export DXB_STATE_DIR=$TEST_TMP/state DXB_LOG_FILE=$TEST_TMP/state/log DXB_GW_COOKIES=$TEST_TMP/cookies \
     DXB_GW_SEED_STATE=$TEST_TMP/state/graywolf-seed.env DXB_GW_API=http://gw/api DXB_GW_RELEASES=http://rel DXB_DPKG_ARCH=arm64 DXB_ZONEINFO_DIR=$TEST_TMP/nozone \
-    DXB_GW_SECRET_FILE=$TEST_TMP/state/graywolf.secret
+    DXB_GW_SECRET_FILE=$TEST_TMP/state/graywolf.secret DXB_GW_DROPIN=$TEST_TMP/graywolf.service.d/dxberry-history.conf
   mkdir -p "$DXB_STATE_DIR" "$TEST_TMP/http"
   : > "$TEST_TMP/calls"
   DXB_STATUS_LINES=(); DXB_FAILED_STEPS=(); DXB_CONSUMED_SECRETS=''; DXB_CFG=()
@@ -26,6 +26,7 @@ gw_env() {
   GW_IGATE_CONFIG='{"id":1,"server":"old.example","enabled":false,"read_only_thing":"keep"}'
   GW_BEACON_CONFIG='{"id":7,"comment":"old","enabled":true}'
   GW_ISRF_FILTERS='[]'
+  GW_POSITION_LOG='{"enabled":false,"db_path":"/run/graywolf/history.db"}'
 }
 # Fake curl: records "METHOD PATH BODY" per call and answers from canned responses.
 # --data-binary @- means the body was piped over stdin (never as a literal argument); read it.
@@ -71,6 +72,7 @@ fake_curl() {
     "GET /digipeater/rules") echo '[]' ;;
     "GET /igate/filters")  echo "$GW_ISRF_FILTERS" ;;
     "PUT /gps")           echo '{}' ;;
+    "GET /position-log")  echo "$GW_POSITION_LOG" ;;
     *)                    echo '{}' ;;
   esac
 }
@@ -436,4 +438,93 @@ test_seed_login_prompt_without_terminal_fails_distinctly() {
   assert_contains "${DXB_FAILED_STEPS[*]}" "no terminal is available"
   assert_not_contains "$(gw_calls)" "/auth/login"
   assert_not_contains "$DXB_CONSUMED_SECRETS" "WEBUI_PASSWORD"
+}
+
+# gw_unit EXECSTART: a packaged graywolf.service that systemctl reports as the unit's fragment.
+# The packaged 0.14.13 unit (measured on the Pi) passes -history-db /var/lib/graywolf/... - the stick.
+gw_unit() {
+  mkdir -p "$TEST_TMP/lib"
+  printf '[Service]\nType=simple\nExecStart=%s\nUser=graywolf\n' "$1" > "$TEST_TMP/lib/graywolf.service"
+  systemctl() {
+    echo "systemctl $*" >> "$TEST_TMP/calls"
+    [[ $1 == show ]] && echo "$TEST_TMP/lib/graywolf.service"
+    return 0
+  }
+}
+
+# Graywolf moves its position history only through the -history-db flag (the web UI just toggles
+# logging), so the drop-in copies the packaged command line and swaps that one value: a flag a
+# future release adds to its unit must survive.
+test_history_execstart_swaps_only_the_history_path() {
+  assert_eq "$(dxb_gw_history_execstart '/usr/bin/graywolf -config /var/lib/graywolf/graywolf.db -history-db /var/lib/graywolf/graywolf-history.db -tile-cache-dir /var/lib/graywolf/tiles -modem /usr/bin/graywolf-modem -http 0.0.0.0:8080')" \
+    '/usr/bin/graywolf -config /var/lib/graywolf/graywolf.db -history-db /run/graywolf/history.db -tile-cache-dir /var/lib/graywolf/tiles -modem /usr/bin/graywolf-modem -http 0.0.0.0:8080'
+  assert_eq "$(dxb_gw_history_execstart '/usr/bin/graywolf -history-db=/x/h.db -http :8080')" '/usr/bin/graywolf -history-db=/run/graywolf/history.db -http :8080'
+  assert_eq "$(dxb_gw_history_execstart '/usr/bin/graywolf --history-db /x/h.db')" '/usr/bin/graywolf --history-db /run/graywolf/history.db'
+  assert_eq "$(dxb_gw_history_execstart '/usr/bin/graywolf -config /c.db')" '/usr/bin/graywolf -config /c.db -history-db /run/graywolf/history.db'
+}
+
+test_history_dropin_puts_the_database_in_ram_and_restarts_graywolf() {
+  gw_env
+  gw_unit '/usr/bin/graywolf -config /var/lib/graywolf/graywolf.db -history-db /var/lib/graywolf/graywolf-history.db -http 0.0.0.0:8080'
+  assert_ok dxb_gw_history_in_ram
+  assert_contains "$(cat "$DXB_GW_DROPIN")" $'ExecStart=\nExecStart=/usr/bin/graywolf -config /var/lib/graywolf/graywolf.db -history-db /run/graywolf/history.db -http 0.0.0.0:8080\n'
+  assert_file_contains "$DXB_GW_DROPIN" "RuntimeDirectory=graywolf"
+  assert_file_contains "$DXB_GW_DROPIN" "RuntimeDirectoryPreserve=yes"
+  assert_contains "$(gw_calls)" "systemctl daemon-reload"
+  assert_contains "$(gw_calls)" "systemctl try-restart graywolf.service"
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
+}
+
+# Every provisioner run re-derives the drop-in; a restart when nothing changed would clear the
+# live map for nothing.
+test_history_dropin_unchanged_leaves_graywolf_running() {
+  gw_env
+  gw_unit '/usr/bin/graywolf -history-db /var/lib/graywolf/graywolf-history.db'
+  assert_ok dxb_gw_history_in_ram
+  : > "$TEST_TMP/calls"
+  assert_ok dxb_gw_history_in_ram
+  assert_not_contains "$(gw_calls)" "daemon-reload"
+  assert_not_contains "$(gw_calls)" "restart"
+}
+
+test_history_dropin_fails_without_a_packaged_start_command() {
+  gw_env                                                   # gw_env's systemctl reports no fragment
+  assert_fails dxb_gw_history_in_ram
+  assert_contains "${DXB_FAILED_STEPS[*]}" "graywolf: "
+  assert_ok test ! -e "$DXB_GW_DROPIN"
+  DXB_FAILED_STEPS=()
+  gw_unit '/usr/bin/graywolf'
+  printf '[Service]\nType=simple\n' > "$TEST_TMP/lib/graywolf.service"   # a unit without ExecStart
+  assert_fails dxb_gw_history_in_ram
+  assert_contains "${DXB_FAILED_STEPS[*]}" "graywolf: "
+  assert_ok test ! -e "$DXB_GW_DROPIN"
+  assert_not_contains "$(gw_calls)" "restart"
+}
+
+# The log is switched on only once Graywolf itself reports its history under /run: if the drop-in
+# did not take, logging would write every station heard to the stick.
+test_seed_position_log_on_when_the_history_is_in_ram() {
+  gw_env
+  gw_cfg 'PASSWORD=secretpass'
+  assert_ok dxb_gw_seed 0
+  assert_contains "$(gw_calls)" 'PUT /position-log {"enabled":true}'
+  assert_contains "${DXB_STATUS_LINES[*]}" "position log on, in RAM"
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
+}
+
+test_seed_position_log_stays_off_while_the_history_is_on_the_stick() {
+  gw_env
+  GW_POSITION_LOG='{"enabled":false,"db_path":"/var/lib/graywolf/graywolf-history.db"}'
+  gw_cfg 'PASSWORD=secretpass'
+  dxb_gw_seed 0 > /dev/null
+  assert_not_contains "$(gw_calls)" 'PUT /position-log'
+  assert_contains "${DXB_FAILED_STEPS[*]}" "/var/lib/graywolf/graywolf-history.db"
+}
+
+test_seed_position_log_off_switches_it_off() {
+  gw_env
+  gw_cfg 'PASSWORD=secretpass' 'POSITION_LOG=off'
+  assert_ok dxb_gw_seed 0
+  assert_contains "$(gw_calls)" 'PUT /position-log {"enabled":false}'
+  assert_not_contains "$(gw_calls)" '{"enabled":true}'
 }

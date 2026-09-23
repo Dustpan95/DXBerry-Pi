@@ -7,6 +7,8 @@
 : "${DXB_GW_COOKIES:=/run/dxberry-graywolf.cookies}"
 : "${DXB_GW_SEED_STATE:=$DXB_STATE_DIR/graywolf-seed.env}"
 : "${DXB_GW_SECRET_FILE:=$DXB_STATE_DIR/graywolf.secret}"
+: "${DXB_GW_DROPIN:=/etc/systemd/system/graywolf.service.d/dxberry-history.conf}"
+: "${DXB_GW_HISTORY_DB:=/run/graywolf/history.db}"
 : "${DXB_CURL:=curl}"
 : "${DXB_TTY:=/dev/tty}"
 
@@ -97,6 +99,55 @@ dxb_gw_install() {
   if ! DEBIAN_FRONTEND=noninteractive apt-get install -y "$tmp/$name" > /dev/null 2>&1; then dxb_step_failed graywolf "apt-get install of $name failed"; rm -rf "$tmp"; return 1; fi
   rm -rf "$tmp"
   dxb_info "installed graywolf $v"
+  return 0
+}
+
+# ---- position history in RAM ---------------------------------------------------------------
+# Graywolf moves its position-history database only through the -history-db flag (the web UI just
+# switches logging on and off), and the packaged unit points it at /var/lib/graywolf - the card or
+# stick. The drop-in copies the packaged command line with that one value swapped, so flags a later
+# release adds survive, and has systemd keep /run/graywolf across service restarts; a reboot
+# clears it. Written whether or not logging is on, so the UI switch can never write the stick.
+
+# dxb_gw_history_execstart EXECSTART: EXECSTART with its -history-db value (-flag value or
+# -flag=value, one or two dashes) replaced by $DXB_GW_HISTORY_DB, or the flag appended when absent.
+dxb_gw_history_execstart() {
+  local exec=$1 m re='(^|[[:space:]])(--?history-db)(=|[[:space:]]+)[^[:space:]]+'
+  if [[ $exec =~ $re ]]; then
+    m=${BASH_REMATCH[0]}
+    printf '%s%s%s%s%s%s\n' "${exec%%"$m"*}" "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "$DXB_GW_HISTORY_DB" "${exec#*"$m"}"
+  else
+    printf '%s -history-db %s\n' "$exec" "$DXB_GW_HISTORY_DB"
+  fi
+}
+
+# dxb_gw_history_in_ram: write the drop-in; on a change reload systemd and restart a running
+# graywolf onto it (a stopped one picks it up when started). 0 in place, 1 failed.
+dxb_gw_history_in_ram() {
+  local unit exec content
+  unit=$(systemctl show -p FragmentPath --value graywolf.service 2> /dev/null)
+  if [[ -z $unit || ! -r $unit ]]; then
+    dxb_step_failed graywolf "could not find the packaged graywolf.service; position history left where the package puts it"
+    return 1
+  fi
+  exec=$(sed -n 's/^ExecStart=//p' "$unit" | tail -1)
+  if [[ -z $exec ]]; then
+    dxb_step_failed graywolf "$unit has no ExecStart; position history left where the package puts it"
+    return 1
+  fi
+  content="# Written by dxberry-provision: Graywolf's position history in RAM, kept across service
+# restarts, cleared at reboot. Rebuilt from the packaged unit on every run.
+[Service]
+ExecStart=
+ExecStart=$(dxb_gw_history_execstart "$exec")
+RuntimeDirectory=graywolf
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes"
+  mkdir -p "$(dirname "$DXB_GW_DROPIN")"
+  dxb_write_if_changed "$DXB_GW_DROPIN" "$content" 644 || return 0
+  systemctl daemon-reload || { dxb_step_failed graywolf "systemctl daemon-reload failed after writing $DXB_GW_DROPIN"; return 1; }
+  systemctl try-restart graywolf.service || { dxb_step_failed graywolf "could not restart graywolf onto the RAM position history"; return 1; }
+  dxb_info "graywolf position history moved to $DXB_GW_HISTORY_DB (RAM)"
   return 0
 }
 
@@ -251,6 +302,24 @@ dxb_gw_seed_gps() {
   dxb_status_add "graywolf: position from gpsd (GPS_DEVICE=${DXB_CFG[GPS_DEVICE]})"
 }
 
+# POSITION_LOG=on switches the log on only once Graywolf itself reports its history database at
+# $DXB_GW_HISTORY_DB: had the drop-in not taken, logging would write every station heard to the stick.
+dxb_gw_seed_position_log() {
+  local path
+  if [[ ${DXB_CFG[POSITION_LOG]} == off ]]; then
+    dxb_gw_api PUT /position-log '{"enabled":false}' > /dev/null || { dxb_step_failed graywolf "position log update failed"; return 1; }
+    dxb_status_add "graywolf: position log off"
+    return 0
+  fi
+  path=$(dxb_gw_api GET /position-log 2> /dev/null | jq -r 'if type == "object" then .db_path // "" else "" end' 2> /dev/null)
+  if [[ $path != "$DXB_GW_HISTORY_DB" ]]; then
+    dxb_step_failed graywolf "position log left off: Graywolf keeps its history at ${path:-an unknown path}, not in RAM at $DXB_GW_HISTORY_DB"
+    return 1
+  fi
+  dxb_gw_api PUT /position-log '{"enabled":true}' > /dev/null || { dxb_step_failed graywolf "position log update failed"; return 1; }
+  dxb_status_add "graywolf: position log on, in RAM (${DXB_GW_HISTORY_DB%/*}, cleared at reboot)"
+}
+
 dxb_gw_seed_digi() {
   local ch hops
   dxb_gw_api PUT /digipeater "$(dxb_gw_payload_digi)" > /dev/null || dxb_step_failed graywolf "digipeater config update failed"
@@ -297,6 +366,7 @@ dxb_gw_seed() {
   # --reseed must not stall on a /dev/tty prompt (it did on rc2)
   dxb_gw_login_any || return 1
   dxb_gw_seed_gps
+  dxb_gw_seed_position_log
   if [[ -n ${DXB_CFG[CALLSIGN]:-} ]]; then
     dxb_gw_api PUT /station/config "$(dxb_gw_payload_station)" > /dev/null || dxb_step_failed graywolf "station callsign update failed"
     dxb_gw_seed_igate

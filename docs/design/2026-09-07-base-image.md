@@ -155,6 +155,7 @@ Advanced seeds (blank = default):
 | `DIGIPEATER` | `off` | `off`, `fillin`, or `wide` — mapped to Graywolf's digipeater presets |
 | `IGATE_RF_TO_IS` | `on` | `on`/`off` |
 | `IGATE_IS_TO_RF` | `off` | `on`/`off` |
+| `POSITION_LOG` | `on` | `on`/`off`; Graywolf's position log, always kept in RAM (§10) |
 | `GRAYWOLF_VERSION` | blank = latest release | exact upstream tag such as `v0.14.13` |
 | `SERIAL_CONSOLE` | `off` | `on`/`off`; off leaves the GPIO UART free for GPS hardware |
 
@@ -459,7 +460,20 @@ Always the latest upstream release unless `GRAYWOLF_VERSION` pins a tag.
 4. Graywolf's package creates the `graywolf` system user (groups `audio`,
    `dialout`, `plugdev`, `gpio`), installs its hardened systemd unit, and
    enables it. The unit binds `0.0.0.0:8080`, so the UI is reachable on the LAN.
-5. Start the service and wait for `GET /api/auth/setup` to answer.
+5. Move the position-history database to RAM. Graywolf takes its path only
+   from the `-history-db` flag, and the packaged unit points it at
+   `/var/lib/graywolf/graywolf-history.db` (the card or stick). The drop-in
+   `/etc/systemd/system/graywolf.service.d/dxberry-history.conf` copies the
+   packaged `ExecStart` (read through `systemctl show -p FragmentPath`) with
+   only that value changed to `/run/graywolf/history.db` — the flag is appended
+   if the package passes none, so flags a later release adds survive — and sets
+   `RuntimeDirectory=graywolf`, `RuntimeDirectoryPreserve=yes`: kept across
+   service restarts, cleared at reboot. It is rebuilt on every run; when it
+   changes, systemd is reloaded and a running Graywolf restarted onto it. It is
+   written whether or not `POSITION_LOG` is on, so the UI switch never writes
+   the stick. A Graywolf upgraded by hand keeps the old command line in the
+   drop-in until the next `dxberry-provision` run.
+6. Start the service and wait for `GET /api/auth/setup` to answer.
 
 ### 9.2 Seeding
 
@@ -502,6 +516,13 @@ default channel 1 after that channel was deleted (400), and an altitude typed
 into the UI (`/A=000040` on the air). The `GET /beacons/:id` before the
 update only checks that the beacon still exists.
 
+After the login, with or without `CALLSIGN`, the position log follows
+`POSITION_LOG`: `on` reads `GET /position-log` and sends
+`PUT /position-log {enabled: true}` only when Graywolf reports `db_path`
+`/run/graywolf/history.db` — any other path is a failed step and the log stays
+off, since it would write every station heard to the stick; `off` sends
+`{enabled: false}`.
+
 With `IGATE_IS_TO_RF=on`, step 5 also adds one IS→RF filter rule
 (`message_dest * allow`, once, unless such a rule exists) — Graywolf's filter
 engine denies whatever no rule matches, so `gate_is_to_rf` alone transmits
@@ -534,7 +555,7 @@ changes (configuration saves, logs the user wants) on disk.
 | Swap | zram (`AUTO_SETUP_SWAPFILE_LOCATION=zram`), never a file on flash |
 | `/tmp` | DietPi's default tmpfs |
 | `noatime` | DietPi's default mount options |
-| Graywolf position log | Graywolf prunes it at 30 days by design; nothing to configure |
+| Graywolf position log | in RAM at `/run/graywolf/history.db` (§9.1 step 5), kept across service restarts, cleared at reboot; Graywolf prunes positions at 30 days |
 | Provisioner state | `/var/lib/dxberry/` — small, written only during provisioning |
 
 Overlay-root mode with a persistent-state list is sub-project 5.

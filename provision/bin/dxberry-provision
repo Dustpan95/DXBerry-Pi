@@ -121,6 +121,7 @@ main() {
   provision_storage
   command -v jq > /dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y jq > /dev/null 2>&1 || dxb_step_failed system "jq is not installed"
   if dxb_gw_install; then
+    dxb_gw_history_in_ram
     systemctl enable --now graywolf > /dev/null 2>&1 || dxb_step_failed graywolf "could not start graywolf.service"
     dxb_gw_seed "$reseed"
     dxb_status_add "graywolf: version $(dxb_gw_installed_version) at http://${DXB_CFG[_IP]:-<this-pi>}:8080 (user ${DXB_CFG[WEBUI_USER]})"

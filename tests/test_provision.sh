@@ -63,7 +63,7 @@ full_env() {
     DXB_IFACES_DIR=$TEST_TMP/ifaces DXB_RESOLV_CONF=$TEST_TMP/resolv.conf DXB_SYSTEMD_DIR=$TEST_TMP/systemd \
     DXB_DIETPI_WIFIDB=$TEST_TMP/wifidb DXB_DIETPI_WIFI=$TEST_TMP/dietpi-wifi.txt \
     DXB_DIETPI_SET_HW=$TEST_TMP/set_hw DXB_SYS_NET=$TEST_TMP/sys DXB_INTERFACES_FILE=$TEST_TMP/interfaces \
-    DXB_JOURNALD_DROPIN=$TEST_TMP/journald.d/dxberry.conf \
+    DXB_JOURNALD_DROPIN=$TEST_TMP/journald.d/dxberry.conf DXB_GW_DROPIN=$TEST_TMP/graywolf.service.d/dxberry-history.conf \
     DXB_SYSFS_ROOT=$TEST_TMP/radio-sys DXB_UDEV_RULES_FILE=$TEST_TMP/etc/70.rules \
     DXB_MODPROBE_FILE=$TEST_TMP/etc/dxberry-audio.conf DXB_UDEVADM=fake_udevadm \
     DXB_RIGCTLD_RUN_DIR=$TEST_TMP/run/rigctld DXB_TMPFILES_DIR=$TEST_TMP/tmpfiles \
@@ -82,6 +82,7 @@ full_env() {
   chmod +x "$DXB_DIETPI_SET_HW"
   printf 'source /etc/network/interfaces.d/*\nauto lo\niface lo inet loopback\n' > "$DXB_INTERFACES_FILE"
   printf "aWIFI_SSID[0]=''\naWIFI_KEY[0]=''\naWIFI_KEYMGR[0]='WPA-PSK'\n" > "$DXB_DIETPI_WIFI"
+  printf '[Service]\nExecStart=/usr/bin/graywolf -history-db /var/lib/graywolf/graywolf-history.db\n' > "$TEST_TMP/graywolf.service"
 
   # shellcheck disable=SC2317
   {
@@ -89,9 +90,11 @@ full_env() {
     sync() { echo "sync" >> "$TEST_TMP/calls"; }
     # "is-enabled" answers no while $TEST_TMP/netwatch-not-enabled exists, so a test can drive
     # the pre-reboot gate from outside the subshell run_driver uses.
+    # "show" reports the packaged graywolf.service fixture below as the unit's fragment.
     systemctl() {
       echo "systemctl $*" >> "$TEST_TMP/calls"
       if [[ $1 == is-enabled && -f $TEST_TMP/netwatch-not-enabled ]]; then return 1; fi
+      [[ $1 == show ]] && echo "$TEST_TMP/graywolf.service"
       return 0
     }
     systemd-run() { echo "systemd-run $*" >> "$TEST_TMP/calls"; }
@@ -390,6 +393,32 @@ test_provision_driver_runs_radio_step_after_graywolf() {
   gw=$(grep -n 'enable --now graywolf' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
   radio=$(grep -n 'dxberry-radio-hotplug' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
   (( gw < radio )) || _fail "radio step must run after graywolf"
+}
+
+# The seed switches the position log on only once Graywolf reports its history in RAM, so the
+# drop-in has to be in place before graywolf is started and seeded.
+test_provision_driver_moves_graywolf_history_to_ram_before_seeding() {
+  full_env
+  printf 'PASSWORD=secretpass\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  fx_scene "$DXB_SYSFS_ROOT" none
+  (
+    # shellcheck disable=SC1091
+    source "$DXB_ROOT/provision/bin/dxberry-provision"
+    dxb_require_root() { :; }
+    dxb_gw_install() { return 0; }
+    dxb_gw_history_in_ram() { echo "history-in-ram" >> "$TEST_TMP/calls"; }
+    dxb_gw_seed() { echo "seed" >> "$TEST_TMP/calls"; }
+    main
+  ) 2> /dev/null
+  local hist gw seed
+  hist=$(grep -n '^history-in-ram$' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  gw=$(grep -n 'enable --now graywolf' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  seed=$(grep -n '^seed$' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  if [[ -z $hist || -z $gw || -z $seed ]]; then
+    _fail "expected the history drop-in, graywolf start and seed to run (got '$hist' '$gw' '$seed')"
+  elif ! (( hist < gw && gw < seed )); then
+    _fail "the history drop-in must come before graywolf is started and seeded"
+  fi
 }
 
 test_run_mode_wifi_import_failure_leaves_wifi_password_intact() {
