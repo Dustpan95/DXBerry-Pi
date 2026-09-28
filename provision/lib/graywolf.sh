@@ -44,11 +44,12 @@ dxb_gw_release_base() {
 # stdin: checksums.txt; $1: dpkg architecture -> "sha256 filename" of the matching .deb
 dxb_gw_pick_deb() { awk -v a="$1" '$2 ~ ("^graywolf_[0-9.]+_" a "\\.deb$") { print $1, $2; exit }'; }
 
-# Fully installed only ("ii"): dpkg-query prints ${Version} for a removed-but-not-purged package too.
+# Installed only (a held package too): dpkg-query prints ${Version} for a removed-but-not-purged
+# package as well, whose status is "config-files".
 dxb_gw_installed_version() {
   local st='' v=''
-  read -r st v < <(dpkg-query -W -f '${db:Status-Abbrev} ${Version}\n' graywolf 2> /dev/null)
-  [[ $st == ii ]] && printf '%s\n' "$v"
+  read -r st v < <(dpkg-query -W -f '${db:Status-Status} ${Version}\n' graywolf 2> /dev/null)
+  [[ $st == installed ]] && printf '%s\n' "$v"
   return 0
 }
 
@@ -132,7 +133,7 @@ dxb_gw_history_execstart() {
 # dxb_gw_history_in_ram: write the drop-in; on a change reload systemd and restart a running
 # graywolf onto it (a stopped one picks it up when started). 0 in place, 1 failed.
 dxb_gw_history_in_ram() {
-  local unit exec new content mount rc changed=0 left="position history left where the package puts it"
+  local unit exec new content mount rc changed=0 remount=0 left="position history left where the package puts it"
   # a refusal keeps an earlier drop-in: removing it would put an enabled log back on the stick
   [[ -f $DXB_GW_DROPIN ]] && left="the previous drop-in $DXB_GW_DROPIN (an older command line) stays in effect"
   unit=$(systemctl show -p FragmentPath --value graywolf.service 2> /dev/null)
@@ -161,7 +162,7 @@ Description=RAM disk for Graywolf position history
 What=tmpfs
 Where=/run/graywolf
 Type=tmpfs
-Options=mode=0750,size=5%,nosuid,nodev,noexec"
+Options=mode=0750,size=5%%,nosuid,nodev,noexec"
   content="# Written by dxberry-provision: Graywolf's position history in RAM, kept across service
 # restarts, cleared at reboot. Rebuilt from the packaged unit on every run.
 [Unit]
@@ -176,12 +177,17 @@ RuntimeDirectoryPreserve=yes"
   # the RAM disk first: the drop-in depends on it
   _dxb_gw_unit_write "$DXB_GW_HISTORY_MOUNT" "$mount"; rc=$?
   (( rc == 2 )) && return 1
-  (( rc == 0 )) && changed=1
+  (( rc == 0 )) && changed=1 remount=1
   _dxb_gw_unit_write "$DXB_GW_DROPIN" "$content"; rc=$?
   (( rc == 2 )) && return 1
   (( rc == 0 )) && changed=1
   (( changed )) || return 0
-  systemctl daemon-reload || { dxb_step_failed graywolf "systemctl daemon-reload failed after writing $DXB_GW_DROPIN"; return 1; }
+  systemctl daemon-reload || { dxb_step_failed graywolf "systemctl daemon-reload failed after writing $DXB_GW_HISTORY_MOUNT / $DXB_GW_DROPIN"; return 1; }
+  # a mounted RAM disk takes changed options only through a remount; restarting the mount would
+  # stop graywolf with it (Requires=)
+  if (( remount )) && systemctl is-active --quiet "${DXB_GW_HISTORY_MOUNT##*/}"; then
+    systemctl reload "${DXB_GW_HISTORY_MOUNT##*/}" || dxb_warn "could not remount /run/graywolf; its new options apply at the next reboot"
+  fi
   systemctl try-restart graywolf.service || { dxb_step_failed graywolf "could not restart graywolf onto the RAM position history"; return 1; }
   dxb_info "graywolf position history moved to $DXB_GW_HISTORY_DB (RAM disk, up to 5% of RAM)"
   return 0

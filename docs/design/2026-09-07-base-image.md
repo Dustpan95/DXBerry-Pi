@@ -471,11 +471,19 @@ Always the latest upstream release unless `GRAYWOLF_VERSION` pins a tag.
    release adds survive, and sets `RuntimeDirectory=graywolf`,
    `RuntimeDirectoryPreserve=yes`: kept across service restarts, cleared at
    reboot. `/run/graywolf` is its own RAM disk, `run-graywolf.mount` (tmpfs,
-   `size=5%` of RAM — about 50 MB on a 1 GB Pi — `mode=0750`, `nosuid`,
-   `nodev`, `noexec`), pulled in by `RequiresMountsFor=/run/graywolf` in the
-   drop-in: Graywolf never caps the database, and `/run` is shared with
-   systemd, udev and logind. Full, Graywolf logs failed history writes and
-   keeps the live map in memory. A command line it cannot rewrite with certainty — not exactly one
+   `size=5%%` — 5% of RAM, the `%` doubled because systemd expands
+   specifiers in `Options=`; about 45 MB on a 1 GB Pi — `mode=0750`,
+   `nosuid`, `nodev`, `noexec`), pulled in by `RequiresMountsFor=/run/graywolf`
+   in the drop-in (which `RuntimeDirectory=` implies anyway; kept to state the
+   intent): Graywolf never caps the database, and `/run` is shared with
+   systemd, udev and logind. Graywolf's own Logs-page store
+   (`graywolf-logs.db`, a 2000-entry ring) prefers `/run/graywolf` on a Pi and
+   shares the cap. Full, Graywolf logs failed writes and keeps the live map in
+   memory. Changed mount options reach a mounted disk through a remount
+   (`systemctl reload run-graywolf.mount`); restarting the mount would stop
+   Graywolf with it. A box upgraded from 0.2.1 gets the disk mounted over its
+   old `/run/graywolf` on the first run: the history restarts once, and the
+   old files stay hidden in RAM until the next reboot. A command line it cannot rewrite with certainty — not exactly one
    one-line `ExecStart`, quotes, or `-history-db` missing (releases before the
    flag crash-loop on it) or given twice — is a failed step and nothing is
    written. It is rebuilt on every run where Graywolf is installed, including

@@ -19,6 +19,7 @@ gw_env() {
   # reach apt-get. Fix-G2 tests override this to simulate it missing.
   ldconfig() { echo "libasound.so.2 (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/libasound.so.2"; }
   systemctl() { echo "systemctl $*" >> "$TEST_TMP/calls"; }
+  dpkg-query() { return 1; }                             # not installed unless a test says so
   sleep() { :; }
   GW_NEEDS_SETUP=true
   GW_CHANNELS=''
@@ -122,25 +123,26 @@ test_install_rejects_checksum_mismatch_and_missing_release() {
   assert_contains "${DXB_FAILED_STEPS[0]}" "could not download checksums.txt"
 }
 
-# fake_dpkg_query STATUS VERSION: answers dpkg-query -W -f '${db:Status-Abbrev} ${Version}\n'
-# the way dpkg does ("ii " is three characters, so a space-padded "ii  0.14.13").
-fake_dpkg_query() { eval "dpkg-query() { printf '%-3s %s\n' '$1' '$2'; }"; }
+# fake_dpkg_query STATUS VERSION: answers dpkg-query -W -f '${db:Status-Status} ${Version}\n' the
+# way dpkg does ("installed 0.14.13"; a removed-but-not-purged package is "config-files").
+fake_dpkg_query() { eval "dpkg-query() { printf '%s %s\n' '$1' '$2'; }"; }
 
 test_install_skips_when_current() {
   gw_env
   gw_cfg 'PASSWORD=secretpass'
   printf 'x  graywolf_0.14.13_arm64.deb\n' > "$TEST_TMP/http/checksums.txt"
-  fake_dpkg_query ii 0.14.13
+  fake_dpkg_query installed 0.14.13
   assert_ok dxb_gw_install
   assert_not_contains "$(gw_calls)" "apt-get"
 }
 
-# dpkg-query prints ${Version} for a removed-but-not-purged package too (status "rc"): that is not
-# an installed Graywolf, so it is reinstalled rather than skipped.
+# dpkg-query prints ${Version} for a removed-but-not-purged package too (status "config-files"):
+# that is not an installed Graywolf, so it is reinstalled rather than skipped. A held package is
+# still "installed".
 test_installed_version_counts_only_a_fully_installed_package() {
-  fake_dpkg_query ii 0.14.13
+  fake_dpkg_query installed 0.14.13
   assert_eq "$(dxb_gw_installed_version)" "0.14.13"
-  fake_dpkg_query rc 0.14.13
+  fake_dpkg_query config-files 0.14.13
   assert_eq "$(dxb_gw_installed_version)" ""
   dpkg-query() { return 1; }
   assert_eq "$(dxb_gw_installed_version)" ""
@@ -151,7 +153,7 @@ test_install_reinstalls_a_removed_but_not_purged_package() {
   gw_cfg 'PASSWORD=secretpass'
   echo "deb-bytes" > "$TEST_TMP/http/graywolf_0.14.13_arm64.deb"
   printf '%s  graywolf_0.14.13_arm64.deb\n' "$(sha256sum "$TEST_TMP/http/graywolf_0.14.13_arm64.deb" | cut -d' ' -f1)" > "$TEST_TMP/http/checksums.txt"
-  fake_dpkg_query rc 0.14.13
+  fake_dpkg_query config-files 0.14.13
   assert_ok dxb_gw_install
   assert_ok grep -qE '^apt-get install -y .*graywolf_0\.14\.13_arm64\.deb$' "$TEST_TMP/calls"
 }
@@ -474,6 +476,7 @@ gw_unit() {
   systemctl() {
     echo "systemctl $*" >> "$TEST_TMP/calls"
     [[ $1 == show ]] && echo "$TEST_TMP/lib/graywolf.service"
+    [[ $1 == is-active ]] && { [[ -f $TEST_TMP/mount-active ]]; return; }   # active only when a test says so
     return 0
   }
 }
@@ -594,9 +597,22 @@ test_history_ram_disk_is_capped_and_mounted_before_graywolf() {
   gw_env
   gw_unit '/usr/bin/graywolf -history-db /var/lib/graywolf/graywolf-history.db'
   assert_ok dxb_gw_history_in_ram
-  assert_contains "$(cat "$DXB_GW_HISTORY_MOUNT")" $'[Mount]\nWhat=tmpfs\nWhere=/run/graywolf\nType=tmpfs\nOptions=mode=0750,size=5%,nosuid,nodev,noexec'
+  assert_contains "$(cat "$DXB_GW_HISTORY_MOUNT")" $'[Mount]\nWhat=tmpfs\nWhere=/run/graywolf\nType=tmpfs\nOptions=mode=0750,size=5%%,nosuid,nodev,noexec'
   assert_contains "$(cat "$DXB_GW_DROPIN")" $'[Unit]\nRequiresMountsFor=/run/graywolf\n'
+  assert_not_contains "$(gw_calls)" "reload run-graywolf.mount"          # not mounted yet: nothing to remount
   assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
+}
+
+# An already mounted RAM disk takes changed options only through a remount; restarting the mount
+# would stop Graywolf with it (Requires=).
+test_history_ram_disk_change_remounts_an_active_disk() {
+  gw_env
+  gw_unit '/usr/bin/graywolf -history-db /var/lib/graywolf/graywolf-history.db'
+  mkdir -p "$TEST_TMP/units"; echo "# older options" > "$DXB_GW_HISTORY_MOUNT"
+  : > "$TEST_TMP/mount-active"
+  assert_ok dxb_gw_history_in_ram
+  assert_contains "$(gw_calls)" "systemctl reload run-graywolf.mount"
+  assert_not_contains "$(gw_calls)" "restart run-graywolf.mount"
 }
 
 # A box set up by 0.2.1 already has the drop-in; the new RAM disk alone must still reload systemd
