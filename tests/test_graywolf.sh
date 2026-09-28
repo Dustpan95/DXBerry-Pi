@@ -7,7 +7,8 @@ source "$DXB_LIB/graywolf.sh"
 gw_env() {
   export DXB_STATE_DIR=$TEST_TMP/state DXB_LOG_FILE=$TEST_TMP/state/log DXB_GW_COOKIES=$TEST_TMP/cookies \
     DXB_GW_SEED_STATE=$TEST_TMP/state/graywolf-seed.env DXB_GW_API=http://gw/api DXB_GW_RELEASES=http://rel DXB_DPKG_ARCH=arm64 DXB_ZONEINFO_DIR=$TEST_TMP/nozone \
-    DXB_GW_SECRET_FILE=$TEST_TMP/state/graywolf.secret DXB_GW_DROPIN=$TEST_TMP/graywolf.service.d/dxberry-history.conf
+    DXB_GW_SECRET_FILE=$TEST_TMP/state/graywolf.secret DXB_GW_DROPIN=$TEST_TMP/graywolf.service.d/dxberry-history.conf \
+    DXB_GW_HISTORY_MOUNT=$TEST_TMP/units/run-graywolf.mount
   mkdir -p "$DXB_STATE_DIR" "$TEST_TMP/http"
   : > "$TEST_TMP/calls"
   DXB_STATUS_LINES=(); DXB_FAILED_STEPS=(); DXB_CONSUMED_SECRETS=''; DXB_CFG=()
@@ -121,13 +122,38 @@ test_install_rejects_checksum_mismatch_and_missing_release() {
   assert_contains "${DXB_FAILED_STEPS[0]}" "could not download checksums.txt"
 }
 
+# fake_dpkg_query STATUS VERSION: answers dpkg-query -W -f '${db:Status-Abbrev} ${Version}\n'
+# the way dpkg does ("ii " is three characters, so a space-padded "ii  0.14.13").
+fake_dpkg_query() { eval "dpkg-query() { printf '%-3s %s\n' '$1' '$2'; }"; }
+
 test_install_skips_when_current() {
   gw_env
   gw_cfg 'PASSWORD=secretpass'
   printf 'x  graywolf_0.14.13_arm64.deb\n' > "$TEST_TMP/http/checksums.txt"
-  dpkg-query() { echo "0.14.13"; }
+  fake_dpkg_query ii 0.14.13
   assert_ok dxb_gw_install
   assert_not_contains "$(gw_calls)" "apt-get"
+}
+
+# dpkg-query prints ${Version} for a removed-but-not-purged package too (status "rc"): that is not
+# an installed Graywolf, so it is reinstalled rather than skipped.
+test_installed_version_counts_only_a_fully_installed_package() {
+  fake_dpkg_query ii 0.14.13
+  assert_eq "$(dxb_gw_installed_version)" "0.14.13"
+  fake_dpkg_query rc 0.14.13
+  assert_eq "$(dxb_gw_installed_version)" ""
+  dpkg-query() { return 1; }
+  assert_eq "$(dxb_gw_installed_version)" ""
+}
+
+test_install_reinstalls_a_removed_but_not_purged_package() {
+  gw_env
+  gw_cfg 'PASSWORD=secretpass'
+  echo "deb-bytes" > "$TEST_TMP/http/graywolf_0.14.13_arm64.deb"
+  printf '%s  graywolf_0.14.13_arm64.deb\n' "$(sha256sum "$TEST_TMP/http/graywolf_0.14.13_arm64.deb" | cut -d' ' -f1)" > "$TEST_TMP/http/checksums.txt"
+  fake_dpkg_query rc 0.14.13
+  assert_ok dxb_gw_install
+  assert_ok grep -qE '^apt-get install -y .*graywolf_0\.14\.13_arm64\.deb$' "$TEST_TMP/calls"
 }
 
 # Measured: `dpkg -s graywolf` has no Depends line, and graywolf-modem (a child process
@@ -530,6 +556,7 @@ test_history_dropin_refuses_a_start_command_it_cannot_copy() {
   assert_fails dxb_gw_history_in_ram
   assert_contains "${DXB_FAILED_STEPS[*]}" "graywolf: "
   assert_ok test ! -e "$DXB_GW_DROPIN"
+  assert_ok test ! -e "$DXB_GW_HISTORY_MOUNT"
   assert_not_contains "$(gw_calls)" "restart"
 }
 
@@ -555,6 +582,42 @@ test_history_dropin_reports_a_write_that_did_not_land() {
   : > "$TEST_TMP/graywolf.service.d"                      # a file where the drop-in directory goes
   assert_fails dxb_gw_history_in_ram 2> /dev/null
   assert_contains "${DXB_FAILED_STEPS[*]}" "could not write"
+  assert_not_contains "$(gw_calls)" "daemon-reload"
+  assert_not_contains "$(gw_calls)" "restart"
+}
+
+# /run is shared with systemd, udev and logind, and Graywolf never caps its history database: the
+# history gets its own RAM disk, capped at 5% of RAM (about 50 MB on a 1 GB Pi), mounted before
+# Graywolf starts. A full disk only stops history writes (Graywolf logs a warning and keeps the
+# live map in memory).
+test_history_ram_disk_is_capped_and_mounted_before_graywolf() {
+  gw_env
+  gw_unit '/usr/bin/graywolf -history-db /var/lib/graywolf/graywolf-history.db'
+  assert_ok dxb_gw_history_in_ram
+  assert_contains "$(cat "$DXB_GW_HISTORY_MOUNT")" $'[Mount]\nWhat=tmpfs\nWhere=/run/graywolf\nType=tmpfs\nOptions=mode=0750,size=5%,nosuid,nodev,noexec'
+  assert_contains "$(cat "$DXB_GW_DROPIN")" $'[Unit]\nRequiresMountsFor=/run/graywolf\n'
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
+}
+
+# A box set up by 0.2.1 already has the drop-in; the new RAM disk alone must still reload systemd
+# and move a running Graywolf onto it.
+test_history_ram_disk_added_later_restarts_graywolf() {
+  gw_env
+  gw_unit '/usr/bin/graywolf -history-db /var/lib/graywolf/graywolf-history.db'
+  assert_ok dxb_gw_history_in_ram
+  rm -f "$DXB_GW_HISTORY_MOUNT"; : > "$TEST_TMP/calls"
+  assert_ok dxb_gw_history_in_ram
+  assert_ok test -f "$DXB_GW_HISTORY_MOUNT"
+  assert_contains "$(gw_calls)" "systemctl daemon-reload"
+  assert_contains "$(gw_calls)" "systemctl try-restart graywolf.service"
+}
+
+test_history_ram_disk_reports_a_write_that_did_not_land() {
+  gw_env
+  gw_unit '/usr/bin/graywolf -history-db /var/lib/graywolf/graywolf-history.db'
+  : > "$TEST_TMP/units"                                   # a file where the unit directory goes
+  assert_fails dxb_gw_history_in_ram 2> /dev/null
+  assert_contains "${DXB_FAILED_STEPS[*]}" "could not write $DXB_GW_HISTORY_MOUNT"
   assert_not_contains "$(gw_calls)" "daemon-reload"
   assert_not_contains "$(gw_calls)" "restart"
 }

@@ -8,6 +8,7 @@
 : "${DXB_GW_SEED_STATE:=$DXB_STATE_DIR/graywolf-seed.env}"
 : "${DXB_GW_SECRET_FILE:=$DXB_STATE_DIR/graywolf.secret}"
 : "${DXB_GW_DROPIN:=/etc/systemd/system/graywolf.service.d/dxberry-history.conf}"
+: "${DXB_GW_HISTORY_MOUNT:=/etc/systemd/system/run-graywolf.mount}"
 : "${DXB_GW_HISTORY_DB:=/run/graywolf/history.db}"
 : "${DXB_CURL:=curl}"
 : "${DXB_TTY:=/dev/tty}"
@@ -43,7 +44,13 @@ dxb_gw_release_base() {
 # stdin: checksums.txt; $1: dpkg architecture -> "sha256 filename" of the matching .deb
 dxb_gw_pick_deb() { awk -v a="$1" '$2 ~ ("^graywolf_[0-9.]+_" a "\\.deb$") { print $1, $2; exit }'; }
 
-dxb_gw_installed_version() { dpkg-query -W -f '${Version}' graywolf 2> /dev/null || true; }
+# Fully installed only ("ii"): dpkg-query prints ${Version} for a removed-but-not-purged package too.
+dxb_gw_installed_version() {
+  local st='' v=''
+  read -r st v < <(dpkg-query -W -f '${db:Status-Abbrev} ${Version}\n' graywolf 2> /dev/null)
+  [[ $st == ii ]] && printf '%s\n' "$v"
+  return 0
+}
 
 dxb_gw_fetch() {
   local i
@@ -125,7 +132,7 @@ dxb_gw_history_execstart() {
 # dxb_gw_history_in_ram: write the drop-in; on a change reload systemd and restart a running
 # graywolf onto it (a stopped one picks it up when started). 0 in place, 1 failed.
 dxb_gw_history_in_ram() {
-  local unit exec new content left="position history left where the package puts it"
+  local unit exec new content mount rc changed=0 left="position history left where the package puts it"
   # a refusal keeps an earlier drop-in: removing it would put an enabled log back on the stick
   [[ -f $DXB_GW_DROPIN ]] && left="the previous drop-in $DXB_GW_DROPIN (an older command line) stays in effect"
   unit=$(systemctl show -p FragmentPath --value graywolf.service 2> /dev/null)
@@ -143,24 +150,50 @@ dxb_gw_history_in_ram() {
     dxb_step_failed graywolf "cannot safely move -history-db in '$exec'; $left"
     return 1
   fi
+  # /run is shared with systemd, udev and logind, and Graywolf never caps the database, so it gets
+  # its own RAM disk. Full, Graywolf only logs failed history writes and keeps the map in memory.
+  mount="# Written by dxberry-provision: the RAM disk for Graywolf's position history, capped at 5% of
+# RAM so a busy station cannot fill /run. Cleared at reboot.
+[Unit]
+Description=RAM disk for Graywolf position history
+
+[Mount]
+What=tmpfs
+Where=/run/graywolf
+Type=tmpfs
+Options=mode=0750,size=5%,nosuid,nodev,noexec"
   content="# Written by dxberry-provision: Graywolf's position history in RAM, kept across service
 # restarts, cleared at reboot. Rebuilt from the packaged unit on every run.
+[Unit]
+RequiresMountsFor=/run/graywolf
+
 [Service]
 ExecStart=
 ExecStart=$new
 RuntimeDirectory=graywolf
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes"
-  mkdir -p "$(dirname "$DXB_GW_DROPIN")" 2> /dev/null
-  dxb_write_if_changed "$DXB_GW_DROPIN" "$content" 644 || return 0
-  if [[ ! -f $DXB_GW_DROPIN || $(< "$DXB_GW_DROPIN") != "$content" ]]; then
-    dxb_step_failed graywolf "could not write $DXB_GW_DROPIN"
-    return 1
-  fi
+  # the RAM disk first: the drop-in depends on it
+  _dxb_gw_unit_write "$DXB_GW_HISTORY_MOUNT" "$mount"; rc=$?
+  (( rc == 2 )) && return 1
+  (( rc == 0 )) && changed=1
+  _dxb_gw_unit_write "$DXB_GW_DROPIN" "$content"; rc=$?
+  (( rc == 2 )) && return 1
+  (( rc == 0 )) && changed=1
+  (( changed )) || return 0
   systemctl daemon-reload || { dxb_step_failed graywolf "systemctl daemon-reload failed after writing $DXB_GW_DROPIN"; return 1; }
   systemctl try-restart graywolf.service || { dxb_step_failed graywolf "could not restart graywolf onto the RAM position history"; return 1; }
-  dxb_info "graywolf position history moved to $DXB_GW_HISTORY_DB (RAM)"
+  dxb_info "graywolf position history moved to $DXB_GW_HISTORY_DB (RAM disk, up to 5% of RAM)"
   return 0
+}
+
+# _dxb_gw_unit_write FILE CONTENT: 0 written, 1 unchanged, 2 did not land (failed step recorded).
+_dxb_gw_unit_write() {
+  mkdir -p "$(dirname "$1")" 2> /dev/null
+  dxb_write_if_changed "$1" "$2" 644 || return 1
+  [[ -f $1 && $(< "$1") == "$2" ]] && return 0
+  dxb_step_failed graywolf "could not write $1"
+  return 2
 }
 
 # ---- API client ----------------------------------------------------------------------------
@@ -336,7 +369,7 @@ dxb_gw_seed_position_log() {
     return 1
   fi
   dxb_gw_api PUT /position-log '{"enabled":true}' > /dev/null || { dxb_step_failed graywolf "position log update failed"; return 1; }
-  dxb_status_add "graywolf: position log on, in RAM (${DXB_GW_HISTORY_DB%/*}, cleared at reboot)"
+  dxb_status_add "graywolf: position log on, in RAM (${DXB_GW_HISTORY_DB%/*}, up to 5% of RAM, cleared at reboot)"
 }
 
 dxb_gw_seed_digi() {

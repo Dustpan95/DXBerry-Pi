@@ -65,8 +65,8 @@ refused there unless you add `--force` from the console.
 
 Logs and the journal live in RAM, swap is on zram, and Graywolf's position log (on by default,
 `POSITION_LOG=off` to disable) is kept in RAM too, so routine operation is gentle on SD cards and USB
-drives. The position log survives a Graywolf restart but starts empty after a reboot. Real state
-(Graywolf configuration, mail, logs you keep) is on disk.
+drives. The position log survives a Graywolf restart, starts empty after a reboot, and never uses more
+than 5% of RAM. Real state (Graywolf configuration, mail, logs you keep) is on disk.
 
 ## Radio plumbing
 

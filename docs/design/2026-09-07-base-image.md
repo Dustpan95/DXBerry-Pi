@@ -456,7 +456,9 @@ Always the latest upstream release unless `GRAYWOLF_VERSION` pins a tag.
    `dpkg --print-architecture` (`arm64` on this image; `armhf` is handled but
    not built or tested here).
 3. Download the `.deb` from the same release path, verify its SHA-256 against
-   `checksums.txt`, and install with `apt-get install ./graywolf_*.deb`.
+   `checksums.txt`, and install with `apt-get install ./graywolf_*.deb` —
+   skipped when that version is already fully installed (dpkg status `ii`; a
+   removed-but-not-purged `rc` package is reinstalled).
 4. Graywolf's package creates the `graywolf` system user (groups `audio`,
    `dialout`, `plugdev`, `gpio`), installs its hardened systemd unit, and
    enables it. The unit binds `0.0.0.0:8080`, so the UI is reachable on the LAN.
@@ -468,7 +470,12 @@ Always the latest upstream release unless `GRAYWOLF_VERSION` pins a tag.
    only that value changed to `/run/graywolf/history.db`, so flags a later
    release adds survive, and sets `RuntimeDirectory=graywolf`,
    `RuntimeDirectoryPreserve=yes`: kept across service restarts, cleared at
-   reboot. A command line it cannot rewrite with certainty — not exactly one
+   reboot. `/run/graywolf` is its own RAM disk, `run-graywolf.mount` (tmpfs,
+   `size=5%` of RAM — about 50 MB on a 1 GB Pi — `mode=0750`, `nosuid`,
+   `nodev`, `noexec`), pulled in by `RequiresMountsFor=/run/graywolf` in the
+   drop-in: Graywolf never caps the database, and `/run` is shared with
+   systemd, udev and logind. Full, Graywolf logs failed history writes and
+   keeps the live map in memory. A command line it cannot rewrite with certainty — not exactly one
    one-line `ExecStart`, quotes, or `-history-db` missing (releases before the
    flag crash-loop on it) or given twice — is a failed step and nothing is
    written. It is rebuilt on every run where Graywolf is installed, including
@@ -562,7 +569,7 @@ changes (configuration saves, logs the user wants) on disk.
 | Swap | zram (`AUTO_SETUP_SWAPFILE_LOCATION=zram`), never a file on flash |
 | `/tmp` | DietPi's default tmpfs |
 | `noatime` | DietPi's default mount options |
-| Graywolf position log | in RAM at `/run/graywolf/history.db` (§9.1 step 5), kept across service restarts, cleared at reboot; Graywolf prunes positions at 30 days |
+| Graywolf position log | in RAM at `/run/graywolf/history.db` on its own RAM disk capped at 5% of RAM (§9.1 step 5), kept across service restarts, cleared at reboot; Graywolf prunes positions at 30 days |
 | Provisioner state | `/var/lib/dxberry/` — small, written only during provisioning |
 
 Overlay-root mode with a persistent-state list is sub-project 5.
