@@ -170,7 +170,9 @@ const cfgKeys = {
   POSITION_LOG: { value: "", effective: "off" },
   CONSOLE: { value: "", effective: "on" },
 };
-const cfgGetAnswer = () => JSON.stringify({ file: "/boot/dxberry.txt", valid: true, errors: [], keys: cfgKeys });
+// network settings start switched off, as in v0.3.0-rc3 (dxberry-config get's network_editable)
+let cfgNetworkEditable = false;
+const cfgGetAnswer = () => JSON.stringify({ file: "/boot/dxberry.txt", valid: true, errors: [], network_editable: cfgNetworkEditable, keys: cfgKeys });
 const cfgFirstJob = () => JSON.stringify({ now: 1000, pending: false, revert_at: null, reverted_at: null, reboot_required: false, job: null });
 
 const ctx = {
@@ -368,6 +370,11 @@ const settingsPath = path.replace(/dxberry\.js$/, "settings.js");
   ok(stext().includes("WiFi") && stext().includes("Shack Net (US), password set"), "Settings shows the WiFi network");
   ok(stext().includes("Login password") && stext().includes("set"), "Settings shows the login password is set");
   ok(!stext().includes("<applied>"), "Settings never shows the raw <applied> marker");
+  // network settings switched off: the values show, but no dialog is offered, and a note says how
+  ok(!sbtn("cfg:network") && !stext().includes("Change network settings"), "no Change network settings while network settings are off: " + stext());
+  ok(stext().includes("Network settings change in dxberry.txt for now: edit it, run sudo dxberry-provision, then restart the Pi."),
+    "a note says where network settings change for now: " + stext());
+  ok(!!sbtn("cfg:system"), "system settings are still offered while network settings are off");
 
   // From here on, dxberry-config's own answers drive the section: a successful network save makes
   // its job pending (Keep/Undo), CONSOLE=off is refused by the validator.
@@ -392,6 +399,12 @@ const settingsPath = path.replace(/dxberry\.js$/, "settings.js");
     }
     return Promise.reject({ problem: "not-found" });
   };
+
+  // network settings switched on (DXB_CONFIG_NETWORK=1): the dialog is offered and the note goes
+  cfgNetworkEditable = true;
+  vm.runInContext("cfgLoadValues()", ctx);
+  await flush(); await flush();
+  ok(!!sbtn("cfg:network") && !stext().includes("dxberry.txt for now"), "Change network settings is offered once network settings are on");
 
   // Change network settings: opens with the current address; DHCP hides the address fields.
   sbtn("cfg:network").click();

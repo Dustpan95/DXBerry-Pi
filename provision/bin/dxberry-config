@@ -6,7 +6,7 @@
 #   confirm                      keep the last network change (stops its two-minute undo)
 #   revert                       undo the last network change now (its timer runs this too; --boot: files only)
 #   apply                        the settings job itself, started by set
-# --json on any subcommand. Network settings (STATIC_IP GATEWAY DNS WIFI_SSID WIFI_PASSWORD WIFI_COUNTRY) are saved on their own.
+# --json on any subcommand. Network settings (STATIC_IP GATEWAY DNS WIFI_SSID WIFI_PASSWORD WIFI_COUNTRY) are changed in dxberry.txt for now.
 # Exit: 0 ok, 1 not root, 2 usage, 4 not valid (nothing written), 5 busy, 6 write failed, 8 applied with failed steps.
 set -uo pipefail
 
@@ -54,6 +54,15 @@ _set_check() {
   dxb_settings_value_ok "$v" || { echo "$k: the value contains a line break or another control character" >&2; return 2; }
 }
 
+# _set_network_check KEY: while network settings from the console are off (DXB_CONFIG_NETWORK,
+# settings.sh), a network key is refused by name - whatever its value - before anything is written.
+_set_network_check() {
+  dxb_settings_is_network_key "$1" || return 0
+  [[ $DXB_CONFIG_NETWORK == 1 ]] && return 0
+  echo "network settings cannot be changed from the console yet: a running interface keeps its settings until the Pi restarts, and the undo cannot test that. Change them in dxberry.txt, run sudo dxberry-provision, then restart the Pi." >&2
+  return 2
+}
+
 # _rollback_write FILE CONTENT: put the pre-change CONTENT back into FILE without touching
 # $DXB_CONFIG_PREV (dxb_settings_write would overwrite it with the change that never applied).
 # 0 rolled back, 1 failed (FILE still holds the unapplied change; says so on stderr).
@@ -78,6 +87,7 @@ cmd_set() {
     k=${a%%=*}; v=${a#*=}
     if dxb_settings_is_secret "$k"; then echo "$k is a password: give it as a $k=... line on standard input with --stdin, never as an argument" >&2; return 2; fi
     _set_check "$k" "$v" || return 2
+    _set_network_check "$k" || return 2
     new=$(dxb_settings_edit "$k" "$v" <<< "$new"); n=$(( n + 1 ))
   done
   if (( STDIN )); then
@@ -88,6 +98,7 @@ cmd_set() {
         echo "standard input takes only PASSWORD=... and WIFI_PASSWORD=... lines" >&2; return 2
       fi
       _set_check "$k" "$v" || return 2
+      _set_network_check "$k" || return 2
       new=$(dxb_settings_edit "$k" "$v" <<< "$new"); n=$(( n + 1 ))
     done
   fi

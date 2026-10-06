@@ -229,14 +229,15 @@ se_cli() {
   ) > "$TEST_TMP/out" 2> "$TEST_TMP/err"
 }
 se_out() { cat "$TEST_TMP/out"; }
-# se_cli_env: se_netsafe_env plus a provisioner stub and the job files under $TEST_TMP.
+# se_cli_env: se_netsafe_env plus a provisioner stub and the job files under $TEST_TMP. Network
+# settings are switched on (DXB_CONFIG_NETWORK=1), so the safety-net code they would use stays tested.
 se_cli_env() {
   se_netsafe_env
   # shellcheck disable=SC2031  # exported here, only ever read (never set) inside se_cli's subshell
   export DXB_CONFIG_JOB_FILE=$TEST_TMP/run/config-job.json DXB_CONFIG_RESULT=$TEST_TMP/run/config-result.json \
     DXB_CONFIG_PENDING=$TEST_TMP/run/config-pending DXB_CONFIG_REVERTED=$TEST_TMP/state/config-reverted \
     DXB_PROVISION_CMD=se_provision DXB_REBOOT_FLAG=$TEST_TMP/run/reboot-required DXB_CONFIG_LOCK_WAIT=2 \
-    DXB_GW_COOKIES=$TEST_TMP/run/graywolf.cookies
+    DXB_GW_COOKIES=$TEST_TMP/run/graywolf.cookies DXB_CONFIG_NETWORK=1
   : > "$TEST_TMP/active"
 }
 se_provision() { echo "provision DXB_GW_UPGRADE=${DXB_GW_UPGRADE:-unset}" >> "$TEST_TMP/calls"; return "$(cat "$TEST_TMP/provision-rc" 2> /dev/null || echo 0)"; }
@@ -358,6 +359,36 @@ test_config_set_takes_secrets_only_on_stdin() {
   # without --stdin nothing is read (a caller that sends nothing never hangs)
   printf 'PASSWORD=ignoredpassword\n' | se_cli set HOSTNAME=calm --json
   assert_eq "$(jq -c '.changed' "$TEST_TMP/out")" '["HOSTNAME"]'
+}
+
+# Network settings from the console are off (DXB_CONFIG_NETWORK=0, the default) until a live
+# re-apply is built and tested: restarting dxberry-netwatch adopts an interface that is already up,
+# so the undo could never try a change before Keep commits it. A network key is refused by name -
+# even at its current value - before anything is written, snapshotted or armed.
+test_config_network_settings_are_refused_while_switched_off() {
+  local before
+  se_cli_env
+  before=$(se_file)
+  DXB_CONFIG_NETWORK=0 se_cli set WIFI_SSID=Other --json; assert_eq "$?" "2"
+  assert_contains "$(cat "$TEST_TMP/err")" "network settings cannot be changed from the console yet"
+  assert_contains "$(cat "$TEST_TMP/err")" "run sudo dxberry-provision, then restart the Pi"
+  DXB_CONFIG_NETWORK=0 se_cli set STATIC_IP=10.0.0.90/24; assert_eq "$?" "2"
+  printf 'WIFI_PASSWORD=newwifipass\n' | DXB_CONFIG_NETWORK=0 se_cli set --stdin; assert_eq "$?" "2"
+  assert_contains "$(cat "$TEST_TMP/err")" "cannot be changed from the console yet"
+  assert_not_contains "$(cat "$TEST_TMP/err")" "newwifipass"
+  # unset is off too: the library's default
+  ( unset DXB_CONFIG_NETWORK; se_cli set DNS=1.1.1.1 ); assert_eq "$?" "2"
+  assert_eq "$(se_file)" "$before"
+  [[ -e $DXB_CONFIG_PREV ]] && _fail "a refused network change must not keep a .prev"
+  assert_fails dxb_netsafe_pending
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemd-run"
+  # system settings are still changed
+  DXB_CONFIG_NETWORK=0 se_cli set HOSTNAME=newpi --json; assert_eq "$?" "0"
+  # get says which, so the page offers the network dialog only when it would work
+  DXB_CONFIG_NETWORK=0 se_cli get --json
+  assert_eq "$(jq -r '.network_editable' "$TEST_TMP/out")" "false"
+  se_cli get --json
+  assert_eq "$(jq -r '.network_editable' "$TEST_TMP/out")" "true"
 }
 
 test_config_network_change_snapshots_and_arms_the_backstop() {

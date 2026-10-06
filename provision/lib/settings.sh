@@ -11,6 +11,11 @@
 DXB_CONSOLE_KEYS='STATIC_IP GATEWAY DNS WIFI_SSID WIFI_PASSWORD WIFI_COUNTRY HOSTNAME TIMEZONE PASSWORD SSH_PUBKEY GPS_DEVICE GPS_BAUD GPS_PPS POSITION_LOG CONSOLE'
 # Changing one of these arms the network safety net (spec 10.3); they are saved on their own.
 DXB_NETWORK_KEYS='STATIC_IP GATEWAY DNS WIFI_SSID WIFI_PASSWORD WIFI_COUNTRY'
+# Network settings from the console are off (0) until a live re-apply is built and tested: a running
+# interface keeps its settings until it is cycled or the Pi restarts (restarting dxberry-netwatch
+# adopts it as it is), so the safety net below could not try a change before Keep commits it.
+# 1 turns them on; the tests do, so that code stays tested and ready (spec 10.3).
+: "${DXB_CONFIG_NETWORK:=0}"
 
 _dxb_settings_in() { [[ " $1 " == *" $2 "* ]]; }
 dxb_settings_is_console_key() { _dxb_settings_in "$DXB_CONSOLE_KEYS" "$1"; }
@@ -22,9 +27,11 @@ dxb_settings_value_ok() { [[ $1 != *[[:cntrl:]]* ]]; }
 # dxb_settings_get_json FILE: the console keys of FILE (spec 10.2 "get"): each key's value as
 # written and the value in effect after the validator's defaults; secrets only as set / not set,
 # never their value. Secrets never reach jq's arguments: only "true"/"false" does.
+# network_editable: whether set takes network keys (DXB_CONFIG_NETWORK).
 dxb_settings_get_json() {
-  local file=$1 k valid=true out='{}' errs
+  local file=$1 k valid=true out='{}' errs ne=false
   local -A raw=()
+  [[ $DXB_CONFIG_NETWORK == 1 ]] && ne=true
   dxb_config_load "$file" || valid=false
   for k in $DXB_CONSOLE_KEYS; do raw[$k]=${DXB_CFG[$k]:-}; done
   dxb_config_validate || valid=false
@@ -36,7 +43,8 @@ dxb_settings_get_json() {
     fi
   done
   errs=$(printf '%s\n' "${DXB_CFG_ERRORS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')
-  jq -cn --arg f "$file" --argjson v "$valid" --argjson e "$errs" --argjson k "$out" '{file: $f, valid: $v, errors: $e, keys: $k}'
+  jq -cn --arg f "$file" --argjson v "$valid" --argjson e "$errs" --argjson ne "$ne" --argjson k "$out" \
+    '{file: $f, valid: $v, errors: $e, network_editable: $ne, keys: $k}'
 }
 
 # dxb_settings_edit KEY VALUE < CONTENT: CONTENT with KEY set to VALUE. The first active KEY line

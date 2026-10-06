@@ -20,7 +20,7 @@ const CONFIG_GPS_BAUDS = ["4800", "9600", "19200", "38400", "57600", "115200"];
 /* config-fields-begin: what the page reads from dxberry-config's --json answers, as COMMAND:PATH.
  * tests/test_page.sh checks each one against the command's real output. */
 const CONFIG_FIELDS = [
-  "get:valid", "get:errors", "get:keys.HOSTNAME.value", "get:keys.HOSTNAME.effective", "get:keys.STATIC_IP.value",
+  "get:valid", "get:errors", "get:network_editable", "get:keys.HOSTNAME.value", "get:keys.HOSTNAME.effective", "get:keys.STATIC_IP.value",
   "get:keys.STATIC_IP.effective", "get:keys.GATEWAY.value", "get:keys.GATEWAY.effective", "get:keys.DNS.value",
   "get:keys.DNS.effective", "get:keys.WIFI_SSID.value", "get:keys.WIFI_PASSWORD.set", "get:keys.WIFI_COUNTRY.value",
   "get:keys.TIMEZONE.value", "get:keys.TIMEZONE.effective", "get:keys.PASSWORD.set", "get:keys.SSH_PUBKEY.value",
@@ -200,9 +200,16 @@ function cfgRender() {
     if (!v.valid) kids.push(el("p", { class: "error" }, "dxberry.txt has errors: " + v.errors.join(" ")));
     const busy = cfgBusy();
     const why = busy ? "Wait for the change above to finish, or keep or undo it" : null;
-    kids.push(el("h3", {}, "Network"), kv(cfgNetworkRows(v.keys)), el("h3", {}, "System"), kv(cfgSystemRows(v.keys)),
+    // network settings from the console wait for a tested live re-apply (console spec 10.3):
+    // dxberry-config get says whether set takes them
+    const netOk = v.network_editable === true;
+    kids.push(el("h3", {}, "Network"), kv(cfgNetworkRows(v.keys)));
+    if (!netOk) {
+      kids.push(el("p", { class: "muted" }, "Network settings change in dxberry.txt for now: edit it, run sudo dxberry-provision, then restart the Pi."));
+    }
+    kids.push(el("h3", {}, "System"), kv(cfgSystemRows(v.keys)),
       el("div", { class: "actions" },
-        btn("Change network settings", () => cfgOpen("network"), { key: "cfg:network", disabled: busy, title: why }),
+        netOk ? btn("Change network settings", () => cfgOpen("network"), { key: "cfg:network", disabled: busy, title: why }) : null,
         btn("Change system settings", () => cfgOpen("system"), { key: "cfg:system", disabled: busy, title: why }),
         el("a", { class: "btn small link", href: `http://${location.hostname}:8080/`, target: "_blank", rel: "noopener noreferrer", "data-key": "cfg:graywolf" },
           "Station, beacon and iGate settings: Graywolf's page")));
@@ -315,6 +322,7 @@ function cfgSetSaving(on) {
 function cfgOpen(section) {
   const v = settings.values;
   if (!v || v.failed || cfgBusy()) return;
+  if (section === "network" && v.network_editable !== true) return;
   settings.form = { section, saving: false };
   document.getElementById("settings-dialog-title").textContent = section === "network" ? "Network settings" : "System settings";
   cfgSetError("");
