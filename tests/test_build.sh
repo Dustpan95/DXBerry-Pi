@@ -96,7 +96,7 @@ test_build_ships_the_settings_page_script() {
 
 test_build_makes_the_update_file() {
   local out=$TEST_TMP/out name list
-  name=$("$DXB_ROOT/build/make-update-tarball.sh" v0.3.0-rc4 "$out") || _fail "make-update-tarball.sh failed"
+  name=$( umask 002; "$DXB_ROOT/build/make-update-tarball.sh" v0.3.0-rc4 "$out" ) || _fail "make-update-tarball.sh failed"
   assert_eq "$name" "$out/dxberry-pi-0.3.0-rc4.tar.gz"
   ( cd "$out" && sha256sum -c --quiet dxberry-pi-0.3.0-rc4.tar.gz.sha256 ) || _fail "the .sha256 does not match"
   list=$(tar -tvzf "$name")
@@ -106,6 +106,8 @@ test_build_makes_the_update_file() {
   # modes as the image installs them, owned by root
   assert_eq "$(awk '$NF == "dxberry/bin/dxberry-provision" {print $1, $2}' <<< "$list")" "-rwxr-xr-x 0/0"
   assert_eq "$(awk '$NF == "dxberry/lib/common.sh" {print $1}' <<< "$list")" "-rw-r--r--"
+  assert_eq "$(awk '$NF == "dxberry/VERSION" {print $1}' <<< "$list")" "-rw-r--r--"
+  assert_eq "$(awk '$NF == "dxberry/RELEASE" {print $1}' <<< "$list")" "-rw-r--r--"
   assert_eq "$(tar -xOzf "$name" dxberry/VERSION)" "0.3.0-rc4"
   assert_contains "$(tar -xOzf "$name" dxberry/RELEASE)" "DXBERRY_VERSION=0.3.0-rc4"
   assert_contains "$(tar -xOzf "$name" dxberry/RELEASE)" "DXBERRY_COMMIT="

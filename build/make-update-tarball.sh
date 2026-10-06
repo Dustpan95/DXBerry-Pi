@@ -19,6 +19,7 @@ chmod 755 "$stage/dxberry/bin/"* || die "chmod failed"
 printf '%s\n' "$version" > "$stage/dxberry/VERSION"
 printf 'DXBERRY_VERSION=%s\nDXBERRY_COMMIT=%s\nDXBERRY_BUILD_DATE=%s\n' "$version" \
   "$(git -C "$root" rev-parse --short HEAD 2> /dev/null || echo unknown)" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$stage/dxberry/RELEASE"
+chmod 644 "$stage/dxberry/VERSION" "$stage/dxberry/RELEASE" || die "chmod failed"
 name="dxberry-pi-$version.tar.gz"
 tar --owner=0 --group=0 --numeric-owner -czf "$out/$name" -C "$stage" dxberry || die "tar failed"
 ( cd "$out" && sha256sum "$name" > "$name.sha256" ) || die "sha256sum failed"
