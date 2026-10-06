@@ -68,6 +68,39 @@ test_page_watches_cockpit_visibility_and_reports_power_failures() {
   assert_contains "$power_body" "terminated"
 }
 
+# A refresh failure's notice must not outlive the refresh: notice()/failure() return the node
+# they created, and refresh() tracks + clears the one a failure made, both on a bad exit_status
+# and on a reply that is not valid JSON. It must never wipe out another notice (e.g. an action's
+# "done") that happens to be showing at the time.
+test_page_clears_the_refresh_failure_notice_once_a_refresh_succeeds() {
+  local js=$PG_DIR/dxberry.js refresh_body notice_body failure_body
+  notice_body=$(sed -n '/^function notice(/,/^}/p' "$js")
+  assert_contains "$notice_body" "return n"
+  assert_contains "$notice_body" ".append(n)"
+  failure_body=$(sed -n '/^function failure(/,/^}/p' "$js")
+  assert_contains "$failure_body" "return notice("
+  assert_file_contains "$js" "refreshFailureNotice"
+  refresh_body=$(sed -n '/^function refresh(/,/^}/p' "$js")
+  assert_contains "$refresh_body" "refreshFailureNotice = "
+  assert_file_contains "$js" "refreshFailureNotice.remove()"
+}
+
+# Restart of cockpit.socket drops this console's session just like Stop, so it must ask first
+# too, with its own warning text (it reconnects on its own, unlike Stop).
+test_page_confirms_restarting_cockpit_socket_too() {
+  local js=$PG_DIR/dxberry.js unit_action_body
+  assert_file_contains "$js" "RESTART_WARNINGS"
+  # shellcheck disable=SC2016  # checking for the literal, unexpanded `Restart ${unit}?` in the JS
+  assert_file_contains "$js" '`Restart ${unit}?`'
+  unit_action_body=$(sed -n '/^function unitAction(/,/^}/p' "$js")
+  assert_contains "$unit_action_body" "RESTART_WARNINGS[unit]"
+  assert_contains "$unit_action_body" '"Restart"'
+  # Stop's own three confirmations must still be there, unchanged.
+  assert_file_contains "$js" '"graywolf.service": "APRS, the iGate and the digipeater stop'
+  assert_file_contains "$js" '"dxberry-netwatch.service": "Network failover stops.'
+  assert_file_contains "$js" '"cockpit.socket": "This console closes and stays unreachable'
+}
+
 test_page_script_parses() {
   command -v node > /dev/null 2>&1 || return 0   # node is optional locally; CI's runner has it
   node --check "$PG_DIR/dxberry.js" 2> "$TEST_TMP/node.err" || _fail "dxberry.js does not parse: $(cat "$TEST_TMP/node.err")"

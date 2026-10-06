@@ -14,6 +14,11 @@ const STOP_WARNINGS = {
   "dxberry-netwatch.service": "Network failover stops. If the Pi then loses its connection it will not switch over, and this page may become unreachable.",
   "cockpit.socket": "This console closes and stays unreachable until cockpit.socket is started again over SSH or the Pi restarts.",
 };
+// Restarting cockpit.socket drops this console's session too, just like Stop, so it asks first
+// as well - but it comes back on its own, so the warning is softer than Stop's.
+const RESTART_WARNINGS = {
+  "cockpit.socket": "This console disconnects while cockpit.socket restarts. It comes back within a few seconds; reconnect and log in again.",
+};
 
 /* fields-begin: every path of dxberry-status --json this page reads. tests/test_page.sh checks each
  * one against the command's real output; a * stands for every element or entry. */
@@ -40,6 +45,10 @@ const FIELDS = [
 /* fields-end */
 
 const state = { busy: false, stopped: false };
+// The notice a failed refresh is currently showing (or null). Cleared, and the notice removed,
+// the moment a later refresh succeeds - but a notice from an action (Restart done, etc.) is a
+// different one and is left alone.
+let refreshFailureNotice = null;
 
 // ---- building blocks ----------------------------------------------------------------------
 function el(tag, attrs, ...kids) {
@@ -264,17 +273,17 @@ function openLog(unit) {
 function notice(text, kind, sticky) {
   const n = el("div", { class: "notice " + kind, role: "status" }, el("span", {}, text));
   if (!sticky) n.append(el("button", { class: "close", type: "button", "aria-label": "Dismiss", onclick: () => n.remove() }, "×"));
-  document.getElementById("notices").replaceChildren(n);
+  document.getElementById("notices").append(n);
   if (kind === "good") setTimeout(() => n.remove(), 6000);
+  return n;
 }
 
 function failure(what, ex) {
   if (ex && (ex.problem === "access-denied" || ex.problem === "not-authorized")) {
-    notice("Administrative access is off. Turn it on with the “Limited access” button at the top of the page, then try again.", "bad");
-    return;
+    return notice("Administrative access is off. Turn it on with the “Limited access” button at the top of the page, then try again.", "bad");
   }
   const code = ex && ex.exit_status ? ` (exit ${ex.exit_status})` : "";
-  notice(`${what} failed${code}: ${(ex && (ex.message || ex.problem)) || "unknown error"}`, "bad");
+  return notice(`${what} failed${code}: ${(ex && (ex.message || ex.problem)) || "unknown error"}`, "bad");
 }
 
 function confirmThen(title, text, label, action) {
@@ -292,6 +301,7 @@ function unitAction(verb, unit) {
     () => { notice(`${unit}: ${verb} done.`, "good"); refresh(true); },
     ex => failure(`systemctl ${verb} ${unit}`, ex));
   if (verb === "stop" && STOP_WARNINGS[unit]) confirmThen(`Stop ${unit}?`, STOP_WARNINGS[unit], "Stop", go);
+  else if (verb === "restart" && RESTART_WARNINGS[unit]) confirmThen(`Restart ${unit}?`, RESTART_WARNINGS[unit], "Restart", go);
   else go();
 }
 
@@ -325,15 +335,28 @@ function render(s) {
     timeCard(s.time, s.radios), aboutCard(s.release), servicesCard(s.services), powerCard());
 }
 
+function clearRefreshFailureNotice() {
+  if (refreshFailureNotice) { refreshFailureNotice.remove(); refreshFailureNotice = null; }
+}
+
 function refresh(force) {
   if (state.busy || state.stopped || (cockpit.hidden && force !== true)) return;
   state.busy = true;
   run([STATUS, "--json"]).then(out => {
     state.busy = false;
     let s;
-    try { s = JSON.parse(out); } catch (e) { notice("dxberry-status did not return a report.", "bad"); return; }
+    try { s = JSON.parse(out); } catch (e) {
+      clearRefreshFailureNotice();
+      refreshFailureNotice = notice("dxberry-status did not return a report.", "bad");
+      return;
+    }
     render(s);
-  }, ex => { state.busy = false; failure("Reading the station status", ex); });
+    clearRefreshFailureNotice();
+  }, ex => {
+    state.busy = false;
+    clearRefreshFailureNotice();
+    refreshFailureNotice = failure("Reading the station status", ex);
+  });
 }
 
 function applyTheme() {
