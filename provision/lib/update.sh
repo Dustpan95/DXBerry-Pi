@@ -124,3 +124,115 @@ dxb_update_check() {
   jq -c --argjson r "$(dxb_update_rollback_info)" --argjson rb "$([[ -e $DXB_REBOOT_FLAG ]] && echo true || echo false)" \
     '. + {rollback: $r, reboot_required: $rb}' <<< "$j"
 }
+
+# ---- the jobs' work ------------------------------------------------------------------------
+: "${DXB_UPDATE_WORK:=$DXB_STATE_DIR/update-work}"
+: "${DXB_SBIN:=/usr/local/sbin}"
+
+# dxb_update_run_provision: the installed tree's provisioner, as a settings change runs it: the
+# installed libraries, the real provision log, umask 022, Graywolf kept, never a terminal prompt.
+dxb_update_run_provision() {
+  local cmd=${DXB_UPDATE_PROVISION:-$DXB_OPT/bin/dxberry-provision}
+  ( umask 022; DXB_LIB=$DXB_OPT/lib DXB_LOG_FILE=${DXB_PROVISION_LOG:-$DXB_STATE_DIR/provision.log} \
+      DXB_GW_UPGRADE=0 DXB_TTY=/dev/null "$cmd" )
+}
+
+# dxb_update_release_from_tree DIR: /etc/dxberry-release from DIR's RELEASE file, or its VERSION
+# and "unknown" for a tree that has none (one the image installed).
+dxb_update_release_from_tree() {
+  local t=$1 v c=unknown d
+  v=$(head -1 "$t/VERSION" 2> /dev/null)
+  d=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  if [[ -f $t/RELEASE ]]; then
+    c=$(sed -n 's/^DXBERRY_COMMIT=//p' "$t/RELEASE" | head -1); c=${c:-unknown}
+    d=$(sed -n 's/^DXBERRY_BUILD_DATE=//p' "$t/RELEASE" | head -1)
+  fi
+  mkdir -p "$(dirname "$DXB_RELEASE_FILE")" 2> /dev/null
+  dxb_write_if_changed "$DXB_RELEASE_FILE" "$(printf 'DXBERRY_VERSION=%s\nDXBERRY_COMMIT=%s\nDXBERRY_BUILD_DATE=%s' "$v" "$c" "$d")" 644 > /dev/null 2>&1
+  return 0
+}
+
+# dxb_update_link_commands: /usr/local/sbin links for every dxberry-* command in the tree (a newer
+# release can add one); dxberry-preboot runs only from the image's first boot and is never linked.
+dxb_update_link_commands() {
+  local f n
+  mkdir -p "$DXB_SBIN" 2> /dev/null
+  for f in "$DXB_OPT"/bin/dxberry-*; do
+    n=${f##*/}
+    [[ -f $f && $n != dxberry-preboot ]] || continue
+    ln -sf "$DXB_OPT/bin/$n" "$DXB_SBIN/$n" || dxb_warn "could not link $DXB_SBIN/$n"
+  done
+}
+
+dxb_update_apply_graywolf() {
+  local before after rc=0
+  dxb_config_load "$(dxb_boot_dir)/dxberry.txt" > /dev/null 2>&1; dxb_config_validate > /dev/null 2>&1
+  if [[ -n ${DXB_CFG[GRAYWOLF_VERSION]:-} ]]; then
+    echo "Graywolf is pinned to ${DXB_CFG[GRAYWOLF_VERSION]} in dxberry.txt; nothing to update"
+    return 0
+  fi
+  before=$(dxb_gw_installed_version)
+  DXB_GW_UPGRADE=1 dxb_gw_install || rc=8
+  after=$(dxb_gw_installed_version)
+  # the position-history drop-in is rebuilt from the new package's own unit (spec 11.2)
+  dxb_gw_history_in_ram || rc=8
+  if [[ $before != "$after" ]]; then systemctl restart graywolf.service || rc=8; fi
+  echo "graywolf: ${before:-not installed} -> ${after:-not installed}"
+  (( ${#DXB_FAILED_STEPS[@]} )) && printf '  %s\n' "${DXB_FAILED_STEPS[@]}"
+  return $rc
+}
+
+dxb_update_apply_dxberry() {
+  local info url sha_url name dl want new=$DXB_OPT.new prev=$DXB_OPT.prev
+  info=$(dxb_update_dxberry_info) || { echo "the DXBerry release list could not be read; nothing changed" >&2; return 6; }
+  if [[ $(jq -r '.update' <<< "$info") != true ]]; then echo "DXBerry $(jq -r '.installed' <<< "$info") is the newest; nothing to update"; return 0; fi
+  url=$(jq -r '.url' <<< "$info"); sha_url=$(jq -r '.sha_url' <<< "$info"); name=$(jq -r '.name' <<< "$info")
+  dl=$DXB_UPDATE_WORK/download
+  rm -rf "$dl"; ( umask 077; mkdir -p "$dl" ) || { echo "could not create $dl" >&2; return 6; }
+  echo "downloading $name"
+  # shellcheck disable=SC2015  # intentional: either curl failing falls through to the one error block
+  "$DXB_UPDATE_CURL" -fsSL --connect-timeout 15 --max-time 900 -o "$dl/$name" "$url" \
+    && "$DXB_UPDATE_CURL" -fsSL --connect-timeout 15 --max-time 60 -o "$dl/$name.sha256" "$sha_url" \
+    || { echo "the download failed; nothing changed" >&2; rm -rf "$dl"; return 6; }
+  want=$(awk '{ print $1; exit }' "$dl/$name.sha256")
+  if [[ ! $want =~ ^[0-9a-f]{64}$ || $(sha256sum "$dl/$name" | cut -d' ' -f1) != "$want" ]]; then
+    echo "the update file does not match its checksum; nothing changed" >&2; rm -rf "$dl"; return 6
+  fi
+  rm -rf "$new"; mkdir -p "$new" || { echo "could not create $new" >&2; return 6; }
+  if ! tar -xzf "$dl/$name" -C "$new" --strip-components=1 --no-same-owner || [[ ! -x $new/bin/dxberry-provision || ! -f $new/VERSION ]]; then
+    echo "the update file is incomplete; nothing changed" >&2; rm -rf "$new" "$dl"; return 6
+  fi
+  rm -rf "$dl"
+  chown -R 0:0 "$new" 2> /dev/null || true
+  # two renames on one filesystem; the previous tree stays as $prev for rollback
+  rm -rf "$prev"
+  if ! mv "$DXB_OPT" "$prev"; then echo "could not move $DXB_OPT aside; nothing changed" >&2; rm -rf "$new"; return 6; fi
+  if ! mv "$new" "$DXB_OPT"; then mv "$prev" "$DXB_OPT"; echo "could not put the new tree in place; nothing changed" >&2; return 6; fi
+  dxb_update_release_from_tree "$DXB_OPT"
+  dxb_update_link_commands
+  echo "DXBerry $(head -1 "$prev/VERSION" 2> /dev/null) -> $(head -1 "$DXB_OPT/VERSION"); running the setup"
+  dxb_update_run_provision || { echo "the setup run reported failed steps" >&2; return 8; }
+  return 0
+}
+
+dxb_update_apply_rollback() {
+  local prev=$DXB_OPT.prev next=$DXB_OPT.next
+  [[ -x $prev/bin/dxberry-provision ]] || { echo "there is no earlier DXBerry to go back to" >&2; return 6; }
+  rm -rf "$next"
+  mv "$DXB_OPT" "$next" || { echo "could not move $DXB_OPT aside; nothing changed" >&2; return 6; }
+  if ! mv "$prev" "$DXB_OPT"; then mv "$next" "$DXB_OPT"; echo "could not put the earlier tree back; nothing changed" >&2; return 6; fi
+  mv "$next" "$prev" || dxb_warn "the newer DXBerry stays at $next"
+  dxb_update_release_from_tree "$DXB_OPT"
+  dxb_update_link_commands
+  echo "DXBerry back to $(head -1 "$DXB_OPT/VERSION"); running the setup"
+  dxb_update_run_provision || { echo "the setup run reported failed steps" >&2; return 8; }
+  return 0
+}
+
+# dxb_update_apply_system: apt-get update and upgrade, never asking (keeps changed config files).
+dxb_update_apply_system() {
+  DEBIAN_FRONTEND=noninteractive "$DXB_APT_GET" update || { echo "apt-get update failed" >&2; return 8; }
+  DEBIAN_FRONTEND=noninteractive "$DXB_APT_GET" -y --no-install-recommends \
+    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade || { echo "apt-get upgrade failed" >&2; return 8; }
+  return 0
+}
