@@ -22,7 +22,7 @@ dxb_update_newer() {
   [[ -n $b ]] || return 1
   [[ -n $a ]] || return 0
   # the backslash matters: an unescaped ~ in the replacement is tilde-expanded to $HOME
-  "$DXB_DPKG" --compare-versions "${a/-/\~}" lt "${b/-/\~}"
+  "$DXB_DPKG" --compare-versions "${a/-/\~}" lt "${b/-/\~}" 2> /dev/null
 }
 
 dxb_update_prereleases() {
@@ -56,15 +56,17 @@ dxb_update_graywolf_info() {
 }
 
 # dxb_update_dxberry_info: the installed DXBerry and the newest release that carries an update file
-# (pre-releases only when switched on).
+# (pre-releases only when switched on). "Newest" is the highest version among the candidates, not
+# GitHub's listing order (creation date): a back-port or re-tag could be listed first but be
+# numbered lower, and must not hide the real latest release.
 dxb_update_dxberry_info() {
-  local installed commit pre releases pick latest
+  local installed commit pre releases candidates pick='' latest='' c cl
   installed=$(sed -n 's/^DXBERRY_VERSION=//p' "$DXB_RELEASE_FILE" 2> /dev/null | head -1)
   commit=$(sed -n 's/^DXBERRY_COMMIT=//p' "$DXB_RELEASE_FILE" 2> /dev/null | head -1)
   pre=$(dxb_update_prereleases)
   releases=$(_dxb_update_fetch "$DXB_UPDATE_API" 2> /dev/null) || return 1
   jq -e 'type == "array"' <<< "$releases" > /dev/null 2>&1 || return 1
-  pick=$(jq -c --arg pre "$pre" '
+  candidates=$(jq -c --arg pre "$pre" '
     [.[] | select(.draft | not) | select($pre == "on" or (.prerelease | not))
      | . as $r
      | ([$r.assets[] | select(.name | test("^dxberry-pi-.*\\.tar\\.gz$"))] | .[0]) as $t
@@ -72,8 +74,13 @@ dxb_update_dxberry_info() {
      | ([$r.assets[] | select(.name == ($t.name + ".sha256"))] | .[0]) as $s
      | select($s != null)
      | {latest: ($r.tag_name | ltrimstr("v")), prerelease: $r.prerelease, url: $t.browser_download_url,
-        sha_url: $s.browser_download_url, name: $t.name}] | .[0] // {latest: null, prerelease: false, url: null, sha_url: null, name: null}' <<< "$releases")
-  latest=$(jq -r '.latest // empty' <<< "$pick")
+        sha_url: $s.browser_download_url, name: $t.name}]' <<< "$releases")
+  while IFS= read -r c; do
+    [[ -n $c ]] || continue
+    cl=$(jq -r '.latest' <<< "$c")
+    if dxb_update_newer "$latest" "$cl"; then pick=$c; latest=$cl; fi
+  done < <(jq -c '.[]' <<< "$candidates")
+  [[ -n $pick ]] || pick='{"latest": null, "prerelease": false, "url": null, "sha_url": null, "name": null}'
   jq -c --arg i "$installed" --arg c "$commit" --argjson p "$([[ $pre == on ]] && echo true || echo false)" \
     --argjson u "$([[ -n $latest ]] && dxb_update_newer "$installed" "$latest" && echo true || echo false)" \
     '{installed: $i, commit: $c} + . + {update: $u, include_prereleases: $p}' <<< "$pick"

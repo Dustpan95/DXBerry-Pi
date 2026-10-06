@@ -88,6 +88,26 @@ test_update_dxberry_info_offers_only_releases_with_an_update_file() {
   dxb_update_dxberry_info > /dev/null 2>&1; assert_eq "$?" "1"
 }
 
+# A release created later but numbered lower (a back-port, a re-tag) must not win just because
+# GitHub lists it first: the highest version among the candidates is "latest", not .[0] of the
+# listing order (creation date).
+test_update_dxberry_info_picks_the_highest_version_not_the_listing_order() {
+  local j
+  up_env
+  jq -n '[
+    {tag_name: "v0.3.0-rc2", prerelease: true, draft: false, assets: [
+      {name: "dxberry-pi-0.3.0-rc2.tar.gz", browser_download_url: "http://files/dxberry-pi-0.3.0-rc2.tar.gz"},
+      {name: "dxberry-pi-0.3.0-rc2.tar.gz.sha256", browser_download_url: "http://files/dxberry-pi-0.3.0-rc2.tar.gz.sha256"}]},
+    {tag_name: "v0.3.0-rc4", prerelease: true, draft: false, assets: [
+      {name: "dxberry-pi-0.3.0-rc4.tar.gz", browser_download_url: "http://files/dxberry-pi-0.3.0-rc4.tar.gz"},
+      {name: "dxberry-pi-0.3.0-rc4.tar.gz.sha256", browser_download_url: "http://files/dxberry-pi-0.3.0-rc4.tar.gz.sha256"}]}
+  ]' > "$TEST_TMP/http/releases.json"
+  dxb_update_set_prereleases on
+  j=$(dxb_update_dxberry_info)
+  assert_eq "$(jq -r '.latest' <<< "$j")" "0.3.0-rc4"
+  assert_eq "$(jq -r '.name' <<< "$j")" "dxberry-pi-0.3.0-rc4.tar.gz"
+}
+
 test_update_graywolf_info_reports_latest_and_the_pin() {
   local j
   up_env
