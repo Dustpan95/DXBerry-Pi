@@ -174,3 +174,55 @@ test_status_json_keeps_the_other_parts_when_one_fails() {
   assert_eq "$(jq -r 'keys | join(" ")' <<< "$j")" "generated pi release time"
   [[ $(jq -r .generated <<< "$j") =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || _fail "generated is not a UTC timestamp"
 }
+
+test_status_graywolf_reports_channels_igate_and_position_log_size() {
+  st_env
+  mkdir -p "$TEST_TMP/run/graywolf"
+  head -c 1000 /dev/zero > "$TEST_TMP/run/graywolf/history.db"
+  head -c 24 /dev/zero > "$TEST_TMP/run/graywolf/history.db-wal"
+  local j; j=$(st_run dxb_status_graywolf)
+  assert_eq "$(jq -c '[.active, .sub, .version, .web_port, .api_ok, .api_error]' <<< "$j")" '["active","running","0.14.13",8080,true,""]'
+  assert_eq "$(jq -c '.channels' <<< "$j")" '[{"id":3,"name":"VHF APRS","enabled":true,"rx_frames":6228,"tx_frames":1010,"rx_bad_fcs":5044}]'
+  assert_eq "$(jq -c '.igate' <<< "$j")" '{"connected":true,"server":"rotate.aprs2.net:14580","rf_to_is_gated":2719,"is_to_rf_gated":1}'
+  assert_eq "$(jq -c '[.position_log.enabled, .position_log.bytes]' <<< "$j")" '[true,1024]'
+}
+
+test_status_graywolf_logs_in_once_and_keeps_the_session() {
+  st_env
+  st_run dxb_status_graywolf > /dev/null
+  st_run dxb_status_graywolf > /dev/null
+  assert_eq "$(grep -c '^POST /auth/login$' "$TEST_TMP/calls")" "1"
+  assert_file_not_contains "$TEST_TMP/argv" "gwsecret1"
+  assert_eq "$(stat -c %a "$DXB_STATUS_GW_COOKIES")" "600"
+  # an expired session costs one more login, not a failure
+  rm -f "$TEST_TMP/gw-session"
+  assert_eq "$(st_run dxb_status_graywolf | jq -r .api_ok)" "true"
+  assert_eq "$(grep -c '^POST /auth/login$' "$TEST_TMP/calls")" "2"
+}
+
+test_status_graywolf_stopped_reports_its_state_without_calling_the_api() {
+  st_env
+  printf 'LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=exit-code\n' > "$TEST_TMP/units/graywolf.service"
+  assert_eq "$(st_run dxb_status_graywolf | jq -c '[.active, .result, .api_ok, .api_error, .channels, .igate, .position_log]')" \
+    '["failed","exit-code",false,"graywolf is not running",[],null,null]'
+  assert_eq "$(cat "$TEST_TMP/argv")" ""
+}
+
+test_status_graywolf_explains_a_missing_refused_or_silent_login() {
+  st_env
+  rm -f "$DXB_GW_SECRET_FILE"
+  assert_contains "$(st_run dxb_status_graywolf | jq -r .api_error)" "no stored Graywolf login"
+  printf 'USER=admin\nPASSWORD=wrongpass1\n' > "$DXB_GW_SECRET_FILE"
+  assert_eq "$(st_run dxb_status_graywolf | jq -r .api_error)" "Graywolf refused the stored login"
+  printf 'USER=admin\nPASSWORD=gwsecret1\n' > "$DXB_GW_SECRET_FILE"
+  : > "$TEST_TMP/gw-down"
+  assert_contains "$(st_run dxb_status_graywolf | jq -r .api_error)" "did not answer"
+}
+
+test_status_radios_passes_dxberry_radio_status_through() {
+  st_env
+  echo '{"radios":{"radio1":{"label":"TM-V71","present":true,"owner":"graywolf","rigctld":"active","rigctld_port":4532,"freq":"145390000","mode":"FM"}},"gps":{"fix":0,"receiver":false}}' > "$TEST_TMP/radio.json"
+  assert_eq "$(st_run dxb_status_radios | jq -c '[.radios.radio1.owner, .radios.radio1.freq, .gps.receiver]')" '["graywolf","145390000",false]'
+  : > "$TEST_TMP/radio-fails"
+  assert_eq "$(st_run dxb_status_json radios | jq -c '[.radios.ok, .radios.error]')" '[false,"dxberry-radio status failed (exit 6)"]'
+}

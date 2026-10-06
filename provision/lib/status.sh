@@ -146,6 +146,100 @@ dxb_status_services() {
   jq -cn --argjson u "$out" '{units: $u}'
 }
 
+# ---- graywolf ------------------------------------------------------------------------------
+_dxb_status_curl() { curl --connect-timeout 2 --max-time 5 "$@"; }
+
+# _dxb_status_gw_login: a session from the stored admin secret, into the status cookie jar. The
+# password goes to jq through the environment and to curl on stdin, never into an argument.
+_dxb_status_gw_login() {
+  local u pw rc
+  [[ -r $DXB_GW_SECRET_FILE ]] || { echo "no stored Graywolf login ($DXB_GW_SECRET_FILE)" >&2; return 1; }
+  u=$(sed -n 's/^USER=//p' "$DXB_GW_SECRET_FILE" | head -1)
+  pw=$(sed -n 's/^PASSWORD=//p' "$DXB_GW_SECRET_FILE" | head -1)
+  [[ -n $u && -n $pw ]] || { echo "the stored Graywolf login is incomplete ($DXB_GW_SECRET_FILE)" >&2; return 1; }
+  ( umask 077; : > "$DXB_GW_COOKIES" )
+  dxb_gw_api POST /auth/login "$(PW=$pw jq -cn --arg u "$u" '{username: $u, password: env.PW}')" > /dev/null 2>&1
+  rc=$?
+  case $rc in
+    0) return 0 ;;
+    22) echo "Graywolf refused the stored login" >&2 ;;
+    *) echo "Graywolf's API did not answer (curl exit $rc)" >&2 ;;
+  esac
+  return 1
+}
+
+# _dxb_status_gw_get PATH: GET through the kept session; logs in once when it is missing or expired.
+_dxb_status_gw_get() {
+  local out
+  if out=$(dxb_gw_api GET "$1" 2> /dev/null); then printf '%s\n' "$out"; return 0; fi
+  _dxb_status_gw_login || return 1
+  dxb_gw_api GET "$1"
+}
+
+# _dxb_status_db_bytes PATH: the history database with its WAL and shared-memory files, or null.
+_dxb_status_db_bytes() {
+  local f total=0 any=0
+  [[ -n $1 ]] || { echo null; return 0; }
+  for f in "$1" "$1-wal" "$1-shm"; do
+    [[ -f $f ]] || continue
+    total=$(( total + $(stat -c %s "$f") )); any=1
+  done
+  if (( any )); then echo "$total"; else echo null; fi
+}
+
+dxb_status_graywolf() {
+  # shellcheck disable=SC2034  # both are read by dxb_gw_api through bash's dynamic scope
+  local DXB_GW_COOKIES=$DXB_STATUS_GW_COOKIES DXB_CURL=$DXB_STATUS_CURL
+  local props active sub result hp port api_ok=false api_err='' ch='[]' list id c stats p ig=null pl=null errf
+  props=$(systemctl show -p ActiveState,SubState,Result graywolf.service 2> /dev/null)
+  active=$(sed -n 's/^ActiveState=//p' <<< "$props")
+  sub=$(sed -n 's/^SubState=//p' <<< "$props")
+  result=$(sed -n 's/^Result=//p' <<< "$props")
+  hp=${DXB_GW_API#*://}; hp=${hp%%/*}; port=${hp##*:}
+  [[ $port =~ ^[0-9]+$ ]] || port=8080
+  if [[ $active != active ]]; then
+    api_err='graywolf is not running'
+  else
+    mkdir -p "$(dirname "$DXB_GW_COOKIES")" 2> /dev/null
+    [[ -f $DXB_GW_COOKIES ]] || ( umask 077; : > "$DXB_GW_COOKIES" )
+    errf=$(mktemp)
+    if list=$(_dxb_status_gw_get /channels 2> "$errf") && jq -e 'type == "array"' <<< "$list" > /dev/null 2>&1; then
+      api_ok=true
+      for id in $(jq -r '.[] | .id | numbers' <<< "$list"); do
+        if ! stats=$(_dxb_status_gw_get "/channels/$id/stats" 2> /dev/null) || ! jq -e 'type == "object"' <<< "$stats" > /dev/null 2>&1; then stats='{}'; fi
+        c=$(jq -c --argjson id "$id" 'map(select(.id == $id)) | .[0]' <<< "$list")
+        ch=$(jq -c --argjson c "$c" --argjson s "$stats" '. + [{id: $c.id, name: ($c.name // ""), enabled: ($c.enabled // true),
+          rx_frames: $s.rx_frames, tx_frames: $s.tx_frames, rx_bad_fcs: $s.rx_bad_fcs}]' <<< "$ch")
+      done
+      if p=$(_dxb_status_gw_get /igate 2> /dev/null) && jq -e 'type == "object"' <<< "$p" > /dev/null 2>&1; then
+        ig=$(jq -c '{connected: (.connected // false), server: (.server // ""), rf_to_is_gated, is_to_rf_gated}' <<< "$p")
+      fi
+      if p=$(_dxb_status_gw_get /position-log 2> /dev/null) && jq -e 'type == "object"' <<< "$p" > /dev/null 2>&1; then
+        pl=$(jq -c --argjson b "$(_dxb_status_db_bytes "$(jq -r '.db_path // ""' <<< "$p")")" \
+          '{enabled: (.enabled // false), path: (.db_path // ""), bytes: $b}' <<< "$p")
+      fi
+    else
+      api_err=$(grep -v '^[[:space:]]*$' "$errf" | tail -1)
+      [[ -n $api_err ]] || api_err="Graywolf's API did not answer"
+    fi
+    rm -f "$errf"
+  fi
+  jq -cn --arg a "$active" --arg s "$sub" --arg r "$result" --arg v "$(dxb_gw_installed_version)" --argjson port "$port" \
+    --argjson ok "$api_ok" --arg e "$api_err" --argjson ig "$ig" --argjson ch "$ch" --argjson pl "$pl" \
+    '{active: $a, sub: $s, result: $r, version: $v, web_port: $port, api_ok: $ok, api_error: $e,
+      igate: $ig, channels: $ch, position_log: $pl}'
+}
+
+# ---- radios --------------------------------------------------------------------------------
+# Exactly what dxberry-radio status --json reports (console spec section 7.1).
+dxb_status_radios() {
+  local out rc
+  out=$("$DXB_RADIO_CMD" status --json 2> /dev/null); rc=$?
+  (( rc == 0 )) || { echo "dxberry-radio status failed (exit $rc)" >&2; return 1; }
+  jq -ce 'select(type == "object" and has("radios"))' <<< "$out" 2> /dev/null \
+    || { echo "dxberry-radio status returned something unexpected" >&2; return 1; }
+}
+
 # ---- the report ----------------------------------------------------------------------------
 # _dxb_status_part NAME: dxb_status_NAME's object with ok:true, or {ok:false, error} carrying the
 # last line it wrote to stderr.
