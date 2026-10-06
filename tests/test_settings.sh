@@ -120,3 +120,17 @@ test_settings_key_lists_and_value_check() {
   assert_fails dxb_settings_value_ok "$(printf 'a\nb')"
   assert_fails dxb_settings_value_ok "$(printf 'a\tb')"
 }
+
+test_settings_temp_files_stay_private_and_are_removed() {
+  local t new
+  se_env
+  t=$(_dxb_settings_tmp 'hunter2hunter2')
+  assert_eq "${t:0:${#DXB_STATE_DIR}}" "$DXB_STATE_DIR"
+  assert_eq "$(stat -c %a "$t")" "600"
+  rm -f "$t"
+  # the public functions built on it clean up after themselves: nothing left under the state dir
+  new=$(dxb_settings_edit WIFI_PASSWORD 'hunter2hunter2' <<< "$(se_file)")
+  dxb_settings_changed "$(se_file)" "$new" > /dev/null
+  dxb_settings_validate "$new" > /dev/null
+  assert_eq "$(find "$DXB_STATE_DIR" -maxdepth 1 -name '.settings.*' | wc -l)" "0"
+}

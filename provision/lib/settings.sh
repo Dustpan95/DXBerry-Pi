@@ -50,11 +50,13 @@ dxb_settings_edit() {
     END { if (!done) print ENVIRON["k"] "=" ENVIRON["v"] }'
 }
 
-# _dxb_settings_tmp CONTENT: a private temp file holding CONTENT (it may hold a secret); prints its path.
+# _dxb_settings_tmp CONTENT: a private temp file holding CONTENT (it may hold a secret) under
+# DXB_STATE_DIR (0700, like every other file that holds one); prints its path. 6 when it cannot be written.
 _dxb_settings_tmp() {
   local t
-  t=$(umask 077; mktemp) || return 6
-  printf '%s\n' "$1" > "$t"
+  mkdir -p "$DXB_STATE_DIR" 2> /dev/null
+  t=$(umask 077; mktemp -p "$DXB_STATE_DIR" .settings.XXXXXX) || return 6
+  printf '%s\n' "$1" > "$t" || { rm -f "$t"; return 6; }
   printf '%s\n' "$t"
 }
 
