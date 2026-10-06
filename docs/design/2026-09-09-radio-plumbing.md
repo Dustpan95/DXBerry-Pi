@@ -262,7 +262,7 @@ command's stderr only when it fails. Exit codes:
 | 3 | no such radio / application |
 | 4 | device absent (pin not found in sysfs) |
 | 5 | `claim` failed to start or wire the new owner; radio left released |
-| 6 | apply failed (udev reload, unit install, or write error) |
+| 6 | apply failed (udev reload, unit install, or write error), or another change kept the record locked for three minutes (`add`/`set`/`remove`/`claim`/`release` change it one at a time) |
 | 7 | re-wiring the existing owner failed during `set` or `apply` (owner unchanged) |
 
 - `scan` — candidates with a numeric index, port, profile name, functions.
