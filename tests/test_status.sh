@@ -226,3 +226,54 @@ test_status_radios_passes_dxberry_radio_status_through() {
   : > "$TEST_TMP/radio-fails"
   assert_eq "$(st_run dxb_status_json radios | jq -c '[.radios.ok, .radios.error]')" '[false,"dxberry-radio status failed (exit 6)"]'
 }
+
+# st_cli ARGS...: the real command in a subshell with the stubs; stdout to $TEST_TMP/out.
+st_cli() {
+  (
+    source "$DXB_ROOT/provision/bin/dxberry-status"
+    dxb_require_root() { :; }
+    st_stubs
+    main "$@"
+  ) > "$TEST_TMP/out" 2> "$TEST_TMP/err"
+}
+st_out() { cat "$TEST_TMP/out"; }
+
+test_status_cli_json_has_every_part() {
+  st_env
+  assert_ok st_cli --json
+  assert_eq "$(jq -r 'keys | join(" ")' "$TEST_TMP/out")" "generated graywolf network pi radios release services time"
+  assert_eq "$(jq -r '[.[] | objects | .ok] | all' "$TEST_TMP/out")" "true"
+}
+
+test_status_cli_prints_a_readable_report() {
+  st_env
+  assert_ok st_cli
+  assert_contains "$(st_out)" "pi: Raspberry Pi 4 Model B Rev 1.4, 99°F (37°C)"
+  assert_contains "$(st_out)" "under-voltage since boot"
+  assert_contains "$(st_out)" 'network: WIFI on wlan0 10.0.0.90/24 via 10.0.0.1, WiFi "Shack Net" -47 dBm'
+  assert_contains "$(st_out)" "graywolf: running, version 0.14.13, iGate connected to rotate.aprs2.net:14580, channel VHF APRS rx 6228 tx 1010 bad FCS 5044"
+  assert_contains "$(st_out)" "time: synced to NTP 144.202.66.214, offset -0.412 ms"
+  assert_contains "$(st_out)" "release: DXBerry 0.3.0-rc1, Graywolf 0.14.13, Cockpit 337-1+deb13u2"
+  assert_contains "$(st_out)" "  dxberry-radio-wire.service: not installed"
+}
+
+test_status_cli_takes_part_names_and_rejects_anything_else() {
+  st_env
+  assert_ok st_cli --json pi time
+  assert_eq "$(jq -r 'keys | join(" ")' "$TEST_TMP/out")" "generated pi time"
+  st_cli bogus; assert_eq "$?" "2"
+  assert_contains "$(cat "$TEST_TMP/err")" "unknown part: bogus"
+  st_cli --frobnicate; assert_eq "$?" "2"
+  assert_ok st_cli -h
+  assert_contains "$(st_out)" "dxberry-status [--json] [PART...]"
+}
+
+# The console runs this every 10 seconds: nothing it does may grow provision.log.
+test_status_cli_leaves_the_provision_log_alone() {
+  st_env
+  rm -f "$DXB_GW_SECRET_FILE"
+  st_cli --json
+  # shellcheck disable=SC2031  # dxberry-status overrides DXB_LOG_FILE only inside st_cli's subshell; this checks the outer value st_env set
+  [[ -s $DXB_LOG_FILE ]] && _fail "dxberry-status wrote to $DXB_LOG_FILE"
+  return 0
+}

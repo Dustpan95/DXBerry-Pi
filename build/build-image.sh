@@ -68,9 +68,11 @@ REQUIRED_FILES=(
   provision/templates/rigctld@.service provision/templates/dxberry-radio-hotplug.service provision/templates/dxberry-radio-wire.service
   provision/templates/dxberry-radio.tmpfiles provision/templates/70-dxberry-radio.rules.head
   provision/templates/dxberry-audio.conf provision/templates/chrony-dxberry.conf provision/templates/gpsd-default.tmpl
+  provision/bin/dxberry-status provision/lib/status.sh
 )
 EXECUTABLE_FILES=(
   provision/bin/dxberry-preboot provision/bin/dxberry-provision provision/bin/dxberry-netwatch provision/bin/dxberry-radio
+  provision/bin/dxberry-status
   boot/Automation_Custom_PreScript.sh boot/Automation_Custom_Script.sh
 )
 
@@ -303,6 +305,9 @@ if ! ln -sf /opt/dxberry/bin/dxberry-netwatch "$MNT/root/usr/local/sbin/dxberry-
 fi
 if ! ln -sf /opt/dxberry/bin/dxberry-radio "$MNT/root/usr/local/sbin/dxberry-radio"; then
   die "failed to symlink dxberry-radio"
+fi
+if ! ln -sf /opt/dxberry/bin/dxberry-status "$MNT/root/usr/local/sbin/dxberry-status"; then
+  die "failed to symlink dxberry-status"
 fi
 if ! cat > "$MNT/root/etc/dxberry-release" << EOF
 DXBERRY_VERSION=$VERSION

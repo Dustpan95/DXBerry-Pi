@@ -48,8 +48,17 @@ test_build_check_fails_on_non_executable_file() {
 
 test_build_symlinks_every_command_into_usr_local_sbin() {
   local b
-  for b in dxberry-provision dxberry-netwatch dxberry-radio; do
+  for b in dxberry-provision dxberry-netwatch dxberry-radio dxberry-status; do
     grep -qF "ln -sf /opt/dxberry/bin/$b " "$DXB_ROOT/build/build-image.sh" \
       || _fail "build-image.sh has no /usr/local/sbin symlink line for $b"
   done
+}
+
+test_build_ships_the_status_command() {
+  local required executable
+  required=$(sed -n '/^REQUIRED_FILES=(/,/^)/p' "$DXB_ROOT/build/build-image.sh")
+  executable=$(sed -n '/^EXECUTABLE_FILES=(/,/^)/p' "$DXB_ROOT/build/build-image.sh")
+  assert_contains "$required" "provision/bin/dxberry-status"
+  assert_contains "$required" "provision/lib/status.sh"
+  assert_contains "$executable" "provision/bin/dxberry-status"
 }

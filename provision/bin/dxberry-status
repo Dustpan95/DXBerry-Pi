@@ -1,0 +1,36 @@
+#!/bin/bash
+# dxberry-status: the station at a glance - Pi, network, Graywolf, radios, time, versions, services.
+#   dxberry-status [--json] [PART...]   PART: pi network graywolf radios time release services
+# Each part is read on its own; one that cannot be read says why and the others still appear.
+# Exit 0 whenever the report was produced, 2 on a usage error. Spec: docs/design/2026-09-29-console.md section 7.
+set -uo pipefail
+
+DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
+for _m in common graywolf status; do
+  # shellcheck disable=SC1090
+  source "$DXB_LIB/$_m.sh"
+done
+
+usage() { sed -n '2,5p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+main() {
+  local json=0 parts=() a report
+  for a in "$@"; do
+    case $a in
+      --json) json=1 ;;
+      -h|--help) usage; return 0 ;;
+      -*) echo "unknown option: $a" >&2; usage >&2; return 2 ;;
+      *)
+        [[ " $DXB_STATUS_PARTS " == *" $a "* ]] || { echo "unknown part: $a (parts: $DXB_STATUS_PARTS)" >&2; return 2; }
+        parts+=("$a") ;;
+    esac
+  done
+  dxb_require_root
+  umask 077
+  # the console runs this every 10 seconds; routine reads must never grow provision.log
+  export DXB_LOG_FILE=/dev/null
+  report=$(dxb_status_json "${parts[@]}") || { echo "could not build the status report" >&2; return 1; }
+  if (( json )); then printf '%s\n' "$report"; else dxb_status_text <<< "$report"; fi
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; exit $?; fi
