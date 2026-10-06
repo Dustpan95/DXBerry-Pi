@@ -287,6 +287,33 @@ test_run_mode_restarts_netwatch_last_and_never_reboots() {
   [[ -f $DXB_STATE_DIR/provisioned ]] && _fail "run mode must never write the provisioned marker"
 }
 
+# A log path that is not a regular file (a device node, here stood in by a FIFO so the test can
+# stat it without root and without harming anything real) must never be chmod'd - that already
+# happened for real against /dev/null on a Pi, and chmod 600 /dev/null breaks every other program
+# that opens it until a reboot.
+test_run_mode_never_chmods_a_log_path_that_is_not_a_regular_file() {
+  full_env
+  printf 'PASSWORD=secretpass\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  mkfifo "$TEST_TMP/notafile"
+  ( while true; do cat "$TEST_TMP/notafile" > /dev/null; done ) &
+  local drain=$! before after rc
+  before=$(stat -c %a "$TEST_TMP/notafile")
+  DXB_LOG_FILE=$TEST_TMP/notafile
+  (
+    # shellcheck disable=SC1091
+    source "$DXB_ROOT/provision/bin/dxberry-provision"
+    dxb_require_root() { :; }
+    dxb_gw_install() { return 0; }
+    dxb_gw_seed() { return 0; }
+    main
+  ) 2> /dev/null
+  rc=$?
+  after=$(stat -c %a "$TEST_TMP/notafile")
+  kill "$drain" 2> /dev/null; wait "$drain" 2> /dev/null
+  assert_eq "$rc" "0"
+  assert_eq "$after" "$before"
+}
+
 # The finding this guards against: a blocked gate's own status text ("Fix the cause, then run:
 # sudo dxberry-provision --first-boot") could be followed literally in RUN mode - which used to
 # write the marker anyway (gate_ok started at 1 and only run mode never touched it), permanently

@@ -137,7 +137,10 @@ main() {
   esac
   dxb_require_root
   mkdir -p "$DXB_STATE_DIR" 2> /dev/null; chmod 700 "$DXB_STATE_DIR" 2> /dev/null
-  DXB_LOG_FILE=${DXB_RADIO_LOG:-$DXB_STATE_DIR/radio.log}; : >> "$DXB_LOG_FILE" 2> /dev/null; chmod 600 "$DXB_LOG_FILE" 2> /dev/null
+  DXB_LOG_FILE=${DXB_RADIO_LOG:-$DXB_STATE_DIR/radio.log}
+  # never touch a log path that is not a regular file (a device node, e.g. a hand-set DXB_RADIO_LOG
+  # of /dev/null) - chmod 600 on /dev/null as root breaks every other program that opens it
+  if [[ ! -e $DXB_LOG_FILE || -f $DXB_LOG_FILE ]]; then : >> "$DXB_LOG_FILE" 2> /dev/null; chmod 600 "$DXB_LOG_FILE" 2> /dev/null; fi
   load_config_if_any
   case $cmd in add|set|remove|claim|release) lock_record || return 6 ;; esac
   case $cmd in

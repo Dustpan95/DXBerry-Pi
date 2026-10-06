@@ -52,6 +52,23 @@ test_cli_scan_table_and_json() {
   assert_eq "$(jq -r '.[0].functions[0].kernel' "$TEST_TMP/out")" "card1"
 }
 
+# A hand-run DXB_RADIO_LOG pointed at something other than a regular file (a device node, here
+# stood in by a FIFO so the test can stat it without root and without harming anything real) must
+# never be chmod'd - that already happened for real against /dev/null on a Pi, and chmod 600
+# /dev/null breaks every other program that opens it until a reboot.
+test_cli_never_chmods_a_log_path_that_is_not_a_regular_file() {
+  cli_env
+  mkfifo "$TEST_TMP/notafile"
+  ( while true; do cat "$TEST_TMP/notafile" > /dev/null; done ) &
+  local drain=$! before after
+  before=$(stat -c %a "$TEST_TMP/notafile")
+  export DXB_RADIO_LOG="$TEST_TMP/notafile"
+  assert_ok cli scan
+  after=$(stat -c %a "$TEST_TMP/notafile")
+  kill "$drain" 2> /dev/null; wait "$drain" 2> /dev/null
+  assert_eq "$after" "$before"
+}
+
 test_cli_add_applies_and_status_shows_radio() {
   cli_env
   assert_ok cli add radio1 --audio 1 --cat 2 --label "TM-V71"

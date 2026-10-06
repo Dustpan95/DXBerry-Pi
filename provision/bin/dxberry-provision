@@ -108,7 +108,9 @@ main() {
     return 0
   fi
   mkdir -p "$DXB_STATE_DIR"; chmod 700 "$DXB_STATE_DIR"
-  : >> "$DXB_LOG_FILE"; chmod 600 "$DXB_LOG_FILE"
+  # never touch a log path that is not a regular file (a device node, e.g. a hand-set DXB_LOG_FILE
+  # of /dev/null) - chmod 600 on /dev/null as root breaks every other program that opens it
+  if [[ ! -e $DXB_LOG_FILE || -f $DXB_LOG_FILE ]]; then : >> "$DXB_LOG_FILE"; chmod 600 "$DXB_LOG_FILE"; fi
   dxb_info "dxberry-provision starting (mode=$DXB_MODE, reseed=$reseed)"
   for w in "${DXB_CFG_WARNINGS[@]}"; do dxb_warn "$w"; done
   dxb_status_add "image: $(sed -n 's/^DXBERRY_VERSION=//p' /etc/dxberry-release 2> /dev/null || echo unknown)"
