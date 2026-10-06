@@ -78,3 +78,8 @@ th { color: var(--muted); font-weight: 600; }
 dialog { background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 20px; max-width: min(92vw, 440px); }
 dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
 dialog p { margin: 0 0 6px; }
+
+[hidden] { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.card.wide { grid-column: 1 / -1; }
+.btn[disabled] { opacity: 0.5; cursor: not-allowed; border-color: var(--line); }

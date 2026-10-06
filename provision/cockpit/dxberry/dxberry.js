@@ -44,7 +44,10 @@ const FIELDS = [
 ];
 /* fields-end */
 
-const state = { busy: false, stopped: false };
+const state = { busy: false, stopped: false, again: false };
+// The last report that parsed. Cards are drawn from it, and actions and dialogs read the station
+// from it between refreshes.
+let last = null;
 // The notice a failed refresh is currently showing (or null). Cleared, and the notice removed,
 // the moment a later refresh succeeds - but a notice from an action (Restart done, etc.) is a
 // different one and is left alone.
@@ -66,7 +69,15 @@ function el(tag, attrs, ...kids) {
   return e;
 }
 const badge = (text, kind) => el("span", { class: "badge " + kind }, text);
-const btn = (label, fn, cls) => el("button", { class: "btn small" + (cls ? " " + cls : ""), type: "button", onclick: fn }, label);
+// btn LABEL FN [OPTS]: OPTS.cls adds classes; OPTS.key keeps keyboard focus across a refresh
+// (render() refocuses the button carrying the same key); OPTS.aria names what the button acts on
+// for screen readers; OPTS.disabled and OPTS.title as on any button.
+const btn = (label, fn, opts) => {
+  const o = opts || {};
+  return el("button", { class: "btn small" + (o.cls ? " " + o.cls : ""), type: "button", onclick: fn,
+    "data-key": o.key, "aria-label": o.aria, disabled: !!o.disabled, title: o.title }, label);
+};
+const srOnly = text => el("span", { class: "sr-only" }, text);
 
 function kv(rows) {
   const dl = el("dl", { class: "kv" });
@@ -81,8 +92,8 @@ function table(head, rows) {
       el("tbody", {}, rows.map(r => el("tr", {}, r.map(c => el("td", {}, c)))))));
 }
 
-function card(title, part, body, actions) {
-  const c = el("section", { class: "card" }, el("h2", {}, title));
+function card(title, part, body, actions, cls) {
+  const c = el("section", { class: "card" + (cls ? " " + cls : "") }, el("h2", {}, title));
   if (!part || part.ok === false) {
     c.append(el("p", { class: "error" }, (part && part.error) || "No data."));
     return c;
@@ -133,6 +144,14 @@ function powerState(t) {
   return badge("OK", "good");
 }
 
+// activeBadge: a unit's ActiveState in words; starting and stopping are not "stopped".
+function activeBadge(active) {
+  if (active === "active") return badge("running", "good");
+  if (active === "failed") return badge("failed", "bad");
+  if (["activating", "deactivating", "reloading"].includes(active)) return badge(active, "warn");
+  return badge("stopped", "warn");
+}
+
 function gps(g) {
   if (!g) return DASH;
   if (g.fix >= 2) return `${g.fix}D fix, grid ${g.grid}, ${g.sats_used} of ${g.sats_seen} satellites`;
@@ -142,10 +161,7 @@ function gps(g) {
 // ---- cards --------------------------------------------------------------------------------
 function stationCard(g) {
   if (!g || !g.ok) return card("Station", g);
-  const running = g.active === "active";
-  const rows = [["Graywolf", [
-    badge(running ? "running" : g.active === "failed" ? "failed" : "stopped", running ? "good" : g.active === "failed" ? "bad" : "warn"),
-    " ", g.version ? `version ${g.version}` : "not installed"]]];
+  const rows = [["Graywolf", [activeBadge(g.active), " ", g.version ? `version ${g.version}` : "not installed"]]];
   const body = [];
   if (!g.api_ok) {
     rows.push(["Details", g.api_error || DASH]);
@@ -154,7 +170,7 @@ function stationCard(g) {
     rows.push(["iGate", ig ? [badge(ig.connected ? "connected" : "not connected", ig.connected ? "good" : "warn"), " ", ig.server,
       ` · ${num(ig.rf_to_is_gated)} sent to APRS-IS, ${num(ig.is_to_rf_gated)} to RF`] : DASH]);
     const pl = g.position_log;
-    rows.push(["Position log", pl ? (pl.enabled ? `on, ${bytes(pl.bytes)} in RAM` : "off") : DASH]);
+    rows.push(["Position log", pl ? (pl.enabled ? (typeof pl.bytes === "number" ? `on, ${bytes(pl.bytes)} in RAM` : "on (in RAM)") : "off") : DASH]);
   }
   body.push(kv(rows));
   if (g.api_ok) {
@@ -163,9 +179,9 @@ function stationCard(g) {
       : el("p", { class: "muted" }, "No radio channels yet."));
   }
   return card("Station", g, body, [
-    el("a", { class: "btn primary", href: `http://${location.hostname}:${g.web_port || 8080}/`, target: "_blank", rel: "noopener noreferrer" }, "Open Graywolf"),
-    btn("Graywolf log", () => openLog("graywolf.service")),
-    btn("Restart Graywolf", () => unitAction("restart", "graywolf.service")),
+    el("a", { class: "btn primary", href: `http://${location.hostname}:${g.web_port || 8080}/`, target: "_blank", rel: "noopener noreferrer", "data-key": "gw:open" }, "Open Graywolf"),
+    btn("Graywolf log", () => openLog("graywolf.service"), { key: "gw:log" }),
+    btn("Restart Graywolf", () => unitAction("restart", "graywolf.service"), { key: "gw:restart" }),
   ]);
 }
 
@@ -205,7 +221,7 @@ function piCard(p) {
     ["Model", p.model || DASH],
     ["Temperature", temp(p.temp_c)],
     ["Power", powerState(p.throttle)],
-    ["Load", Array.isArray(p.load) ? p.load.map(x => Number(x).toFixed(2)).join("  ") : DASH],
+    ["Load", Array.isArray(p.load) ? p.load.map(x => (typeof x === "number" ? x.toFixed(2) : DASH)).join("  ") : DASH],
     ["Memory", `${bytes(p.mem_used)} of ${bytes(p.mem_total)}`],
     ["Disk", `${bytes(p.disk_used)} of ${bytes(p.disk_total)}`],
     ["Up", uptime(p.uptime_s)],
@@ -246,19 +262,21 @@ function servicesCard(s) {
   const rows = s.units.map(u => {
     if (u.load === "not-found") return [u.unit, unitState(u), "", ""];
     const acts = u.active === "active"
-      ? [btn("Stop", () => unitAction("stop", u.unit)), btn("Restart", () => unitAction("restart", u.unit))]
-      : [btn("Start", () => unitAction("start", u.unit))];
-    return [u.unit, unitState(u), el("span", { class: "row-actions" }, acts), btn("Log", () => openLog(u.unit), "link")];
+      ? [btn("Stop", () => unitAction("stop", u.unit), { key: `unit:${u.unit}:stop`, aria: `Stop ${u.unit}` }),
+        btn("Restart", () => unitAction("restart", u.unit), { key: `unit:${u.unit}:restart`, aria: `Restart ${u.unit}` })]
+      : [btn("Start", () => unitAction("start", u.unit), { key: `unit:${u.unit}:start`, aria: `Start ${u.unit}` })];
+    return [u.unit, unitState(u), el("span", { class: "row-actions" }, acts),
+      btn("Log", () => openLog(u.unit), { cls: "link", key: `unit:${u.unit}:log`, aria: `Log of ${u.unit}` })];
   });
-  return card("Services", s, [table(["Unit", "State", "", ""], rows)]);
+  return card("Services", s, [table(["Unit", "State", srOnly("Actions"), srOnly("Log")], rows)]);
 }
 
 function powerCard() {
   return el("section", { class: "card" }, el("h2", {}, "Power"),
     el("p", { class: "muted" }, "Restarting or shutting down stops Graywolf and every radio until the Pi is back."),
     el("div", { class: "actions" },
-      btn("Restart the Pi", () => power("reboot.target"), "danger"),
-      btn("Shut down the Pi", () => power("poweroff.target"), "danger")));
+      btn("Restart the Pi", () => power("reboot.target"), { cls: "danger", key: "power:reboot" }),
+      btn("Shut down the Pi", () => power("poweroff.target"), { cls: "danger", key: "power:off" })));
 }
 
 // ---- actions ------------------------------------------------------------------------------
@@ -271,19 +289,36 @@ function openLog(unit) {
 }
 
 function notice(text, kind, sticky) {
-  const n = el("div", { class: "notice " + kind, role: "status" }, el("span", {}, text));
+  const n = el("div", { class: "notice " + kind }, el("span", {}, text));
   if (!sticky) n.append(el("button", { class: "close", type: "button", "aria-label": "Dismiss", onclick: () => n.remove() }, "×"));
   document.getElementById("notices").append(n);
   if (kind === "good") setTimeout(() => n.remove(), 6000);
   return n;
 }
 
-function failure(what, ex) {
+// errorText: the useful part of a DXBerry command's stderr - its WARN and ERROR lines without the
+// timestamp, and any line that is not a log line (usage errors, validator reasons). INFO lines
+// are progress, not the problem.
+function errorText(msg) {
+  return String(msg || "").split("\n")
+    .filter(l => l.trim() && !/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[INFO\] /.test(l))
+    .map(l => l.replace(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[(WARN|ERROR)\] /, "").trim())
+    .join(" ");
+}
+
+// problemText: what went wrong, in words - the exit code's plain meaning (from EXITS, when the
+// command has a table), then the command's own error text.
+function problemText(ex, exits) {
+  const code = ex && ex.exit_status;
+  const head = code ? `Exit ${code}${exits && exits[code] ? ": " + exits[code] : ""}. ` : "";
+  return head + (errorText(ex && ex.message) || (ex && ex.problem) || "unknown error");
+}
+
+function failure(what, ex, exits) {
   if (ex && (ex.problem === "access-denied" || ex.problem === "not-authorized")) {
     return notice("Administrative access is off. Turn it on with the “Limited access” button at the top of the page, then try again.", "bad");
   }
-  const code = ex && ex.exit_status ? ` (exit ${ex.exit_status})` : "";
-  return notice(`${what} failed${code}: ${(ex && (ex.message || ex.problem)) || "unknown error"}`, "bad");
+  return notice(`${what} failed. ${problemText(ex, exits)}`, "bad");
 }
 
 function confirmThen(title, text, label, action) {
@@ -328,34 +363,66 @@ function power(target) {
 
 // ---- refresh ------------------------------------------------------------------------------
 function render(s) {
+  const a = document.activeElement;
+  const focused = a && a.dataset ? a.dataset.key : undefined;
   document.getElementById("host").textContent = (s.network && s.network.hostname) || "";
   document.getElementById("updated").textContent = s.generated ? "updated " + new Date(s.generated).toLocaleTimeString("en-US") : "";
   document.getElementById("cards").replaceChildren(
     stationCard(s.graywolf), radiosCard(s.radios), networkCard(s.network), piCard(s.pi),
     timeCard(s.time, s.radios), aboutCard(s.release), servicesCard(s.services), powerCard());
+  if (focused) {
+    const again = [...document.querySelectorAll("[data-key]")].find(e => e.dataset.key === focused);
+    if (again) again.focus();
+  }
+}
+
+// show: draw the last report. A bug in one card must say so, not leave the page silently stale.
+function show() {
+  if (!last) return false;
+  try {
+    render(last);
+    return true;
+  } catch (e) {
+    console.error(e);
+    setRefreshFailure(notice(`Showing the station status failed: ${(e && e.message) || e}`, "bad"));
+    return false;
+  }
 }
 
 function clearRefreshFailureNotice() {
   if (refreshFailureNotice) { refreshFailureNotice.remove(); refreshFailureNotice = null; }
 }
 
+// setRefreshFailure: N is now the one refresh-failure notice. Before any report has been shown,
+// the cards area says so instead of "Reading the station…".
+function setRefreshFailure(n) {
+  clearRefreshFailureNotice();
+  refreshFailureNotice = n;
+  if (!last) document.getElementById("cards").replaceChildren(el("p", { class: "muted" }, "The station status could not be read; see the message above."));
+}
+
 function refresh(force) {
-  if (state.busy || state.stopped || (cockpit.hidden && force !== true)) return;
+  if (state.stopped || (cockpit.hidden && force !== true)) return;
+  // an action's refresh asked for while the timer's one runs must still happen once that ends
+  if (state.busy) { if (force === true) state.again = true; return; }
   state.busy = true;
+  const finish = () => {
+    state.busy = false;
+    if (state.again) { state.again = false; refresh(true); }
+  };
   run([STATUS, "--json"]).then(out => {
-    state.busy = false;
-    let s;
-    try { s = JSON.parse(out); } catch (e) {
-      clearRefreshFailureNotice();
-      refreshFailureNotice = notice("dxberry-status did not return a report.", "bad");
-      return;
+    let s = null;
+    try { s = JSON.parse(out); } catch (e) { s = null; }
+    if (s) {
+      last = s;
+      if (show()) clearRefreshFailureNotice();
+    } else {
+      setRefreshFailure(notice("dxberry-status did not return a report.", "bad"));
     }
-    render(s);
-    clearRefreshFailureNotice();
+    finish();
   }, ex => {
-    state.busy = false;
-    clearRefreshFailureNotice();
-    refreshFailureNotice = failure("Reading the station status", ex);
+    setRefreshFailure(failure("Reading the station status", ex));
+    finish();
   });
 }
 

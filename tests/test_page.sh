@@ -69,20 +69,68 @@ test_page_watches_cockpit_visibility_and_reports_power_failures() {
 }
 
 # A refresh failure's notice must not outlive the refresh: notice()/failure() return the node
-# they created, and refresh() tracks + clears the one a failure made, both on a bad exit_status
-# and on a reply that is not valid JSON. It must never wipe out another notice (e.g. an action's
-# "done") that happens to be showing at the time.
+# they created, setRefreshFailure() tracks it, and a later good refresh removes it. It must never
+# wipe out another notice (e.g. an action's "done") that happens to be showing at the time.
 test_page_clears_the_refresh_failure_notice_once_a_refresh_succeeds() {
-  local js=$PG_DIR/dxberry.js refresh_body notice_body failure_body
+  local js=$PG_DIR/dxberry.js notice_body failure_body set_body refresh_body
   notice_body=$(sed -n '/^function notice(/,/^}/p' "$js")
   assert_contains "$notice_body" "return n"
   assert_contains "$notice_body" ".append(n)"
   failure_body=$(sed -n '/^function failure(/,/^}/p' "$js")
   assert_contains "$failure_body" "return notice("
-  assert_file_contains "$js" "refreshFailureNotice"
+  set_body=$(sed -n '/^function setRefreshFailure(/,/^}/p' "$js")
+  assert_contains "$set_body" "refreshFailureNotice = "
+  assert_contains "$set_body" "could not be read"
   refresh_body=$(sed -n '/^function refresh(/,/^}/p' "$js")
-  assert_contains "$refresh_body" "refreshFailureNotice = "
+  assert_contains "$refresh_body" "setRefreshFailure("
+  assert_contains "$refresh_body" "clearRefreshFailureNotice()"
   assert_file_contains "$js" "refreshFailureNotice.remove()"
+}
+
+# An action asks for a refresh while the 10 s one may still be running; that request must run
+# when the running one ends, not vanish. And a card that throws must show a notice, not leave the
+# page silently stale.
+test_page_reruns_a_refresh_asked_for_while_busy_and_survives_a_card_that_throws() {
+  local js=$PG_DIR/dxberry.js refresh_body show_body
+  refresh_body=$(sed -n '/^function refresh(/,/^}/p' "$js")
+  assert_contains "$refresh_body" "state.again = true"
+  assert_contains "$refresh_body" "if (state.again)"
+  show_body=$(sed -n '/^function show(/,/^}/p' "$js")
+  assert_contains "$show_body" "catch (e)"
+  assert_contains "$show_body" "setRefreshFailure("
+}
+
+# The cards are rebuilt every 10 s; a keyboard user's focus must land back on the same button.
+test_page_keeps_keyboard_focus_across_a_refresh() {
+  local js=$PG_DIR/dxberry.js render_body
+  render_body=$(sed -n '/^function render(/,/^}/p' "$js")
+  assert_contains "$render_body" "dataset.key"
+  assert_contains "$render_body" ".focus()"
+  assert_file_contains "$js" '"data-key": o.key'
+  # shellcheck disable=SC2016  # checking for the literal, unexpanded `Stop ${u.unit}` in the JS
+  assert_file_contains "$js" 'aria: `Stop ${u.unit}`'
+  assert_file_not_contains "$js" 'role: "status"'
+  assert_file_contains "$PG_DIR/index.html" 'aria-labelledby="confirm-title"'
+}
+
+# A failed DXBerry command's stderr is timestamped log lines; the page shows the WARN/ERROR text
+# (and lines that are not log lines) without timestamps, drops INFO progress, and puts the plain
+# meaning of the exit code first.
+test_page_error_text_keeps_the_problem_and_drops_progress() {
+  command -v node > /dev/null 2>&1 || return 0
+  local js=$PG_DIR/dxberry.js et pt stderr got
+  et=$(sed -n '/^function errorText(/,/^}/p' "$js")
+  pt=$(sed -n '/^function problemText(/,/^}/p' "$js")
+  stderr=$(printf '%s\n' '2026-10-06 12:00:00 [INFO] radio radio1 now owned by graywolf' \
+    '2026-10-06 12:00:01 [ERROR] invalid radio record:' '  radio1: bad label' 'unknown option: --x')
+  got=$(node -e "$et
+$pt
+console.log(errorText(process.argv[1]));
+console.log(problemText({exit_status: 4, message: process.argv[2]}, {4: 'the device is not plugged in'}));
+console.log(problemText({problem: 'not-found'}));" "$stderr" '2026-10-06 12:00:00 [ERROR] radio radio1 is not plugged in')
+  assert_eq "$(sed -n 1p <<< "$got")" "invalid radio record: radio1: bad label unknown option: --x"
+  assert_eq "$(sed -n 2p <<< "$got")" "Exit 4: the device is not plugged in. radio radio1 is not plugged in"
+  assert_eq "$(sed -n 3p <<< "$got")" "not-found"
 }
 
 # Restart of cockpit.socket drops this console's session just like Stop, so it must ask first
