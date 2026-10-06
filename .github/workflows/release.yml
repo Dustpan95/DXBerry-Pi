@@ -22,9 +22,9 @@ jobs:
           fi
       - name: Syntax
         run: |
-          for f in provision/bin/* provision/lib/*.sh provision/lib/apps/*.sh build/*.sh boot/*.sh tests/*.sh tests/fixtures/*.sh; do bash -n "$f"; done
+          for f in provision/bin/* provision/lib/*.sh provision/lib/apps/*.sh build/build-image.sh build/make-update-tarball.sh boot/*.sh tests/*.sh tests/fixtures/*.sh; do bash -n "$f"; done
       - name: shellcheck
-        run: shellcheck -x provision/bin/* provision/lib/*.sh provision/lib/apps/*.sh build/build-image.sh boot/*.sh tests/*.sh tests/fixtures/*.sh
+        run: shellcheck -x provision/bin/* provision/lib/*.sh provision/lib/apps/*.sh build/build-image.sh build/make-update-tarball.sh boot/*.sh tests/*.sh tests/fixtures/*.sh
       - name: Unit tests
         run: tests/run.sh
       - name: Build tree check
@@ -33,6 +33,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y parted
       - name: Build image
         run: sudo build/build-image.sh --version "${GITHUB_REF_NAME#v}"
+      - name: DXBerry update file
+        run: build/make-update-tarball.sh "${GITHUB_REF_NAME#v}" out
       - name: Release notes
         run: |
           {
@@ -41,6 +43,7 @@ jobs:
             echo "DietPi base image: $(cat build/work/*.img.xz.sha256)"
             echo "Graywolf: latest release at first boot (pin with GRAYWOLF_VERSION=)."
             echo "Console: https://<the Pi's address>/ (log in as dietpi with PASSWORD)."
+            echo "Update from the console: Updates card, or sudo dxberry-update dxberry (dxberry-pi-${GITHUB_REF_NAME#v}.tar.gz)."
           } > notes.md
       - name: Publish
         env:
@@ -51,5 +54,5 @@ jobs:
           case "$GITHUB_REF_NAME" in
             *-*) flags+=(--prerelease) ;;
           esac
-          gh release create "$GITHUB_REF_NAME" out/*.img.xz out/*.sha256 \
+          gh release create "$GITHUB_REF_NAME" out/*.img.xz out/*.tar.gz out/*.sha256 \
             --title "DXBerry-Pi $GITHUB_REF_NAME" --notes-file notes.md "${flags[@]}"
