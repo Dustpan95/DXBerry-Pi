@@ -22,6 +22,14 @@ co_run() {
       case $1 in
         is-enabled) if [[ -f $TEST_TMP/logind-masked ]]; then echo masked; return 1; fi; echo static ;;
         restart) [[ -f $TEST_TMP/restart-fails ]] && return 1 ;;
+        show)
+          if [[ $2 == -p && $3 == Listen && $4 == cockpit.socket ]]; then
+            if [[ -f $TEST_TMP/cockpit-socket-9090 ]]; then
+              printf 'Listen=[::]:9090 (Stream)\n'
+            else
+              printf 'Listen=[::]:443 (Stream)\nListen=[::]:80 (Stream)\n'
+            fi
+          fi ;;
       esac
       return 0
     }
@@ -116,6 +124,31 @@ test_console_restart_failure_is_a_failed_step() {
   co_env; : > "$TEST_TMP/cockpit-installed"; : > "$TEST_TMP/restart-fails"
   co_run provision_console
   assert_contains "$(cat "$TEST_TMP/failed")" "console: could not restart cockpit.socket on ports 443 and 80"
+  assert_eq "$(cat "$TEST_TMP/status")" "console: unavailable (see FAILED STEPS)"
+}
+
+# An unchanged drop-in is not proof the restart it once needed actually happened: if the socket
+# somehow ended up back on 9090 (an earlier restart failed, say), the next run must still retry.
+test_console_retries_the_restart_when_unchanged_but_not_listening_on_443() {
+  co_env; : > "$TEST_TMP/cockpit-installed"
+  co_run provision_console
+  : > "$TEST_TMP/cockpit-socket-9090"
+  : > "$TEST_TMP/calls"
+  co_run provision_console
+  assert_contains "$(co_calls)" "systemctl daemon-reload"
+  assert_contains "$(co_calls)" "systemctl restart cockpit.socket"
+  assert_eq "$(cat "$TEST_TMP/status")" "console: https://10.0.0.90/ (log in as dietpi)"
+}
+
+# A listen drop-in that could not be written (a read-only /etc, say) must never report the
+# console as reachable.
+test_console_status_line_names_a_failed_listen_write() {
+  co_env; : > "$TEST_TMP/cockpit-installed"
+  mkdir -p "$TEST_TMP/systemd"
+  : > "$TEST_TMP/systemd/cockpit.socket.d"   # a file where dxb_console_listen needs a directory
+  co_run provision_console
+  assert_contains "$(cat "$TEST_TMP/failed")" "could not write"
+  assert_eq "$(cat "$TEST_TMP/status")" "console: unavailable (see FAILED STEPS)"
 }
 
 test_console_listen_template_replaces_9090() {

@@ -67,10 +67,17 @@ dxb_console_link() {
   dxb_info "DXBerry page linked into Cockpit"
 }
 
+# dxb_console_listening_443: cockpit.socket's own current bind addresses include :443 - the
+# drop-in has actually taken effect. systemctl show -p Listen prints one "Listen=..." line per
+# bound address, e.g. "Listen=[::]:443 (Stream)".
+dxb_console_listening_443() {
+  systemctl show -p Listen cockpit.socket 2> /dev/null | grep -qE ':443([^0-9]|$)'
+}
+
 # provision_console (console spec section 12): runs after the radio step. Never fatal: every
 # problem is a failed step named console and the rest of the run goes on.
 provision_console() {
-  local rc
+  local rc restart_failed=0
   if [[ ${DXB_CFG[CONSOLE]:-on} == off ]]; then
     if systemctl cat cockpit.socket > /dev/null 2>&1; then
       systemctl disable --now cockpit.socket > /dev/null 2>&1 || dxb_step_failed console "could not stop cockpit.socket"
@@ -86,15 +93,23 @@ provision_console() {
   dxb_console_logind
   dxb_console_listen; rc=$?
   dxb_console_link
-  # the package's own unit starts on 9090 when installed; the drop-in moves it to 443 and 80
-  if (( rc == 0 )); then
+  # the package's own unit starts on 9090 when installed; the drop-in moves it to 443 and 80.
+  # Also restart when the drop-in is unchanged but the socket is not actually listening on 443
+  # (an earlier restart here failed, for instance): otherwise that state never heals before a
+  # reboot, since an unchanged drop-in on its own is not proof the restart it needed ever ran.
+  if (( rc == 0 )) || { (( rc == 1 )) && ! dxb_console_listening_443; }; then
     if systemctl daemon-reload > /dev/null 2>&1 && systemctl restart cockpit.socket > /dev/null 2>&1; then
       dxb_info "console listening on ports 443 and 80"
     else
       dxb_step_failed console "could not restart cockpit.socket on ports 443 and 80"
+      restart_failed=1
     fi
   fi
   systemctl enable --now cockpit.socket > /dev/null 2>&1 || dxb_step_failed console "could not enable cockpit.socket"
-  dxb_status_add "console: https://${DXB_CFG[_IP]:-<this-pi>}/ (log in as dietpi)"
+  if (( rc == 2 )) || (( restart_failed )); then
+    dxb_status_add "console: unavailable (see FAILED STEPS)"
+  else
+    dxb_status_add "console: https://${DXB_CFG[_IP]:-<this-pi>}/ (log in as dietpi)"
+  fi
   return 0
 }
