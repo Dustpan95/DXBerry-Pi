@@ -8,6 +8,20 @@ const STATUS = "/opt/dxberry/bin/dxberry-status";
 const LOGS = "/system/logs/#/?prio=debug&service=";
 const REFRESH_MS = 10000;
 const DASH = "—";
+const RADIO = "/opt/dxberry/bin/dxberry-radio";
+// dxberry-radio's exit codes in words (radio plumbing spec section 6.2).
+const RADIO_EXITS = {
+  1: "this needs administrative access",
+  2: "the request was not valid",
+  3: "there is no such radio or application",
+  4: "the device is not plugged in",
+  5: "the application could not take the radio, so it was left released",
+  6: "applying the change failed",
+  7: "the current owner could not be re-wired",
+};
+const PTT_METHODS = { rigctld: "rigctld", cm108: "CM108 HID", gpio: "Pi GPIO", vox: "VOX", digirig_tone: "DigiRig Lite tone", none: "none" };
+const PTT_TYPES = { RIG: "a CAT command", RTS: "the RTS line", DTR: "the DTR line", NONE: "nothing" };
+const FUNCTION_KINDS = { audio: "sound", serial: "serial", hid: "HID" };
 // Stopping these takes the station, the network or this page away, so Stop asks first.
 const STOP_WARNINGS = {
   "graywolf.service": "APRS, the iGate and the digipeater stop until Graywolf is started again.",
@@ -35,7 +49,17 @@ const FIELDS = [
   "graywolf.channels.*.name", "graywolf.channels.*.rx_frames", "graywolf.channels.*.tx_frames", "graywolf.channels.*.rx_bad_fcs",
   "graywolf.position_log.enabled", "graywolf.position_log.bytes",
   "radios.ok", "radios.radios.*.label", "radios.radios.*.present", "radios.radios.*.owner", "radios.radios.*.rigctld",
-  "radios.radios.*.rigctld_port", "radios.radios.*.freq", "radios.radios.*.mode",
+  "radios.radios.*.rigctld_port", "radios.radios.*.freq", "radios.radios.*.mode", "radios.radios.*.wiring",
+  "radios.radios.*.alsa_id", "radios.radios.*.kernel.audio", "radios.radios.*.kernel.cat", "radios.radios.*.kernel.hid",
+  "radios.radios.*.kernel.ptt_serial", "radios.radios.*.audio.path", "radios.radios.*.cat.path", "radios.radios.*.hid.path",
+  "radios.radios.*.ptt_serial", "radios.radios.*.ptt.method", "radios.radios.*.ptt.gpio_line",
+  "radios.radios.*.rig.model", "radios.radios.*.rig.baud", "radios.radios.*.rig.ptt_type",
+  "radios.candidates.*.index", "radios.candidates.*.port", "radios.candidates.*.name", "radios.candidates.*.profile",
+  "radios.candidates.*.defaults.ptt", "radios.candidates.*.defaults.ptt_type", "radios.candidates.*.defaults.cat",
+  "radios.candidates.*.defaults.model", "radios.candidates.*.defaults.baud",
+  "radios.candidates.*.functions.*.kind", "radios.candidates.*.functions.*.kernel", "radios.candidates.*.functions.*.path",
+  "radios.candidates.*.functions.*.product",
+  "radios.apps.*.name", "radios.apps.*.label",
   "radios.gps.fix", "radios.gps.receiver", "radios.gps.grid", "radios.gps.sats_used", "radios.gps.sats_seen",
   "time.ok", "time.synced", "time.source", "time.reference", "time.stratum", "time.offset_ms",
   "release.ok", "release.dxberry", "release.dxberry_commit", "release.graywolf", "release.cockpit",
@@ -43,11 +67,19 @@ const FIELDS = [
   "services.units.*.result", "services.units.*.type",
 ];
 /* fields-end */
+/* radio-fields-begin: what the page reads from dxberry-radio's own --json answers, as COMMAND:PATH
+ * ('models' = dxberry-radio models; 'add' = the answer of add, set and claim, which is the status
+ * block). tests/test_page.sh checks each one against the command's real output. */
+const RADIO_FIELDS = ["models:*.model", "models:*.mfg", "models:*.name", "add:warnings"];
+/* radio-fields-end */
 
 const state = { busy: false, stopped: false, again: false };
 // The last report that parsed. Cards are drawn from it, and actions and dialogs read the station
 // from it between refreshes.
 let last = null;
+const pending = {};   // radio name -> what is running for it right now ("Giving to Graywolf")
+let models = null;    // Hamlib's rig models once dxberry-radio models has answered
+let modelsLoading = null;
 // The notice a failed refresh is currently showing (or null). Cleared, and the notice removed,
 // the moment a later refresh succeeds - but a notice from an action (Restart done, etc.) is a
 // different one and is left alone.
@@ -185,21 +217,186 @@ function stationCard(g) {
   ]);
 }
 
-function radiosCard(r) {
-  if (!r || !r.ok) return card("Radios", r);
-  const names = Object.keys(r.radios || {});
-  const body = [];
-  if (!names.length) {
-    body.push(el("p", { class: "muted" }, "No radios set up. Plug one in, then over SSH run: sudo dxberry-radio scan"));
-  } else {
-    body.push(table(["Radio", "State", "Owner", "rigctld", "Frequency"], names.map(n => {
-      const x = r.radios[n];
-      return [[el("strong", {}, n), x.label ? " " + x.label : ""],
-        badge(x.present ? "present" : "unplugged", x.present ? "good" : "warn"),
-        x.owner || "none", `${x.rigctld} on port ${x.rigctld_port}`, freq(x.freq, x.mode)];
-    })));
+// ---- radios -------------------------------------------------------------------------------
+// loadModels: Hamlib's rig list, fetched once per page load (names for the cards, choices for the form).
+function loadModels() {
+  if (!modelsLoading) modelsLoading = run([RADIO, "models", "--json"]).then(out => (models = JSON.parse(out)));
+  return modelsLoading;
+}
+
+function modelName(n) {
+  const m = models && models.find(x => x.model === n);
+  return m ? `${m.mfg} ${m.name} (model ${n})`.replace("  ", " ") : `model ${n}`;
+}
+
+function appLabel(r, name) {
+  const a = ((r && r.apps) || []).find(x => x.name === name);
+  return a ? a.label : name;
+}
+
+function warningsOf(out) {
+  try {
+    const j = JSON.parse(out);
+    return Array.isArray(j.warnings) ? j.warnings : [];
+  } catch (e) {
+    return [];
   }
-  return card("Radios", r, body);
+}
+
+// ownsOthers: whether APP owns a radio besides NAME. When it does not, Release and Remove stop it.
+function ownsOthers(app, name) {
+  return Object.entries(last.radios.radios).some(([n, x]) => n !== name && x.owner === app);
+}
+
+// handMadeChannels: Graywolf's channels not named after a DXBerry radio - made by hand (spec 8.3).
+function handMadeChannels() {
+  const g = last && last.graywolf;
+  if (!g || !g.ok || !g.api_ok) return [];
+  const radios = (last.radios && last.radios.radios) || {};
+  return (g.channels || []).map(c => c.name).filter(c => !(c in radios));
+}
+
+function parts(x) {
+  const k = x.kernel || {};
+  const bits = [];
+  if (x.audio) bits.push(`sound ${k.audio || "absent"}${x.alsa_id ? ` (${x.alsa_id})` : ""}`);
+  if (x.cat) bits.push(`CAT ${k.cat || "absent"}`);
+  if (x.ptt_serial) bits.push(`PTT serial ${k.ptt_serial || "absent"}`);
+  if (x.hid) bits.push(`HID ${k.hid || "absent"}`);
+  return bits.join(" · ") || DASH;
+}
+
+function pttText(x) {
+  const m = x.ptt ? x.ptt.method : "";
+  let t = PTT_METHODS[m] || m || DASH;
+  if (m === "rigctld" && x.rig) t += `, keyed by ${PTT_TYPES[x.rig.ptt_type] || x.rig.ptt_type}`;
+  if (m === "gpio" && typeof x.ptt.gpio_line === "number") t += ` line ${x.ptt.gpio_line}`;
+  return t;
+}
+
+function radioActions(r, n, x, busy) {
+  const acts = [];
+  for (const a of r.apps || []) {
+    if (a.name === x.owner) continue;
+    acts.push(btn(`Give to ${a.label}`, () => giveTo(n, a), { key: `radio:${n}:give:${a.name}`, disabled: busy || !x.present,
+      title: x.present ? null : "Plug the radio in first" }));
+  }
+  if (x.owner) acts.push(btn("Release", () => release(n), { key: `radio:${n}:release`, disabled: busy }));
+  acts.push(btn("Remove", () => removeRadio(n), { cls: "danger", key: `radio:${n}:remove`, disabled: busy }));
+  return acts;
+}
+
+function radioBlock(r, n) {
+  const x = r.radios[n];
+  const busy = pending[n];
+  const owner = x.owner ? appLabel(r, x.owner) : "";
+  return el("div", { class: "radio" },
+    el("div", { class: "radio-head" }, el("strong", {}, n), x.label ? " " + x.label : "", " ",
+      badge(x.present ? "present" : "unplugged", x.present ? "good" : "warn"), " ",
+      badge(owner ? `owned by ${owner}` : "not in use", owner ? "good" : "muted"),
+      busy ? [" ", badge(busy + "…", "warn")] : null),
+    kv([
+      ["Parts", parts(x)],
+      ["Rig", `${modelName(x.rig && x.rig.model)}${x.rig && x.rig.baud ? `, ${x.rig.baud} baud` : ""}`],
+      ["PTT", pttText(x)],
+      ["rigctld", `${x.rigctld} on port ${x.rigctld_port}`],
+      ["Frequency", freq(x.freq, x.mode)],
+      ["Wiring", x.wiring === "names" ? "stable names only (you set up the application)" : "full (DXBerry sets up the application)"],
+    ]),
+    el("div", { class: "actions" }, radioActions(r, n, x, !!busy)));
+}
+
+function candidateBlock(r, c) {
+  const fns = (c.functions || []).map(f => `${FUNCTION_KINDS[f.kind] || f.kind} ${f.kernel}`).join(" · ");
+  const product = (c.functions || []).map(f => f.product).find(Boolean);
+  return el("div", { class: "radio" },
+    el("div", { class: "radio-head" }, el("strong", {}, c.name), " ",
+      c.profile === "generic" ? badge("no profile", "muted") : badge("known interface", "good")),
+    kv([["USB port", c.port], ["Parts", fns || DASH], ["Reports as", product || DASH]]),
+    el("div", { class: "actions" }, candidateActions(r, c)));
+}
+
+// candidateActions: Task 5 adds Add here.
+function candidateActions(r, c) {
+  return [];
+}
+
+function radiosCard(r) {
+  if (!r || !r.ok) return card("Radios", r, null, null, "wide");
+  const names = Object.keys(r.radios || {});
+  const cands = r.candidates || [];
+  if (names.length && !modelsLoading) loadModels().then(show, () => {});
+  const body = [];
+  if (!names.length && !cands.length) {
+    body.push(el("p", { class: "muted" }, "No radios set up, and no USB radio interface is plugged in. Plug one in; it shows up here within 10 seconds."));
+  }
+  for (const n of names) body.push(radioBlock(r, n));
+  if (cands.length) {
+    body.push(el("h3", {}, "Plugged in, not set up"));
+    for (const c of cands) body.push(candidateBlock(r, c));
+  }
+  return card("Radios", r, body, null, "wide");
+}
+
+// radioAction: run one dxberry-radio change for radio NAME, marked busy on the page meanwhile.
+// T = {busy, what, done}: the badge while it runs, the failure's subject, the success notice.
+function radioAction(name, t, args) {
+  pending[name] = t.busy;
+  show();
+  return run([RADIO, ...args, "--json"]).then(out => {
+    delete pending[name];
+    notice(t.done, "good");
+    for (const w of warningsOf(out)) notice(`${name}: ${w}`, "warn");
+    refresh(true);
+  }, ex => {
+    delete pending[name];
+    failure(t.what, ex, RADIO_EXITS);
+    show();
+    refresh(true);
+  });
+}
+
+function giveTo(name, app) {
+  const x = last.radios.radios[name];
+  const go = () => radioAction(name, { busy: `Giving to ${app.label}`, what: `Giving ${name} to ${app.label}`, done: `${name} now belongs to ${app.label}.` },
+    ["claim", name, app.name]);
+  const warn = [];
+  if (x.owner) {
+    const prev = appLabel(last.radios, x.owner);
+    warn.push(ownsOthers(x.owner, name) ? `${prev} lets go of ${name} first.` : `${prev} lets go of ${name} first and stops, because it owns no other radio.`);
+  }
+  const hand = app.name === "graywolf" ? handMadeChannels() : [];
+  if (hand.length) {
+    warn.push(`Graywolf already has channels made by hand: ${hand.join(", ")}. It gets a new channel named ${name} for this radio; ` +
+      "if a hand-made channel uses the same sound card, the two compete for it. Remove or re-point the hand-made channel in Graywolf's page.");
+  }
+  if (warn.length) confirmThen(`Give ${name} to ${app.label}?`, warn.join(" "), `Give to ${app.label}`, go);
+  else go();
+}
+
+function release(name) {
+  const x = last.radios.radios[name];
+  const label = appLabel(last.radios, x.owner);
+  const go = () => radioAction(name, { busy: "Releasing", what: `Releasing ${name} from ${label}`, done: `${name} released.` }, ["release", name]);
+  let text = `${label} stops using ${name}.`;
+  if (x.owner === "graywolf") text += ` Graywolf's channel named ${name} is deleted.`;
+  if (!ownsOthers(x.owner, name)) {
+    text += ` ${label} owns no other radio, so it stops altogether`;
+    const hand = x.owner === "graywolf" ? handMadeChannels() : [];
+    text += hand.length ? `, and its hand-made channels (${hand.join(", ")}) stop with it until it is started again under Services.` : ".";
+  }
+  confirmThen(`Release ${name}?`, text, "Release", go);
+}
+
+function removeRadio(name) {
+  const x = last.radios.radios[name];
+  const go = () => radioAction(name, { busy: "Removing", what: `Removing ${name}`, done: `${name} removed.` }, ["remove", name]);
+  let text = `DXBerry forgets ${name} and stops its rigctld. The device itself is untouched and shows up under “Plugged in, not set up” while it is plugged in.`;
+  if (x.owner) {
+    const label = appLabel(last.radios, x.owner);
+    text = (ownsOthers(x.owner, name) ? `${label} lets go of it first. ` : `${label} lets go of it first and stops, because it owns no other radio. `) + text;
+  }
+  confirmThen(`Remove ${name}?`, text, "Remove", go);
 }
 
 function networkCard(n) {

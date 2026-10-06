@@ -155,10 +155,12 @@ test_page_script_parses() {
 }
 
 # Every field the page reads must exist in the real command's output, so a change to dxberry-status
-# that would leave a card blank fails here. The radios part is real dxberry-radio output.
+# that would leave a card blank fails here. The radios part is real dxberry-radio output, with one
+# radio pinned and a second DigiRig plugged in but not set up.
 test_page_reads_only_fields_that_dxberry_status_produces() {
   local DXB_GPSPIPE=pg_gpspipe f n=0
   cli_env
+  rm -rf "$DXB_SYSFS_ROOT"; fx_scene "$DXB_SYSFS_ROOT" two-digirigs
   cli add radio1 --audio 1 --cat 2 --label TM-V71 > /dev/null 2>&1
   cli status --json || _fail "dxberry-radio status --json failed: $(cat "$TEST_TMP/err")"
   cp "$TEST_TMP/out" "$TEST_TMP/radio.json"
@@ -168,5 +170,61 @@ test_page_reads_only_fields_that_dxberry_status_produces() {
     n=$(( n + 1 ))
     pg_has_path "$TEST_TMP/out" "$f" || _fail "dxberry.js reads $f, which dxberry-status --json does not produce"
   done
-  (( n >= 40 )) || _fail "only $n fields found between the markers in dxberry.js"
+  (( n >= 60 )) || _fail "only $n fields found between the markers in dxberry.js"
+}
+
+# pg_radio_fields: "COMMAND:PATH" entries dxberry.js declares it reads from dxberry-radio's own answers.
+pg_radio_fields() { sed -n '/radio-fields-begin/,/radio-fields-end/p' "$PG_DIR/dxberry.js" | grep -oE '"[a-z]+:[a-z0-9_.*]+"' | tr -d '"'; }
+
+test_page_reads_only_fields_that_dxberry_radio_produces() {
+  local DXB_RIGCTL=cli_rigctl f n=0
+  cli_env
+  cli models --json || _fail "dxberry-radio models --json failed: $(cat "$TEST_TMP/err")"
+  cp "$TEST_TMP/out" "$TEST_TMP/models.json"
+  cli add radio1 --audio 1 --cat 2 --json || _fail "dxberry-radio add --json failed: $(cat "$TEST_TMP/err")"
+  cp "$TEST_TMP/out" "$TEST_TMP/add.json"
+  for f in $(pg_radio_fields); do
+    n=$(( n + 1 ))
+    pg_has_path "$TEST_TMP/${f%%:*}.json" "${f#*:}" || _fail "dxberry.js reads ${f#*:} from dxberry-radio ${f%%:*} --json, which it does not produce"
+  done
+  (( n >= 4 )) || _fail "only $n fields found between the radio-fields markers in dxberry.js"
+}
+
+test_page_drives_radios_through_dxberry_radio() {
+  local js=$PG_DIR/dxberry.js
+  assert_file_contains "$js" 'const RADIO = "/opt/dxberry/bin/dxberry-radio";'
+  assert_file_contains "$js" '["claim", name, app.name]'
+  assert_file_contains "$js" '["release", name]'
+  assert_file_contains "$js" '["remove", name]'
+  assert_file_contains "$js" '4: "the device is not plugged in"'
+  assert_file_contains "$js" '5: "the application could not take the radio, so it was left released"'
+  assert_file_contains "$js" "failure(t.what, ex, RADIO_EXITS)"
+}
+
+# A channel Graywolf has that is not named after a DXBerry radio was made by hand (spec 8.3).
+test_page_flags_graywolf_channels_made_by_hand() {
+  command -v node > /dev/null 2>&1 || return 0
+  local fn got
+  fn=$(sed -n '/^function handMadeChannels(/,/^}/p' "$PG_DIR/dxberry.js")
+  got=$(node -e "let last = {graywolf: {ok: true, api_ok: true, channels: [{name: 'VHF APRS'}, {name: 'radio1'}]}, radios: {radios: {radio1: {}}}};
+$fn
+console.log(JSON.stringify(handMadeChannels()));
+last.graywolf.api_ok = false;
+console.log(JSON.stringify(handMadeChannels()));")
+  assert_eq "$(sed -n 1p <<< "$got")" '["VHF APRS"]'
+  assert_eq "$(sed -n 2p <<< "$got")" '[]'
+}
+
+# Release and Remove stop an application that owns no other radio (plumbing spec 9.2); the page
+# must say so before it happens.
+test_page_says_when_the_owner_will_stop() {
+  command -v node > /dev/null 2>&1 || return 0
+  local fn got
+  fn=$(sed -n '/^function ownsOthers(/,/^}/p' "$PG_DIR/dxberry.js")
+  got=$(node -e "let last = {radios: {radios: {radio1: {owner: 'graywolf'}, radio2: {owner: ''}}}};
+$fn
+console.log(ownsOthers('graywolf', 'radio1'));
+last.radios.radios.radio2.owner = 'graywolf';
+console.log(ownsOthers('graywolf', 'radio1'));")
+  assert_eq "$got" "$(printf 'false\ntrue')"
 }

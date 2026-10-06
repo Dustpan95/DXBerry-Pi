@@ -83,3 +83,7 @@ dialog p { margin: 0 0 6px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .card.wide { grid-column: 1 / -1; }
 .btn[disabled] { opacity: 0.5; cursor: not-allowed; border-color: var(--line); }
+h3 { font-size: 14px; margin: 18px 0 0; }
+.radio { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.radio-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-bottom: 8px; }
+.radio .actions { margin-top: 10px; }
