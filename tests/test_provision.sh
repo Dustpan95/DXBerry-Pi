@@ -282,6 +282,10 @@ test_run_mode_restarts_netwatch_last_and_never_reboots() {
   assert_eq "$rc" "0"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "reboot"
   assert_eq "$(tail -1 "$TEST_TMP/calls")" "systemd-run --quiet --on-active=3 systemctl restart dxberry-netwatch"
+  # netwatch adopts an interface that is already up, so the restart does not apply a new address:
+  # the operator is told to restart the Pi, never to expect the new address now
+  assert_file_contains "$DXB_LOG_FILE" "An interface that is already up keeps its old settings until it is cycled or the Pi restarts: run sudo reboot to apply the change."
+  assert_file_not_contains "$DXB_LOG_FILE" "reconnect at the new address"
   # Run mode means "first boot already happened"; it must never write the marker itself, gate or
   # no gate - only a --first-boot run whose gate passed does that.
   [[ -f $DXB_STATE_DIR/provisioned ]] && _fail "run mode must never write the provisioned marker"

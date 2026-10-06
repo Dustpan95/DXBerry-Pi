@@ -166,7 +166,9 @@ main() {
   elif [[ $DXB_MODE == first-boot ]]; then
     dxb_warn "not rebooting; this session stays up. Fix the network problem in $boot/dxberry-status.txt, then run: sudo dxberry-provision --first-boot"
   elif (( DXB_NET_CHANGED )); then
-    dxb_warn "network configuration changed; restarting dxberry-netwatch in 3s (an SSH session may drop and can reconnect at the new address)"
+    # netwatch adopts an interface that is already up (base spec 8.4), so this restart does not
+    # apply a changed address or gateway to it
+    dxb_warn "network configuration changed; restarting dxberry-netwatch in 3s. An interface that is already up keeps its old settings until it is cycled or the Pi restarts: run sudo reboot to apply the change."
     systemd-run --quiet --on-active=3 systemctl restart dxberry-netwatch 2> /dev/null || systemctl restart dxberry-netwatch
   fi
   return $rc
