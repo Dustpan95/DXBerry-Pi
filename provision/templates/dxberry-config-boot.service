@@ -5,6 +5,7 @@
 Description=DXBerry-Pi: undo a network change that was never kept
 ConditionPathExists=/var/lib/dxberry/network-snapshot/manifest
 DefaultDependencies=no
+RequiresMountsFor=/var/lib/dxberry
 After=local-fs.target
 Before=dxberry-netwatch.service network-pre.target
 

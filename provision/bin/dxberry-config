@@ -99,6 +99,10 @@ cmd_set() {
       fi
       _set_check "$k" "$v" || return 2
       _set_network_check "$k" || return 2
+      if ! dxb_settings_secret_ok "$v"; then
+        echo "$k: a password cannot start or end with a space or be wrapped in double quotes (dxberry.txt would change it)" >&2
+        return 2
+      fi
       new=$(dxb_settings_edit "$k" "$v" <<< "$new"); n=$(( n + 1 ))
     done
   fi

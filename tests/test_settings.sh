@@ -140,7 +140,7 @@ se_netsafe_env() {
   se_env
   export DXB_NETSAFE_DIR=$TEST_TMP/state/network-snapshot DXB_NETSAFE_AT=$TEST_TMP/run/config-revert-at \
     DXB_NETSAFE_FILES="$TEST_TMP/etc/interfaces $TEST_TMP/etc/eth0.conf $TEST_TMP/etc/wlan0.conf $TEST_TMP/etc/wpa.conf" \
-    DXB_SYSTEMD_RUN=se_systemd_run DXB_CONFIG_CMD=/opt/dxberry/bin/dxberry-config
+    DXB_SYSTEMD_RUN=se_systemd_run DXB_CONFIG_CMD=/opt/dxberry/bin/dxberry-config DXB_DIETPI_WIFI=$TEST_TMP/boot/dietpi-wifi.txt
   mkdir -p "$TEST_TMP/etc"
   echo 'source interfaces.d/*' > "$TEST_TMP/etc/interfaces"
   echo 'iface eth0 inet static' > "$TEST_TMP/etc/eth0.conf"
@@ -182,7 +182,8 @@ test_netsafe_arm_never_leaves_a_gap() {
     assert_ok dxb_netsafe_arm 600
     first=$(awk '{print $1}' "$DXB_NETSAFE_AT")
     assert_contains "$first" "dxberry-config-revert-"
-    assert_contains "$(cat "$TEST_TMP/calls")" "--on-active=600 --unit=$first /opt/dxberry/bin/dxberry-config revert"
+    # AccuracySec=1s: a timer's default accuracy (1 min) would fire the undo up to a minute late
+    assert_contains "$(cat "$TEST_TMP/calls")" "--on-active=600 --timer-property=AccuracySec=1s --unit=$first /opt/dxberry/bin/dxberry-config revert"
     assert_ok dxb_netsafe_arm 120
     second=$(awk '{print $1}' "$DXB_NETSAFE_AT")
     [[ $second != "$first" ]] || _fail "each arm needs its own unit name"
@@ -200,6 +201,21 @@ test_netsafe_arm_never_leaves_a_gap() {
     [[ -e $DXB_NETSAFE_AT ]] && _fail "disarm must forget the deadline"
     exit $(( TESTS_FAILED > before ? 1 : 0 ))
   ) || TESTS_FAILED=$(( TESTS_FAILED + 1 ))
+}
+
+# DietPi's WiFi file is DXB_DIETPI_WIFI (/boot/dietpi-wifi.txt), which is not next to dxberry.txt
+# when the boot partition is /boot/firmware: the snapshot must cover it where it is.
+test_netsafe_snapshot_covers_dietpis_wifi_file_where_it_is() {
+  local w=$TEST_TMP/dietpi/dietpi-wifi.txt
+  se_netsafe_env
+  mkdir -p "$TEST_TMP/dietpi"
+  printf "aWIFI_SSID[0]='Shack Net'\n" > "$w"
+  DXB_DIETPI_WIFI=$w dxb_netsafe_snapshot
+  assert_eq "$(awk -F'\t' -v p="$w" '$2 == p && $1 != "-" { print "kept" }' "$DXB_NETSAFE_DIR/manifest")" "kept"
+  assert_not_contains "$(cat "$DXB_NETSAFE_DIR/manifest")" "$DXB_BOOT_DIR/dietpi-wifi.txt"
+  printf "aWIFI_SSID[0]='Other'\n" > "$w"
+  assert_ok dxb_netsafe_restore
+  assert_file_contains "$w" "Shack Net"
 }
 
 test_netsafe_revert_at_reports_the_deadline() {
@@ -389,6 +405,27 @@ test_config_network_settings_are_refused_while_switched_off() {
   assert_eq "$(jq -r '.network_editable' "$TEST_TMP/out")" "false"
   se_cli get --json
   assert_eq "$(jq -r '.network_editable' "$TEST_TMP/out")" "true"
+}
+
+# dxberry.txt's parser trims spaces around a value and strips a pair of wrapping double quotes, so
+# such a password would silently not be the one typed (a console or WiFi lockout): refused, unprinted.
+test_config_set_refuses_a_password_the_file_would_change() {
+  local before p
+  se_cli_env
+  before=$(se_file)
+  for p in ' lead-pw-1' 'trail-pw-2 ' '"quoted-pw-3"'; do
+    printf 'PASSWORD=%s\n' "$p" | se_cli set --stdin; assert_eq "$?" "2"
+    assert_contains "$(cat "$TEST_TMP/err")" "PASSWORD: a password cannot start or end with a space or be wrapped in double quotes (dxberry.txt would change it)"
+    assert_not_contains "$(cat "$TEST_TMP/out" "$TEST_TMP/err")" "-pw-"
+  done
+  printf 'WIFI_PASSWORD=wifi-pw-4 \n' | se_cli set --stdin; assert_eq "$?" "2"
+  assert_contains "$(cat "$TEST_TMP/err")" "WIFI_PASSWORD: a password cannot start or end with a space"
+  assert_not_contains "$(cat "$TEST_TMP/err")" "-pw-"
+  assert_eq "$(se_file)" "$before"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemd-run"
+  # a quote at one end only, or spaces inside, are kept as typed
+  printf 'PASSWORD="half quoted pw\n' | se_cli set --stdin --json; assert_eq "$?" "0"
+  assert_eq "$(dxb_config_load "$DXB_BOOT_DIR/dxberry.txt" > /dev/null 2>&1; printf '%s' "${DXB_CFG[PASSWORD]}")" '"half quoted pw'
 }
 
 test_config_network_change_snapshots_and_arms_the_backstop() {

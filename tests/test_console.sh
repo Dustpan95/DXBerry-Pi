@@ -165,6 +165,8 @@ test_console_installs_the_network_undo_boot_unit_even_when_off() {
   co_run provision_console
   assert_file_contains "$DXB_NETSAFE_UNIT_FILE" "ExecStart=/opt/dxberry/bin/dxberry-config revert --boot"
   assert_file_contains "$DXB_NETSAFE_UNIT_FILE" "Before=dxberry-netwatch.service"
+  # the snapshot it restores lives under /var/lib/dxberry, which must be mounted first
+  assert_contains "$(sed -n '/^\[Unit\]/,/^\[Service\]/p' "$DXB_NETSAFE_UNIT_FILE")" "RequiresMountsFor=/var/lib/dxberry"
   assert_contains "$(co_calls)" "systemctl enable dxberry-config-boot.service"
   assert_eq "$(cat "$TEST_TMP/failed")" ""
   rm -f "$DXB_NETSAFE_UNIT_FILE"

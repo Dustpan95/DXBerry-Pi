@@ -23,6 +23,9 @@ dxb_settings_is_network_key() { _dxb_settings_in "$DXB_NETWORK_KEYS" "$1"; }
 dxb_settings_is_secret() { _dxb_settings_in "$DXB_SECRET_KEYS" "$1"; }
 # dxb_settings_value_ok VALUE: a dxberry.txt value is one line of printable text.
 dxb_settings_value_ok() { [[ $1 != *[[:cntrl:]]* ]]; }
+# dxb_settings_secret_ok VALUE: dxb_config_load trims spaces around a value and strips a pair of
+# wrapping double quotes, so a password with either would not be the one typed once it is read back.
+dxb_settings_secret_ok() { [[ $1 != [[:space:]]* && $1 != *[[:space:]] ]] && ! [[ ${#1} -ge 2 && $1 == \"*\" ]]; }
 
 # dxb_settings_get_json FILE: the console keys of FILE (spec 10.2 "get"): each key's value as
 # written and the value in effect after the validator's defaults; secrets only as set / not set,
@@ -126,11 +129,12 @@ dxb_settings_write() {
 
 # dxb_netsafe_files: every file a network change can touch, one per line - DietPi's and ifupdown's
 # network files, the WiFi credentials, and dxberry.txt itself (a replaced WiFi password is scrubbed
-# from dxberry.txt and lives on only in this snapshot).
+# from dxberry.txt and lives on only in this snapshot). DietPi's dietpi-wifi.txt is where network.sh
+# writes it (DXB_DIETPI_WIFI), not next to dxberry.txt: the boot partition may be /boot/firmware.
 dxb_netsafe_files() {
   local boot f
   boot=$(dxb_boot_dir)
-  for f in $DXB_NETSAFE_FILES "$boot/dxberry.txt" "$boot/dietpi-wifi.txt"; do printf '%s\n' "$f"; done
+  for f in $DXB_NETSAFE_FILES "$boot/dxberry.txt" "${DXB_DIETPI_WIFI:-/boot/dietpi-wifi.txt}"; do printf '%s\n' "$f"; done
 }
 
 # dxb_netsafe_snapshot: copy every network file that exists into DXB_NETSAFE_DIR (0700) with a
@@ -191,11 +195,12 @@ dxb_netsafe_revert_at() { [[ -f $DXB_NETSAFE_AT ]] && awk '{ print $2; exit }' "
 # dxb_netsafe_arm SECONDS: arm a timer that runs "dxberry-config revert" SECONDS from now, then stop
 # the one armed before, so there is never a moment without one, and record the new unit and its
 # deadline for the page's countdown. Each arm has its own unit name: a transient timer cannot be
-# armed twice under one name. 0 ok, 6 failed (the earlier timer stays armed).
+# armed twice under one name. AccuracySec=1s: a timer's default accuracy of one minute would fire the
+# undo up to a minute late. 0 ok, 6 failed (the earlier timer stays armed).
 dxb_netsafe_arm() {
   local unit old
   unit="dxberry-config-revert-$(date +%s%N)"
-  "$DXB_SYSTEMD_RUN" --quiet --collect --on-active="$1" --unit="$unit" "$DXB_CONFIG_CMD" revert > /dev/null 2>&1 \
+  "$DXB_SYSTEMD_RUN" --quiet --collect --on-active="$1" --timer-property=AccuracySec=1s --unit="$unit" "$DXB_CONFIG_CMD" revert > /dev/null 2>&1 \
     || { dxb_error "could not arm the network undo timer"; return 6; }
   old=$(_dxb_netsafe_unit)
   [[ -n $old ]] && systemctl stop "$old.timer" > /dev/null 2>&1

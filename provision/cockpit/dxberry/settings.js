@@ -377,6 +377,9 @@ function cfgFormArgs() {
     }
   }
   if (secrets.some(s => /[\u0000-\u001f\u007f]/.test(s))) return { error: "A password cannot contain a line break or another control character." };
+  // dxberry.txt's parser trims spaces around a value and strips wrapping double quotes
+  const changedByFile = s => { const p = s.slice(s.indexOf("=") + 1); return /^\s|\s$/.test(p) || (p.length >= 2 && p.startsWith('"') && p.endsWith('"')); };
+  if (secrets.some(changedByFile)) return { error: "A password cannot start or end with a space or be wrapped in double quotes (dxberry.txt would change it)." };
   if (!args.length && !secrets.length) return { args: null, stdin: "", warn };
   return { args: ["set", ...args, ...(secrets.length ? ["--stdin"] : [])], stdin: secrets.map(s => s + "\n").join(""), warn };
 }

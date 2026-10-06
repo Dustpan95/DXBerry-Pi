@@ -414,10 +414,24 @@ Object.assign(vals, {'cf-HOSTNAME': 'shackpi', 'cf-TIMEZONE': 'America/Chicago',
 console.log(JSON.stringify(cfgFormArgs()));
 vals['cf-PASSWORD2'] = 'a';
 const r = cfgFormArgs();
-console.log(JSON.stringify(r.args), JSON.stringify(r.stdin), r.warn.length);")
+console.log(JSON.stringify(r.args), JSON.stringify(r.stdin), r.warn.length);
+vals['cf-PASSWORD'] = vals['cf-PASSWORD2'] = ' padded pass';
+console.log(JSON.stringify(cfgFormArgs()));
+vals['cf-PASSWORD'] = vals['cf-PASSWORD2'] = '\"quoted pass\"';
+console.log(JSON.stringify(cfgFormArgs()));
+vals['cf-PASSWORD'] = vals['cf-PASSWORD2'] = '\"half quoted';
+console.log(JSON.stringify(cfgFormArgs().stdin));
+settings.form.section = 'network';
+vals['cf-WIFI_PASSWORD'] = 'wifi pass ';
+console.log(JSON.stringify(cfgFormArgs()));")
   assert_eq "$(sed -n 1p <<< "$got")" '{"args":["set","STATIC_IP=10.0.0.91/24"],"stdin":"","warn":[]}'
   assert_eq "$(sed -n 2p <<< "$got")" '{"args":["set","STATIC_IP=10.0.0.91/24","--stdin"],"stdin":"WIFI_PASSWORD=new wifi pass\n","warn":[]}'
   assert_eq "$(sed -n 3p <<< "$got")" '["set","STATIC_IP=","GATEWAY=","--stdin"]'
   assert_contains "$(sed -n 4p <<< "$got")" "differ"
   assert_eq "$(sed -n 5p <<< "$got")" '["set","TIMEZONE=America/Chicago","CONSOLE=off","--stdin"] "PASSWORD=a\n" 2'
+  # dxberry.txt's parser would trim a space at either end, or strip wrapping double quotes
+  assert_contains "$(sed -n 6p <<< "$got")" '"error":"A password cannot start or end with a space or be wrapped in double quotes (dxberry.txt would change it)."'
+  assert_contains "$(sed -n 7p <<< "$got")" '"error":"A password cannot start or end with a space'
+  assert_eq "$(sed -n 8p <<< "$got")" '"PASSWORD=\"half quoted\n"'
+  assert_contains "$(sed -n 9p <<< "$got")" '"error":"A password cannot start or end with a space'
 }
