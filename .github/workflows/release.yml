@@ -40,6 +40,7 @@ jobs:
             echo
             echo "DietPi base image: $(cat build/work/*.img.xz.sha256)"
             echo "Graywolf: latest release at first boot (pin with GRAYWOLF_VERSION=)."
+            echo "Console: https://<the Pi's address>/ (log in as dietpi with PASSWORD)."
           } > notes.md
       - name: Publish
         env:
