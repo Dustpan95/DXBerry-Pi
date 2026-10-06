@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DXBerry</title>
+  <link rel="stylesheet" href="dxberry.css">
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>DXBerry-Pi <span id="host" class="host"></span></h1>
+      <p id="updated" class="muted"></p>
+    </div>
+    <button id="refresh" class="btn" type="button">Refresh</button>
+  </header>
+  <div id="notices" aria-live="polite"></div>
+  <main id="cards" class="cards"><p class="muted">Reading the station&hellip;</p></main>
+  <dialog id="confirm">
+    <form method="dialog">
+      <h2></h2>
+      <p></p>
+      <div class="actions">
+        <button class="btn" value="cancel">Cancel</button>
+        <button class="btn danger ok" value="ok">OK</button>
+      </div>
+    </form>
+  </dialog>
+  <script src="../base1/cockpit.js"></script>
+  <script src="dxberry.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "requires": {
+    "cockpit": "239"
+  },
+  "menu": {
+    "index": {
+      "label": "DXBerry",
+      "order": -1,
+      "keywords": [
+        { "matches": ["ham", "radio", "aprs", "graywolf", "igate", "station", "dxberry"] }
+      ]
+    }
+  }
+}

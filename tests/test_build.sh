@@ -69,3 +69,11 @@ test_build_ships_the_console_step() {
   assert_contains "$required" "provision/lib/console.sh"
   assert_contains "$required" "provision/templates/cockpit-listen.conf"
 }
+
+test_build_ships_the_console_page() {
+  local required f
+  required=$(sed -n '/^REQUIRED_FILES=(/,/^)/p' "$DXB_ROOT/build/build-image.sh")
+  for f in manifest.json index.html dxberry.js dxberry.css; do
+    assert_contains "$required" "provision/cockpit/dxberry/$f"
+  done
+}
