@@ -36,7 +36,7 @@ test_page_manifest_makes_dxberry_the_first_menu_entry() {
 # Cockpit's page policy allows this package's own files only: no inline script, handler or style.
 test_page_html_loads_only_its_own_files() {
   local html=$PG_DIR/index.html
-  assert_eq "$(grep -oE 'src="[^"]*"' "$html" | sort | tr '\n' ' ')" 'src="../base1/cockpit.js" src="dxberry.js" '
+  assert_eq "$(grep -oE 'src="[^"]*"' "$html" | sort | tr '\n' ' ')" 'src="../base1/cockpit.js" src="dxberry.js" src="settings.js" '
   assert_eq "$(grep -oE 'href="[^"]*"' "$html" | tr '\n' ' ')" 'href="dxberry.css" '
   assert_file_not_contains "$html" "http"
   assert_file_not_contains "$html" "style="
@@ -353,4 +353,71 @@ Promise.resolve().then(() => {
 });
 ")
   assert_eq "$got" '{"dialogOpen":true,"closes":0,"savingCalls":[true],"notices":["radio1 updated."],"refreshCalls":1}'
+}
+
+# pg_config_fields: "COMMAND:PATH" entries settings.js declares it reads from dxberry-config.
+pg_config_fields() { sed -n '/\/\* config-fields-begin/,/\/\* config-fields-end/p' "$PG_DIR/settings.js" | grep -oE '"[a-z]+:[A-Za-z0-9_.*]+"' | tr -d '"'; }
+
+test_page_reads_only_fields_that_dxberry_config_produces() {
+  local f n=0
+  se_cli_env
+  se_cli get --json || _fail "dxberry-config get --json failed: $(cat "$TEST_TMP/err")"
+  cp "$TEST_TMP/out" "$TEST_TMP/get.json"
+  se_cli set HOSTNAME=pagetest --json || _fail "dxberry-config set --json failed: $(cat "$TEST_TMP/err")"
+  cp "$TEST_TMP/out" "$TEST_TMP/set.json"
+  se_cli job --json || _fail "dxberry-config job --json failed: $(cat "$TEST_TMP/err")"
+  cp "$TEST_TMP/out" "$TEST_TMP/job.json"
+  for f in $(pg_config_fields); do
+    n=$(( n + 1 ))
+    pg_has_path "$TEST_TMP/${f%%:*}.json" "${f#*:}" || _fail "settings.js reads ${f#*:} from dxberry-config ${f%%:*} --json, which it does not produce"
+  done
+  (( n >= 25 )) || _fail "only $n fields found between the config-fields markers in settings.js"
+}
+
+# settings.js shares dxberry.js's global scope: its own top-level names start with cfg / CONFIG
+# (plus the one state object "settings"), so the two files can never clash.
+test_page_settings_script_keeps_to_its_own_names() {
+  local js=$PG_DIR/settings.js bad
+  bad=$(grep -oE '^(function|const|let|var) [A-Za-z_][A-Za-z0-9_]*' "$js" | awk '{print $2}' | grep -vE '^(cfg|CONFIG)|^settings$' || true)
+  assert_eq "$bad" ""
+  assert_file_not_contains "$js" "innerHTML"
+  assert_file_contains "$js" 'const CONFIG = "/opt/dxberry/bin/dxberry-config";'
+  assert_file_contains "$js" '"--stdin"'
+  command -v node > /dev/null 2>&1 || return 0
+  cat "$PG_DIR/dxberry.js" "$js" > "$TEST_TMP/both.js"
+  node --check "$TEST_TMP/both.js" 2> "$TEST_TMP/node.err" || _fail "dxberry.js + settings.js do not parse as one script: $(cat "$TEST_TMP/node.err")"
+}
+
+# The form sends only what changed, passwords only on stdin, and network and system apart.
+test_page_settings_form_args() {
+  command -v node > /dev/null 2>&1 || return 0
+  local fn got
+  fn=$(sed -n '/^function cfgFormArgs(/,/^}/p' "$PG_DIR/settings.js")
+  got=$(node -e "
+const vals = {'cf-mode': 'static', 'cf-STATIC_IP': '10.0.0.91/24', 'cf-GATEWAY': '10.0.0.1', 'cf-DNS': '', 'cf-WIFI_SSID': 'Shack Net',
+  'cf-WIFI_PASSWORD': '', 'cf-WIFI_COUNTRY': 'us'};
+const document = { getElementById: id => (id in vals ? { value: vals[id] } : null) };
+const keys = {STATIC_IP: {value: '10.0.0.90/24'}, GATEWAY: {value: '10.0.0.1'}, DNS: {value: ''}, WIFI_SSID: {value: 'Shack Net'},
+  WIFI_PASSWORD: {secret: true, set: true}, WIFI_COUNTRY: {value: 'US'}, HOSTNAME: {value: 'shackpi'}, TIMEZONE: {value: ''},
+  PASSWORD: {secret: true, set: true}, SSH_PUBKEY: {value: ''}, GPS_DEVICE: {value: ''}, GPS_BAUD: {value: ''}, GPS_PPS: {value: ''},
+  POSITION_LOG: {value: ''}, CONSOLE: {value: ''}};
+const settings = {form: {section: 'network'}, values: {keys}};
+$fn
+console.log(JSON.stringify(cfgFormArgs()));
+vals['cf-WIFI_PASSWORD'] = 'new wifi pass';
+console.log(JSON.stringify(cfgFormArgs()));
+vals['cf-mode'] = 'dhcp';
+console.log(JSON.stringify(cfgFormArgs().args));
+settings.form.section = 'system';
+Object.assign(vals, {'cf-HOSTNAME': 'shackpi', 'cf-TIMEZONE': 'America/Chicago', 'cf-PASSWORD': 'a', 'cf-PASSWORD2': 'b', 'cf-SSH_PUBKEY': '',
+  'cf-GPS_DEVICE': '', 'cf-GPS_PATH': '', 'cf-GPS_BAUD': '', 'cf-GPS_PPS': '', 'cf-POSITION_LOG': '', 'cf-CONSOLE': 'off'});
+console.log(JSON.stringify(cfgFormArgs()));
+vals['cf-PASSWORD2'] = 'a';
+const r = cfgFormArgs();
+console.log(JSON.stringify(r.args), JSON.stringify(r.stdin), r.warn.length);")
+  assert_eq "$(sed -n 1p <<< "$got")" '{"args":["set","STATIC_IP=10.0.0.91/24"],"stdin":"","warn":[]}'
+  assert_eq "$(sed -n 2p <<< "$got")" '{"args":["set","STATIC_IP=10.0.0.91/24","--stdin"],"stdin":"WIFI_PASSWORD=new wifi pass\n","warn":[]}'
+  assert_eq "$(sed -n 3p <<< "$got")" '["set","STATIC_IP=","GATEWAY=","--stdin"]'
+  assert_contains "$(sed -n 4p <<< "$got")" "differ"
+  assert_eq "$(sed -n 5p <<< "$got")" '["set","TIMEZONE=America/Chicago","CONSOLE=off","--stdin"] "PASSWORD=a\n" 2'
 }

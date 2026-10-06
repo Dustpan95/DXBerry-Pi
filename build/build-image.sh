@@ -71,6 +71,7 @@ REQUIRED_FILES=(
   provision/bin/dxberry-status provision/lib/status.sh
   provision/lib/console.sh provision/templates/cockpit-listen.conf
   provision/cockpit/dxberry/manifest.json provision/cockpit/dxberry/index.html provision/cockpit/dxberry/dxberry.js provision/cockpit/dxberry/dxberry.css
+  provision/cockpit/dxberry/settings.js
   provision/bin/dxberry-config provision/lib/settings.sh provision/templates/dxberry-config-boot.service
 )
 EXECUTABLE_FILES=(

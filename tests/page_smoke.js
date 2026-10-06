@@ -96,14 +96,29 @@ const rerr = mk("p", "radio-form-error", "error"); rerr.hidden = true;
 rform.append(mk("h2", "radio-dialog-title"), mk("div", "radio-fields", "form-grid"), rerr, mk("button", "radio-cancel", "btn"), mk("button", "radio-save", "btn primary"));
 radioD.append(rform);
 const cards = mk("main", "cards", "cards"); cards.append("Reading the station…");
-doc.body.append(mk("span", "host"), mk("p", "updated"), mk("button", "refresh"), mk("div", "notices"), cards, confirmD, radioD);
+// settings.js's own elements: the section it fills, and its own dialog.
+const settingsSec = mk("section", "settings", "card settings");
+const settingsD = mk("dialog", "settings-dialog");
+const sform = mk("form", "settings-form");
+const serr = mk("p", "settings-form-error", "error"); serr.hidden = true;
+sform.append(mk("h2", "settings-dialog-title"), mk("div", "settings-fields", "form-grid"), serr, mk("button", "settings-cancel", "btn"), mk("button", "settings-save", "btn primary"));
+settingsD.append(sform);
+doc.body.append(mk("span", "host"), mk("p", "updated"), mk("button", "refresh"), mk("div", "notices"), cards, confirmD, radioD, settingsSec, settingsD);
 
 // ---- fake cockpit -----------------------------------------------------------------------------
 const calls = [];
 let answer = () => Promise.reject({ problem: "not-found" });
 const cockpit = {
   hidden: false,
-  spawn(args, opts) { calls.push({ args, opts }); return answer(args); },
+  // spawn's promise carries input(data), like cockpit's own: it records the data onto this call and
+  // returns the same promise, for run(args, input)'s p.input(input) to chain on.
+  spawn(args, opts) {
+    const call = { args, opts };
+    calls.push(call);
+    const p = answer(args);
+    p.input = data => { call.input = data; return p; };
+    return p;
+  },
   jump(url) { calls.push({ jump: url }); },
   addEventListener() {},
 };
@@ -136,20 +151,46 @@ const status = {
 const models = [{ model: 1, mfg: "Hamlib", name: "Dummy", status: "Stable" }, { model: 4, mfg: "FLRig", name: "", status: "Stable" },
   { model: 3073, mfg: "Icom", name: "IC-7300", status: "Stable" }, { model: 3085, mfg: "Icom", name: "IC-705", status: "Stable" }];
 
+// settings.js's own fixtures: a provisioned Pi's console keys (effective values; passwords set),
+// and the first, idle dxberry-config job answer.
+const cfgKeys = {
+  STATIC_IP: { value: "10.0.0.90/24", effective: "10.0.0.90/24" },
+  GATEWAY: { value: "10.0.0.1", effective: "10.0.0.1" },
+  DNS: { value: "", effective: "10.0.0.1" },
+  WIFI_SSID: { value: "Shack Net" },
+  WIFI_PASSWORD: { secret: true, set: true },
+  WIFI_COUNTRY: { value: "US" },
+  HOSTNAME: { value: "shackpi", effective: "shackpi" },
+  TIMEZONE: { value: "America/Chicago", effective: "America/Chicago" },
+  PASSWORD: { secret: true, set: true },
+  SSH_PUBKEY: { value: "" },
+  GPS_DEVICE: { value: "", effective: "auto" },
+  GPS_BAUD: { value: "", effective: "57600" },
+  GPS_PPS: { value: "" },
+  POSITION_LOG: { value: "", effective: "off" },
+  CONSOLE: { value: "", effective: "on" },
+};
+const cfgGetAnswer = () => JSON.stringify({ file: "/boot/dxberry.txt", valid: true, errors: [], keys: cfgKeys });
+const cfgFirstJob = () => JSON.stringify({ now: 1000, pending: false, revert_at: null, reverted_at: null, reboot_required: false, job: null });
+
 const ctx = {
-  document: doc, cockpit, console, setTimeout: (f) => 0, setInterval: () => 0,
+  document: doc, cockpit, console, setTimeout: (f) => 0, setInterval: () => 0, clearTimeout: () => 0,
   window: { addEventListener() {} }, localStorage: { getItem: () => null }, location: { hostname: "10.0.0.90" }, Node: N,
 };
 vm.createContext(ctx);
 const flush = () => new Promise(r => setImmediate(r));
+const settingsPath = path.replace(/dxberry\.js$/, "settings.js");
 
 (async () => {
   answer = args => {
     if (args[0].endsWith("dxberry-status")) return Promise.resolve(JSON.stringify(status));
     if (args[1] === "models") return Promise.resolve(JSON.stringify(models));
+    if (args[0].endsWith("dxberry-config") && args[1] === "get") return Promise.resolve(cfgGetAnswer());
+    if (args[0].endsWith("dxberry-config") && args[1] === "job") return Promise.resolve(cfgFirstJob());
     return Promise.reject({ problem: "not-found" });
   };
   vm.runInContext(fs.readFileSync(path, "utf8"), ctx, { filename: "dxberry.js" });
+  vm.runInContext(fs.readFileSync(settingsPath, "utf8"), ctx, { filename: "settings.js" });
   await flush(); await flush(); await flush();
   const text = () => cards.textContent;
   ok(cards.querySelectorAll("section").length === 8, "eight cards render");
@@ -318,6 +359,91 @@ const flush = () => new Promise(r => setImmediate(r));
   status.radios.radios.radio1.present = false;
   doc.getElementById("refresh").click(); await flush(); await flush();
   ok(btnByKey("radio:radio1:give:graywolf").disabled && text().includes("unplugged"), "Give to disabled while unplugged");
+
+  // ---- the Settings section (settings.js) --------------------------------------------------
+  const sbtn = k => doc.querySelectorAll("[data-key]").find(e => e.dataset.key === k);
+  const stext = () => settingsSec.textContent;
+  ok(stext().includes("Hostname") && stext().includes("shackpi"), "Settings shows the hostname");
+  ok(stext().includes("Address") && stext().includes("10.0.0.90/24 (fixed)"), "Settings shows the current address");
+  ok(stext().includes("WiFi") && stext().includes("Shack Net (US), password set"), "Settings shows the WiFi network");
+  ok(stext().includes("Login password") && stext().includes("set"), "Settings shows the login password is set");
+  ok(!stext().includes("<applied>"), "Settings never shows the raw <applied> marker");
+
+  // From here on, dxberry-config's own answers drive the section: a successful network save makes
+  // its job pending (Keep/Undo), CONSOLE=off is refused by the validator.
+  let jobAnswer = { now: 1000, pending: false, revert_at: null, reverted_at: null, reboot_required: false, job: null };
+  answer = args => {
+    if (!args[0].endsWith("dxberry-config")) return Promise.reject({ problem: "not-found" });
+    const cmd = args[1];
+    if (cmd === "get") return Promise.resolve(cfgGetAnswer());
+    if (cmd === "job") return Promise.resolve(JSON.stringify(jobAnswer));
+    if (cmd === "set") {
+      if (args.includes("CONSOLE=off")) {
+        return Promise.reject({ exit_status: 4,
+          message: "dxberry.txt would not be valid, so nothing was written:\n  line 3: GATEWAY is not inside 10.0.0.90/24" });
+      }
+      jobAnswer = { now: 1000, pending: true, revert_at: 1090, reverted_at: null, reboot_required: false,
+        job: { unit: "dxberry-job-config-1", state: "finished", exit: 0, changed: ["WIFI_SSID"], network: true, lines: [] } };
+      return Promise.resolve('{"ok":true,"changed":["WIFI_SSID"],"job":"dxberry-job-config-1","network":true}');
+    }
+    if (cmd === "confirm") {
+      jobAnswer = Object.assign({}, jobAnswer, { pending: false, revert_at: null });
+      return Promise.resolve('{"ok":true,"kept":true}');
+    }
+    return Promise.reject({ problem: "not-found" });
+  };
+
+  // Change network settings: opens with the current address; DHCP hides the address fields.
+  sbtn("cfg:network").click();
+  await flush(); await flush();
+  ok(settingsD.open, "Change network settings opens the dialog");
+  ok($("cf-STATIC_IP").value === "10.0.0.90/24", "the dialog opens with the current address");
+  $("cf-mode").value = "dhcp"; $("cf-mode").fire("change");
+  ok($("cf-STATIC_IP").closest(".field").hidden === true, "switching to DHCP hides the address fields");
+  $("cf-mode").value = "static"; $("cf-mode").fire("change");
+  ok($("cf-STATIC_IP").closest(".field").hidden === false, "switching back to a fixed address shows them again");
+
+  // Save with a new WiFi password: only the password changed, and it travels on stdin, never argv.
+  $("cf-WIFI_PASSWORD").value = "new wifi pass";
+  sform.fire("submit");
+  await flush(); await flush(); await flush();
+  const setCall = calls.filter(c => c.args && c.args[0].endsWith("dxberry-config") && c.args[1] === "set").pop();
+  ok(setCall && setCall.args.join(" ") === "/opt/dxberry/bin/dxberry-config set --stdin --json",
+    "Save sends only --stdin, no plain KEY=VALUE args: " + (setCall && setCall.args.join(" ")));
+  ok(setCall && !setCall.args.some(a => a.includes("new wifi pass")), "the password never appears in the arguments");
+  ok(setCall && setCall.input === "WIFI_PASSWORD=new wifi pass\n", "the password is sent only on standard input: " + (setCall && JSON.stringify(setCall.input)));
+  ok(!settingsD.open, "the dialog closes on a successful save");
+
+  // The change is now pending: Keep these settings / Undo now, with a countdown near 1:30.
+  ok(stext().includes("Keep these settings") && stext().includes("Undo now"), "a pending network change offers Keep and Undo: " + stext());
+  const left = (() => { const m = /in (\d+):(\d\d) /.exec(stext()); return m ? Number(m[1]) * 60 + Number(m[2]) : null; })();
+  ok(left !== null && left >= 85 && left <= 90, "the countdown is near 1:30: " + stext());
+
+  // Keep these settings runs dxberry-config confirm --json.
+  sbtn("cfg:keep").click();
+  await flush(); await flush();
+  const confirmCall = calls.filter(c => c.args && c.args[1] === "confirm").pop();
+  ok(confirmCall && confirmCall.args.join(" ") === "/opt/dxberry/bin/dxberry-config confirm --json",
+    "Keep these settings runs dxberry-config confirm --json: " + (confirmCall && confirmCall.args.join(" ")));
+  ok(doc.getElementById("notices").textContent.includes("Network settings kept."), "a kept change says so");
+
+  // Change system settings: turning the console off asks first, naming what it does.
+  sbtn("cfg:system").click();
+  await flush(); await flush();
+  ok(settingsD.open && $("settings-dialog-title").textContent === "System settings", "Change system settings opens the dialog");
+  $("cf-CONSOLE").value = "off";
+  sform.fire("submit");
+  ok(confirmD.open && confirmD.querySelector("p").textContent.includes("CONSOLE=off turns this console off"),
+    "turning the console off asks first and names it: " + confirmD.querySelector("p").textContent);
+
+  // A refused save (the validator rejected it) shows the exit code's meaning and the validator's
+  // own line, in the still-open dialog.
+  confirmD.returnValue = "ok"; confirmD.close();
+  await flush(); await flush(); await flush();
+  ok(settingsD.open, "a refused save leaves the dialog open");
+  const serrText = $("settings-form-error").textContent;
+  ok(serrText.includes("the settings would not be valid") && serrText.includes("GATEWAY is not inside 10.0.0.90/24"),
+    "a refused save shows the exit code's meaning and the validator's line: " + serrText);
 
   console.log(failures ? `${failures} failure(s)` : "all ok");
   process.exit(failures ? 1 : 0);

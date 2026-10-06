@@ -97,3 +97,12 @@ h3 { font-size: 14px; margin: 18px 0 0; }
 .field input:focus-visible, .field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .field #rf-model-filter { margin-bottom: 6px; }
 .hint { margin: 4px 0 0; font-size: 12px; }
+.settings { margin-top: 16px; }
+.settings h3:first-of-type { margin-top: 6px; }
+.notice.keep { flex-wrap: wrap; align-items: center; }
+.notice.keep p { margin: 6px 0 0; }
+.job-log { margin-top: 12px; }
+.job-log summary { cursor: pointer; color: var(--muted); }
+pre.log { max-height: 260px; overflow: auto; margin: 8px 0 0; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; font: 12px/1.4 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; white-space: pre-wrap; }
+#settings-dialog { max-width: min(92vw, 560px); width: 100%; max-height: 90vh; overflow: auto; }

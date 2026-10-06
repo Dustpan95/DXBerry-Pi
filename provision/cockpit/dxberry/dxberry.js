@@ -501,8 +501,11 @@ function powerCard() {
 }
 
 // ---- actions ------------------------------------------------------------------------------
-function run(args) {
-  return cockpit.spawn(args, { superuser: "require", err: "message" });
+// run ARGS [INPUT]: the command as superuser; INPUT (passwords, for one) goes to its standard input,
+// never into ARGS. Cockpit's spawn promise sends it with input() and then closes stdin.
+function run(args, input) {
+  const p = cockpit.spawn(args, { superuser: "require", err: "message" });
+  return input === undefined ? p : p.input(input);
 }
 
 function openLog(unit) {
