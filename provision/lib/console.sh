@@ -78,6 +78,8 @@ dxb_console_listening_443() {
 # problem is a failed step named console and the rest of the run goes on.
 provision_console() {
   local rc restart_failed=0
+  # the network undo's boot unit is a safety net, not a console feature: installed whatever CONSOLE says
+  dxb_netsafe_install_unit || dxb_step_failed console "could not install dxberry-config-boot.service"
   if [[ ${DXB_CFG[CONSOLE]:-on} == off ]]; then
     if systemctl cat cockpit.socket > /dev/null 2>&1; then
       systemctl disable --now cockpit.socket > /dev/null 2>&1 || dxb_step_failed console "could not stop cockpit.socket"

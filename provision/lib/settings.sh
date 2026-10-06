@@ -105,3 +105,112 @@ dxb_settings_write() {
   dxb_write_if_changed "$file" "$content" > /dev/null 2>&1
   [[ -f $file && $(< "$file") == "$content" ]] || { dxb_error "could not write $file"; return 6; }
 }
+
+# ---- the network safety net (spec 10.3) ----------------------------------------------------
+: "${DXB_NETSAFE_DIR:=$DXB_STATE_DIR/network-snapshot}"
+: "${DXB_NETSAFE_AT:=$DXB_RUN_DIR/config-revert-at}"
+: "${DXB_NETSAFE_FILES:=/etc/network/interfaces /etc/network/interfaces.d/eth0.conf /etc/network/interfaces.d/wlan0.conf /etc/resolv.conf /var/lib/dietpi/dietpi-wifi.db /etc/wpa_supplicant/wpa_supplicant.conf}"
+: "${DXB_SYSTEMD_RUN:=systemd-run}"
+: "${DXB_CONFIG_CMD:=/opt/dxberry/bin/dxberry-config}"
+: "${DXB_NETSAFE_BACKSTOP_S:=600}"
+: "${DXB_NETSAFE_WINDOW_S:=120}"
+: "${DXB_TEMPLATES:=/opt/dxberry/templates}"
+
+# dxb_netsafe_files: every file a network change can touch, one per line - DietPi's and ifupdown's
+# network files, the WiFi credentials, and dxberry.txt itself (a replaced WiFi password is scrubbed
+# from dxberry.txt and lives on only in this snapshot).
+dxb_netsafe_files() {
+  local boot f
+  boot=$(dxb_boot_dir)
+  for f in $DXB_NETSAFE_FILES "$boot/dxberry.txt" "$boot/dietpi-wifi.txt"; do printf '%s\n' "$f"; done
+}
+
+# dxb_netsafe_snapshot: copy every network file that exists into DXB_NETSAFE_DIR (0700) with a
+# manifest of which existed; a file the change creates is removed on restore. The copies hold the
+# WiFi key, so nothing here prints them. 0 ok, 6 failed (no snapshot left behind).
+dxb_netsafe_snapshot() {
+  local f i=0
+  rm -rf "$DXB_NETSAFE_DIR"
+  ( umask 077; mkdir -p "$DXB_NETSAFE_DIR" ) || { dxb_error "could not create $DXB_NETSAFE_DIR"; return 6; }
+  chmod 700 "$DXB_NETSAFE_DIR"
+  while IFS= read -r f; do
+    i=$(( i + 1 ))
+    if [[ -f $f ]]; then
+      if ! cp -p "$f" "$DXB_NETSAFE_DIR/$i"; then
+        dxb_error "could not snapshot $f"; rm -rf "$DXB_NETSAFE_DIR"; return 6
+      fi
+      printf '%s\t%s\n' "$i" "$f" >> "$DXB_NETSAFE_DIR/manifest.new"
+    else
+      printf '%s\t%s\n' - "$f" >> "$DXB_NETSAFE_DIR/manifest.new"
+    fi
+  done < <(dxb_netsafe_files)
+  # the manifest appears last: its presence is what "a change is waiting" means
+  mv -f "$DXB_NETSAFE_DIR/manifest.new" "$DXB_NETSAFE_DIR/manifest"
+}
+
+dxb_netsafe_pending() { [[ -f $DXB_NETSAFE_DIR/manifest ]]; }
+
+# _dxb_netsafe_put SRC DEST: DEST becomes a copy of SRC through a temp file and a rename (so a
+# crash never leaves a half-written dxberry.txt), with SRC's mode where the filesystem has modes.
+_dxb_netsafe_put() {
+  mkdir -p "$(dirname "$2")" 2> /dev/null
+  cp "$1" "$2.dxbtmp.$$" || return 1
+  chmod --reference="$1" "$2.dxbtmp.$$" 2> /dev/null || true
+  mv -f "$2.dxbtmp.$$" "$2"
+}
+
+# dxb_netsafe_restore: put the snapshot back - files that existed are restored, files that did not
+# are removed - then drop the snapshot. 0 ok, 6 when a file could not be restored (the snapshot is
+# kept so it can be retried).
+dxb_netsafe_restore() {
+  local n f rc=0
+  dxb_netsafe_pending || { dxb_error "there is no network change to undo"; return 6; }
+  while IFS=$'\t' read -r n f; do
+    [[ -n $f ]] || continue
+    if [[ $n == - ]]; then
+      rm -f "$f" || { dxb_error "could not remove $f"; rc=6; }
+    else
+      _dxb_netsafe_put "$DXB_NETSAFE_DIR/$n" "$f" || { dxb_error "could not restore $f"; rc=6; }
+    fi
+  done < "$DXB_NETSAFE_DIR/manifest"
+  (( rc == 0 )) && rm -rf "$DXB_NETSAFE_DIR"
+  return $rc
+}
+
+_dxb_netsafe_unit() { [[ -f $DXB_NETSAFE_AT ]] && awk '{ print $1; exit }' "$DXB_NETSAFE_AT"; }
+dxb_netsafe_revert_at() { [[ -f $DXB_NETSAFE_AT ]] && awk '{ print $2; exit }' "$DXB_NETSAFE_AT"; return 0; }
+
+# dxb_netsafe_arm SECONDS: arm a timer that runs "dxberry-config revert" SECONDS from now, then stop
+# the one armed before, so there is never a moment without one, and record the new unit and its
+# deadline for the page's countdown. Each arm has its own unit name: a transient timer cannot be
+# armed twice under one name. 0 ok, 6 failed (the earlier timer stays armed).
+dxb_netsafe_arm() {
+  local unit old
+  unit="dxberry-config-revert-$(date +%s%N)"
+  "$DXB_SYSTEMD_RUN" --quiet --collect --on-active="$1" --unit="$unit" "$DXB_CONFIG_CMD" revert > /dev/null 2>&1 \
+    || { dxb_error "could not arm the network undo timer"; return 6; }
+  old=$(_dxb_netsafe_unit)
+  [[ -n $old ]] && systemctl stop "$old.timer" > /dev/null 2>&1
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  printf '%s %s\n' "$unit" "$(( $(date +%s) + $1 ))" > "$DXB_NETSAFE_AT"
+}
+
+dxb_netsafe_disarm() {
+  local u
+  u=$(_dxb_netsafe_unit)
+  [[ -n $u ]] && systemctl stop "$u.timer" > /dev/null 2>&1
+  rm -f "$DXB_NETSAFE_AT"
+  return 0
+}
+
+# dxb_netsafe_install_unit: the boot unit that undoes a change still waiting at boot (a transient
+# timer does not survive a restart). 0 installed or unchanged, 6 failed. The unit's path is worked
+# out here, not when this file is sourced, so a caller that sets DXB_SYSTEMD_DIR later still wins.
+dxb_netsafe_install_unit() {
+  local content f=${DXB_NETSAFE_UNIT_FILE:-${DXB_SYSTEMD_DIR:-/etc/systemd/system}/dxberry-config-boot.service}
+  content=$(< "$DXB_TEMPLATES/dxberry-config-boot.service") || { dxb_error "dxberry-config-boot.service template missing"; return 6; }
+  mkdir -p "$(dirname "$f")" 2> /dev/null
+  if dxb_write_if_changed "$f" "$content"; then systemctl daemon-reload > /dev/null 2>&1; fi
+  [[ -f $f && $(< "$f") == "$content" ]] || { dxb_error "could not write $f"; return 6; }
+  systemctl enable dxberry-config-boot.service > /dev/null 2>&1 || { dxb_error "could not enable dxberry-config-boot.service"; return 6; }
+}

@@ -3,11 +3,13 @@
 source "$DXB_LIB/common.sh"
 source "$DXB_LIB/config.sh"
 source "$DXB_LIB/console.sh"
+source "$DXB_LIB/settings.sh"
 
 co_env() {
   export DXB_STATE_DIR=$TEST_TMP/state DXB_LOG_FILE=$TEST_TMP/state/log DXB_TEMPLATES=$DXB_ROOT/provision/templates \
     DXB_COCKPIT_SRC=$TEST_TMP/opt/cockpit/dxberry DXB_COCKPIT_LINK=$TEST_TMP/usr-share-cockpit/dxberry \
-    DXB_COCKPIT_DROPIN=$TEST_TMP/systemd/cockpit.socket.d/dxberry-listen.conf
+    DXB_COCKPIT_DROPIN=$TEST_TMP/systemd/cockpit.socket.d/dxberry-listen.conf \
+    DXB_NETSAFE_UNIT_FILE=$TEST_TMP/units/dxberry-config-boot.service
   mkdir -p "$DXB_STATE_DIR" "$DXB_COCKPIT_SRC"
   : > "$TEST_TMP/calls"
   DXB_STATUS_LINES=(); DXB_FAILED_STEPS=()
@@ -155,4 +157,19 @@ test_console_listen_template_replaces_9090() {
   local t=$DXB_ROOT/provision/templates/cockpit-listen.conf
   assert_eq "$(grep -m1 '^ListenStream' "$t")" "ListenStream="
   assert_file_not_contains "$t" "9090"
+}
+
+# The boot unit that undoes an unkept network change is installed whatever CONSOLE says.
+test_console_installs_the_network_undo_boot_unit_even_when_off() {
+  co_env
+  co_run provision_console
+  assert_file_contains "$DXB_NETSAFE_UNIT_FILE" "ExecStart=/opt/dxberry/bin/dxberry-config revert --boot"
+  assert_file_contains "$DXB_NETSAFE_UNIT_FILE" "Before=dxberry-netwatch.service"
+  assert_contains "$(co_calls)" "systemctl enable dxberry-config-boot.service"
+  assert_eq "$(cat "$TEST_TMP/failed")" ""
+  rm -f "$DXB_NETSAFE_UNIT_FILE"
+  DXB_CFG[CONSOLE]=off
+  co_run provision_console
+  assert_file_contains "$DXB_NETSAFE_UNIT_FILE" "dxberry-config revert --boot"
+  assert_eq "$(cat "$TEST_TMP/status")" "console: off (CONSOLE=off)"
 }

@@ -511,5 +511,6 @@ test_run_mode_writes_the_reboot_flag_when_a_reboot_is_needed() {
     main
   ) > /dev/null 2>&1
   [[ -e $DXB_REBOOT_FLAG ]] && _fail "a run that needs no reboot must not write $DXB_REBOOT_FLAG"
+  unset DXB_REBOOT_FLAG
   return 0
 }

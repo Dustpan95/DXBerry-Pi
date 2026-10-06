@@ -6,7 +6,7 @@
 set -uo pipefail
 
 DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
-for _m in common config system network storage graywolf radio radio_udev rigctld gps console scrub; do
+for _m in common config system network storage graywolf radio radio_udev rigctld gps settings console scrub; do
   # shellcheck disable=SC1090
   source "$DXB_LIB/$_m.sh"
 done

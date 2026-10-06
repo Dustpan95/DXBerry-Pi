@@ -1,0 +1,16 @@
+# Installed by DXBerry-Pi. A network change made from the console undoes itself unless it is kept;
+# the undo timer does not survive a restart, so a change still waiting at boot is undone here,
+# before dxberry-netwatch brings the network up.
+[Unit]
+Description=DXBerry-Pi: undo a network change that was never kept
+ConditionPathExists=/var/lib/dxberry/network-snapshot/manifest
+DefaultDependencies=no
+After=local-fs.target
+Before=dxberry-netwatch.service network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/dxberry/bin/dxberry-config revert --boot
+
+[Install]
+WantedBy=multi-user.target

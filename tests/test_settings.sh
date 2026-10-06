@@ -134,3 +134,73 @@ test_settings_temp_files_stay_private_and_are_removed() {
   dxb_settings_validate "$new" > /dev/null
   assert_eq "$(find "$DXB_STATE_DIR" -maxdepth 1 -name '.settings.*' | wc -l)" "0"
 }
+
+# se_netsafe_env: se_env plus fake network files and a systemd-run that records what it arms.
+se_netsafe_env() {
+  se_env
+  export DXB_NETSAFE_DIR=$TEST_TMP/state/network-snapshot DXB_NETSAFE_AT=$TEST_TMP/run/config-revert-at \
+    DXB_NETSAFE_FILES="$TEST_TMP/etc/interfaces $TEST_TMP/etc/eth0.conf $TEST_TMP/etc/wlan0.conf $TEST_TMP/etc/wpa.conf" \
+    DXB_SYSTEMD_RUN=se_systemd_run DXB_CONFIG_CMD=/opt/dxberry/bin/dxberry-config
+  mkdir -p "$TEST_TMP/etc"
+  echo 'source interfaces.d/*' > "$TEST_TMP/etc/interfaces"
+  echo 'iface eth0 inet static' > "$TEST_TMP/etc/eth0.conf"
+  ( umask 077; echo 'psk="old-secret"' > "$TEST_TMP/etc/wpa.conf" )
+  : > "$TEST_TMP/calls"
+}
+se_systemd_run() { echo "systemd-run $*" >> "$TEST_TMP/calls"; [[ ! -f $TEST_TMP/systemd-run-fails ]]; }
+
+test_netsafe_snapshot_and_restore_put_every_file_back() {
+  se_netsafe_env
+  assert_ok dxb_netsafe_snapshot
+  assert_eq "$(stat -c %a "$DXB_NETSAFE_DIR")" "700"
+  assert_ok dxb_netsafe_pending
+  # the change: files edited, one created, the WiFi key replaced
+  echo 'iface eth0 inet dhcp' > "$TEST_TMP/etc/eth0.conf"
+  echo 'iface wlan0 inet dhcp' > "$TEST_TMP/etc/wlan0.conf"
+  echo 'psk="new-secret"' > "$TEST_TMP/etc/wpa.conf"
+  printf 'PASSWORD=<applied>\nSTATIC_IP=\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  assert_ok dxb_netsafe_restore
+  assert_eq "$(cat "$TEST_TMP/etc/eth0.conf")" "iface eth0 inet static"
+  [[ -e $TEST_TMP/etc/wlan0.conf ]] && _fail "a file the change created must be removed on restore"
+  assert_file_contains "$TEST_TMP/etc/wpa.conf" "old-secret"
+  assert_eq "$(stat -c %a "$TEST_TMP/etc/wpa.conf")" "600"
+  assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "STATIC_IP=10.0.0.90/24"
+  assert_fails dxb_netsafe_pending
+  assert_fails dxb_netsafe_restore
+}
+
+test_netsafe_arm_never_leaves_a_gap() {
+  se_netsafe_env
+  (
+    local first second l_arm l_stop before=$TESTS_FAILED
+    systemctl() { echo "systemctl $*" >> "$TEST_TMP/calls"; }
+    assert_ok dxb_netsafe_arm 600
+    first=$(awk '{print $1}' "$DXB_NETSAFE_AT")
+    assert_contains "$first" "dxberry-config-revert-"
+    assert_contains "$(cat "$TEST_TMP/calls")" "--on-active=600 --unit=$first /opt/dxberry/bin/dxberry-config revert"
+    assert_ok dxb_netsafe_arm 120
+    second=$(awk '{print $1}' "$DXB_NETSAFE_AT")
+    [[ $second != "$first" ]] || _fail "each arm needs its own unit name"
+    # the old timer is stopped only after the new one is armed
+    l_arm=$(grep -n 'on-active=120' "$TEST_TMP/calls" | cut -d: -f1)
+    l_stop=$(grep -n "stop $first.timer" "$TEST_TMP/calls" | cut -d: -f1)
+    [[ -n $l_arm && -n $l_stop ]] && (( l_arm < l_stop )) || _fail "the new timer must be armed before the old one is stopped"
+    # a failed arm keeps the timer that was there
+    touch "$TEST_TMP/systemd-run-fails"
+    dxb_netsafe_arm 120 2> /dev/null; assert_eq "$?" "6"
+    assert_eq "$(awk '{print $1}' "$DXB_NETSAFE_AT")" "$second"
+    assert_not_contains "$(cat "$TEST_TMP/calls")" "stop $second.timer"
+    dxb_netsafe_disarm
+    assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop $second.timer"
+    [[ -e $DXB_NETSAFE_AT ]] && _fail "disarm must forget the deadline"
+    exit $(( TESTS_FAILED > before ? 1 : 0 ))
+  ) || TESTS_FAILED=$(( TESTS_FAILED + 1 ))
+}
+
+test_netsafe_revert_at_reports_the_deadline() {
+  se_netsafe_env
+  echo "dxberry-config-revert-1 1700000120" > "$DXB_NETSAFE_AT"
+  assert_eq "$(dxb_netsafe_revert_at)" "1700000120"
+  rm -f "$DXB_NETSAFE_AT"
+  assert_eq "$(dxb_netsafe_revert_at)" ""
+}
