@@ -47,12 +47,26 @@ cmd_get() {
 # _set_one KEY VALUE: apply one change to NEW (the caller's variable), checking it first.
 _set_check() {
   local k=$1 v=$2
+  # a key spanning two names adjacent in the space-separated DXB_CONSOLE_KEYS list (e.g.
+  # "STATIC_IP GATEWAY") would otherwise pass dxb_settings_is_console_key's substring check
+  [[ $k =~ ^[A-Z][A-Z0-9_]*$ ]] || { echo "$k is not a setting name (letters, digits and underscores, e.g. HOSTNAME)" >&2; return 2; }
   dxb_settings_is_console_key "$k" || { echo "$k is not a console setting (station, beacon, iGate and digipeater settings are changed in Graywolf's page)" >&2; return 2; }
   dxb_settings_value_ok "$v" || { echo "$k: the value contains a line break or another control character" >&2; return 2; }
 }
 
+# _rollback_write FILE CONTENT: put the pre-change CONTENT back into FILE without touching
+# $DXB_CONFIG_PREV (dxb_settings_write would overwrite it with the change that never applied).
+# 0 rolled back, 1 failed (FILE still holds the unapplied change; says so on stderr).
+_rollback_write() {
+  local file=$1 content=$2
+  dxb_write_if_changed "$file" "$content" > /dev/null 2>&1
+  [[ -f $file && $(< "$file") == "$content" ]] && return 0
+  echo "could not roll back $file; it still holds the change that was never applied (the previous dxberry.txt is in $DXB_CONFIG_PREV)" >&2
+  return 1
+}
+
 cmd_set() {
-  local file content new a k v line errs rc unit n=0 net=0 others=0
+  local file content new a k v line errs rc unit n=0 net=0 others=0 rolled_back
   local -a changed=()
   file="$(dxb_boot_dir)/dxberry.txt"
   [[ -f $file ]] || { echo "no $file; nothing to change" >&2; return 4; }
@@ -60,7 +74,7 @@ cmd_set() {
   if dxb_netsafe_pending; then echo "the last network change waits to be kept or undone first (sudo dxberry-config confirm, or revert)" >&2; return 5; fi
   content=$(< "$file"); new=$content
   for a in "$@"; do
-    [[ $a == *=* ]] || { echo "expected KEY=VALUE, got: ${a%%=*}" >&2; return 2; }
+    [[ $a == *=* ]] || { echo "expected KEY=VALUE arguments" >&2; return 2; }
     k=${a%%=*}; v=${a#*=}
     if dxb_settings_is_secret "$k"; then echo "$k is a password: give it as a $k=... line on standard input with --stdin, never as an argument" >&2; return 2; fi
     _set_check "$k" "$v" || return 2
@@ -79,7 +93,10 @@ cmd_set() {
   fi
   (( n )) || { echo "usage: dxberry-config set KEY=VALUE... [--stdin]" >&2; return 2; }
   errs=$(dxb_settings_validate "$new"); rc=$?
-  if (( rc != 0 )); then
+  if (( rc == 6 )); then
+    echo "could not check the settings" >&2
+    return 6
+  elif (( rc != 0 )); then
     echo "dxberry.txt would not be valid, so nothing was written:" >&2
     printf '%s\n' "$errs" | sed '/^$/d; s/^/  /' >&2
     return 4
@@ -100,8 +117,10 @@ cmd_set() {
     return 6
   fi
   if (( net )) && ! dxb_netsafe_arm "$DXB_NETSAFE_BACKSTOP_S"; then
-    dxb_netsafe_restore > /dev/null 2>&1 || dxb_settings_write "$file" "$content"
-    echo "could not arm the undo timer, so nothing was changed" >&2
+    rolled_back=1
+    dxb_netsafe_restore > /dev/null 2>&1 || _rollback_write "$file" "$content" || rolled_back=0
+    rm -f "$DXB_CONFIG_PENDING"
+    (( rolled_back )) && echo "could not arm the undo timer, so nothing was changed" >&2
     return 6
   fi
   mkdir -p "$DXB_RUN_DIR" 2> /dev/null
@@ -109,10 +128,15 @@ cmd_set() {
   rm -f "$DXB_CONFIG_RESULT" "$DXB_CONFIG_REVERTED"
   unit="dxberry-job-config-$(date +%s)"
   if ! "$DXB_SYSTEMD_RUN" --quiet --collect --unit="$unit" --description="DXBerry settings change" "$DXB_CONFIG_CMD" apply > /dev/null 2>&1; then
-    if (( net )); then dxb_netsafe_disarm; dxb_netsafe_restore > /dev/null 2>&1 || dxb_settings_write "$file" "$content"
-    else dxb_settings_write "$file" "$content"; fi
+    rolled_back=1
+    if (( net )); then
+      dxb_netsafe_disarm
+      dxb_netsafe_restore > /dev/null 2>&1 || _rollback_write "$file" "$content" || rolled_back=0
+    else
+      _rollback_write "$file" "$content" || rolled_back=0
+    fi
     rm -f "$DXB_CONFIG_PENDING"
-    echo "could not start the settings job, so nothing was changed" >&2
+    (( rolled_back )) && echo "could not start the settings job, so nothing was changed" >&2
     return 6
   fi
   jq -cn --arg u "$unit" --argjson t "$(date +%s)" --argjson n "$net" --argjson c "$(printf '%s\n' "${changed[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" \
@@ -135,14 +159,20 @@ cmd_apply() {
     case $k in POSITION_LOG|GPS_DEVICE|GPS_BAUD|GPS_PPS) gw=1 ;; esac
   done
   echo "applying: ${keys[*]:-everything}"
-  # a settings change never upgrades Graywolf; and nothing here may wait on a terminal
-  DXB_GW_UPGRADE=0 DXB_TTY=/dev/null "$DXB_PROVISION_CMD" || rc=8
+  # the provisioner keeps its own log (never this command's /dev/null) and its own umask (022, what
+  # it is written for - e.g. its /etc/hosts fallback rewrite - not this command's 077); a settings
+  # change never upgrades Graywolf, and nothing here may wait on a terminal
+  ( umask 022; DXB_LOG_FILE=$DXB_PROVISION_LOG DXB_GW_UPGRADE=0 DXB_TTY=/dev/null "$DXB_PROVISION_CMD" ) || rc=8
   if (( gw )); then DXB_TTY=/dev/null dxb_settings_push_graywolf || rc=8; fi
   if (( net )) && dxb_netsafe_pending; then
-    if dxb_netsafe_arm "$DXB_NETSAFE_WINDOW_S"; then
-      echo "network change applied; it is undone in $DXB_NETSAFE_WINDOW_S seconds unless kept (sudo dxberry-config confirm)"
+    if lock_config; then
+      if dxb_netsafe_arm "$DXB_NETSAFE_WINDOW_S"; then
+        echo "network change applied; it is undone in $DXB_NETSAFE_WINDOW_S seconds unless kept (sudo dxberry-config confirm)"
+      else
+        echo "the undo timer could not be re-armed; the earlier one still undoes the change" >&2
+      fi
     else
-      echo "the undo timer could not be re-armed; the earlier one still undoes the change" >&2
+      echo "could not lock settings to re-arm the undo timer; the earlier one still undoes the change" >&2
     fi
   fi
   rm -f "$DXB_CONFIG_PENDING"
@@ -179,11 +209,15 @@ cmd_job() {
 }
 
 cmd_confirm() {
-  if ! dxb_netsafe_pending; then say "no network change is waiting"; (( JSON )) && echo '{"ok":true}'; return 0; fi
+  if ! dxb_netsafe_pending; then
+    say "no network change is waiting (it may already have been undone)"
+    (( JSON )) && echo '{"ok":true,"kept":false}'
+    return 0
+  fi
   dxb_netsafe_disarm
   rm -rf "$DXB_NETSAFE_DIR"
   say "network settings kept"
-  (( JSON )) && echo '{"ok":true}'
+  (( JSON )) && echo '{"ok":true,"kept":true}'
   return 0
 }
 
@@ -191,7 +225,19 @@ cmd_revert() {
   local rc=0
   dxb_netsafe_pending || { echo "there is no network change to undo" >&2; return 6; }
   dxb_netsafe_disarm
-  dxb_netsafe_restore || rc=6
+  # a failed restore must never be recorded as reverted (the page would show both "keep?" and
+  # "was undone" for the same change, and nothing would ever retry it): take a wholly separate
+  # path, with its own short retry timer, instead of falling into the success bookkeeping below.
+  if ! dxb_netsafe_restore; then
+    if (( BOOT )); then
+      echo "could not undo the network change" >&2
+    elif dxb_netsafe_arm 60; then
+      echo "could not undo the network change; trying again in 60 seconds" >&2
+    else
+      echo "could not undo the network change, and the retry timer could not be armed" >&2
+    fi
+    return 6
+  fi
   if (( ! BOOT )); then
     systemctl restart dxberry-netwatch > /dev/null 2>&1 || { echo "could not restart dxberry-netwatch" >&2; rc=6; }
   fi
@@ -222,7 +268,10 @@ main() {
   esac
   dxb_require_root
   mkdir -p "$DXB_STATE_DIR" 2> /dev/null; chmod 700 "$DXB_STATE_DIR" 2> /dev/null
-  # this command's own log lines go to the journal (job) or the terminal, never the provision log
+  # "apply" runs the provisioner as a CHILD PROCESS (cmd_apply): remember its own log path (common.sh's
+  # default, $DXB_STATE_DIR/provision.log, unless a caller already overrode DXB_LOG_FILE) before
+  # rebinding this command's own log lines to the journal (job) or the terminal, never that log.
+  DXB_PROVISION_LOG=$DXB_LOG_FILE
   export DXB_LOG_FILE=/dev/null
   case $cmd in
     get) cmd_get ;;

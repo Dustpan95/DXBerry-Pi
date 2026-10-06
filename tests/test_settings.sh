@@ -147,7 +147,12 @@ se_netsafe_env() {
   ( umask 077; echo 'psk="old-secret"' > "$TEST_TMP/etc/wpa.conf" )
   : > "$TEST_TMP/calls"
 }
-se_systemd_run() { echo "systemd-run $*" >> "$TEST_TMP/calls"; [[ ! -f $TEST_TMP/systemd-run-fails ]]; }
+se_systemd_run() {
+  echo "systemd-run $*" >> "$TEST_TMP/calls"
+  [[ ! -f $TEST_TMP/systemd-run-fails ]] || return 1
+  [[ ! -f $TEST_TMP/job-start-fails || $* != *' apply'* ]] || return 1
+  return 0
+}
 
 test_netsafe_snapshot_and_restore_put_every_file_back() {
   se_netsafe_env
@@ -235,6 +240,10 @@ se_cli_env() {
   : > "$TEST_TMP/active"
 }
 se_provision() { echo "provision DXB_GW_UPGRADE=${DXB_GW_UPGRADE:-unset}" >> "$TEST_TMP/calls"; return "$(cat "$TEST_TMP/provision-rc" 2> /dev/null || echo 0)"; }
+# se_wait_for FILE: wait up to five seconds for FILE to appear (a background command reached a
+# point). `command sleep`: other test files' env helpers leave a no-op sleep() function in this
+# shared shell.
+se_wait_for() { local i; for (( i = 0; i < 100; i++ )); do [[ -e $1 ]] && return 0; command sleep 0.05; done; return 1; }
 
 test_config_get_json_and_text() {
   se_cli_env
@@ -270,6 +279,48 @@ test_config_set_of_the_same_values_changes_nothing() {
   assert_ok se_cli set HOSTNAME=shackpi --json
   assert_eq "$(se_out)" '{"ok":true,"changed":[],"job":null,"network":false}'
   assert_not_contains "$(cat "$TEST_TMP/calls")" "systemd-run"
+}
+
+# A key string spanning two adjacent names in the space-separated DXB_CONSOLE_KEYS list (here,
+# "STATIC_IP GATEWAY") must never pass dxb_settings_is_console_key's substring check: _set_check
+# rejects anything that is not itself a single valid key name before it ever gets there.
+test_config_set_rejects_a_malformed_key_name() {
+  se_cli_env
+  se_cli set "STATIC_IP GATEWAY=192.168.9.1"; assert_eq "$?" "2"
+}
+
+test_config_set_reports_6_when_settings_cannot_be_checked() {
+  local before
+  se_cli_env
+  before=$(se_file)
+  rm -rf "$DXB_STATE_DIR"
+  : > "$DXB_STATE_DIR"
+  se_cli set HOSTNAME=x; assert_eq "$?" "6"
+  assert_contains "$(cat "$TEST_TMP/err")" "could not check the settings"
+  rm -f "$DXB_STATE_DIR"
+  mkdir -p "$DXB_STATE_DIR"
+  assert_eq "$(se_file)" "$before"
+}
+
+test_config_set_usage_error_never_echoes_the_argument() {
+  se_cli_env
+  se_cli set "hunter2hunter2"; assert_eq "$?" "2"
+  assert_eq "$(cat "$TEST_TMP/err")" "expected KEY=VALUE arguments"
+  assert_not_contains "$(cat "$TEST_TMP/err")" "hunter2"
+}
+
+test_config_set_waits_for_the_lock() {
+  command -v flock > /dev/null 2>&1 || return 0
+  local pid
+  se_cli_env
+  export DXB_CONFIG_LOCK_WAIT=1
+  mkdir -p "$DXB_RUN_DIR"
+  ( exec 8> "$DXB_RUN_DIR/config.lock"; flock 8; : > "$TEST_TMP/held"; exec sleep 10 ) &
+  pid=$!
+  se_wait_for "$TEST_TMP/held" || _fail "the background holder never took the settings lock"
+  se_cli set HOSTNAME=blocked --json; assert_eq "$?" "5"
+  assert_contains "$(cat "$TEST_TMP/err")" "in progress"
+  kill "$pid" 2> /dev/null; wait "$pid" 2> /dev/null
 }
 
 test_config_set_refuses_what_it_must() {
@@ -338,9 +389,30 @@ test_config_set_rolls_back_when_the_job_cannot_start() {
   touch "$TEST_TMP/systemd-run-fails"
   se_cli set HOSTNAME=never --json; assert_eq "$?" "6"
   assert_eq "$(se_file)" "$before"
+  # the rollback must put dxberry.txt back WITHOUT overwriting .prev with the change that was
+  # never applied: .prev still holds what it held before this whole (failed) attempt
+  assert_eq "$(cat "$DXB_CONFIG_PREV")" "$before"
+  [[ -e $DXB_CONFIG_PENDING ]] && _fail "a rolled-back change must not leave a pending-keys file"
   se_cli set WIFI_SSID=Never --json; assert_eq "$?" "6"
   assert_eq "$(se_file)" "$before"
   assert_fails dxb_netsafe_pending
+  [[ -e $DXB_CONFIG_PENDING ]] && _fail "a rolled-back network change must not leave a pending-keys file"
+}
+
+# A network change whose undo timer arms fine but whose job never starts (a different failure
+# point than the timer itself failing to arm) must still roll back the file, drop the snapshot,
+# stop the timer it just armed, and forget its deadline.
+test_config_set_rolls_back_a_network_change_when_only_the_job_fails_to_start() {
+  local before
+  se_cli_env
+  before=$(se_file)
+  touch "$TEST_TMP/job-start-fails"
+  se_cli set WIFI_SSID=Never --json; assert_eq "$?" "6"
+  assert_eq "$(se_file)" "$before"
+  assert_fails dxb_netsafe_pending
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-config-revert-"
+  [[ -e $DXB_NETSAFE_AT ]] && _fail "the re-armed deadline file must be removed when the job never started"
+  [[ -e $DXB_CONFIG_PENDING ]] && _fail "the pending keys file must be removed when the job never started"
 }
 
 test_config_apply_keeps_graywolf_rearms_and_records_its_exit() {
@@ -356,6 +428,33 @@ test_config_apply_keeps_graywolf_rearms_and_records_its_exit() {
   se_cli apply; assert_eq "$?" "8"
   assert_eq "$(jq -r '.exit' "$DXB_CONFIG_RESULT")" "8"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "on-active"
+}
+
+# A network key with no snapshot waiting (confirmed or already undone before apply ran) must never
+# re-arm the backstop - and, since the guard short-circuits first, never even try the lock.
+test_config_apply_skips_the_rearm_without_a_pending_snapshot() {
+  se_cli_env
+  printf 'WIFI_SSID\n' > "$DXB_CONFIG_PENDING"
+  assert_ok se_cli apply
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "--on-active=120"
+}
+
+# The provisioner is a CHILD PROCESS: main()'s own export DXB_LOG_FILE=/dev/null must never reach
+# it (a real provisioner run under that export would "chmod 600 /dev/null" as root, and every
+# other program on the box would then fail to open /dev/null until a reboot). It also needs its
+# own umask (022, what it is written for - e.g. its /etc/hosts fallback rewrite), not this
+# command's 077.
+test_config_apply_runs_the_provisioner_with_its_own_log_and_umask() {
+  se_cli_env
+  cat > "$TEST_TMP/provision-stub" << 'STUB'
+#!/bin/bash
+echo "LOG=$DXB_LOG_FILE UPGRADE=$DXB_GW_UPGRADE UMASK=$(umask)" >> "$STUB_OUT"
+STUB
+  chmod +x "$TEST_TMP/provision-stub"
+  export DXB_PROVISION_CMD="$TEST_TMP/provision-stub" STUB_OUT="$TEST_TMP/stub-out"
+  unset DXB_LOG_FILE
+  assert_ok se_cli apply
+  assert_contains "$(cat "$TEST_TMP/stub-out")" "LOG=$DXB_STATE_DIR/provision.log UPGRADE=0 UMASK=0022"
 }
 
 test_config_apply_pushes_position_log_and_gps_to_graywolf() {
@@ -402,9 +501,13 @@ test_config_confirm_and_revert() {
   se_cli_env
   printf 'WIFI_PASSWORD=newwifipass\n' | se_cli set WIFI_SSID=Other --stdin --json
   assert_ok se_cli confirm --json
-  assert_eq "$(se_out)" '{"ok":true}'
+  assert_eq "$(se_out)" '{"ok":true,"kept":true}'
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-config-revert-"
   assert_fails dxb_netsafe_pending
   assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "WIFI_SSID=Other"
+  # nothing waiting (the undo may have already won the race): say so, never "kept"
+  assert_ok se_cli confirm --json
+  assert_eq "$(se_out)" '{"ok":true,"kept":false}'
   # revert: the file comes back, netwatch restarts, the undo is recorded
   se_cli set WIFI_SSID=Again --json
   assert_ok se_cli revert --json
@@ -417,6 +520,25 @@ test_config_confirm_and_revert() {
   assert_ok se_cli revert --boot
   assert_not_contains "$(cat "$TEST_TMP/calls")" "restart dxberry-netwatch"
   assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "WIFI_SSID=Other"
+}
+
+# A restore that fails (one file could not be put back) must never be recorded as reverted - the
+# page would otherwise show both "keep?" and "was undone" for the same change - and nothing else
+# would ever retry it. Guarded like test_settings_write_keeps_the_previous_file_private: root can
+# write through the permissions this test breaks, so the scenario cannot be forced that way as root.
+test_config_revert_retries_when_the_restore_fails() {
+  se_cli_env
+  printf 'WIFI_PASSWORD=newwifipass\n' | se_cli set WIFI_SSID=Other --stdin --json
+  assert_eq "$?" "0"
+  if (( EUID != 0 )); then
+    chmod 500 "$TEST_TMP/etc"
+    se_cli revert; assert_eq "$?" "6"
+    assert_contains "$(cat "$TEST_TMP/err")" "trying again"
+    assert_ok dxb_netsafe_pending
+    [[ -s $DXB_CONFIG_REVERTED ]] && _fail "a failed restore must not be recorded as reverted"
+    assert_contains "$(cat "$TEST_TMP/calls")" "--on-active=60"
+    chmod 700 "$TEST_TMP/etc"
+  fi
 }
 
 test_config_usage() {
