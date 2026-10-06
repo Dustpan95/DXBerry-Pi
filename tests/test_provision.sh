@@ -70,9 +70,11 @@ full_env() {
     DXB_RIGCTLD_RUN_DIR=$TEST_TMP/run/rigctld DXB_TMPFILES_DIR=$TEST_TMP/tmpfiles \
     DXB_RADIOS_STATE=$TEST_TMP/run/radios-state.json DXB_RADIOS_FILE=$TEST_TMP/state/radios.json \
     DXB_GPSD_DEFAULT=$TEST_TMP/etc/default/gpsd DXB_CHRONY_DROPIN=$TEST_TMP/etc/chrony/conf.d/dxberry.conf \
-    DXB_RPI_CONFIG_TXT=$TEST_TMP/bootfs/config.txt DXB_GPSPIPE=fake_gpspipe DXB_RUN_DIR=$TEST_TMP/run
+    DXB_RPI_CONFIG_TXT=$TEST_TMP/bootfs/config.txt DXB_GPSPIPE=fake_gpspipe DXB_RUN_DIR=$TEST_TMP/run \
+    DXB_COCKPIT_SRC=$TEST_TMP/cockpit-src DXB_COCKPIT_LINK=$TEST_TMP/usr-share-cockpit/dxberry \
+    DXB_COCKPIT_DROPIN=$TEST_TMP/cockpit.socket.d/dxberry-listen.conf
   mkdir -p "$DXB_BOOT_DIR" "$DXB_SYSTEMD_DIR" "$DXB_ZONEINFO_DIR" "$DXB_SYS_NET/eth0" "$DXB_SYS_NET/wlan0" \
-    "$DXB_SYSFS_ROOT" "$TEST_TMP/etc" "$DXB_RIGCTLD_RUN_DIR" "$DXB_TMPFILES_DIR"
+    "$DXB_SYSFS_ROOT" "$TEST_TMP/etc" "$DXB_RIGCTLD_RUN_DIR" "$DXB_TMPFILES_DIR" "$TEST_TMP/cockpit-src"
   : > "$DXB_ZONEINFO_DIR/UTC"
   echo DietPi > "$DXB_HOSTNAME_FILE"
   printf '127.0.0.1 localhost\n127.0.1.1 DietPi\n' > "$DXB_HOSTS_FILE"
@@ -103,7 +105,8 @@ full_env() {
     hostname() { echo "hostname $*" >> "$TEST_TMP/calls"; }
     swapon() { echo "NAME"; echo "/dev/zram0"; }
     apt-get() { echo "apt-get $*" >> "$TEST_TMP/calls"; }
-    dpkg-query() { return 1; }
+    # Graywolf is not installed; Cockpit is, so the console step does not try to install it
+    dpkg-query() { [[ $* == *cockpit* ]] || return 1; printf installed; }
     fake_udevadm() { echo "udevadm $*" >> "$TEST_TMP/calls"; }
     systemd-tmpfiles() { echo "systemd-tmpfiles $*" >> "$TEST_TMP/calls"; }
     rigctl() { printf '145390000\nFM\n'; }
@@ -441,6 +444,27 @@ test_provision_driver_rebuilds_the_history_dropin_when_the_release_check_fails()
   assert_contains "$(cat "$TEST_TMP/calls")" "history-in-ram"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "enable --now graywolf"
   assert_fails grep -qx seed "$TEST_TMP/calls"
+}
+
+test_provision_driver_runs_the_console_step_after_radio() {
+  full_env
+  printf 'PASSWORD=secretpass\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  fx_scene "$DXB_SYSFS_ROOT" none
+  (
+    # shellcheck disable=SC1091
+    source "$DXB_ROOT/provision/bin/dxberry-provision"
+    dxb_require_root() { :; }
+    dxb_gw_install() { return 0; }
+    dxb_gw_seed() { return 0; }
+    main
+  ) 2> /dev/null
+  local radio console
+  radio=$(grep -n 'dxberry-radio-hotplug' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  console=$(grep -n 'cockpit.socket' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  if [[ -z $radio || -z $console ]] || (( radio > console )); then
+    _fail "the console step must run after the radio step (radio '$radio', console '$console')"
+  fi
+  assert_file_contains "$DXB_BOOT_DIR/dxberry-status.txt" "console: https://<this-pi>/ (log in as dietpi)"
 }
 
 test_run_mode_wifi_import_failure_leaves_wifi_password_intact() {

@@ -62,3 +62,10 @@ test_build_ships_the_status_command() {
   assert_contains "$required" "provision/lib/status.sh"
   assert_contains "$executable" "provision/bin/dxberry-status"
 }
+
+test_build_ships_the_console_step() {
+  local required
+  required=$(sed -n '/^REQUIRED_FILES=(/,/^)/p' "$DXB_ROOT/build/build-image.sh")
+  assert_contains "$required" "provision/lib/console.sh"
+  assert_contains "$required" "provision/templates/cockpit-listen.conf"
+}

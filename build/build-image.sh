@@ -69,6 +69,7 @@ REQUIRED_FILES=(
   provision/templates/dxberry-radio.tmpfiles provision/templates/70-dxberry-radio.rules.head
   provision/templates/dxberry-audio.conf provision/templates/chrony-dxberry.conf provision/templates/gpsd-default.tmpl
   provision/bin/dxberry-status provision/lib/status.sh
+  provision/lib/console.sh provision/templates/cockpit-listen.conf
 )
 EXECUTABLE_FILES=(
   provision/bin/dxberry-preboot provision/bin/dxberry-provision provision/bin/dxberry-netwatch provision/bin/dxberry-radio
