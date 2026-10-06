@@ -11,6 +11,7 @@
 #   status [NAME]              record + live state; frequency and mode from rigctld
 #   hotplug                    udev entry point (apply without touching udev)
 #   gps                        GPS fix, satellites and grid square
+#   models                     Hamlib's rig models (number, maker, name) for --model
 # Options: --ptt M --ptt-type T --model K --baud B --wiring full|names --label S --gpio-line N; --json on any subcommand.
 set -uo pipefail
 
@@ -20,7 +21,16 @@ for _m in common config graywolf radio radio_udev rigctld gps; do
   source "$DXB_LIB/$_m.sh"
 done
 
-usage() { sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+# A --json caller (the console) gets this run's warnings in the answer: cockpit.spawn keeps a
+# command's stderr only when it fails. dxb_warn often runs inside a command substitution, so the
+# messages go to a file, not a variable.
+DXB_RADIO_WARN_FILE=''
+dxb_warn() { [[ -n $DXB_RADIO_WARN_FILE ]] && printf '%s\n' "$*" >> "$DXB_RADIO_WARN_FILE"; dxb_log WARN "$@"; }
+warnings_json() {
+  if [[ -n $DXB_RADIO_WARN_FILE && -s $DXB_RADIO_WARN_FILE ]]; then jq -Rsc 'split("\n") | map(select(length > 0))' "$DXB_RADIO_WARN_FILE"; else echo '[]'; fi
+}
+
+usage() { sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 JSON=0
 # the commands that print nothing on success still owe --json an answer (spec section 6.2)
 json_ok() { (( JSON )) && printf '{"ok":true}\n'; return 0; }
@@ -73,9 +83,15 @@ cmd_status() {
     out=$(jq -c --arg n "$n" --argjson r "$r" --argjson s "$st" --arg f "$f" --arg m "$m" '.[$n] = ($r + $s + {freq: $f, mode: $m})' <<< "$out")
   done
   [[ -n $only ]] && [[ $(jq 'length' <<< "$out") == 0 ]] && { echo "no such radio: $only" >&2; return 3; }
-  if (( JSON )); then jq -cn --argjson r "$out" --argjson g "$(dxb_gps_fix)" '{radios: $r, gps: $g}'; return 0; fi
+  if (( JSON )); then
+    jq -cn --argjson r "$out" --argjson g "$(dxb_gps_fix)" --argjson c "$(dxb_radio_unpinned)" \
+      --argjson a "$(dxb_app_catalog)" --argjson w "$(warnings_json)" \
+      '{radios: $r, gps: $g, candidates: $c, apps: $a, warnings: $w}'
+    return 0
+  fi
   [[ $out == '{}' ]] && { echo "no radios pinned; run: dxberry-radio scan"; }
   jq -r 'to_entries[] | "\(.key)  \(.value.label)  \(if .value.present then "present" else "ABSENT" end)  rigctld:\(.value.rigctld) port \(.value.rigctld_port)  owner:\(if .value.owner == "" then "-" else .value.owner end)  \(.value.freq) \(.value.mode)  ptt:\(.value.ptt.method)  alsa:\(.value.alsa_id // "-")"' <<< "$out"
+  [[ -n $only ]] || jq -r '.[] | "plugged in, not set up: \(.index)  \(.port)  \(.name) [\(.profile)]"' <<< "$(dxb_radio_unpinned)"
   dxb_gps_status_line
 }
 
@@ -85,13 +101,24 @@ cmd_gps() {
   dxb_gps_state "$j"
 }
 
+cmd_models() {
+  local j; j=$(dxb_rigctld_models) || return 6
+  if (( JSON )); then printf '%s\n' "$j"; return 0; fi
+  jq -r '.[] | "\(.model | tostring | (" " * (6 - length)) + .)  \(.mfg) \(.name)"' <<< "$j"
+}
+
 main() {
   local cmd='' args=() a rc opts
   for a in "$@"; do case $a in --json) JSON=1 ;; *) args+=("$a") ;; esac; done
+  if (( JSON )); then
+    DXB_RADIO_WARN_FILE=$(mktemp 2> /dev/null) || DXB_RADIO_WARN_FILE=''
+    # shellcheck disable=SC2064  # expand now: the file name is fixed for this run
+    [[ -n $DXB_RADIO_WARN_FILE ]] && trap "rm -f '$DXB_RADIO_WARN_FILE'" EXIT
+  fi
   cmd=${args[0]:-}; args=("${args[@]:1}")
   case $cmd in
     -h|--help) usage; return 0 ;;
-    scan|add|set|remove|apply|claim|release|status|hotplug|gps) ;;
+    scan|add|set|remove|apply|claim|release|status|hotplug|gps|models) ;;
     '') usage >&2; return 2 ;;
     *) echo "unknown subcommand: $cmd" >&2; usage >&2; return 2 ;;
   esac
@@ -130,6 +157,7 @@ main() {
       return $rc ;;
     status) cmd_status "${args[0]:-}" ;;
     gps) cmd_gps ;;
+    models) cmd_models ;;
   esac
 }
 

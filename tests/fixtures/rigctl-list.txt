@@ -1,0 +1,6 @@
+ Rig #  Mfg                    Model                   Version         Status      Macro
+     1  Hamlib                 Dummy                   20240709.0      Stable      RIG_MODEL_DUMMY
+     2  Hamlib                 NET rigctl              20240418.0      Stable      RIG_MODEL_NETRIGCTL
+     4  FLRig                                          20250107.0      Stable      RIG_MODEL_FLRIG
+  3073  Icom                   IC-7300                 20250107.14     Stable      RIG_MODEL_IC7300
+  3085  Icom                   IC-705                  20250107.11     Stable      RIG_MODEL_IC705

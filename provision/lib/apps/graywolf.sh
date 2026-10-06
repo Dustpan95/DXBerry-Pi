@@ -4,6 +4,7 @@
 # Expects common.sh, graywolf.sh and radio.sh to be sourced.
 
 app_graywolf_unit() { echo graywolf.service; }
+app_graywolf_label() { echo Graywolf; }
 app_graywolf_needs_service_restart() { echo no; }
 app_graywolf_wait_ready() { dxb_gw_wait_ready; }
 

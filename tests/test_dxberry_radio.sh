@@ -169,3 +169,60 @@ test_cli_port_path_selector_errors_and_set() {
   assert_ok cli set radio1 --cat usb-0:1.4:1.0
   assert_eq "$(jq -r '.radios.radio1.cat.path' "$DXB_STATE_DIR/radios.json")" "usb-0:1.4:1.0"
 }
+
+# cli_rigctl ARGS: rigctl as the radio tests need it - Hamlib's model list for -l, else a frequency and mode
+cli_rigctl() { if [[ ${1:-} == -l ]]; then cat "$DXB_ROOT/tests/fixtures/rigctl-list.txt"; else printf '145390000\nFM\n'; fi; }
+cli_rigctl_garbage() { echo "rigctl: something else entirely"; }
+
+test_cli_models_lists_hamlibs_rigs() {
+  local DXB_RIGCTL=cli_rigctl
+  cli_env
+  assert_ok cli models --json
+  assert_eq "$(jq 'length' "$TEST_TMP/out")" "5"
+  assert_eq "$(jq -c '.[] | select(.model == 3073)' "$TEST_TMP/out")" '{"model":3073,"mfg":"Icom","name":"IC-7300","status":"Stable"}'
+  # a blank name stays blank instead of swallowing the next column
+  assert_eq "$(jq -c '.[] | select(.model == 4)' "$TEST_TMP/out")" '{"model":4,"mfg":"FLRig","name":"","status":"Stable"}'
+  assert_ok cli models
+  assert_contains "$(out)" "3085  Icom IC-705"
+}
+
+test_cli_models_fails_cleanly_without_a_listing() {
+  local DXB_RIGCTL=false
+  cli_env
+  cli models --json; assert_eq "$?" "6"
+  assert_contains "$(cat "$TEST_TMP/err")" "rigctl -l"
+  DXB_RIGCTL=cli_rigctl_garbage
+  cli models --json; assert_eq "$?" "6"
+  assert_eq "$(out)" ""
+}
+
+test_cli_status_lists_unpinned_candidates_and_apps() {
+  cli_env
+  rm -rf "$DXB_SYSFS_ROOT"; fx_scene "$DXB_SYSFS_ROOT" two-digirigs
+  cat > "$DXB_APPS_DIR/beta.sh" <<'EOF'
+app_beta_unit() { echo beta.service; }
+app_beta_label() { echo "Beta Modem"; }
+EOF
+  assert_ok cli status --json
+  assert_eq "$(jq -r '[.candidates[].port] | join(" ")' "$TEST_TMP/out")" "usb-0:1.1 usb-0:1.2 usb-0:1.3 usb-0:1.4"
+  assert_eq "$(jq -c '.apps' "$TEST_TMP/out")" '[{"name":"alpha","label":"alpha"},{"name":"beta","label":"Beta Modem"}]'
+  assert_eq "$(jq -c '.warnings' "$TEST_TMP/out")" '[]'
+  # pinning the first DigiRig (codec on 1.1, CP2102 on 1.2) takes both of its candidates off the list
+  assert_ok cli add radio1 --audio usb-0:1.1:1.0 --cat usb-0:1.2:1.0
+  assert_ok cli status --json
+  assert_eq "$(jq -r '[.candidates[].port] | join(" ")' "$TEST_TMP/out")" "usb-0:1.3 usb-0:1.4"
+  assert_eq "$(jq -r '.candidates[0] | .index, .defaults.ptt' "$TEST_TMP/out" | tr '\n' ' ')" "3 rigctld "
+  assert_ok cli status
+  assert_contains "$(out)" "plugged in, not set up: 3  usb-0:1.3  DigiRig Mobile [0d8c:013c]"
+}
+
+# cockpit.spawn drops a successful command's stderr, so a --json answer carries the run's warnings.
+test_cli_json_answers_carry_the_runs_warnings() {
+  cli_env
+  # no CAT pin: the DigiRig profile's RTS keying has no serial line behind it, so add warns and uses NONE
+  assert_ok cli add radio1 --audio 1 --cat none --json
+  assert_contains "$(jq -r '.warnings[]' "$TEST_TMP/out")" "ptt_type RTS needs a serial pin; set to NONE"
+  assert_eq "$(jq -r '.radios.radio1.rig.ptt_type' "$TEST_TMP/out")" "NONE"
+  assert_ok cli set radio1 --label quiet --json
+  assert_eq "$(jq -c '.warnings' "$TEST_TMP/out")" '[]'
+}

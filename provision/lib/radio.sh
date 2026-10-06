@@ -84,6 +84,14 @@ dxb_radio_scan() {
 # shellcheck disable=SC2034
 dxb_radio_scan_cache() { DXB_RADIO_SCAN=$(dxb_radio_scan) || DXB_RADIO_SCAN='[]'; }
 
+# dxb_radio_unpinned: the scan's candidates none of whose functions a radio pins yet - what the
+# console lists as "plugged in, not set up". Needs DXB_RADIOS loaded and DXB_RADIO_SCAN filled.
+dxb_radio_unpinned() {
+  jq -c --argjson r "$DXB_RADIOS" '
+    [$r.radios[] | (.audio, .cat, .hid, .ptt_serial) | select(. != null) | .path] as $pinned
+    | map(select(any(.functions[]; .path as $p | $pinned | any(. == $p)) | not))' <<< "$DXB_RADIO_SCAN"
+}
+
 # ---- record --------------------------------------------------------------------------------
 DXB_RADIO_NAME_RE='^[a-z][a-z0-9]{0,11}$'
 # a function's USB port path as scan prints it (udev ID_PATH style): usb-0:1.3:1.0
@@ -461,6 +469,18 @@ dxb_app_load() {
   [[ $1 =~ ^[a-z][a-z0-9_]{0,15}$ && -f $DXB_APPS_DIR/$1.sh ]] || { dxb_error "no such application: $1 (available: $(dxb_app_list | tr '\n' ' '))"; return 3; }
   # shellcheck disable=SC1090
   source "$DXB_APPS_DIR/$1.sh"
+}
+
+# dxb_app_catalog: [{name, label}] for every application module, the label from the module's
+# optional app_<app>_label (else the name). Each module is read in a subshell, so loading one for
+# its label defines nothing here.
+dxb_app_catalog() {
+  local a label out='[]'
+  for a in $(dxb_app_list); do
+    label=$( dxb_app_load "$a" 2> /dev/null && declare -F "app_${a}_label" > /dev/null && "app_${a}_label" ) || label=''
+    out=$(jq -c --arg n "$a" --arg l "${label:-$a}" '. + [{name: $n, label: $l}]' <<< "$out")
+  done
+  printf '%s\n' "$out"
 }
 dxb_app_owned() { jq -r --arg a "$1" '[.radios[] | select(.owner == $a)] | length' <<< "$DXB_RADIOS"; }
 dxb_app_unit() { "app_$1_unit"; }

@@ -107,3 +107,21 @@ dxb_rigctld_install_units() {
   systemctl enable dxberry-radio-wire.service > /dev/null 2>&1 || { dxb_error "systemctl enable dxberry-radio-wire.service failed"; return 6; }
   return $rc
 }
+
+# dxb_rigctld_models: Hamlib's rig models (rigctl -l) as [{model, mfg, name, status}], in rigctl's
+# order. The listing is fixed-width and a name can be blank (FLRig), so every field is cut at its
+# header's column rather than split on spaces. 0 ok, 6 when rigctl fails or lists nothing readable.
+dxb_rigctld_models() {
+  local out json
+  out=$("$DXB_RIGCTL" -l 2> /dev/null) || { dxb_error "could not list Hamlib's radio models (rigctl -l)"; return 6; }
+  json=$(awk '
+    function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    !m { m = index($0, "Mfg"); n = index($0, "Model"); v = index($0, "Version"); s = index($0, "Status"); x = index($0, "Macro")
+         if (!(m && n && v && s && x)) m = 0
+         next }
+    { id = trim(substr($0, 1, m - 1)) }
+    id ~ /^[0-9]+$/ { print id "\t" trim(substr($0, m, n - m)) "\t" trim(substr($0, n, v - n)) "\t" trim(substr($0, s, x - s)) }' <<< "$out" \
+    | jq -Rnc '[inputs | split("\t") | {model: (.[0] | tonumber), mfg: .[1], name: .[2], status: .[3]}]')
+  jq -e 'length > 0' <<< "$json" > /dev/null 2>&1 || { dxb_error "rigctl -l listed no radio models this command could read"; return 6; }
+  printf '%s\n' "$json"
+}
