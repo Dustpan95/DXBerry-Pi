@@ -168,12 +168,31 @@ _dxb_status_gw_login() {
   return 1
 }
 
-# _dxb_status_gw_get PATH: GET through the kept session; logs in once when it is missing or expired.
+# _dxb_status_gw_get PATH: GET through the kept session; logs in and retries only when the
+# failure is an authentication failure - curl -f reports an HTTP error as exit 22, with
+# "... error: 401" (a missing/expired session) or "... error: 403" on stderr. Any other failure
+# (a 404, a timeout, ...) is returned as is, its stderr reaching the caller unchanged, so a
+# channel or endpoint that keeps failing never costs a fresh login (a database write) on every
+# refresh.
 _dxb_status_gw_get() {
-  local out
-  if out=$(dxb_gw_api GET "$1" 2> /dev/null); then printf '%s\n' "$out"; return 0; fi
-  _dxb_status_gw_login || return 1
-  dxb_gw_api GET "$1"
+  local out errf rc
+  errf=$(mktemp)
+  out=$(dxb_gw_api GET "$1" 2> "$errf")
+  rc=$?
+  if (( rc == 0 )); then
+    printf '%s\n' "$out"
+    rm -f "$errf"
+    return 0
+  fi
+  if (( rc == 22 )) && grep -qE 'error: (401|403)\b' "$errf"; then
+    rm -f "$errf"
+    _dxb_status_gw_login || return 1
+    dxb_gw_api GET "$1"
+    return $?
+  fi
+  cat "$errf" >&2
+  rm -f "$errf"
+  return "$rc"
 }
 
 # _dxb_status_db_bytes PATH: the history database with its WAL and shared-memory files, or null.

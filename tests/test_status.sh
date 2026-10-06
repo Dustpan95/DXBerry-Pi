@@ -57,9 +57,12 @@ st_radio() {
 }
 # st_curl: Graywolf's API as dxb_gw_api calls it. A login with the stored password opens a session
 # (a file); every other call needs that session. argv goes to $TEST_TMP/argv so a test can prove
-# the password never travels on a command line.
+# the password never travels on a command line. Mimics curl -f: an HTTP error is exit 22 with
+# "curl: (22) The requested URL returned error: <code>" on stderr. A test can make one path always
+# answer 404 (regardless of session) by touching $TEST_TMP/gw-404-<name>, where <name> is the
+# path's first segment (igate, channels, ...).
 st_curl() {
-  local m=GET url='' data='' p
+  local m=GET url='' data='' p name
   printf '%s\n' "$*" >> "$TEST_TMP/argv"
   while (( $# )); do
     case $1 in
@@ -74,10 +77,21 @@ st_curl() {
   echo "$m $p" >> "$TEST_TMP/calls"
   [[ -f $TEST_TMP/gw-down ]] && return 7
   if [[ $m == POST && $p == /auth/login ]]; then
-    [[ $(jq -r .password <<< "$data") == gwsecret1 ]] || return 22
-    : > "$TEST_TMP/gw-session"; echo '{"ok":true}'; return 0
+    if [[ $(jq -r .password <<< "$data") == gwsecret1 ]]; then
+      : > "$TEST_TMP/gw-session"; echo '{"ok":true}'; return 0
+    fi
+    echo 'curl: (22) The requested URL returned error: 401' >&2
+    return 22
   fi
-  [[ -f $TEST_TMP/gw-session ]] || return 22
+  name=${p#/}; name=${name%%/*}
+  if [[ -f $TEST_TMP/gw-404-$name ]]; then
+    echo 'curl: (22) The requested URL returned error: 404' >&2
+    return 22
+  fi
+  if [[ ! -f $TEST_TMP/gw-session ]]; then
+    echo 'curl: (22) The requested URL returned error: 401' >&2
+    return 22
+  fi
   case $p in
     /channels) echo '[{"id":3,"name":"VHF APRS","enabled":true,"mode":"aprs"}]' ;;
     /channels/3/stats) echo '{"channel":3,"rx_frames":6228,"rx_bad_fcs":5044,"tx_frames":1010,"dcd_state":false}' ;;
@@ -219,6 +233,18 @@ test_status_graywolf_explains_a_missing_refused_or_silent_login() {
   assert_contains "$(st_run dxb_status_graywolf | jq -r .api_error)" "did not answer"
 }
 
+# An endpoint that keeps failing for a reason other than authentication (a 404 on another
+# Graywolf version, a disabled channel's stats, ...) must never cost a fresh login: that is a
+# database write on Graywolf's side, and this runs every 10 seconds.
+test_status_graywolf_a_404_never_forces_a_relogin() {
+  st_env
+  : > "$TEST_TMP/gw-404-igate"
+  local j
+  for _ in 1 2 3; do j=$(st_run dxb_status_graywolf); done
+  assert_eq "$(grep -c '^POST /auth/login$' "$TEST_TMP/calls")" "1"
+  assert_eq "$(jq -c '[.api_ok, .igate]' <<< "$j")" '[true,null]'
+}
+
 test_status_radios_passes_dxberry_radio_status_through() {
   st_env
   echo '{"radios":{"radio1":{"label":"TM-V71","present":true,"owner":"graywolf","rigctld":"active","rigctld_port":4532,"freq":"145390000","mode":"FM"}},"gps":{"fix":0,"receiver":false}}' > "$TEST_TMP/radio.json"
@@ -268,12 +294,23 @@ test_status_cli_takes_part_names_and_rejects_anything_else() {
   assert_contains "$(st_out)" "dxberry-status [--json] [PART...]"
 }
 
-# The console runs this every 10 seconds: nothing it does may grow provision.log.
+# The console runs this every 10 seconds: nothing it does may grow provision.log, even when a
+# collector along the way calls a dxb_ logging helper (dxb_warn, dxb_info, ...). st_vcgencmd is
+# overridden only inside this subshell, so the simulated warning never reaches the other tests.
+# A marker file (outside dxb_log's own redirections) proves the override actually ran, so this
+# test cannot pass vacuously.
 test_status_cli_leaves_the_provision_log_alone() {
   st_env
   rm -f "$DXB_GW_SECRET_FILE"
-  st_cli --json
-  # shellcheck disable=SC2031  # dxberry-status overrides DXB_LOG_FILE only inside st_cli's subshell; this checks the outer value st_env set
+  (
+    source "$DXB_ROOT/provision/bin/dxberry-status"
+    dxb_require_root() { :; }
+    st_stubs
+    st_vcgencmd() { echo called >> "$TEST_TMP/vcgencmd-called"; dxb_warn "simulated: vcgencmd failed"; return 1; }
+    main --json
+  ) > "$TEST_TMP/out" 2> "$TEST_TMP/err"
+  [[ -f $TEST_TMP/vcgencmd-called ]] || _fail "the simulated vcgencmd override never ran"
+  # shellcheck disable=SC2031  # dxberry-status overrides DXB_LOG_FILE only inside the subshell above; this checks the outer value st_env set
   [[ -s $DXB_LOG_FILE ]] && _fail "dxberry-status wrote to $DXB_LOG_FILE"
   return 0
 }
