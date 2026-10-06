@@ -88,6 +88,16 @@ has channels made by hand that a new DXBerry channel could compete with; **Add**
 sound card renames it at the next replug or reboot, which breaks a hand-made channel on it. All of it is
 `sudo dxberry-radio` underneath; `sudo dxberry-radio models` lists the rig models.
 
+The Settings section changes the Pi's own settings: its address (DHCP or fixed, gateway, DNS),
+WiFi, hostname, time zone, login password, SSH key, GPS, position log and the console itself. They
+are written back to `dxberry.txt`, which stays the one place they live, and applied by a setup run
+whose output the page shows; saving a setting never upgrades Graywolf. Passwords are never shown
+back. A network change undoes itself two minutes after it is applied unless you click **Keep these
+settings**, from the new address if the Pi's address changed; an unkept change is also undone at
+the next restart. Station, beacon, iGate and digipeater settings stay in Graywolf's own page. On
+the command line: `sudo dxberry-config get`, `sudo dxberry-config set HOSTNAME=shackpi`, and for a
+password `printf 'PASSWORD=%s\n' '...' | sudo dxberry-config set --stdin`.
+
 The console is [Cockpit](https://cockpit-project.org) from Debian with one extra page; `CONSOLE=off` in
 `dxberry.txt` turns it off. `sudo dxberry-status` prints the same report in a terminal, and
 `sudo dxberry-status --json` gives it to scripts.
@@ -126,7 +136,9 @@ Output goes to `out/DXBerry-Pi-<version>-rpi234-arm64.img.xz` and a matching `.s
 ## Layout
 
 - `boot/` — files for the boot partition and DietPi's automation hooks
-- `provision/` — the provisioner installed at `/opt/dxberry` (`dxberry-preboot`, `dxberry-provision`, `dxberry-netwatch`, `dxberry-radio`, `dxberry-status`, and the console page under `cockpit/`)
+- `provision/` — the provisioner installed at `/opt/dxberry` (`dxberry-preboot`, `dxberry-provision`, `dxberry-netwatch`, `dxberry-radio`, `dxberry-status`, `dxberry-config`, and the console page under `cockpit/`)
+  - `bin/dxberry-config` — settings management
+  - `lib/settings.sh` — settings provisioning library
 - `build/` — image build
 - `docs/design/` — design specifications; `docs/plans/` — implementation plans
 
