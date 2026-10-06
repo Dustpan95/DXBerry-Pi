@@ -263,12 +263,17 @@ console.log(JSON.stringify(radioFormArgs()));
 vals['rf-name'] = 'radio1';
 console.log(JSON.stringify(radioFormArgs()));
 vals['rf-name'] = 'radio3'; vals['rf-audio'] = 'none'; vals['rf-cat'] = 'none';
+console.log(JSON.stringify(radioFormArgs()));
+vals['rf-name'] = 'radio4'; vals['rf-ptt-serial'] = 'usb-0:1.5:1.0';
 console.log(JSON.stringify(radioFormArgs()));")
   assert_eq "$(sed -n 1p <<< "$got")" '{"args":["set","radio1","--label","TM-V71","--cat","none"],"name":"radio1"}'
   assert_eq "$(sed -n 2p <<< "$got")" '{"args":null,"name":"radio1"}'
   assert_eq "$(sed -n 3p <<< "$got")" '{"args":["add","radio2","--audio","usb-0:1.3:1.0","--cat","usb-0:1.4:1.0","--model","1","--baud","57600","--ptt","rigctld","--ptt-type","RTS","--wiring","full","--label","old"],"name":"radio2"}'
   assert_contains "$(sed -n 4p <<< "$got")" "already exists"
   assert_contains "$(sed -n 5p <<< "$got")" "at least one"
+  # A sound card and a CAT port are not the only way to pin a radio: a PTT serial port (or a HID,
+  # not exercised here) counts too, so this must return args, not the "at least one" error.
+  assert_eq "$(sed -n 6p <<< "$got")" '{"args":["add","radio4","--audio","none","--cat","none","--ptt-serial","usb-0:1.5:1.0","--model","1","--baud","57600","--ptt","rigctld","--ptt-type","RTS","--wiring","full","--label","old"],"name":"radio4"}'
 }
 
 # A failed Hamlib list fetch must not be cached forever: opening the form retries it, so the
@@ -279,4 +284,41 @@ test_page_retries_a_failed_model_list_from_the_form() {
   assert_contains "$load_body" "modelsLoading = null"
   cards_body=$(sed -n '/^function radiosCard(/,/^}/p' "$js")
   assert_contains "$cards_body" "modelsTried = true"
+}
+
+# A save that is still in flight when the operator cancels and reopens the form must not touch
+# the newer form's dialog once it resolves: only the page notice and the refresh happen either
+# way; re-enabling Save and closing the dialog are for the form that is still open.
+test_page_a_stale_save_leaves_a_newer_form_alone() {
+  command -v node > /dev/null 2>&1 || return 0
+  local js=$PG_DIR/dxberry.js fn got
+  fn=$(sed -n '/^function saveRadioForm(/,/^}/p' "$js")
+  got=$(node -e "
+const RADIO = '/opt/dxberry/bin/dxberry-radio';
+const RADIO_EXITS = {};
+const dialog = { open: true, closes: 0, close() { this.open = false; this.closes++; } };
+const document = { getElementById: id => (id === 'radio-dialog' ? dialog : null) };
+const savingCalls = [];
+function setSaving(on) { savingCalls.push(on); }
+function setFormError(t) { /* not expected here */ }
+const notices = [];
+function notice(t) { notices.push(t); }
+function failure(what) { notices.push('FAILURE:' + what); }
+function warningsOf() { return []; }
+let refreshCalls = 0;
+function refresh() { refreshCalls++; }
+function problemText() { return 'problem'; }
+function radioFormArgs() { return { args: ['set', 'radio1', '--label', 'TM-V71'], name: 'radio1' }; }
+let resolveRun;
+function run() { return new Promise(res => { resolveRun = res; }); }
+let form = { edit: true, name: 'radio1', saving: false };
+$fn
+saveRadioForm({ preventDefault() {} });
+form = { edit: true, name: 'radio1', saving: false };   // Cancel, then the form is opened again
+resolveRun('{}');
+Promise.resolve().then(() => {
+  console.log(JSON.stringify({ dialogOpen: dialog.open, closes: dialog.closes, savingCalls, notices, refreshCalls }));
+});
+")
+  assert_eq "$got" '{"dialogOpen":true,"closes":0,"savingCalls":[true],"notices":["radio1 updated."],"refreshCalls":1}'
 }

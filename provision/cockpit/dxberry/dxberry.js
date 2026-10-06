@@ -655,6 +655,7 @@ function fillRadioForm(name, cand) {
   const bauds = BAUDS.slice();
   const baud = edit ? x.rig.baud : (df.baud || 0);
   if (!bauds.includes(baud)) bauds.push(baud);
+  bauds.sort((a, b) => a - b);
   document.getElementById("radio-dialog-title").textContent = edit ? `Edit ${name}` : `Add ${cand.name}`;
   setFormError("");
   setSaving(false);
@@ -703,7 +704,9 @@ function radioFormArgs() {
     const name = v("rf-name");
     if (!NAME_RE.test(name)) return { error: "The name must be lower-case letters and digits, starting with a letter, 12 at most." };
     if (name in last.radios.radios) return { error: `${name} already exists; pick another name.` };
-    if (o.audio === "none" && o.cat === "none") return { error: "Pick a sound card or a CAT port: a radio needs at least one." };
+    if (o.audio === "none" && o.cat === "none" && (!o.ptt_serial || o.ptt_serial === "none") && !o.hid) {
+      return { error: "Pick a sound card, a CAT port, a PTT serial port or a HID: a radio needs at least one." };
+    }
     add("--audio", o.audio);
     add("--cat", o.cat);
     if (o.ptt_serial && o.ptt_serial !== "none") add("--ptt-serial", o.ptt_serial);
@@ -725,7 +728,7 @@ function radioFormArgs() {
   if (Number(o.model) !== x.rig.model) add("--model", o.model);
   if (Number(o.baud) !== x.rig.baud) add("--baud", o.baud);
   if (ptt !== x.ptt.method) add("--ptt", ptt);
-  if (o.ptt_type !== x.rig.ptt_type) add("--ptt-type", o.ptt_type);
+  if (ptt === "rigctld" && o.ptt_type !== x.rig.ptt_type) add("--ptt-type", o.ptt_type);
   if (ptt === "gpio" && Number(o.gpio_line) !== x.ptt.gpio_line) add("--gpio-line", o.gpio_line);
   if (o.wiring !== x.wiring) add("--wiring", o.wiring);
   return { args: flags.length ? ["set", form.name, ...flags] : null, name: form.name };
@@ -744,16 +747,16 @@ function saveRadioForm(e) {
   setSaving(true);
   run([RADIO, ...r.args, "--json"]).then(out => {
     f.saving = false;
-    setSaving(false);
-    if (d.open) d.close();
+    // a cancelled-then-reopened form is not this one any more: only the dialog that is still
+    // this form's own gets re-enabled and closed; the notice and refresh happen regardless
+    if (form === f) { setSaving(false); if (d.open) d.close(); }
     notice(f.edit ? `${r.name} updated.` : `${r.name} added.`, "good");
     for (const w of warningsOf(out)) notice(`${r.name}: ${w}`, "warn");
     refresh(true);
   }, ex => {
     f.saving = false;
-    setSaving(false);
-    // the form is still open: say it there; if the operator closed it meanwhile, say it on the page
-    if (d.open && form === f) setFormError(problemText(ex, RADIO_EXITS));
+    // the form is still open and still current: say it there; otherwise say it on the page
+    if (form === f && d.open) { setSaving(false); setFormError(problemText(ex, RADIO_EXITS)); }
     else failure(f.edit ? `Updating ${r.name}` : `Adding ${r.name}`, ex, RADIO_EXITS);
     refresh(true);
   });
@@ -837,7 +840,7 @@ function init() {
   document.getElementById("refresh").addEventListener("click", () => refresh(true));
   cockpit.addEventListener("visibilitychange", () => { if (!cockpit.hidden) refresh(true); });
   document.getElementById("radio-form").addEventListener("submit", saveRadioForm);
-  document.getElementById("radio-cancel").addEventListener("click", () => document.getElementById("radio-dialog").close());
+  document.getElementById("radio-cancel").addEventListener("click", () => { form = null; document.getElementById("radio-dialog").close(); });
   refresh(true);
   setInterval(() => refresh(false), REFRESH_MS);
 }
