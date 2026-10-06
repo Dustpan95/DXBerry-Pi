@@ -266,7 +266,7 @@ stdout as success. Exit codes:
 - `add NAME --audio N|none --cat N[:K]|none [--hid N] [--ptt-serial N[:K]]
   [--ptt M] [--model K] [--baud B] [--ptt-type T] [--gpio-line N]
   [--wiring full|names] [--label S]` — validates, fills defaults from the
-  profile, allocates the port, saves, runs `apply`. `N` is a `scan` index and
+  profile, allocates the port, saves, runs `apply`. `N` is a `scan` index or a function's port path as `scan` prints it, and
   `:K` picks the Kth function of that kind on the candidate (an IC-705's
   second serial port is `--cat 1:2`).
 - `set NAME [same flags]` — changes fields; a pin change keeps the owner and
@@ -295,6 +295,7 @@ stdout as success. Exit codes:
   right now (§7.1).
 - `hotplug` — alias of `apply --hotplug`, the udev entry point.
 - `gps` — §8.3.
+- `models` — Hamlib's rig models from `rigctl -l` (`--json`: `[{model, mfg, name, status}]`); added for the console.
 
 Logging: `/var/lib/dxberry/radio.log` via the shared `dxb_log`, plus
 journal output when invoked by systemd.
@@ -488,6 +489,7 @@ With no gpsd, no receiver or no fix it still exits 0; the JSON then carries
 | `app_<app>_unwire RADIO` | remove that configuration so the application no longer opens the devices; idempotent |
 | `app_<app>_needs_service_restart` | prints `yes` when wire/unwire only take effect after a restart (Graywolf prints `no`: its API applies live) |
 | `app_<app>_wait_ready` | optional; blocks until the application accepts configuration (Graywolf: its API answers); failure makes `claim` return 5 |
+| `app_<app>_label` | optional; prints the name the console shows (Graywolf: `Graywolf`) |
 
 Applications with `wiring: names` skip `wire`/`unwire`; the core still
 starts and stops the unit.

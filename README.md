@@ -80,6 +80,13 @@ warnings, load, memory, disk), the clock, and versions. Buttons open Graywolf, r
 or restart DXBerry's services, open each service's log, and restart or shut down the Pi. Cockpit's own
 Overview, Services, Logs, Terminal and Accounts pages are in the same menu.
 
+The Radios card lists each radio DXBerry knows (its parts, rig, PTT, rigctld and frequency) with
+**Give to Graywolf**, **Release**, **Edit** and **Remove**, and every USB radio interface that is
+plugged in but not set up yet, with **Add**: a form filled from the interface's profile, with Hamlib's
+searchable list of rig models. It says first when a change stops an application, and when Graywolf
+has channels made by hand that a new DXBerry channel could compete with. All of it is
+`sudo dxberry-radio` underneath; `sudo dxberry-radio models` lists the rig models.
+
 The console is [Cockpit](https://cockpit-project.org) from Debian with one extra page; `CONSOLE=off` in
 `dxberry.txt` turns it off. `sudo dxberry-status` prints the same report in a terminal, and
 `sudo dxberry-status --json` gives it to scripts.
@@ -89,6 +96,7 @@ The console is [Cockpit](https://cockpit-project.org) from Debian with one extra
 `sudo dxberry-radio scan` lists the USB sound cards, serial ports and HID PTT interfaces currently
 plugged in. `sudo dxberry-radio add radio1 --audio N --cat N` pins one as `radio1`, giving it a stable
 name (`hw:RADIO1`, `/dev/dxberry/radio1-cat`) that survives replugging into a different USB port.
+`--audio` and `--cat` also take a port path as `scan` prints it (`--audio usb-0:1.3:1.0`).
 `sudo dxberry-radio claim radio1 graywolf` hands it to Graywolf, wiring an audio device, channel and PTT
 through Graywolf's API; `release` takes it back. A radio has exactly one owning application at a time,
 handed over automatically (the previous owner is unwired first); rigctld runs for every pinned radio
