@@ -116,15 +116,32 @@ test_cli_json_mode_confirms_the_commands_that_print_nothing() {
   cli_env
   cli add radio1 --audio 1 --cat 2 > /dev/null
   assert_ok cli apply --json
-  assert_eq "$(out)" '{"ok":true}'
+  assert_eq "$(jq -c '[.ok, .warnings]' "$TEST_TMP/out")" '[true,[]]'
   assert_ok cli hotplug --json
-  assert_eq "$(out)" '{"ok":true}'
+  assert_eq "$(jq -c '[.ok, .warnings]' "$TEST_TMP/out")" '[true,[]]'
   assert_ok cli release radio1 --json
-  assert_eq "$(out)" '{"ok":true}'
+  assert_eq "$(jq -c '[.ok, .warnings]' "$TEST_TMP/out")" '[true,[]]'
   assert_ok cli remove radio1 --json
-  assert_eq "$(out)" '{"ok":true}'
+  assert_eq "$(jq -c '[.ok, .warnings]' "$TEST_TMP/out")" '[true,[]]'
   assert_ok cli apply                       # without --json the commands stay silent
   assert_eq "$(out)" ""
+}
+
+# release and remove answer only {"ok":true}, so that answer carries the run's warnings too: a
+# channel the application would not delete must still reach the page.
+test_cli_release_and_remove_answers_carry_the_runs_warnings() {
+  cli_env
+  cli add radio1 --audio 1 --cat 2 > /dev/null
+  assert_ok cli claim radio1 alpha
+  # as app_graywolf_unwire does when Graywolf refuses the DELETE (the later definition wins)
+  cat >> "$DXB_APPS_DIR/alpha.sh" <<'APP'
+app_alpha_unwire() { dxb_warn "could not delete alpha channel $1"; }
+APP
+  assert_ok cli release radio1 --json
+  assert_eq "$(jq -c '[.ok, .warnings]' "$TEST_TMP/out")" '[true,["could not delete alpha channel radio1"]]'
+  assert_ok cli claim radio1 alpha
+  assert_ok cli remove radio1 --json
+  assert_eq "$(jq -c '[.ok, .warnings]' "$TEST_TMP/out")" '[true,["could not delete alpha channel radio1"]]'
 }
 
 test_cli_gps_without_daemon() {

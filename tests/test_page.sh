@@ -184,6 +184,8 @@ test_page_reads_only_fields_that_dxberry_radio_produces() {
   cp "$TEST_TMP/out" "$TEST_TMP/models.json"
   cli add radio1 --audio 1 --cat 2 --json || _fail "dxberry-radio add --json failed: $(cat "$TEST_TMP/err")"
   cp "$TEST_TMP/out" "$TEST_TMP/add.json"
+  cli release radio1 --json || _fail "dxberry-radio release --json failed: $(cat "$TEST_TMP/err")"
+  cp "$TEST_TMP/out" "$TEST_TMP/release.json"
   for f in $(pg_radio_fields); do
     n=$(( n + 1 ))
     pg_has_path "$TEST_TMP/${f%%:*}.json" "${f#*:}" || _fail "dxberry.js reads ${f#*:} from dxberry-radio ${f%%:*} --json, which it does not produce"

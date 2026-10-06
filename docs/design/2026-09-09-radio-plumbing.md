@@ -249,8 +249,11 @@ All require root (`dxb_require_root`). All accept `--json`, anywhere in the
 argument list. `scan`, `status`, `gps` and, in JSON mode, `add`/`set`/`claim`
 (which print the radio's status block) answer with their own object; the
 four that otherwise print nothing on success — `apply`, `hotplug`, `release`,
-`remove` — answer `{"ok":true}`, so a caller never has to read an empty
-stdout as success. Exit codes:
+`remove` — answer `{"ok":true,"warnings":[…]}`, so a caller never has to read an empty
+stdout as success. Every `--json` answer except the lists and readings of `scan`, `gps` and
+`models` — that is `status`'s, the status block of `add`/`set`/`claim`, and `{"ok":true}` —
+carries `warnings`: this run's warning messages, because `cockpit.spawn` hands the console a
+command's stderr only when it fails. Exit codes:
 
 | Code | Meaning |
 |---|---|
@@ -292,7 +295,10 @@ stdout as success. Exit codes:
 - `status [NAME]` — record + runtime + for present radios with rigctld
   active: frequency and mode from `rigctl -m 2 -r 127.0.0.1:PORT f m`
   (1 s timeout; failures show `?`), and the ALSA id the audio card carries
-  right now (§7.1).
+  right now (§7.1). `--json` also carries `candidates` (the `scan` entries no
+  radio pins yet), `apps` (`[{name, label}]`, one per application module) and
+  `warnings` (console spec §8) — this run's warnings, which `{"ok":true}` and
+  the answers of `add`/`set`/`claim` carry too (above).
 - `hotplug` — alias of `apply --hotplug`, the udev entry point.
 - `gps` — §8.3.
 - `models` — Hamlib's rig models from `rigctl -l` (`--json`: `[{model, mfg, name, status}]`); added for the console.

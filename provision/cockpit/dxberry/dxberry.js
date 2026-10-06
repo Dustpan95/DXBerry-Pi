@@ -74,8 +74,9 @@ const FIELDS = [
 /* fields-end */
 /* radio-fields-begin: what the page reads from dxberry-radio's own --json answers, as COMMAND:PATH
  * ('models' = dxberry-radio models; 'add' = the answer of add, set and claim, which is the status
- * block). tests/test_page.sh checks each one against the command's real output. */
-const RADIO_FIELDS = ["models:*.model", "models:*.mfg", "models:*.name", "add:warnings"];
+ * block; 'release' = the {"ok":true} answer of release and remove). tests/test_page.sh checks each
+ * one against the command's real output. */
+const RADIO_FIELDS = ["models:*.model", "models:*.mfg", "models:*.name", "add:warnings", "release:warnings"];
 /* radio-fields-end */
 
 const state = { busy: false, stopped: false, again: false };

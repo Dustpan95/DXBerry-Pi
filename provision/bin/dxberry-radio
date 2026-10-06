@@ -32,8 +32,9 @@ warnings_json() {
 
 usage() { sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 JSON=0
-# the commands that print nothing on success still owe --json an answer (spec section 6.2)
-json_ok() { (( JSON )) && printf '{"ok":true}\n'; return 0; }
+# the commands that print nothing on success still owe --json an answer (spec section 6.2), and it
+# carries this run's warnings like every other answer (a channel Graywolf would not delete on release)
+json_ok() { (( JSON )) && jq -cn --argjson w "$(warnings_json)" '{ok: true, warnings: $w}'; return 0; }
 
 # lock_record: one change to the radio record at a time. add/set/remove/claim/release each load the
 # record, can work for two minutes (claim waits for Graywolf) and save it whole, so two at once
