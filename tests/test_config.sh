@@ -253,3 +253,24 @@ test_config_gps_keys_are_known_not_reserved() {
   assert_ok dxb_config_validate
   assert_contains "${DXB_CFG_WARNINGS[*]}" "GPS_FOO"
 }
+
+test_validate_console_defaults_on_and_takes_only_on_or_off() {
+  export DXB_ZONEINFO_DIR=$TEST_TMP/no-such-dir
+  write_cfg 'PASSWORD=secretpass'
+  assert_ok load_and_validate
+  assert_eq "${DXB_CFG[CONSOLE]:-}" "on"
+  write_cfg 'PASSWORD=secretpass' 'CONSOLE=off'
+  assert_ok load_and_validate
+  assert_eq "${DXB_CFG[CONSOLE]:-}" "off"
+  write_cfg 'PASSWORD=secretpass' 'CONSOLE=no'
+  assert_fails load_and_validate
+  assert_contains "$(errors_text)" "CONSOLE must be on or off"
+}
+
+test_config_console_key_is_known_but_its_prefix_stays_reserved() {
+  write_cfg 'PASSWORD=secretpass' 'CONSOLE=off' 'CONSOLE_PORT=9090'
+  dxb_config_load "$TEST_TMP/dxberry.txt"
+  assert_eq "${#DXB_CFG_WARNINGS[@]}" "0"
+  assert_eq "${DXB_CFG[CONSOLE]:-}" "off"
+  assert_eq "${DXB_CFG[CONSOLE_PORT]:-unset}" "unset"
+}

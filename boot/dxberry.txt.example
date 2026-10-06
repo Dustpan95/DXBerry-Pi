@@ -63,6 +63,8 @@ WEBUI_PASSWORD=
 # GRAYWOLF_VERSION=
 # on keeps the console on the GPIO UART; off (default) leaves the UART free for a GPS.
 # SERIAL_CONSOLE=off
+# The web console at https://<the Pi's address>/ (log in as dietpi with PASSWORD). off turns it off.
+# CONSOLE=on
 # GPS receiver. auto (default) = a USB GPS is picked up when plugged in; none = off;
 # uart = a GPS on GPIO pins 8/10 (needs SERIAL_CONSOLE=off, turns off onboard Bluetooth);
 # or a /dev/tty path.
