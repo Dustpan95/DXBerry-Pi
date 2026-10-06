@@ -86,6 +86,8 @@ dxb_radio_scan_cache() { DXB_RADIO_SCAN=$(dxb_radio_scan) || DXB_RADIO_SCAN='[]'
 
 # ---- record --------------------------------------------------------------------------------
 DXB_RADIO_NAME_RE='^[a-z][a-z0-9]{0,11}$'
+# a function's USB port path as scan prints it (udev ID_PATH style): usb-0:1.3:1.0
+DXB_RADIO_PATH_RE='^usb-[0-9]+:[0-9.]+:[0-9]+\.[0-9]+$'
 dxb_radio_empty_record() { printf '{"version":1,"radios":{},"gps":{"device":"auto","baud":9600,"pps":""}}\n'; }
 
 dxb_radio_load() {
@@ -135,16 +137,32 @@ dxb_radio_names() { jq -r '.radios | keys[]' <<< "$DXB_RADIOS"; }
 dxb_radio_get() { jq -ce --arg n "$1" '.radios[$n] // empty' <<< "$DXB_RADIOS" || { dxb_error "no such radio: $1"; return 3; }; }
 dxb_radio_alloc_port() { jq -r '[.radios[].rigctld_port] as $u | [range(4532; 4600; 2)] | map(select(. as $p | $u | index($p) | not)) | .[0]' <<< "$DXB_RADIOS"; }
 
-# _dxb_radio_pin SELECTOR KIND: resolves "N" / "N:K" against DXB_RADIO_SCAN to a pin object; "none" -> null.
+# _dxb_radio_pin SELECTOR KIND: resolves a selector against DXB_RADIO_SCAN to a pin object; "none" -> null.
+# A selector is "N" / "N:K" (scan index, Kth function of KIND) or a function's port path as scan
+# prints it (usb-0:1.3:1.0) - a path still names the same function after a hotplug renumbers the
+# scan. 0 ok, 2 bad selector, 4 no function of KIND is plugged in at that path.
 _dxb_radio_pin() {
   local sel=$1 kind=$2 n k
   [[ $sel == none || -z $sel ]] && { echo null; return 0; }
-  [[ $sel =~ ^([0-9]+)(:([0-9]+))?$ ]] || { dxb_error "bad candidate selector '$sel' (use N or N:K)"; return 2; }
+  if [[ $sel =~ $DXB_RADIO_PATH_RE ]]; then
+    jq -ce --arg p "$sel" --arg kind "$kind" \
+      '[.[].functions[] | select(.path == $p and .kind == $kind)] | .[0] // empty | {path, vidpid, serial}' <<< "$DXB_RADIO_SCAN" \
+      || { dxb_error "no $kind function is plugged in at $sel"; return 4; }
+    return 0
+  fi
+  [[ $sel =~ ^([0-9]+)(:([0-9]+))?$ ]] || { dxb_error "bad candidate selector '$sel' (use N, N:K or a port path such as usb-0:1.3:1.0)"; return 2; }
   n=${BASH_REMATCH[1]}; k=${BASH_REMATCH[3]:-1}
   (( k >= 1 )) || { dxb_error "bad candidate selector '$sel' (K must be >= 1)"; return 2; }
   jq -ce --argjson n "$n" --argjson k "$k" --arg kind "$kind" \
     '(.[] | select(.index == $n) | .functions | map(select(.kind == $kind)) | .[$k - 1]) // empty | {path, vidpid, serial}' <<< "$DXB_RADIO_SCAN" \
     || { dxb_error "candidate $sel has no $kind function"; return 2; }
+}
+
+# _dxb_radio_cand_index SELECTOR: the scan index of the candidate a selector points at (N, N:K or
+# a function's port path); empty when no candidate holds that path.
+_dxb_radio_cand_index() {
+  if [[ $1 =~ ^([0-9]+)(:[0-9]+)?$ ]]; then printf '%s\n' "${BASH_REMATCH[1]}"; return 0; fi
+  jq -r --arg p "$1" '[.[] | select(any(.functions[]; .path == $p)) | .index] | .[0] // empty' <<< "$DXB_RADIO_SCAN"
 }
 
 # _dxb_radio_build OPTS BASE: merge OPTS (candidate selectors + overrides) into BASE (an existing radio or {}).
@@ -154,14 +172,16 @@ _dxb_radio_build() {
   for k in audio cat hid ptt_serial; do
     sel=$(jq -r --arg k "$k" '.[$k] // empty' <<< "$opts")
     [[ -n $sel ]] || continue
-    pin=$(_dxb_radio_pin "$sel" "$( [[ $k == audio ]] && echo audio || { [[ $k == hid ]] && echo hid || echo serial; } )") || return 2
+    pin=$(_dxb_radio_pin "$sel" "$( [[ $k == audio ]] && echo audio || { [[ $k == hid ]] && echo hid || echo serial; } )") || return $?
     r=$(jq -c --arg k "$k" --argjson p "$pin" '.[$k] = $p' <<< "$r")
   done
   # profile defaults come from the audio candidate, else the cat candidate, only when creating
   if [[ $(jq -r '.profile // empty' <<< "$r") == "" ]]; then
     # the profile candidate is the audio selector unless it is absent or "none", then the cat selector
-    cand=$(jq -r 'if (.audio // "none") != "none" then .audio else (.cat // empty) end' <<< "$opts"); cand=${cand%%:*}
-    if [[ -n $cand && $cand != none ]]; then
+    cand=$(jq -r 'if (.audio // "none") != "none" then .audio else (.cat // empty) end' <<< "$opts")
+    [[ $cand == none ]] && cand=''
+    [[ -n $cand ]] && cand=$(_dxb_radio_cand_index "$cand")
+    if [[ -n $cand ]]; then
       defaults=$(jq -c --argjson n "$cand" '.[] | select(.index == $n) | {profile: .profile, defaults: .defaults}' <<< "$DXB_RADIO_SCAN")
     fi
     [[ -n $defaults ]] || defaults='{}'
@@ -172,8 +192,10 @@ _dxb_radio_build() {
          wiring: "full", owner: ""} + .' <<< "$r")
     # the DigiRig hid pin is implied by the audio candidate when the operator did not choose one
     if [[ $(jq -r '.hid' <<< "$r") == null ]]; then
-      cand=$(jq -r '.audio // empty' <<< "$opts"); cand=${cand%%:*}
-      [[ -n $cand && $cand != none ]] && pin=$(_dxb_radio_pin "$cand" hid 2> /dev/null) && r=$(jq -c --argjson p "$pin" '.hid = $p' <<< "$r")
+      cand=$(jq -r '.audio // empty' <<< "$opts")
+      [[ $cand == none ]] && cand=''
+      [[ -n $cand ]] && cand=$(_dxb_radio_cand_index "$cand")
+      [[ -n $cand ]] && pin=$(_dxb_radio_pin "$cand" hid 2> /dev/null) && r=$(jq -c --argjson p "$pin" '.hid = $p' <<< "$r")
     fi
   fi
   r=$(jq -c --argjson o "$opts" '
@@ -203,7 +225,7 @@ dxb_radio_add() {
   [[ $name =~ $DXB_RADIO_NAME_RE ]] || { dxb_error "radio name must match $DXB_RADIO_NAME_RE"; return 2; }
   jq -e --arg n "$name" '.radios[$n]' <<< "$DXB_RADIOS" > /dev/null 2>&1 && { dxb_error "radio $name already exists"; return 2; }
   jq -e 'type == "object"' <<< "$opts" > /dev/null 2>&1 || { dxb_error "options must be a JSON object"; return 2; }
-  radio=$(_dxb_radio_build "$opts" '{}') || return 2
+  radio=$(_dxb_radio_build "$opts" '{}') || return $?
   radio=$(jq -c --argjson p "$(dxb_radio_alloc_port)" '. + {rigctld_port: $p, owner: ""}' <<< "$radio")
   dxb_radio_save "$(jq -c --arg n "$name" --argjson r "$radio" '.radios[$n] = $r' <<< "$DXB_RADIOS")" && dxb_info "radio $name added"
 }
@@ -211,7 +233,7 @@ dxb_radio_add() {
 dxb_radio_set() {
   local name=$1 opts=$2 cur radio
   cur=$(dxb_radio_get "$name") || return 3
-  radio=$(_dxb_radio_build "$opts" "$cur") || return 2
+  radio=$(_dxb_radio_build "$opts" "$cur") || return $?
   dxb_radio_save "$(jq -c --arg n "$name" --argjson r "$radio" '.radios[$n] = $r' <<< "$DXB_RADIOS")" || return $?
   dxb_info "radio $name updated"
 }

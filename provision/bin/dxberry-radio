@@ -2,6 +2,7 @@
 # dxberry-radio: discover, pin, and hand radios between applications. Spec: docs/design/2026-09-09-radio-plumbing.md
 #   scan                       list USB candidates (audio / serial / HID functions grouped by port)
 #   add NAME [pins] [opts]     pin a radio: --audio N --cat N[:K] [--hid N] [--ptt-serial N[:K]]
+#                              (a pin also takes a port path as scan prints it: --audio usb-0:1.3:1.0)
 #   set NAME [pins] [opts]     change a radio ( --audio none clears a pin )
 #   remove NAME                forget a radio
 #   apply                      regenerate udev rules, rigctld instances and runtime state
@@ -19,7 +20,7 @@ for _m in common config graywolf radio radio_udev rigctld gps; do
   source "$DXB_LIB/$_m.sh"
 done
 
-usage() { sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 JSON=0
 # the commands that print nothing on success still owe --json an answer (spec section 6.2)
 json_ok() { (( JSON )) && printf '{"ok":true}\n'; return 0; }

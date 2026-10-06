@@ -145,3 +145,27 @@ test_cli_add_rejects_flag_shaped_option_value() {
   assert_contains "$(cat "$TEST_TMP/err")" "--label needs a value"
   assert_ok cli add radio1 --audio 1 --cat 2 --label ""
 }
+
+# The console pins by port path: a hotplug between reading the scan and saving the form can
+# renumber the scan, but a path always names the same function.
+test_cli_add_takes_port_paths_as_selectors() {
+  cli_env
+  assert_ok cli add radio1 --audio usb-0:1.3:1.0 --cat usb-0:1.4:1.0 --label TM-V71
+  # the same record the scan-index form gives: the DigiRig profile's defaults and its implied HID pin
+  assert_eq "$(jq -r '.radios.radio1 | [.profile, .audio.path, .cat.path, .hid.path, .ptt.method, .rig.ptt_type] | join(" ")' "$DXB_STATE_DIR/radios.json")" \
+    "0d8c:013c usb-0:1.3:1.0 usb-0:1.4:1.0 usb-0:1.3:1.3 rigctld RTS"
+}
+
+test_cli_port_path_selector_errors_and_set() {
+  cli_env
+  cli add radio1 --audio usb-0:1.9:1.0; assert_eq "$?" "4"
+  assert_contains "$(cat "$TEST_TMP/err")" "no audio function is plugged in at usb-0:1.9:1.0"
+  cli add radio1 --audio usb-0:1.4:1.0; assert_eq "$?" "4"     # that path is a serial port, not a sound card
+  cli add radio1 --audio sideways; assert_eq "$?" "2"
+  assert_contains "$(cat "$TEST_TMP/err")" "port path"
+  cli add radio1 --audio 1 --cat 2 > /dev/null
+  assert_ok cli set radio1 --cat none
+  assert_eq "$(jq -c '.radios.radio1.cat' "$DXB_STATE_DIR/radios.json")" "null"
+  assert_ok cli set radio1 --cat usb-0:1.4:1.0
+  assert_eq "$(jq -r '.radios.radio1.cat.path' "$DXB_STATE_DIR/radios.json")" "usb-0:1.4:1.0"
+}
