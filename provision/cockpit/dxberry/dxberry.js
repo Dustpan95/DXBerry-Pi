@@ -83,7 +83,9 @@ const state = { busy: false, stopped: false, again: false };
 // The last report that parsed. Cards are drawn from it, and actions and dialogs read the station
 // from it between refreshes.
 let last = null;
-const pending = {};   // radio name -> what is running for it right now ("Giving to Graywolf")
+// radio name -> what is running for it right now ("Giving to Graywolf"); no prototype, so a radio
+// named like a member every object inherits (constructor is a valid name) is not busy
+const pending = Object.create(null);
 let models = null;    // Hamlib's rig models once dxberry-radio models has answered
 let modelsLoading = null;
 let modelsTried = false;   // radiosCard asks once per page load; opening the form asks again after a failure
@@ -227,10 +229,11 @@ function stationCard(g) {
 
 // ---- radios -------------------------------------------------------------------------------
 // loadModels: Hamlib's rig list, fetched once per page load (names for the cards, choices for the form).
+// Any failure - the command's, or an answer that does not parse - is forgotten, so the next ask retries.
 function loadModels() {
   if (!modelsLoading) {
-    modelsLoading = run([RADIO, "models", "--json"]).then(out => (models = JSON.parse(out)),
-      ex => { modelsLoading = null; throw ex; });
+    modelsLoading = run([RADIO, "models", "--json"]).then(out => (models = JSON.parse(out)))
+      .then(null, ex => { modelsLoading = null; throw ex; });
   }
   return modelsLoading;
 }
@@ -264,7 +267,7 @@ function handMadeChannels() {
   const g = last && last.graywolf;
   if (!g || !g.ok || !g.api_ok) return [];
   const radios = (last.radios && last.radios.radios) || {};
-  return (g.channels || []).map(c => c.name).filter(c => !(c in radios));
+  return (g.channels || []).map(c => c.name).filter(c => !Object.prototype.hasOwnProperty.call(radios, c));
 }
 
 function parts(x) {
@@ -289,12 +292,12 @@ function radioActions(r, n, x, busy) {
   const acts = [];
   for (const a of r.apps || []) {
     if (a.name === x.owner) continue;
-    acts.push(btn(`Give to ${a.label}`, () => giveTo(n, a), { key: `radio:${n}:give:${a.name}`, disabled: busy || !x.present,
-      title: x.present ? null : "Plug the radio in first" }));
+    acts.push(btn(`Give to ${a.label}`, () => giveTo(n, a), { key: `radio:${n}:give:${a.name}`, aria: `Give ${n} to ${a.label}`,
+      disabled: busy || !x.present, title: x.present ? null : "Plug the radio in first" }));
   }
-  if (x.owner) acts.push(btn("Release", () => release(n), { key: `radio:${n}:release`, disabled: busy }));
-  acts.push(btn("Edit", () => openRadioForm(n), { key: `radio:${n}:edit`, disabled: busy }));
-  acts.push(btn("Remove", () => removeRadio(n), { cls: "danger", key: `radio:${n}:remove`, disabled: busy }));
+  if (x.owner) acts.push(btn("Release", () => release(n), { key: `radio:${n}:release`, aria: `Release ${n}`, disabled: busy }));
+  acts.push(btn("Edit", () => openRadioForm(n), { key: `radio:${n}:edit`, aria: `Edit ${n}`, disabled: busy }));
+  acts.push(btn("Remove", () => removeRadio(n), { cls: "danger", key: `radio:${n}:remove`, aria: `Remove ${n}`, disabled: busy }));
   return acts;
 }
 
@@ -379,10 +382,17 @@ function giveTo(name, app) {
     const prev = appLabel(last.radios, x.owner);
     warn.push(ownsOthers(x.owner, name) ? `${prev} lets go of ${name} first.` : `${prev} lets go of ${name} first and stops, because it owns no other radio.`);
   }
-  const hand = app.name === "graywolf" ? handMadeChannels() : [];
-  if (hand.length) {
-    warn.push(`Graywolf already has channels made by hand: ${hand.join(", ")}. It gets a new channel named ${name} for this radio; ` +
-      "if a hand-made channel uses the same sound card, the two compete for it. Remove or re-point the hand-made channel in Graywolf's page.");
+  // DXBerry makes Graywolf a channel for the radio only with full wiring (names wiring leaves
+  // Graywolf to the operator), so only then can a hand-made channel compete with it
+  if (app.name === "graywolf" && x.wiring !== "names") {
+    const g = last.graywolf;
+    const hand = handMadeChannels();
+    if (!g || !g.ok || !g.api_ok) {
+      warn.push("Graywolf is not answering, so its channels made by hand could not be checked.");
+    } else if (hand.length) {
+      warn.push(`Graywolf already has channels made by hand: ${hand.join(", ")}. It gets a new channel named ${name} for this radio; ` +
+        "if a hand-made channel uses the same sound card, the two compete for it. Remove or re-point the hand-made channel in Graywolf's page.");
+    }
   }
   if (warn.length) confirmThen(`Give ${name} to ${app.label}?`, warn.join(" "), `Give to ${app.label}`, go);
   else go();
@@ -393,7 +403,7 @@ function release(name) {
   const label = appLabel(last.radios, x.owner);
   const go = () => radioAction(name, { busy: "Releasing", what: `Releasing ${name} from ${label}`, done: `${name} released.` }, ["release", name]);
   let text = `${label} stops using ${name}.`;
-  if (x.owner === "graywolf") text += ` Graywolf's channel named ${name} is deleted.`;
+  if (x.owner === "graywolf" && x.wiring !== "names") text += ` Graywolf's channel named ${name} is deleted.`;
   if (!ownsOthers(x.owner, name)) {
     text += ` ${label} owns no other radio, so it stops altogether`;
     const hand = x.owner === "graywolf" ? handMadeChannels() : [];
@@ -594,7 +604,7 @@ function fnChoices(kind) {
 }
 
 function nextRadioName() {
-  for (let i = 1; i < 100; i++) if (!(`radio${i}` in last.radios.radios)) return `radio${i}`;
+  for (let i = 1; i < 100; i++) if (!Object.prototype.hasOwnProperty.call(last.radios.radios, `radio${i}`)) return `radio${i}`;
   return "";
 }
 
@@ -607,15 +617,24 @@ function modelField(current) {
     "aria-label": "Search Hamlib's rig models" });
   const sel = el("select", { id: "rf-model", size: "6" });
   const sorted = models.slice().sort((a, b) => `${a.mfg} ${a.name}`.localeCompare(`${b.mfg} ${b.name}`));
+  const hits = (m, q) => `${m.mfg} ${m.name} ${m.model}`.toLowerCase().includes(q);
   const fill = () => {
     const q = filter.value.trim().toLowerCase();
     const keep = Number(sel.value || current || 1);
     sel.replaceChildren(...sorted
-      .filter(m => m.model === keep || !q || `${m.mfg} ${m.name} ${m.model}`.toLowerCase().includes(q))
+      .filter(m => m.model === keep || !q || hits(m, q))
       .map(m => el("option", { value: String(m.model) }, `${m.mfg} ${m.name} (${m.model})`.replace("  ", " "))));
     sel.value = String(keep);
   };
   filter.addEventListener("input", fill);
+  // Enter in the search box would submit the whole form; it picks the first model the search finds instead
+  filter.addEventListener("keydown", e => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const q = filter.value.trim().toLowerCase();
+    const first = q && sorted.find(m => hits(m, q));
+    if (first) { sel.value = String(first.model); fill(); }
+  });
   fill();
   return el("div", { class: "field" }, el("label", { for: "rf-model" }, "Hamlib rig model"), filter, sel,
     el("p", { class: "hint muted" }, "Hamlib Dummy (1) when the radio has no CAT control."));
@@ -655,6 +674,8 @@ function fillRadioForm(name, cand) {
   const keep = pin => [["", `Keep: ${pin ? pin.path : "none"}`]];
   const bauds = BAUDS.slice();
   const baud = edit ? x.rig.baud : (df.baud || 0);
+  // the pin renames the card's ALSA id, which a channel made by hand in Graywolf refers to
+  const hand = edit ? [] : handMadeChannels();
   if (!bauds.includes(baud)) bauds.push(baud);
   bauds.sort((a, b) => a - b);
   document.getElementById("radio-dialog-title").textContent = edit ? `Edit ${name}` : `Add ${cand.name}`;
@@ -667,7 +688,9 @@ function fillRadioForm(name, cand) {
     field("Label", "rf-label", el("input", { id: "rf-label", type: "text", value: edit ? x.label : "", maxlength: "40" }),
       "Shown beside the name, for example Kenwood TM-V71."),
     field("Sound card", "rf-audio", choice("rf-audio", (edit ? keep(x.audio) : []).concat([["none", "None"]], fnChoices("audio")),
-      edit ? "" : (own("audio") ? own("audio").path : "none"))),
+      edit ? "" : (own("audio") ? own("audio").path : "none")),
+      hand.length ? `Graywolf has channels made by hand (${hand.join(", ")}). Pinning a sound card renames it to the radio's name in capitals ` +
+        "at the next replug or reboot; a hand-made channel that uses this card stops working then." : null),
     field("CAT port", "rf-cat", choice("rf-cat", (edit ? keep(x.cat) : []).concat([["none", "None"]], fnChoices("serial")),
       edit ? "" : (own("serial") ? own("serial").path : "none")),
       !edit && df.cat === "separate" ? "This interface's CAT and PTT port is a separate USB device: pick its serial port here." : null),
@@ -704,7 +727,7 @@ function radioFormArgs() {
   if (!form.edit) {
     const name = v("rf-name");
     if (!NAME_RE.test(name)) return { error: "The name must be lower-case letters and digits, starting with a letter, 12 at most." };
-    if (name in last.radios.radios) return { error: `${name} already exists; pick another name.` };
+    if (Object.prototype.hasOwnProperty.call(last.radios.radios, name)) return { error: `${name} already exists; pick another name.` };
     if (o.audio === "none" && o.cat === "none" && (!o.ptt_serial || o.ptt_serial === "none") && !o.hid) {
       return { error: "Pick a sound card, a CAT port, a PTT serial port or a HID: a radio needs at least one." };
     }
@@ -715,7 +738,8 @@ function radioFormArgs() {
     add("--model", o.model);
     add("--baud", o.baud);
     add("--ptt", ptt);
-    add("--ptt-type", o.ptt_type);
+    // only rigctld keys by a CAT command or a serial line; anything else sends NONE, not the profile's type
+    add("--ptt-type", ptt === "rigctld" ? o.ptt_type : "NONE");
     if (ptt === "gpio") add("--gpio-line", o.gpio_line);
     add("--wiring", o.wiring);
     add("--label", o.label);

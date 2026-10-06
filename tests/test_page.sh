@@ -213,17 +213,18 @@ test_page_drives_radios_through_dxberry_radio() {
   assert_file_contains "$js" "failure(t.what, ex, RADIO_EXITS)"
 }
 
-# A channel Graywolf has that is not named after a DXBerry radio was made by hand (spec 8.3).
+# A channel Graywolf has that is not named after a DXBerry radio was made by hand (spec 8.3), even
+# one named like a member every JavaScript object inherits.
 test_page_flags_graywolf_channels_made_by_hand() {
   command -v node > /dev/null 2>&1 || return 0
   local fn got
   fn=$(sed -n '/^function handMadeChannels(/,/^}/p' "$PG_DIR/dxberry.js")
-  got=$(node -e "let last = {graywolf: {ok: true, api_ok: true, channels: [{name: 'VHF APRS'}, {name: 'radio1'}]}, radios: {radios: {radio1: {}}}};
+  got=$(node -e "let last = {graywolf: {ok: true, api_ok: true, channels: [{name: 'VHF APRS'}, {name: 'radio1'}, {name: 'constructor'}]}, radios: {radios: {radio1: {}}}};
 $fn
 console.log(JSON.stringify(handMadeChannels()));
 last.graywolf.api_ok = false;
 console.log(JSON.stringify(handMadeChannels()));")
-  assert_eq "$(sed -n 1p <<< "$got")" '["VHF APRS"]'
+  assert_eq "$(sed -n 1p <<< "$got")" '["VHF APRS","constructor"]'
   assert_eq "$(sed -n 2p <<< "$got")" '[]'
 }
 
@@ -276,6 +277,10 @@ console.log(JSON.stringify(radioFormArgs()));
 vals['rf-name'] = 'radio3'; vals['rf-audio'] = 'none'; vals['rf-cat'] = 'none';
 console.log(JSON.stringify(radioFormArgs()));
 vals['rf-name'] = 'radio4'; vals['rf-ptt-serial'] = 'usb-0:1.5:1.0';
+console.log(JSON.stringify(radioFormArgs()));
+vals['rf-name'] = 'radio5'; vals['rf-ptt'] = 'vox';
+console.log(JSON.stringify(radioFormArgs()));
+vals['rf-name'] = 'constructor';
 console.log(JSON.stringify(radioFormArgs()));")
   assert_eq "$(sed -n 1p <<< "$got")" '{"args":["set","radio1","--label","TM-V71","--cat","none"],"name":"radio1"}'
   assert_eq "$(sed -n 2p <<< "$got")" '{"args":null,"name":"radio1"}'
@@ -285,16 +290,32 @@ console.log(JSON.stringify(radioFormArgs()));")
   # A sound card and a CAT port are not the only way to pin a radio: a PTT serial port (or a HID,
   # not exercised here) counts too, so this must return args, not the "at least one" error.
   assert_eq "$(sed -n 6p <<< "$got")" '{"args":["add","radio4","--audio","none","--cat","none","--ptt-serial","usb-0:1.5:1.0","--model","1","--baud","57600","--ptt","rigctld","--ptt-type","RTS","--wiring","full","--label","old"],"name":"radio4"}'
+  # only rigctld keys by a serial line: any other PTT is added with NONE, not the profile's RTS
+  assert_eq "$(sed -n 7p <<< "$got")" '{"args":["add","radio5","--audio","none","--cat","none","--ptt-serial","usb-0:1.5:1.0","--model","1","--baud","57600","--ptt","vox","--ptt-type","NONE","--wiring","full","--label","old"],"name":"radio5"}'
+  # a valid name that every JavaScript object inherits is not a radio that "already exists"
+  assert_contains "$(sed -n 8p <<< "$got")" '"args":["add","constructor",'
 }
 
 # A failed Hamlib list fetch must not be cached forever: opening the form retries it, so the
 # searchable list still appears once the command works.
 test_page_retries_a_failed_model_list_from_the_form() {
-  local js=$PG_DIR/dxberry.js load_body cards_body
+  local js=$PG_DIR/dxberry.js load_body cards_body got
   load_body=$(sed -n '/^function loadModels(/,/^}/p' "$js")
   assert_contains "$load_body" "modelsLoading = null"
   cards_body=$(sed -n '/^function radiosCard(/,/^}/p' "$js")
   assert_contains "$cards_body" "modelsTried = true"
+  # a listing that does not parse is a failure too: the next ask runs the command again
+  command -v node > /dev/null 2>&1 || return 0
+  got=$(node -e "const RADIO = 'dxberry-radio';
+let models = null, modelsLoading = null;
+const answers = ['rigctl: not a listing', '[{\"model\":1}]'];
+function run() { return Promise.resolve(answers.shift()); }
+$load_body
+loadModels().then(() => console.log('parsed garbage'), () => {
+  console.log('cleared ' + (modelsLoading === null));
+  return loadModels().then(m => console.log('retried ' + JSON.stringify(m)));
+}).catch(e => console.log('stuck ' + e));" 2>&1)
+  assert_eq "$got" "$(printf 'cleared true\nretried [{"model":1}]')"
 }
 
 # A save that is still in flight when the operator cancels and reopens the form must not touch

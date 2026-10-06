@@ -84,7 +84,8 @@ The Radios card lists each radio DXBerry knows (its parts, rig, PTT, rigctld and
 **Give to Graywolf**, **Release**, **Edit** and **Remove**, and every USB radio interface that is
 plugged in but not set up yet, with **Add**: a form filled from the interface's profile, with Hamlib's
 searchable list of rig models. It says first when a change stops an application, and when Graywolf
-has channels made by hand that a new DXBerry channel could compete with. All of it is
+has channels made by hand that a new DXBerry channel could compete with; **Add** notes that pinning a
+sound card renames it at the next replug or reboot, which breaks a hand-made channel on it. All of it is
 `sudo dxberry-radio` underneath; `sudo dxberry-radio models` lists the rig models.
 
 The console is [Cockpit](https://cockpit-project.org) from Debian with one extra page; `CONSOLE=off` in

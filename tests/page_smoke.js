@@ -162,6 +162,9 @@ const flush = () => new Promise(r => setImmediate(r));
   ok(!text().includes("Give to Graywolf"), "no Give to Graywolf on a radio Graywolf owns");
   const btnByKey = k => cards.querySelectorAll("[data-key]").find(e => e.dataset.key === k);
   ok(!!btnByKey("radio:radio1:release") && !!btnByKey("radio:radio1:edit") && !!btnByKey("radio:radio1:remove"), "Release, Edit, Remove buttons");
+  const aria = k => btnByKey(k).getAttribute("aria-label");
+  ok(aria("radio:radio1:release") === "Release radio1" && aria("radio:radio1:edit") === "Edit radio1" && aria("radio:radio1:remove") === "Remove radio1",
+    "the radio's buttons name the radio for screen readers");
   ok(!!btnByKey("cand:usb-0:1.3:add") && !!btnByKey("cand:usb-0:1.4:add"), "an Add button per candidate");
   ok(text().includes("on, 4.4 MB in RAM"), "position log text");
 
@@ -176,6 +179,7 @@ const flush = () => new Promise(r => setImmediate(r));
   ok(confirmD.open, "Release asks first");
   const ctext = confirmD.querySelector("p").textContent;
   ok(ctext.includes("VHF APRS") && ctext.includes("stops altogether"), "the confirmation names the hand-made channel and that Graywolf stops: " + ctext);
+  ok(ctext.includes("Graywolf's channel named radio1 is deleted."), "with full wiring, Release says Graywolf's channel for the radio is deleted");
   answer = args => {
     if (args[1] === "release") return Promise.reject({ exit_status: 3, message: "2026-10-06 12:00:00 [INFO] working\n2026-10-06 12:00:01 [ERROR] no such radio: radio1" });
     if (args[0].endsWith("dxberry-status")) return Promise.resolve(JSON.stringify(status));
@@ -207,10 +211,17 @@ const flush = () => new Promise(r => setImmediate(r));
   ok($("rf-audio").value === "usb-0:1.3:1.0", "sound card preselected from the candidate");
   ok($("rf-cat").value === "none", "no CAT preselected (separate device)");
   ok($("radio-fields").textContent.includes("separate USB device"), "hint for the DigiRig's separate CAT port");
+  const audioField = $("rf-audio").closest(".field").textContent;
+  ok(audioField.includes("Graywolf has channels made by hand (VHF APRS).") && audioField.includes("renames it to the radio's name in capitals at the next replug or reboot"),
+    "Add cautions that pinning a sound card renames it under Graywolf's hand-made channel: " + audioField);
   ok($("rf-hid").value === "", "HID automatic on add");
   ok($("rf-model").value === "1" && $("rf-model").options.length === 4, "model list loaded, default 1");
   $("rf-model-filter").value = "icom"; $("rf-model-filter").fire("input");
   ok($("rf-model").options.length === 3 && $("rf-model").value === "1", "search narrows the list and keeps the chosen model: " + $("rf-model").options.map(o => o.textContent).join("|"));
+  let prevented = false;
+  $("rf-model-filter").fire("keydown", { key: "Enter", preventDefault() { prevented = true; } });
+  // the list reads Hamlib Dummy (kept, but not a match), Icom IC-705, Icom IC-7300: Enter takes the first match
+  ok(prevented && $("rf-model").value === "3085", "Enter in the search picks the first model it finds instead of submitting the form: " + $("rf-model").value);
   ok($("rf-gpio").closest(".field").hidden === true && $("rf-ptt-type").closest(".field").hidden === false, "GPIO hidden, PTT type shown for rigctld");
   $("rf-ptt").value = "gpio"; $("rf-ptt").fire("change");
   ok($("rf-gpio").closest(".field").hidden === false && $("rf-ptt-type").closest(".field").hidden === true, "GPIO shown for gpio PTT");
@@ -234,6 +245,7 @@ const flush = () => new Promise(r => setImmediate(r));
   await flush(); await flush();
   ok(radioD.open && $("radio-dialog-title").textContent === "Edit radio1", "Edit opens the form");
   ok($("rf-name") === null, "no Name field when editing");
+  ok(!$("rf-audio").closest(".field").textContent.includes("made by hand"), "Edit carries no renaming caution");
   ok($("rf-audio").value === "" && $("rf-model").value === "3073", "pins default to keep; model is the radio's");
   answer = args => {
     if (args[1] === "set") return Promise.reject({ exit_status: 2, message: "2026-10-06 12:00:00 [ERROR] invalid radio record:\n  radio1: bad label" });
@@ -259,14 +271,48 @@ const flush = () => new Promise(r => setImmediate(r));
   doc.getElementById("refresh").click(); await flush(); await flush();
   ok(radioD.open && $("rf-label").value === "typed", "the 10 s refresh does not touch the open form");
   ok($("rf-audio").value === "none" && $("rf-cat").value === "usb-0:1.4:1.0", "serial-only candidate: CAT preselected, no sound card");
+  // the profile says RTS, but only rigctld keys by a serial line: anything else is added with NONE
+  $("rf-ptt").value = "vox"; $("rf-ptt").fire("change");
+  rform.fire("submit");
+  await flush(); await flush(); await flush();
+  const add2 = calls.filter(c => c.args && c.args[1] === "add").pop();
+  ok(add2 && add2.args.join(" ").includes("--ptt vox --ptt-type NONE --wiring full --label typed"), "a VOX radio is added with --ptt-type NONE: " + (add2 && add2.args.join(" ")));
 
   // Give to: an unowned radio with hand-made channels asks first
   status.radios.radios.radio1.owner = "";
   doc.getElementById("refresh").click(); await flush(); await flush();
   btnByKey("radio:radio1:give:graywolf").click();
   ok(confirmD.open && confirmD.querySelector("p").textContent.includes("made by hand: VHF APRS"), "Give to Graywolf warns about hand-made channels");
+  ok(confirmD.querySelector("p").textContent.includes("It gets a new channel named radio1"), "with full wiring, Give says Graywolf gets a channel for the radio");
   confirmD.returnValue = "cancel"; confirmD.close();
   ok(!calls.some(c => c.args && c.args[1] === "claim"), "Cancel runs nothing");
+  ok(aria("radio:radio1:give:graywolf") === "Give radio1 to Graywolf", "Give names the radio and the application for screen readers");
+
+  // Graywolf not answering: its hand-made channels cannot be checked, and Give says so first
+  status.graywolf.api_ok = false;
+  doc.getElementById("refresh").click(); await flush(); await flush();
+  btnByKey("radio:radio1:give:graywolf").click();
+  ok(confirmD.open && confirmD.querySelector("p").textContent.includes("Graywolf is not answering, so its channels made by hand could not be checked."),
+    "Give to Graywolf says when Graywolf could not be asked about hand-made channels: " + confirmD.querySelector("p").textContent);
+  confirmD.returnValue = "cancel"; confirmD.close();
+  status.graywolf.api_ok = true;
+
+  // names wiring: DXBerry makes no Graywolf channel, so neither Release nor Give talks about one
+  status.radios.radios.radio1.wiring = "names";
+  status.radios.radios.radio1.owner = "graywolf";
+  doc.getElementById("refresh").click(); await flush(); await flush();
+  btnByKey("radio:radio1:release").click();
+  const ntext = confirmD.querySelector("p").textContent;
+  ok(confirmD.open && !ntext.includes("is deleted") && ntext.includes("stops altogether"), "Release of a names-only radio promises no channel deletion: " + ntext);
+  confirmD.returnValue = "cancel"; confirmD.close();
+  status.radios.radios.radio1.owner = "";
+  doc.getElementById("refresh").click(); await flush(); await flush();
+  btnByKey("radio:radio1:give:graywolf").click();
+  ok(!confirmD.open, "Give a names-only radio to Graywolf: no channel is made, so nothing to caution about");
+  await flush(); await flush(); await flush();
+  const claim = calls.filter(c => c.args && c.args[1] === "claim").pop();
+  ok(claim && claim.args.join(" ") === "/opt/dxberry/bin/dxberry-radio claim radio1 graywolf --json", "Give runs claim: " + (claim && claim.args.join(" ")));
+  status.radios.radios.radio1.wiring = "full";
 
   // unplugged radio: Give to disabled
   status.radios.radios.radio1.present = false;
