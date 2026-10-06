@@ -277,3 +277,31 @@ test_status_cli_leaves_the_provision_log_alone() {
   [[ -s $DXB_LOG_FILE ]] && _fail "dxberry-status wrote to $DXB_LOG_FILE"
   return 0
 }
+
+# A part can be ok:true (or api_ok:true) and still carry a null where the renderer expects an
+# array or object (an empty-but-present field from some future collector change, a hand-built
+# report, etc). One such null must never take down the other parts' lines.
+test_status_text_tolerates_null_arrays_in_otherwise_ok_parts() {
+  local j out rc
+  j=$(jq -cn '{
+    generated: "2026-01-01T00:00:00Z",
+    pi: {ok: true, model: "Raspberry Pi 4 Model B Rev 1.4", temp_c: 37, throttle: null, load: null,
+         mem_total: 3977555968, mem_used: 495955968, disk_total: 30000000000, disk_used: 3000000000, uptime_s: 450123},
+    network: {ok: true, state: "WIFI", interface: "wlan0", address: "10.0.0.90", prefix: 24, gateway: "10.0.0.1", wifi: null, hostname: "dxberry-pi"},
+    graywolf: {ok: true, active: "active", sub: "running", result: "success", version: "0.14.13", web_port: 8080,
+               api_ok: true, api_error: "", igate: null, channels: null, position_log: null},
+    radios: {ok: true, radios: null, gps: {fix: 0, receiver: false}},
+    time: {ok: true, synced: true, source: "NTP", reference: "144.202.66.214", stratum: 5, offset_ms: -0.412},
+    release: {ok: true, dxberry: "0.3.0-rc1", dxberry_commit: "abc1234", graywolf: "0.14.13", cockpit: "337-1+deb13u2", update: null},
+    services: {ok: true, units: null}
+  }')
+  out=$(dxb_status_text <<< "$j"); rc=$?
+  assert_eq "$rc" "0"
+  assert_contains "$out" "pi: Raspberry Pi 4 Model B Rev 1.4"
+  assert_contains "$out" "network: WIFI on wlan0 10.0.0.90/24 via 10.0.0.1"
+  assert_contains "$out" "graywolf: running, version 0.14.13"
+  assert_contains "$out" "radios: 0 radio(s)"
+  assert_contains "$out" "time: synced to NTP 144.202.66.214, offset -0.412 ms"
+  assert_contains "$out" "release: DXBerry 0.3.0-rc1, Graywolf 0.14.13, Cockpit 337-1+deb13u2"
+  assert_contains "$out" "services:"
+}

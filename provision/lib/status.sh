@@ -285,7 +285,7 @@ dxb_status_text() {
         (if (.under_voltage_now | not) and .under_voltage_since_boot then "under-voltage since boot" else empty end),
         (if (.throttled_now | not) and .throttled_since_boot then "throttled since boot" else empty end)]
        | if length > 0 then "; " + join(", ") else "" end) end;
-    line("pi"; .model + ", " + temp(.temp_c) + ", load " + ((.load[0] // "?") | tostring) + ", RAM " + (.mem_used | mb) + " of " + (.mem_total | mb)
+    line("pi"; .model + ", " + temp(.temp_c) + ", load " + (((.load // [])[0] // "?") | tostring) + ", RAM " + (.mem_used | mb) + " of " + (.mem_total | mb)
       + ", disk " + (.disk_used | gb) + " of " + (.disk_total | gb) + ", up " + (.uptime_s | up) + (.throttle | power)),
     line("network"; .state + (if .interface != "" then " on " + .interface + " " + .address + "/" + (.prefix | tostring) else "" end)
       + (if .gateway != "" then " via " + .gateway else "" end)
@@ -293,15 +293,15 @@ dxb_status_text() {
     line("graywolf"; (if .active == "active" then "running" else .active end) + ", version " + (if .version == "" then "not installed" else .version end)
       + (if .api_ok then
            (if .igate != null then ", iGate " + (if .igate.connected then "connected to " + .igate.server else "not connected" end) else "" end)
-           + ([.channels[] | ", channel " + .name + " rx " + (.rx_frames | tostring) + " tx " + (.tx_frames | tostring) + " bad FCS " + (.rx_bad_fcs | tostring)] | join(""))
+           + ([(.channels // [])[] | ", channel " + .name + " rx " + (.rx_frames | tostring) + " tx " + (.tx_frames | tostring) + " bad FCS " + (.rx_bad_fcs | tostring)] | join(""))
            + (if .position_log != null then ", position log " + (if .position_log.enabled then "on" else "off" end) else "" end)
          else " (" + .api_error + ")" end)),
     line("radios"; (.radios | length | tostring) + " radio(s)"
-      + ([.radios | to_entries[] | ", " + .key + " " + (if .value.present then "present" else "unplugged" end) + (if .value.owner != "" then " (" + .value.owner + ")" else "" end)] | join(""))),
+      + ([(.radios // {}) | to_entries[] | ", " + .key + " " + (if .value.present then "present" else "unplugged" end) + (if .value.owner != "" then " (" + .value.owner + ")" else "" end)] | join(""))),
     line("time"; if .synced then "synced to " + .source + (if .source == "NTP" and .reference != "" then " " + .reference else "" end) + ", offset " + (.offset_ms | tostring) + " ms" else "not synced" end),
     line("release"; "DXBerry " + .dxberry + ", Graywolf " + (if .graywolf == "" then "-" else .graywolf end) + ", Cockpit " + (if .cockpit == "" then "-" else .cockpit end)),
     (if has("services") then
-       (if .services.ok then "services:", (.services.units[] | "  " + .unit + ": " + (if .load == "not-found" then "not installed" else .active + " (" + .sub + ")" end))
+       (if .services.ok then "services:", ((.services.units // [])[] | "  " + .unit + ": " + (if .load == "not-found" then "not installed" else .active + " (" + .sub + ")" end))
         else "services: unavailable (" + (.services.error // "unknown error") + ")" end)
      else empty end)'
 }
