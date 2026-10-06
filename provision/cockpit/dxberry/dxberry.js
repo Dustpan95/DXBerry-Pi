@@ -306,7 +306,13 @@ function power(target) {
     () => {
       state.stopped = true;
       notice(reboot ? "Pi restarting, reconnecting…" : "Pi shutting down…", "warn", true);
-      run(["systemctl", "--no-block", "start", target]).then(null, () => { /* the connection is going away */ });
+      run(["systemctl", "--no-block", "start", target]).then(null, ex => {
+        // "disconnected"/"terminated": the connection going away as the Pi goes down, not a failure.
+        if (ex && (ex.problem === "disconnected" || ex.problem === "terminated")) return;
+        state.stopped = false;
+        failure(reboot ? "Restart" : "Shut down", ex);
+        refresh(true);
+      });
     });
 }
 
@@ -320,7 +326,7 @@ function render(s) {
 }
 
 function refresh(force) {
-  if (state.busy || state.stopped || (document.hidden && force !== true)) return;
+  if (state.busy || state.stopped || (cockpit.hidden && force !== true)) return;
   state.busy = true;
   run([STATUS, "--json"]).then(out => {
     state.busy = false;
@@ -341,7 +347,7 @@ function init() {
   applyTheme();
   window.addEventListener("storage", applyTheme);
   document.getElementById("refresh").addEventListener("click", () => refresh(true));
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(true); });
+  cockpit.addEventListener("visibilitychange", () => { if (!cockpit.hidden) refresh(true); });
   refresh(true);
   setInterval(() => refresh(false), REFRESH_MS);
 }

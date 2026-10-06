@@ -53,6 +53,21 @@ test_page_runs_everything_through_superuser_commands() {
   assert_file_not_contains "$js" "cockpit.file"
 }
 
+# Cockpit keeps a visited page's frame alive but hidden, and document.hidden stays false inside
+# it, so the refresh loop must watch cockpit.hidden/cockpit's own visibilitychange, not document's.
+# A --no-block power action that fails outright (not just the connection going away) must be
+# reported through failure(), not swallowed as a silent, permanent "restarting" state.
+test_page_watches_cockpit_visibility_and_reports_power_failures() {
+  local js=$PG_DIR/dxberry.js power_body
+  assert_file_contains "$js" "cockpit.hidden"
+  assert_file_contains "$js" 'cockpit.addEventListener("visibilitychange"'
+  assert_file_not_contains "$js" "document.hidden"
+  power_body=$(sed -n '/^function power(/,/^}/p' "$js")
+  assert_contains "$power_body" "failure("
+  assert_contains "$power_body" "disconnected"
+  assert_contains "$power_body" "terminated"
+}
+
 test_page_script_parses() {
   command -v node > /dev/null 2>&1 || return 0   # node is optional locally; CI's runner has it
   node --check "$PG_DIR/dxberry.js" 2> "$TEST_TMP/node.err" || _fail "dxberry.js does not parse: $(cat "$TEST_TMP/node.err")"
