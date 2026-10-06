@@ -1,0 +1,237 @@
+#!/bin/bash
+# dxberry-config: read and change the Pi's own settings in dxberry.txt. Spec: docs/design/2026-09-29-console.md section 10
+#   get                          every console setting (passwords only as set / not set) and whether dxberry.txt validates
+#   set KEY=VALUE... [--stdin]   change settings; --stdin also reads PASSWORD=... / WIFI_PASSWORD=... lines from standard input
+#   job                          the last settings change: running or finished, its exit and output; a network change waiting
+#   confirm                      keep the last network change (stops its two-minute undo)
+#   revert                       undo the last network change now (its timer runs this too; --boot: files only)
+#   apply                        the settings job itself, started by set
+# --json on any subcommand. Network settings (STATIC_IP GATEWAY DNS WIFI_SSID WIFI_PASSWORD WIFI_COUNTRY) are saved on their own.
+# Exit: 0 ok, 1 not root, 2 usage, 4 not valid (nothing written), 5 busy, 6 write failed, 8 applied with failed steps.
+set -uo pipefail
+
+DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
+for _m in common config graywolf settings; do
+  # shellcheck disable=SC1090
+  source "$DXB_LIB/$_m.sh"
+done
+: "${DXB_PROVISION_CMD:=/opt/dxberry/bin/dxberry-provision}"
+: "${DXB_CONFIG_LOCK_WAIT:=30}"
+
+usage() { sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+JSON=0
+STDIN=0
+BOOT=0
+
+say() { (( JSON )) || printf '%s\n' "$*"; }
+
+# lock_config: one set / confirm / revert at a time (two browser tabs, or the page and SSH).
+lock_config() {
+  local f=$DXB_RUN_DIR/config.lock
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  exec 7> "$f" || return 0
+  command -v flock > /dev/null 2>&1 || return 0
+  flock -w "$DXB_CONFIG_LOCK_WAIT" 7 || { echo "another settings change is in progress; try again" >&2; return 5; }
+}
+
+cmd_get() {
+  local file j
+  file="$(dxb_boot_dir)/dxberry.txt"
+  [[ -f $file ]] || { echo "no $file" >&2; return 4; }
+  j=$(dxb_settings_get_json "$file")
+  if (( JSON )); then printf '%s\n' "$j"; return 0; fi
+  jq -r '.keys | to_entries[] | "\(.key)=\(if .value.secret then (if .value.set then "(set)" else "(not set)" end) else .value.value end)"' <<< "$j"
+  jq -r 'if .valid then empty else "dxberry.txt has errors:", (.errors[] | "  " + .) end' <<< "$j"
+}
+
+# _set_one KEY VALUE: apply one change to NEW (the caller's variable), checking it first.
+_set_check() {
+  local k=$1 v=$2
+  dxb_settings_is_console_key "$k" || { echo "$k is not a console setting (station, beacon, iGate and digipeater settings are changed in Graywolf's page)" >&2; return 2; }
+  dxb_settings_value_ok "$v" || { echo "$k: the value contains a line break or another control character" >&2; return 2; }
+}
+
+cmd_set() {
+  local file content new a k v line errs rc unit n=0 net=0 others=0
+  local -a changed=()
+  file="$(dxb_boot_dir)/dxberry.txt"
+  [[ -f $file ]] || { echo "no $file; nothing to change" >&2; return 4; }
+  if dxb_settings_job_running; then echo "a settings change is still being applied; wait for it to finish (sudo dxberry-config job)" >&2; return 5; fi
+  if dxb_netsafe_pending; then echo "the last network change waits to be kept or undone first (sudo dxberry-config confirm, or revert)" >&2; return 5; fi
+  content=$(< "$file"); new=$content
+  for a in "$@"; do
+    [[ $a == *=* ]] || { echo "expected KEY=VALUE, got: ${a%%=*}" >&2; return 2; }
+    k=${a%%=*}; v=${a#*=}
+    if dxb_settings_is_secret "$k"; then echo "$k is a password: give it as a $k=... line on standard input with --stdin, never as an argument" >&2; return 2; fi
+    _set_check "$k" "$v" || return 2
+    new=$(dxb_settings_edit "$k" "$v" <<< "$new"); n=$(( n + 1 ))
+  done
+  if (( STDIN )); then
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ -n $line ]] || continue
+      k=${line%%=*}; v=${line#*=}
+      if [[ $line != *=* ]] || ! dxb_settings_is_secret "$k" || ! dxb_settings_is_console_key "$k"; then
+        echo "standard input takes only PASSWORD=... and WIFI_PASSWORD=... lines" >&2; return 2
+      fi
+      _set_check "$k" "$v" || return 2
+      new=$(dxb_settings_edit "$k" "$v" <<< "$new"); n=$(( n + 1 ))
+    done
+  fi
+  (( n )) || { echo "usage: dxberry-config set KEY=VALUE... [--stdin]" >&2; return 2; }
+  errs=$(dxb_settings_validate "$new"); rc=$?
+  if (( rc != 0 )); then
+    echo "dxberry.txt would not be valid, so nothing was written:" >&2
+    printf '%s\n' "$errs" | sed '/^$/d; s/^/  /' >&2
+    return 4
+  fi
+  mapfile -t changed < <(dxb_settings_changed "$content" "$new")
+  if (( ${#changed[@]} == 0 )); then
+    if (( JSON )); then echo '{"ok":true,"changed":[],"job":null,"network":false}'; else echo "nothing changed"; fi
+    return 0
+  fi
+  for k in "${changed[@]}"; do if dxb_settings_is_network_key "$k"; then net=1; else others=1; fi; done
+  if (( net && others )); then
+    echo "save network settings ($DXB_NETWORK_KEYS) on their own, so the undo puts back exactly what changed" >&2
+    return 2
+  fi
+  if (( net )) && ! dxb_netsafe_snapshot; then return 6; fi
+  if ! dxb_settings_write "$file" "$new"; then
+    (( net )) && rm -rf "$DXB_NETSAFE_DIR"
+    return 6
+  fi
+  if (( net )) && ! dxb_netsafe_arm "$DXB_NETSAFE_BACKSTOP_S"; then
+    dxb_netsafe_restore > /dev/null 2>&1 || dxb_settings_write "$file" "$content"
+    echo "could not arm the undo timer, so nothing was changed" >&2
+    return 6
+  fi
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  printf '%s\n' "${changed[@]}" > "$DXB_CONFIG_PENDING"
+  rm -f "$DXB_CONFIG_RESULT" "$DXB_CONFIG_REVERTED"
+  unit="dxberry-job-config-$(date +%s)"
+  if ! "$DXB_SYSTEMD_RUN" --quiet --collect --unit="$unit" --description="DXBerry settings change" "$DXB_CONFIG_CMD" apply > /dev/null 2>&1; then
+    if (( net )); then dxb_netsafe_disarm; dxb_netsafe_restore > /dev/null 2>&1 || dxb_settings_write "$file" "$content"
+    else dxb_settings_write "$file" "$content"; fi
+    rm -f "$DXB_CONFIG_PENDING"
+    echo "could not start the settings job, so nothing was changed" >&2
+    return 6
+  fi
+  jq -cn --arg u "$unit" --argjson t "$(date +%s)" --argjson n "$net" --argjson c "$(printf '%s\n' "${changed[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" \
+    '{unit: $u, started: $t, network: ($n == 1), changed: $c}' > "$DXB_CONFIG_JOB_FILE"
+  if (( JSON )); then
+    jq -c '{ok: true, changed: .changed, job: .unit, network: .network}' "$DXB_CONFIG_JOB_FILE"
+  else
+    echo "changed: ${changed[*]}; applying as $unit (follow it with: sudo dxberry-config job)"
+    (( net )) && echo "this network change is undone unless kept: sudo dxberry-config confirm"
+  fi
+  return 0
+}
+
+cmd_apply() {
+  local rc=0 k net=0 gw=0
+  local -a keys=()
+  [[ -f $DXB_CONFIG_PENDING ]] && mapfile -t keys < "$DXB_CONFIG_PENDING"
+  for k in "${keys[@]}"; do
+    dxb_settings_is_network_key "$k" && net=1
+    case $k in POSITION_LOG|GPS_DEVICE|GPS_BAUD|GPS_PPS) gw=1 ;; esac
+  done
+  echo "applying: ${keys[*]:-everything}"
+  # a settings change never upgrades Graywolf; and nothing here may wait on a terminal
+  DXB_GW_UPGRADE=0 DXB_TTY=/dev/null "$DXB_PROVISION_CMD" || rc=8
+  if (( gw )); then DXB_TTY=/dev/null dxb_settings_push_graywolf || rc=8; fi
+  if (( net )) && dxb_netsafe_pending; then
+    if dxb_netsafe_arm "$DXB_NETSAFE_WINDOW_S"; then
+      echo "network change applied; it is undone in $DXB_NETSAFE_WINDOW_S seconds unless kept (sudo dxberry-config confirm)"
+    else
+      echo "the undo timer could not be re-armed; the earlier one still undoes the change" >&2
+    fi
+  fi
+  rm -f "$DXB_CONFIG_PENDING"
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  jq -cn --argjson e "$rc" --argjson t "$(date +%s)" '{exit: $e, finished: $t}' > "$DXB_CONFIG_RESULT"
+  echo "finished with exit $rc"
+  return $rc
+}
+
+cmd_job() {
+  local unit='' state lines result='null' at reverted j
+  if [[ -f $DXB_CONFIG_JOB_FILE ]]; then
+    unit=$(dxb_settings_job_unit)
+    if [[ -n $unit ]] && systemctl is-active --quiet "$unit"; then state=running
+    elif [[ -f $DXB_CONFIG_RESULT ]]; then state=finished; result=$(jq -c . "$DXB_CONFIG_RESULT" 2> /dev/null || echo null)
+    else state=ended; fi
+    lines=$(journalctl -u "$unit" -o cat --no-pager -n 400 2> /dev/null | jq -Rsc 'split("\n") | map(select(length > 0))')
+    j=$(jq -c --arg s "$state" --argjson r "$result" --argjson l "${lines:-[]}" \
+      '. + {state: $s, exit: ($r.exit // null), finished: ($r.finished // null), lines: $l}' "$DXB_CONFIG_JOB_FILE")
+  else
+    j=null
+  fi
+  at=$(dxb_netsafe_revert_at)
+  reverted=$(cat "$DXB_CONFIG_REVERTED" 2> /dev/null)
+  j=$(jq -cn --argjson j "$j" --argjson now "$(date +%s)" --argjson p "$(dxb_netsafe_pending && echo true || echo false)" \
+    --arg at "$at" --arg rv "$reverted" --argjson rb "$([[ -e $DXB_REBOOT_FLAG ]] && echo true || echo false)" \
+    '{now: $now, pending: $p, revert_at: (if $at == "" then null else ($at | tonumber) end),
+      reverted_at: (if $rv == "" then null else ($rv | tonumber) end), reboot_required: $rb, job: $j}')
+  if (( JSON )); then printf '%s\n' "$j"; return 0; fi
+  jq -r '(if .job == null then "no settings change yet" else "last change: \(.job.changed | join(" ")) - \(.job.state)\(if .job.exit != null then " (exit \(.job.exit))" else "" end)" end),
+    (if .pending then "a network change waits to be kept: sudo dxberry-config confirm (or revert)" else empty end),
+    (if .reboot_required then "a restart is needed to finish" else empty end),
+    (.job.lines // [] | .[] | "  " + .)' <<< "$j"
+}
+
+cmd_confirm() {
+  if ! dxb_netsafe_pending; then say "no network change is waiting"; (( JSON )) && echo '{"ok":true}'; return 0; fi
+  dxb_netsafe_disarm
+  rm -rf "$DXB_NETSAFE_DIR"
+  say "network settings kept"
+  (( JSON )) && echo '{"ok":true}'
+  return 0
+}
+
+cmd_revert() {
+  local rc=0
+  dxb_netsafe_pending || { echo "there is no network change to undo" >&2; return 6; }
+  dxb_netsafe_disarm
+  dxb_netsafe_restore || rc=6
+  if (( ! BOOT )); then
+    systemctl restart dxberry-netwatch > /dev/null 2>&1 || { echo "could not restart dxberry-netwatch" >&2; rc=6; }
+  fi
+  mkdir -p "$(dirname "$DXB_CONFIG_REVERTED")" 2> /dev/null
+  date +%s > "$DXB_CONFIG_REVERTED"
+  (( rc == 0 )) && say "network change undone"
+  (( JSON && rc == 0 )) && echo '{"ok":true}'
+  return $rc
+}
+
+main() {
+  local cmd='' a
+  local -a args=()
+  for a in "$@"; do
+    case $a in
+      --json) JSON=1 ;;
+      --stdin) STDIN=1 ;;
+      --boot) BOOT=1 ;;
+      *) args+=("$a") ;;
+    esac
+  done
+  cmd=${args[0]:-}; args=("${args[@]:1}")
+  case $cmd in
+    -h|--help) usage; return 0 ;;
+    get|set|job|confirm|revert|apply) ;;
+    '') usage >&2; return 2 ;;
+    *) echo "unknown subcommand: $cmd" >&2; usage >&2; return 2 ;;
+  esac
+  dxb_require_root
+  mkdir -p "$DXB_STATE_DIR" 2> /dev/null; chmod 700 "$DXB_STATE_DIR" 2> /dev/null
+  # this command's own log lines go to the journal (job) or the terminal, never the provision log
+  export DXB_LOG_FILE=/dev/null
+  case $cmd in
+    get) cmd_get ;;
+    set) lock_config || return 5; cmd_set "${args[@]}" ;;
+    job) cmd_job ;;
+    confirm) lock_config || return 5; cmd_confirm ;;
+    revert) lock_config || return 5; cmd_revert ;;
+    apply) cmd_apply ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then umask 077; main "$@"; exit $?; fi

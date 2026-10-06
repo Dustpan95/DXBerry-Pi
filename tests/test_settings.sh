@@ -204,3 +204,225 @@ test_netsafe_revert_at_reports_the_deadline() {
   rm -f "$DXB_NETSAFE_AT"
   assert_eq "$(dxb_netsafe_revert_at)" ""
 }
+
+# se_cli ARGS...: run dxberry-config's main in a subshell with stubs; stdout to $TEST_TMP/out,
+# stderr to $TEST_TMP/err, exit code returned. Standard input passes through (for --stdin).
+# systemctl: is-active answers from $TEST_TMP/active (one unit per line).
+se_cli() {
+  (
+    source "$DXB_ROOT/provision/bin/dxberry-config"
+    dxb_require_root() { :; }
+    systemctl() {
+      echo "systemctl $*" >> "$TEST_TMP/calls"
+      case $1 in
+        is-active) grep -qx "${*: -1}" "$TEST_TMP/active" 2> /dev/null ;;
+        *) return 0 ;;
+      esac
+    }
+    journalctl() { printf 'applying: HOSTNAME\nfinished: all steps completed\n'; }
+    main "$@"
+  ) > "$TEST_TMP/out" 2> "$TEST_TMP/err"
+}
+se_out() { cat "$TEST_TMP/out"; }
+# se_cli_env: se_netsafe_env plus a provisioner stub and the job files under $TEST_TMP.
+se_cli_env() {
+  se_netsafe_env
+  # shellcheck disable=SC2031  # exported here, only ever read (never set) inside se_cli's subshell
+  export DXB_CONFIG_JOB_FILE=$TEST_TMP/run/config-job.json DXB_CONFIG_RESULT=$TEST_TMP/run/config-result.json \
+    DXB_CONFIG_PENDING=$TEST_TMP/run/config-pending DXB_CONFIG_REVERTED=$TEST_TMP/state/config-reverted \
+    DXB_PROVISION_CMD=se_provision DXB_REBOOT_FLAG=$TEST_TMP/run/reboot-required DXB_CONFIG_LOCK_WAIT=2 \
+    DXB_GW_COOKIES=$TEST_TMP/run/graywolf.cookies
+  : > "$TEST_TMP/active"
+}
+se_provision() { echo "provision DXB_GW_UPGRADE=${DXB_GW_UPGRADE:-unset}" >> "$TEST_TMP/calls"; return "$(cat "$TEST_TMP/provision-rc" 2> /dev/null || echo 0)"; }
+
+test_config_get_json_and_text() {
+  se_cli_env
+  assert_ok se_cli get --json
+  assert_eq "$(jq -r '.keys.HOSTNAME.value' "$TEST_TMP/out")" "shackpi"
+  assert_ok se_cli get
+  assert_contains "$(se_out)" "HOSTNAME=shackpi"
+  assert_contains "$(se_out)" "PASSWORD=(set)"
+  assert_not_contains "$(se_out)" "<applied>"
+  rm "$DXB_BOOT_DIR/dxberry.txt"
+  se_cli get --json; assert_eq "$?" "4"
+}
+
+test_config_set_writes_and_starts_the_job() {
+  se_cli_env
+  assert_ok se_cli set HOSTNAME=newpi TIMEZONE=UTC --json
+  assert_eq "$(jq -c '.changed' "$TEST_TMP/out")" '["HOSTNAME","TIMEZONE"]'
+  assert_eq "$(jq -r '.network' "$TEST_TMP/out")" "false"
+  assert_contains "$(jq -r '.job' "$TEST_TMP/out")" "dxberry-job-config-"
+  assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "HOSTNAME=newpi"
+  assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "# DXBerry-Pi settings"
+  assert_contains "$(cat "$TEST_TMP/calls")" "--unit=$(jq -r '.job' "$TEST_TMP/out") --description=DXBerry settings change /opt/dxberry/bin/dxberry-config apply"
+  # shellcheck disable=SC2002  # cat for a clear left-to-right read: the pending file, then squash it to one line
+  assert_eq "$(cat "$DXB_CONFIG_PENDING" | tr '\n' ' ')" "HOSTNAME TIMEZONE "
+  assert_eq "$(jq -r '.unit' "$DXB_CONFIG_JOB_FILE")" "$(jq -r '.job' "$TEST_TMP/out")"
+  # not a network change: no snapshot, no undo timer
+  assert_fails dxb_netsafe_pending
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "on-active"
+}
+
+test_config_set_of_the_same_values_changes_nothing() {
+  se_cli_env
+  assert_ok se_cli set HOSTNAME=shackpi --json
+  assert_eq "$(se_out)" '{"ok":true,"changed":[],"job":null,"network":false}'
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemd-run"
+}
+
+test_config_set_refuses_what_it_must() {
+  local before
+  se_cli_env
+  before=$(se_file)
+  se_cli set CALLSIGN=N0CALL-9; assert_eq "$?" "2"
+  assert_contains "$(cat "$TEST_TMP/err")" "Graywolf's page"
+  se_cli set PASSWORD=hunter2hunter2; assert_eq "$?" "2"
+  assert_contains "$(cat "$TEST_TMP/err")" "standard input"
+  assert_not_contains "$(cat "$TEST_TMP/err")" "hunter2"
+  se_cli set "HOSTNAME=$(printf 'a\nb')"; assert_eq "$?" "2"
+  se_cli set HOSTNAME; assert_eq "$?" "2"
+  se_cli set; assert_eq "$?" "2"
+  se_cli set HOSTNAME=x WIFI_SSID=Other; assert_eq "$?" "2"
+  assert_contains "$(cat "$TEST_TMP/err")" "on their own"
+  se_cli set GATEWAY=192.168.9.1; assert_eq "$?" "4"
+  assert_contains "$(cat "$TEST_TMP/err")" "GATEWAY is not inside 10.0.0.90/24"
+  assert_eq "$(se_file)" "$before"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemd-run"
+}
+
+test_config_set_takes_secrets_only_on_stdin() {
+  se_cli_env
+  printf 'PASSWORD=correct horse battery\n' | se_cli set --stdin --json
+  assert_eq "$?" "0"
+  assert_eq "$(jq -c '.changed' "$TEST_TMP/out")" '["PASSWORD"]'
+  assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "PASSWORD=correct horse battery"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "correct horse"
+  assert_not_contains "$(cat "$TEST_TMP/out" "$TEST_TMP/err")" "correct horse"
+  # stdin takes only the two secrets
+  : > "$TEST_TMP/active"; rm -f "$DXB_CONFIG_JOB_FILE"
+  printf 'HOSTNAME=sneaky\n' | se_cli set --stdin; assert_eq "$?" "2"
+  assert_not_contains "$(cat "$TEST_TMP/err")" "sneaky"
+  # without --stdin nothing is read (a caller that sends nothing never hangs)
+  printf 'PASSWORD=ignoredpassword\n' | se_cli set HOSTNAME=calm --json
+  assert_eq "$(jq -c '.changed' "$TEST_TMP/out")" '["HOSTNAME"]'
+}
+
+test_config_network_change_snapshots_and_arms_the_backstop() {
+  se_cli_env
+  printf 'WIFI_PASSWORD=newwifipass\n' | se_cli set WIFI_SSID=Other --stdin --json
+  assert_eq "$?" "0"
+  assert_eq "$(jq -r '.network' "$TEST_TMP/out")" "true"
+  assert_ok dxb_netsafe_pending
+  assert_contains "$(cat "$TEST_TMP/calls")" "--on-active=600"
+  # the snapshot holds the file as it was before the change
+  assert_contains "$(cat "$DXB_NETSAFE_DIR"/*)" "WIFI_SSID=Shack Net"
+  # a second change waits until this one is kept or undone
+  se_cli set STATIC_IP=10.0.0.91/24; assert_eq "$?" "5"
+  assert_contains "$(cat "$TEST_TMP/err")" "kept or undone"
+}
+
+test_config_set_refuses_while_a_job_runs() {
+  se_cli_env
+  assert_ok se_cli set HOSTNAME=busy --json
+  jq -r '.job' "$TEST_TMP/out" > "$TEST_TMP/active"
+  se_cli set TIMEZONE=UTC; assert_eq "$?" "5"
+  assert_contains "$(cat "$TEST_TMP/err")" "still being applied"
+}
+
+test_config_set_rolls_back_when_the_job_cannot_start() {
+  local before
+  se_cli_env
+  before=$(se_file)
+  touch "$TEST_TMP/systemd-run-fails"
+  se_cli set HOSTNAME=never --json; assert_eq "$?" "6"
+  assert_eq "$(se_file)" "$before"
+  se_cli set WIFI_SSID=Never --json; assert_eq "$?" "6"
+  assert_eq "$(se_file)" "$before"
+  assert_fails dxb_netsafe_pending
+}
+
+test_config_apply_keeps_graywolf_rearms_and_records_its_exit() {
+  se_cli_env
+  printf 'WIFI_SSID\n' > "$DXB_CONFIG_PENDING"
+  dxb_netsafe_snapshot
+  assert_ok se_cli apply
+  assert_contains "$(cat "$TEST_TMP/calls")" "provision DXB_GW_UPGRADE=0"
+  assert_contains "$(cat "$TEST_TMP/calls")" "--on-active=120"
+  assert_eq "$(jq -r '.exit' "$DXB_CONFIG_RESULT")" "0"
+  [[ -e $DXB_CONFIG_PENDING ]] && _fail "apply must consume the pending keys"
+  echo 1 > "$TEST_TMP/provision-rc"; printf 'HOSTNAME\n' > "$DXB_CONFIG_PENDING"; : > "$TEST_TMP/calls"
+  se_cli apply; assert_eq "$?" "8"
+  assert_eq "$(jq -r '.exit' "$DXB_CONFIG_RESULT")" "8"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "on-active"
+}
+
+test_config_apply_pushes_position_log_and_gps_to_graywolf() {
+  se_cli_env
+  printf 'POSITION_LOG\n' > "$DXB_CONFIG_PENDING"
+  (
+    source "$DXB_ROOT/provision/bin/dxberry-config"
+    dxb_require_root() { :; }
+    systemctl() { :; }
+    dxb_gw_wait_ready() { return 0; }
+    dxb_gw_login_any() { echo login >> "$TEST_TMP/calls"; }
+    dxb_gw_seed_position_log() { echo "seed position_log ${DXB_CFG[POSITION_LOG]}" >> "$TEST_TMP/calls"; }
+    dxb_gw_seed_gps() { echo "seed gps" >> "$TEST_TMP/calls"; }
+    dxb_gw_api() { echo "api $*" >> "$TEST_TMP/calls"; }
+    main apply
+  ) > /dev/null 2>&1
+  assert_contains "$(cat "$TEST_TMP/calls")" "seed position_log on"
+  assert_contains "$(cat "$TEST_TMP/calls")" "seed gps"
+  assert_contains "$(cat "$TEST_TMP/calls")" "api POST /auth/logout"
+}
+
+test_config_job_reports_state_lines_and_the_undo() {
+  se_cli_env
+  se_cli job --json
+  assert_eq "$(jq -c '{job, pending, revert_at, reverted_at, reboot_required}' "$TEST_TMP/out")" \
+    '{"job":null,"pending":false,"revert_at":null,"reverted_at":null,"reboot_required":false}'
+  printf 'WIFI_PASSWORD=newwifipass\n' | se_cli set WIFI_SSID=Other --stdin --json
+  jq -r '.job' "$TEST_TMP/out" > "$TEST_TMP/active"
+  se_cli job --json
+  assert_eq "$(jq -r '.job.state, .job.network, .pending' "$TEST_TMP/out" | tr '\n' ' ')" "running true true "
+  assert_eq "$(jq -c '.job.lines' "$TEST_TMP/out")" '["applying: HOSTNAME","finished: all steps completed"]'
+  [[ $(jq -r '.revert_at' "$TEST_TMP/out") =~ ^[0-9]+$ ]] || _fail "revert_at must be an epoch while the undo is armed"
+  : > "$TEST_TMP/active"
+  echo '{"exit":8,"finished":1700000300}' > "$DXB_CONFIG_RESULT"
+  touch "$DXB_REBOOT_FLAG"
+  se_cli job --json
+  assert_eq "$(jq -r '.job.state, .job.exit, .reboot_required' "$TEST_TMP/out" | tr '\n' ' ')" "finished 8 true "
+  rm -f "$DXB_CONFIG_RESULT"
+  se_cli job --json
+  assert_eq "$(jq -r '.job.state' "$TEST_TMP/out")" "ended"
+}
+
+test_config_confirm_and_revert() {
+  se_cli_env
+  printf 'WIFI_PASSWORD=newwifipass\n' | se_cli set WIFI_SSID=Other --stdin --json
+  assert_ok se_cli confirm --json
+  assert_eq "$(se_out)" '{"ok":true}'
+  assert_fails dxb_netsafe_pending
+  assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "WIFI_SSID=Other"
+  # revert: the file comes back, netwatch restarts, the undo is recorded
+  se_cli set WIFI_SSID=Again --json
+  assert_ok se_cli revert --json
+  assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "WIFI_SSID=Other"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl restart dxberry-netwatch"
+  [[ -s $DXB_CONFIG_REVERTED ]] || _fail "revert must record when it ran"
+  se_cli revert; assert_eq "$?" "6"
+  # at boot: files only, no netwatch restart (it has not started yet)
+  se_cli set WIFI_SSID=Boot --json; : > "$TEST_TMP/calls"
+  assert_ok se_cli revert --boot
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "restart dxberry-netwatch"
+  assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "WIFI_SSID=Other"
+}
+
+test_config_usage() {
+  se_cli_env
+  se_cli; assert_eq "$?" "2"
+  se_cli frobnicate; assert_eq "$?" "2"
+  assert_ok se_cli -h
+  assert_contains "$(se_out)" "set KEY=VALUE"
+}

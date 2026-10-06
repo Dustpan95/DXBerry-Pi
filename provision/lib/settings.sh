@@ -214,3 +214,30 @@ dxb_netsafe_install_unit() {
   [[ -f $f && $(< "$f") == "$content" ]] || { dxb_error "could not write $f"; return 6; }
   systemctl enable dxberry-config-boot.service > /dev/null 2>&1 || { dxb_error "could not enable dxberry-config-boot.service"; return 6; }
 }
+
+# ---- the settings job ----------------------------------------------------------------------
+: "${DXB_CONFIG_JOB_FILE:=$DXB_RUN_DIR/config-job.json}"
+: "${DXB_CONFIG_RESULT:=$DXB_RUN_DIR/config-result.json}"
+: "${DXB_CONFIG_PENDING:=$DXB_RUN_DIR/config-pending}"
+: "${DXB_CONFIG_REVERTED:=$DXB_STATE_DIR/config-reverted}"
+
+dxb_settings_job_unit() { [[ -f $DXB_CONFIG_JOB_FILE ]] && jq -r '.unit // empty' "$DXB_CONFIG_JOB_FILE" 2> /dev/null; return 0; }
+dxb_settings_job_running() { local u; u=$(dxb_settings_job_unit); [[ -n $u ]] && systemctl is-active --quiet "$u"; }
+
+# dxb_settings_push_graywolf: Graywolf keeps its own copy of POSITION_LOG and the GPS source, and a
+# plain provisioner run does not reseed it, so the new values go through their one seed function
+# each (spec 10.2) - never a whole --reseed. 0 ok, 1 failed (the seed functions record why).
+dxb_settings_push_graywolf() {
+  local rc=0
+  # shellcheck disable=SC2015  # intentional: either failure takes the same "not updated" error path
+  dxb_config_load "$(dxb_boot_dir)/dxberry.txt" && dxb_config_validate \
+    || { dxb_error "dxberry.txt does not validate; Graywolf's position log and GPS source not updated"; return 1; }
+  dxb_gw_wait_ready || { dxb_error "Graywolf's API is not answering; its position log and GPS source not updated"; return 1; }
+  rm -f "$DXB_GW_COOKIES"; ( umask 077; : > "$DXB_GW_COOKIES" )
+  dxb_gw_login_any || { rm -f "$DXB_GW_COOKIES"; return 1; }
+  dxb_gw_seed_position_log || rc=1
+  dxb_gw_seed_gps || rc=1
+  dxb_gw_api POST /auth/logout > /dev/null 2>&1 || true
+  rm -f "$DXB_GW_COOKIES"
+  return $rc
+}
