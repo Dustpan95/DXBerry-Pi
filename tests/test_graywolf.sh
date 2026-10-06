@@ -695,3 +695,19 @@ test_seed_position_log_off_switches_it_off() {
   assert_contains "$(gw_calls)" 'PUT /position-log {"enabled":false}'
   assert_not_contains "$(gw_calls)" '{"enabled":true}'
 }
+
+# A settings change runs the provisioner with DXB_GW_UPGRADE=0: an installed Graywolf is kept even
+# when the release is newer (updates are their own screen); a missing one is still installed.
+test_install_keeps_an_installed_graywolf_when_upgrades_are_off() {
+  gw_env
+  gw_cfg 'PASSWORD=secretpass'
+  echo "deb-bytes" > "$TEST_TMP/http/graywolf_0.14.14_arm64.deb"
+  printf '%s  graywolf_0.14.14_arm64.deb\n' "$(sha256sum "$TEST_TMP/http/graywolf_0.14.14_arm64.deb" | cut -d' ' -f1)" > "$TEST_TMP/http/checksums.txt"
+  fake_dpkg_query installed 0.14.13
+  DXB_GW_UPGRADE=0 dxb_gw_install
+  assert_eq "$?" "0"
+  assert_not_contains "$(gw_calls)" "graywolf_0.14.14_arm64.deb"
+  dpkg-query() { return 1; }
+  DXB_GW_UPGRADE=0 dxb_gw_install
+  assert_contains "$(gw_calls)" "graywolf_0.14.14_arm64.deb"
+}

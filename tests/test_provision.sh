@@ -482,3 +482,34 @@ test_run_mode_wifi_import_failure_leaves_wifi_password_intact() {
   ) 2> /dev/null
   assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "WIFI_PASSWORD=wifipass1"
 }
+
+# A run that needs a reboot (GPS overlay, onboard WiFi re-enabled) says so where Debian and the
+# console look: /run/reboot-required.
+test_run_mode_writes_the_reboot_flag_when_a_reboot_is_needed() {
+  full_env
+  export DXB_REBOOT_FLAG=$TEST_TMP/run/reboot-required
+  mkdir -p "$TEST_TMP/run"
+  printf 'PASSWORD=secretpass\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  (
+    # shellcheck disable=SC1091
+    source "$DXB_ROOT/provision/bin/dxberry-provision"
+    dxb_require_root() { :; }
+    dxb_gw_install() { return 0; }
+    dxb_gw_seed() { return 0; }
+    # shellcheck disable=SC2030
+    provision_radio() { DXB_RADIO_REBOOT_NEEDED=1; }
+    main
+  ) > /dev/null 2>&1
+  assert_file_contains "$DXB_REBOOT_FLAG" "System restart required"
+  rm -f "$DXB_REBOOT_FLAG"
+  (
+    # shellcheck disable=SC1091
+    source "$DXB_ROOT/provision/bin/dxberry-provision"
+    dxb_require_root() { :; }
+    dxb_gw_install() { return 0; }
+    dxb_gw_seed() { return 0; }
+    main
+  ) > /dev/null 2>&1
+  [[ -e $DXB_REBOOT_FLAG ]] && _fail "a run that needs no reboot must not write $DXB_REBOOT_FLAG"
+  return 0
+}

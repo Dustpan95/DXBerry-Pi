@@ -4,6 +4,8 @@
 
 : "${DXB_STATE_DIR:=/var/lib/dxberry}"
 : "${DXB_LOG_FILE:=$DXB_STATE_DIR/provision.log}"
+# Debian's "a reboot is needed" marker; the console and the update check read it.
+: "${DXB_REBOOT_FLAG:=/run/reboot-required}"
 declare -ga DXB_FAILED_STEPS=() DXB_STATUS_LINES=()
 # Space-separated secret key names that were actually consumed (applied somewhere) this run.
 # provision_scrub only replaces a secret's plaintext once it is in this list - a key nobody

@@ -93,6 +93,12 @@ dxb_gw_install() {
   # crash-looping graywolf-modem healed by a plain dxberry-provision even when the release fetch
   # below fails.
   dxb_gw_install_runtime_deps
+  # A settings change runs the provisioner with DXB_GW_UPGRADE=0: an installed Graywolf is kept,
+  # because updates are installed from the console's Updates screen or by a plain dxberry-provision.
+  if [[ ${DXB_GW_UPGRADE:-1} == 0 && -n $(dxb_gw_installed_version) ]]; then
+    dxb_info "graywolf $(dxb_gw_installed_version) kept (DXB_GW_UPGRADE=0)"
+    return 0
+  fi
   base=$(dxb_gw_release_base)
   arch=${DXB_DPKG_ARCH:-$(dpkg --print-architecture)}
   sums=$(dxb_gw_fetch "$base/checksums.txt") || { dxb_step_failed graywolf "could not download checksums.txt from $base"; return 1; }
