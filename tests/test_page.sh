@@ -150,6 +150,15 @@ test_page_confirms_restarting_cockpit_socket_too() {
   assert_file_contains "$js" '"cockpit.socket": "This console closes and stays unreachable'
 }
 
+# tests/page_smoke.js runs the page against a fake DOM and a fake cockpit.spawn: the cards render,
+# the radio buttons ask what they should and run the right commands, and the form sends what it should.
+test_page_smoke_drives_the_page_in_a_fake_browser() {
+  command -v node > /dev/null 2>&1 || return 0
+  local out
+  out=$(node "$DXB_ROOT/tests/page_smoke.js" "$PG_DIR/dxberry.js" 2>&1) || _fail "tests/page_smoke.js failed:
+$out"
+}
+
 test_page_script_parses() {
   command -v node > /dev/null 2>&1 || return 0   # node is optional locally; CI's runner has it
   node --check "$PG_DIR/dxberry.js" 2> "$TEST_TMP/node.err" || _fail "dxberry.js does not parse: $(cat "$TEST_TMP/node.err")"
