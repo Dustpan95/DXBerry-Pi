@@ -3,7 +3,8 @@
 PG_DIR=$DXB_ROOT/provision/cockpit/dxberry
 
 # pg_fields: the dxberry-status --json paths dxberry.js declares it reads (between its markers).
-pg_fields() { sed -n '/fields-begin/,/fields-end/p' "$PG_DIR/dxberry.js" | grep -oE '"[a-z0-9_.*]+"' | tr -d '"'; }
+# Anchored on the comment's own `/* fields-begin` so it does not also match `radio-fields-begin`.
+pg_fields() { sed -n '/\/\* fields-begin/,/\/\* fields-end/p' "$PG_DIR/dxberry.js" | grep -oE '"[a-z0-9_.*]+"' | tr -d '"'; }
 # pg_has_path FILE PATH: PATH (dot-separated; * = the first element or entry) exists in FILE's JSON.
 pg_has_path() {
   jq -e --arg p "$2" '
@@ -227,4 +228,55 @@ console.log(ownsOthers('graywolf', 'radio1'));
 last.radios.radios.radio2.owner = 'graywolf';
 console.log(ownsOthers('graywolf', 'radio1'));")
   assert_eq "$got" "$(printf 'false\ntrue')"
+}
+
+test_page_has_the_radio_form_dialog() {
+  local html=$PG_DIR/index.html js=$PG_DIR/dxberry.js
+  assert_file_contains "$html" '<dialog id="radio-dialog" aria-labelledby="radio-dialog-title">'
+  assert_file_contains "$html" '<form id="radio-form" novalidate>'
+  assert_file_contains "$html" 'id="radio-fields"'
+  assert_file_contains "$html" 'id="radio-cancel"'
+  assert_file_contains "$js" 'addEventListener("submit", saveRadioForm)'
+  assert_file_contains "$js" 'btn("Add", () => openRadioForm(null, c)'
+  assert_file_contains "$js" 'btn("Edit", () => openRadioForm(n)'
+}
+
+# The form pins by port path, sends add every field, and sends set only what changed.
+test_page_radio_form_sends_only_what_changed() {
+  command -v node > /dev/null 2>&1 || return 0
+  local js=$PG_DIR/dxberry.js fn re got
+  fn=$(sed -n '/^function radioFormArgs(/,/^}/p' "$js")
+  re=$(grep -m1 '^const NAME_RE' "$js")
+  got=$(node -e "$re
+const vals = {'rf-label': 'TM-V71', 'rf-audio': '', 'rf-cat': 'none', 'rf-ptt-serial': '', 'rf-hid': '', 'rf-model': '1',
+  'rf-baud': '57600', 'rf-ptt': 'rigctld', 'rf-ptt-type': 'RTS', 'rf-gpio': '', 'rf-wiring': 'full'};
+const document = { getElementById: id => (id in vals ? { value: vals[id] } : null) };
+const x = {label: 'old', rig: {model: 1, baud: 57600, ptt_type: 'RTS'}, ptt: {method: 'rigctld', gpio_line: null}, wiring: 'full'};
+let form = {edit: true, name: 'radio1', x};
+let last = {radios: {radios: {radio1: x}}};
+$fn
+console.log(JSON.stringify(radioFormArgs()));
+vals['rf-label'] = 'old'; vals['rf-cat'] = '';
+console.log(JSON.stringify(radioFormArgs()));
+form = {edit: false}; vals['rf-name'] = 'radio2'; vals['rf-audio'] = 'usb-0:1.3:1.0'; vals['rf-cat'] = 'usb-0:1.4:1.0'; vals['rf-ptt-serial'] = 'none';
+console.log(JSON.stringify(radioFormArgs()));
+vals['rf-name'] = 'radio1';
+console.log(JSON.stringify(radioFormArgs()));
+vals['rf-name'] = 'radio3'; vals['rf-audio'] = 'none'; vals['rf-cat'] = 'none';
+console.log(JSON.stringify(radioFormArgs()));")
+  assert_eq "$(sed -n 1p <<< "$got")" '{"args":["set","radio1","--label","TM-V71","--cat","none"],"name":"radio1"}'
+  assert_eq "$(sed -n 2p <<< "$got")" '{"args":null,"name":"radio1"}'
+  assert_eq "$(sed -n 3p <<< "$got")" '{"args":["add","radio2","--audio","usb-0:1.3:1.0","--cat","usb-0:1.4:1.0","--model","1","--baud","57600","--ptt","rigctld","--ptt-type","RTS","--wiring","full","--label","old"],"name":"radio2"}'
+  assert_contains "$(sed -n 4p <<< "$got")" "already exists"
+  assert_contains "$(sed -n 5p <<< "$got")" "at least one"
+}
+
+# A failed Hamlib list fetch must not be cached forever: opening the form retries it, so the
+# searchable list still appears once the command works.
+test_page_retries_a_failed_model_list_from_the_form() {
+  local js=$PG_DIR/dxberry.js load_body cards_body
+  load_body=$(sed -n '/^function loadModels(/,/^}/p' "$js")
+  assert_contains "$load_body" "modelsLoading = null"
+  cards_body=$(sed -n '/^function radiosCard(/,/^}/p' "$js")
+  assert_contains "$cards_body" "modelsTried = true"
 }

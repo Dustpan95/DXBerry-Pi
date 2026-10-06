@@ -22,6 +22,11 @@ const RADIO_EXITS = {
 const PTT_METHODS = { rigctld: "rigctld", cm108: "CM108 HID", gpio: "Pi GPIO", vox: "VOX", digirig_tone: "DigiRig Lite tone", none: "none" };
 const PTT_TYPES = { RIG: "a CAT command", RTS: "the RTS line", DTR: "the DTR line", NONE: "nothing" };
 const FUNCTION_KINDS = { audio: "sound", serial: "serial", hid: "HID" };
+const NAME_RE = /^[a-z][a-z0-9]{0,11}$/;
+const PTT_METHOD_CHOICES = [["rigctld", "rigctld (CAT command or a serial line)"], ["cm108", "CM108 HID (the sound card's PTT pin)"],
+  ["gpio", "Pi GPIO pin"], ["vox", "VOX (the radio keys on audio)"], ["digirig_tone", "DigiRig Lite tone"], ["none", "None (receive only)"]];
+const PTT_TYPE_CHOICES = [["RIG", "A CAT command"], ["RTS", "The RTS line"], ["DTR", "The DTR line"], ["NONE", "Nothing"]];
+const BAUDS = [0, 4800, 9600, 19200, 38400, 57600, 115200];
 // Stopping these takes the station, the network or this page away, so Stop asks first.
 const STOP_WARNINGS = {
   "graywolf.service": "APRS, the iGate and the digipeater stop until Graywolf is started again.",
@@ -80,6 +85,8 @@ let last = null;
 const pending = {};   // radio name -> what is running for it right now ("Giving to Graywolf")
 let models = null;    // Hamlib's rig models once dxberry-radio models has answered
 let modelsLoading = null;
+let modelsTried = false;   // radiosCard asks once per page load; opening the form asks again after a failure
+let form = null;      // the open radio form: {edit, name, x (the radio when editing), saving}
 // The notice a failed refresh is currently showing (or null). Cleared, and the notice removed,
 // the moment a later refresh succeeds - but a notice from an action (Restart done, etc.) is a
 // different one and is left alone.
@@ -220,7 +227,10 @@ function stationCard(g) {
 // ---- radios -------------------------------------------------------------------------------
 // loadModels: Hamlib's rig list, fetched once per page load (names for the cards, choices for the form).
 function loadModels() {
-  if (!modelsLoading) modelsLoading = run([RADIO, "models", "--json"]).then(out => (models = JSON.parse(out)));
+  if (!modelsLoading) {
+    modelsLoading = run([RADIO, "models", "--json"]).then(out => (models = JSON.parse(out)),
+      ex => { modelsLoading = null; throw ex; });
+  }
   return modelsLoading;
 }
 
@@ -282,6 +292,7 @@ function radioActions(r, n, x, busy) {
       title: x.present ? null : "Plug the radio in first" }));
   }
   if (x.owner) acts.push(btn("Release", () => release(n), { key: `radio:${n}:release`, disabled: busy }));
+  acts.push(btn("Edit", () => openRadioForm(n), { key: `radio:${n}:edit`, disabled: busy }));
   acts.push(btn("Remove", () => removeRadio(n), { cls: "danger", key: `radio:${n}:remove`, disabled: busy }));
   return acts;
 }
@@ -316,16 +327,18 @@ function candidateBlock(r, c) {
     el("div", { class: "actions" }, candidateActions(r, c)));
 }
 
-// candidateActions: Task 5 adds Add here.
 function candidateActions(r, c) {
-  return [];
+  return [btn("Add", () => openRadioForm(null, c), { cls: "primary", key: `cand:${c.port}:add`, aria: `Add the interface on ${c.port}` })];
 }
 
 function radiosCard(r) {
   if (!r || !r.ok) return card("Radios", r, null, null, "wide");
   const names = Object.keys(r.radios || {});
   const cands = r.candidates || [];
-  if (names.length && !modelsLoading) loadModels().then(show, () => {});
+  if (names.length && !modelsTried) {
+    modelsTried = true;
+    loadModels().then(show, () => {});
+  }
   const body = [];
   if (!names.length && !cands.length) {
     body.push(el("p", { class: "muted" }, "No radios set up, and no USB radio interface is plugged in. Plug one in; it shows up here within 10 seconds."));
@@ -558,6 +571,194 @@ function power(target) {
     });
 }
 
+// ---- the radio form -----------------------------------------------------------------------
+function field(label, id, control, hint) {
+  return el("div", { class: "field" }, el("label", { for: id }, label), control, hint ? el("p", { class: "hint muted" }, hint) : null);
+}
+
+function choice(id, choices, value) {
+  const s = el("select", { id });
+  for (const [v, t] of choices) s.append(el("option", { value: v }, t));
+  s.value = String(value);
+  return s;
+}
+
+// fnChoices: the plugged-in functions of KIND that no radio pins yet, as [port path, text] choices.
+function fnChoices(kind) {
+  const out = [];
+  for (const c of (last.radios.candidates || [])) {
+    for (const f of c.functions || []) if (f.kind === kind) out.push([f.path, `${f.kernel} · ${c.name} · ${f.path}`]);
+  }
+  return out;
+}
+
+function nextRadioName() {
+  for (let i = 1; i < 100; i++) if (!(`radio${i}` in last.radios.radios)) return `radio${i}`;
+  return "";
+}
+
+function modelField(current) {
+  if (!models) {
+    return field("Hamlib rig model", "rf-model", el("input", { id: "rf-model", type: "number", min: "1", value: String(current || 1) }),
+      "Hamlib's list could not be read; type the model number (1 when the radio has no CAT control).");
+  }
+  const filter = el("input", { id: "rf-model-filter", type: "search", placeholder: "Search: maker, name or number", autocomplete: "off",
+    "aria-label": "Search Hamlib's rig models" });
+  const sel = el("select", { id: "rf-model", size: "6" });
+  const sorted = models.slice().sort((a, b) => `${a.mfg} ${a.name}`.localeCompare(`${b.mfg} ${b.name}`));
+  const fill = () => {
+    const q = filter.value.trim().toLowerCase();
+    const keep = Number(sel.value || current || 1);
+    sel.replaceChildren(...sorted
+      .filter(m => m.model === keep || !q || `${m.mfg} ${m.name} ${m.model}`.toLowerCase().includes(q))
+      .map(m => el("option", { value: String(m.model) }, `${m.mfg} ${m.name} (${m.model})`.replace("  ", " "))));
+    sel.value = String(keep);
+  };
+  filter.addEventListener("input", fill);
+  fill();
+  return el("div", { class: "field" }, el("label", { for: "rf-model" }, "Hamlib rig model"), filter, sel,
+    el("p", { class: "hint muted" }, "Hamlib Dummy (1) when the radio has no CAT control."));
+}
+
+function syncPttFields() {
+  const m = document.getElementById("rf-ptt").value;
+  document.getElementById("rf-gpio").closest(".field").hidden = m !== "gpio";
+  document.getElementById("rf-ptt-type").closest(".field").hidden = m !== "rigctld";
+}
+
+function setFormError(text) {
+  const p = document.getElementById("radio-form-error");
+  p.textContent = text;
+  p.hidden = !text;
+}
+
+function setSaving(on) {
+  const b = document.getElementById("radio-save");
+  b.disabled = on;
+  b.textContent = on ? "Saving…" : "Save";
+}
+
+// openRadioForm NAME CAND: edit radio NAME, or (NAME null) add the interface CAND. Hamlib's list is
+// fetched first; without it the model is a number field.
+function openRadioForm(name, cand) {
+  const open = () => fillRadioForm(name, cand);
+  loadModels().then(open, open);
+}
+
+function fillRadioForm(name, cand) {
+  const edit = !!name;
+  const x = edit ? last.radios.radios[name] : null;
+  form = { edit, name, x, saving: false };
+  const df = (cand && cand.defaults) || {};
+  const own = kind => cand && (cand.functions || []).find(f => f.kind === kind);
+  const keep = pin => [["", `Keep: ${pin ? pin.path : "none"}`]];
+  const bauds = BAUDS.slice();
+  const baud = edit ? x.rig.baud : (df.baud || 0);
+  if (!bauds.includes(baud)) bauds.push(baud);
+  document.getElementById("radio-dialog-title").textContent = edit ? `Edit ${name}` : `Add ${cand.name}`;
+  setFormError("");
+  setSaving(false);
+  // replaceChildren would turn a null into the text "null", so the add-only Name field is filtered
+  document.getElementById("radio-fields").replaceChildren(...[
+    edit ? null : field("Name", "rf-name", el("input", { id: "rf-name", type: "text", value: nextRadioName(), maxlength: "12",
+      autocomplete: "off", spellcheck: "false" }), "Lower-case letters and digits, starting with a letter: radio1, ic705."),
+    field("Label", "rf-label", el("input", { id: "rf-label", type: "text", value: edit ? x.label : "", maxlength: "40" }),
+      "Shown beside the name, for example Kenwood TM-V71."),
+    field("Sound card", "rf-audio", choice("rf-audio", (edit ? keep(x.audio) : []).concat([["none", "None"]], fnChoices("audio")),
+      edit ? "" : (own("audio") ? own("audio").path : "none"))),
+    field("CAT port", "rf-cat", choice("rf-cat", (edit ? keep(x.cat) : []).concat([["none", "None"]], fnChoices("serial")),
+      edit ? "" : (own("serial") ? own("serial").path : "none")),
+      !edit && df.cat === "separate" ? "This interface's CAT and PTT port is a separate USB device: pick its serial port here." : null),
+    field("PTT serial port", "rf-ptt-serial", choice("rf-ptt-serial",
+      (edit ? keep(x.ptt_serial) : []).concat([["none", "None (PTT goes over the CAT port)"]], fnChoices("serial")), edit ? "" : "none")),
+    field("HID (CM108 PTT)", "rf-hid", choice("rf-hid",
+      edit ? keep(x.hid).concat([["none", "None"]], fnChoices("hid")) : [["", "Automatic (from the sound card)"]].concat(fnChoices("hid")), "")),
+    modelField(edit ? x.rig.model : df.model),
+    field("Baud rate", "rf-baud", choice("rf-baud", bauds.map(b => [String(b), b ? String(b) : "Not used"]), String(baud))),
+    field("PTT", "rf-ptt", choice("rf-ptt", PTT_METHOD_CHOICES, edit ? x.ptt.method : (df.ptt || "vox"))),
+    field("rigctld keys PTT with", "rf-ptt-type", choice("rf-ptt-type", PTT_TYPE_CHOICES, edit ? x.rig.ptt_type : (df.ptt_type || "NONE"))),
+    field("GPIO line", "rf-gpio", el("input", { id: "rf-gpio", type: "number", min: "0", max: "53",
+      value: edit && typeof x.ptt.gpio_line === "number" ? String(x.ptt.gpio_line) : "" }), "The BCM GPIO number that keys the radio."),
+    field("Wiring", "rf-wiring", choice("rf-wiring", [["full", "Full: DXBerry sets up the application"],
+      ["names", "Names only: I set up the application myself"]], edit ? x.wiring : "full")),
+  ].filter(Boolean));
+  document.getElementById("rf-ptt").addEventListener("change", syncPttFields);
+  syncPttFields();
+  document.getElementById("radio-dialog").showModal();
+}
+
+// radioFormArgs: the dxberry-radio arguments for the open form - every field for add, only what
+// changed for set ({args: null} when nothing did) - or {error} when the form is not complete.
+function radioFormArgs() {
+  const v = id => { const e = document.getElementById(id); return e ? e.value.trim() : ""; };
+  const ptt = v("rf-ptt");
+  const o = { label: v("rf-label"), audio: v("rf-audio"), cat: v("rf-cat"), ptt_serial: v("rf-ptt-serial"), hid: v("rf-hid"),
+    model: v("rf-model"), baud: v("rf-baud"), ptt_type: v("rf-ptt-type"), gpio_line: v("rf-gpio"), wiring: v("rf-wiring") };
+  if (!/^[0-9]+$/.test(o.model) || Number(o.model) < 1) return { error: "Pick a rig model (Hamlib Dummy, 1, when the radio has no CAT control)." };
+  if (ptt === "gpio" && !/^[0-9]+$/.test(o.gpio_line)) return { error: "Give the GPIO line that keys the radio." };
+  if (o.label.startsWith("--")) return { error: "The label cannot start with --." };
+  const flags = [];
+  const add = (flag, value) => flags.push(flag, value);
+  if (!form.edit) {
+    const name = v("rf-name");
+    if (!NAME_RE.test(name)) return { error: "The name must be lower-case letters and digits, starting with a letter, 12 at most." };
+    if (name in last.radios.radios) return { error: `${name} already exists; pick another name.` };
+    if (o.audio === "none" && o.cat === "none") return { error: "Pick a sound card or a CAT port: a radio needs at least one." };
+    add("--audio", o.audio);
+    add("--cat", o.cat);
+    if (o.ptt_serial && o.ptt_serial !== "none") add("--ptt-serial", o.ptt_serial);
+    if (o.hid) add("--hid", o.hid);
+    add("--model", o.model);
+    add("--baud", o.baud);
+    add("--ptt", ptt);
+    add("--ptt-type", o.ptt_type);
+    if (ptt === "gpio") add("--gpio-line", o.gpio_line);
+    add("--wiring", o.wiring);
+    add("--label", o.label);
+    return { args: ["add", name, ...flags], name };
+  }
+  const x = form.x;
+  if (o.label !== x.label) add("--label", o.label);
+  for (const [k, flag] of [["audio", "--audio"], ["cat", "--cat"], ["ptt_serial", "--ptt-serial"], ["hid", "--hid"]]) {
+    if (o[k]) add(flag, o[k]);
+  }
+  if (Number(o.model) !== x.rig.model) add("--model", o.model);
+  if (Number(o.baud) !== x.rig.baud) add("--baud", o.baud);
+  if (ptt !== x.ptt.method) add("--ptt", ptt);
+  if (o.ptt_type !== x.rig.ptt_type) add("--ptt-type", o.ptt_type);
+  if (ptt === "gpio" && Number(o.gpio_line) !== x.ptt.gpio_line) add("--gpio-line", o.gpio_line);
+  if (o.wiring !== x.wiring) add("--wiring", o.wiring);
+  return { args: flags.length ? ["set", form.name, ...flags] : null, name: form.name };
+}
+
+function saveRadioForm(e) {
+  e.preventDefault();
+  if (!form || form.saving) return;
+  const d = document.getElementById("radio-dialog");
+  const r = radioFormArgs();
+  if (r.error) { setFormError(r.error); return; }
+  if (!r.args) { d.close(); notice(`${r.name}: nothing changed.`, "good"); return; }
+  const f = form;
+  f.saving = true;
+  setFormError("");
+  setSaving(true);
+  run([RADIO, ...r.args, "--json"]).then(out => {
+    f.saving = false;
+    setSaving(false);
+    if (d.open) d.close();
+    notice(f.edit ? `${r.name} updated.` : `${r.name} added.`, "good");
+    for (const w of warningsOf(out)) notice(`${r.name}: ${w}`, "warn");
+    refresh(true);
+  }, ex => {
+    f.saving = false;
+    setSaving(false);
+    // the form is still open: say it there; if the operator closed it meanwhile, say it on the page
+    if (d.open && form === f) setFormError(problemText(ex, RADIO_EXITS));
+    else failure(f.edit ? `Updating ${r.name}` : `Adding ${r.name}`, ex, RADIO_EXITS);
+    refresh(true);
+  });
+}
+
 // ---- refresh ------------------------------------------------------------------------------
 function render(s) {
   const a = document.activeElement;
@@ -635,6 +836,8 @@ function init() {
   window.addEventListener("storage", applyTheme);
   document.getElementById("refresh").addEventListener("click", () => refresh(true));
   cockpit.addEventListener("visibilitychange", () => { if (!cockpit.hidden) refresh(true); });
+  document.getElementById("radio-form").addEventListener("submit", saveRadioForm);
+  document.getElementById("radio-cancel").addEventListener("click", () => document.getElementById("radio-dialog").close());
   refresh(true);
   setInterval(() => refresh(false), REFRESH_MS);
 }
