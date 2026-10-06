@@ -431,11 +431,30 @@ test_config_apply_keeps_graywolf_rearms_and_records_its_exit() {
 }
 
 # A network key with no snapshot waiting (confirmed or already undone before apply ran) must never
-# re-arm the backstop - and, since the guard short-circuits first, never even try the lock.
+# re-arm the backstop.
 test_config_apply_skips_the_rearm_without_a_pending_snapshot() {
   se_cli_env
   printf 'WIFI_SSID\n' > "$DXB_CONFIG_PENDING"
   assert_ok se_cli apply
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "--on-active=120"
+}
+
+# dxb_netsafe_pending must be checked AFTER taking the settings lock, not before: a confirm or
+# revert holding the lock while apply waits can keep or undo the change (clearing the snapshot)
+# during that wait. A check-then-lock apply would still re-arm a 120s timer afterwards - a stray
+# timer (its eventual revert is a no-op) plus a false revert_at countdown on the page.
+test_config_apply_rechecks_pending_after_taking_the_lock() {
+  se_cli_env
+  printf 'WIFI_SSID\n' > "$DXB_CONFIG_PENDING"
+  dxb_netsafe_snapshot
+  (
+    source "$DXB_ROOT/provision/bin/dxberry-config"
+    dxb_require_root() { :; }
+    systemctl() { :; }
+    # a confirm/revert that ran and cleared the snapshot while apply was waiting for the lock
+    lock_config() { rm -rf "$DXB_NETSAFE_DIR"; return 0; }
+    main apply
+  ) > /dev/null 2>&1
   assert_not_contains "$(cat "$TEST_TMP/calls")" "--on-active=120"
 }
 
@@ -451,6 +470,7 @@ test_config_apply_runs_the_provisioner_with_its_own_log_and_umask() {
 echo "LOG=$DXB_LOG_FILE UPGRADE=$DXB_GW_UPGRADE UMASK=$(umask)" >> "$STUB_OUT"
 STUB
   chmod +x "$TEST_TMP/provision-stub"
+  # shellcheck disable=SC2031  # exported here, only ever read (never set) inside se_cli's subshell
   export DXB_PROVISION_CMD="$TEST_TMP/provision-stub" STUB_OUT="$TEST_TMP/stub-out"
   unset DXB_LOG_FILE
   assert_ok se_cli apply

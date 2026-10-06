@@ -164,12 +164,17 @@ cmd_apply() {
   # change never upgrades Graywolf, and nothing here may wait on a terminal
   ( umask 022; DXB_LOG_FILE=$DXB_PROVISION_LOG DXB_GW_UPGRADE=0 DXB_TTY=/dev/null "$DXB_PROVISION_CMD" ) || rc=8
   if (( gw )); then DXB_TTY=/dev/null dxb_settings_push_graywolf || rc=8; fi
-  if (( net )) && dxb_netsafe_pending; then
+  # lock first, THEN check: a confirm or revert holding the lock while this waited for it can keep
+  # or undo the change (clearing the snapshot) during that wait, so dxb_netsafe_pending is only
+  # trustworthy once the lock is held - checking it first would still re-arm a stray timer.
+  if (( net )); then
     if lock_config; then
-      if dxb_netsafe_arm "$DXB_NETSAFE_WINDOW_S"; then
-        echo "network change applied; it is undone in $DXB_NETSAFE_WINDOW_S seconds unless kept (sudo dxberry-config confirm)"
-      else
-        echo "the undo timer could not be re-armed; the earlier one still undoes the change" >&2
+      if dxb_netsafe_pending; then
+        if dxb_netsafe_arm "$DXB_NETSAFE_WINDOW_S"; then
+          echo "network change applied; it is undone in $DXB_NETSAFE_WINDOW_S seconds unless kept (sudo dxberry-config confirm)"
+        else
+          echo "the undo timer could not be re-armed; the earlier one still undoes the change" >&2
+        fi
       fi
     else
       echo "could not lock settings to re-arm the undo timer; the earlier one still undoes the change" >&2
