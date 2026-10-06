@@ -18,8 +18,8 @@ app_alpha_needs_service_restart() { echo no; }
 EOF
   fx_scene "$DXB_SYSFS_ROOT" digirig
 }
-# cli ARGS...: run the command in a subshell with stubs; stdout to $TEST_TMP/out, exit code returned.
-cli() {
+# cli_run ARGS...: run the command in a subshell with stubs; output left to the caller, exit code returned.
+cli_run() {
   (
     source "$DXB_ROOT/provision/bin/dxberry-radio"     # first: the libraries define the real dxb_require_root
     dxb_require_root() { :; }
@@ -32,8 +32,14 @@ cli() {
     alsactl() { :; }
     timeout() { shift; "$@"; }
     main "$@"
-  ) > "$TEST_TMP/out" 2> "$TEST_TMP/err"
+  )
 }
+# cli ARGS...: cli_run with stdout to $TEST_TMP/out and stderr to $TEST_TMP/err.
+cli() { cli_run "$@" > "$TEST_TMP/out" 2> "$TEST_TMP/err"; }
+# cli_to TAG ARGS...: cli_run with its own $TEST_TMP/TAG.out and TAG.err, for two commands at once.
+cli_to() { local tag=$1; shift; cli_run "$@" > "$TEST_TMP/$tag.out" 2> "$TEST_TMP/$tag.err"; }
+# cli_wait_for FILE: wait up to five seconds for FILE to appear (a background command reached a point).
+cli_wait_for() { local i; for (( i = 0; i < 100; i++ )); do [[ -e $1 ]] && return 0; sleep 0.05; done; return 1; }
 out() { cat "$TEST_TMP/out"; }
 
 test_cli_scan_table_and_json() {
@@ -225,4 +231,51 @@ test_cli_json_answers_carry_the_runs_warnings() {
   assert_eq "$(jq -r '.radios.radio1.rig.ptt_type' "$TEST_TMP/out")" "NONE"
   assert_ok cli set radio1 --label quiet --json
   assert_eq "$(jq -c '.warnings' "$TEST_TMP/out")" '[]'
+}
+
+# Two radio changes at once must take turns on the record. Here release radio1 is still unwiring
+# (slowly, as Graywolf's API calls are) when claim radio2 starts: without a record lock the claim
+# saves radio2's new owner, then the release saves its older copy of the record over it and stops
+# the application radio2 was just given to.
+test_cli_radio_changes_take_turns_on_the_record() {
+  command -v flock > /dev/null 2>&1 || return 0   # without flock the lock is only a warning
+  local pid rc
+  cli_env
+  rm -rf "$DXB_SYSFS_ROOT"; fx_scene "$DXB_SYSFS_ROOT" two-digirigs
+  cli add radio1 --audio usb-0:1.1:1.0 --cat usb-0:1.2:1.0 > /dev/null
+  cli add radio2 --audio usb-0:1.3:1.0 --cat usb-0:1.4:1.0 > /dev/null
+  assert_ok cli claim radio1 alpha
+  # the later definition wins when the module is sourced
+  cat >> "$DXB_APPS_DIR/alpha.sh" <<'APP'
+app_alpha_unwire() { : > "$TEST_TMP/unwiring"; sleep 2; echo "alpha unwire $1" >> "$TEST_TMP/calls"; }
+APP
+  cli_to release release radio1 &
+  pid=$!
+  cli_wait_for "$TEST_TMP/unwiring" || _fail "release radio1 never reached alpha's unwire"
+  cli_to claim claim radio2 alpha; rc=$?
+  wait "$pid"; assert_eq "$?" "0"
+  assert_eq "$rc" "0"
+  assert_eq "$(jq -r '.radios.radio1.owner + "," + .radios.radio2.owner' "$DXB_RADIOS_FILE")" ",alpha"
+  grep -qx alpha.service "$TEST_TMP/active" || _fail "alpha.service was stopped although radio2 is wired to it"
+}
+
+# A change that cannot get the record within DXB_RADIO_LOCK_WAIT seconds fails with exit 6 and
+# leaves the record alone; reading (status) and apply never wait for it.
+test_cli_a_radio_change_gives_up_while_another_holds_the_record() {
+  command -v flock > /dev/null 2>&1 || return 0
+  local pid DXB_RADIO_LOCK_WAIT=1
+  cli_env
+  cli add radio1 --audio 1 --cat 2 --label before > /dev/null
+  mkdir -p "$DXB_RUN_DIR"
+  ( exec 8> "$DXB_RUN_DIR/record.lock"; flock 8; : > "$TEST_TMP/held"; exec sleep 10 ) &
+  pid=$!
+  cli_wait_for "$TEST_TMP/held" || _fail "the background holder never took the record lock"
+  cli set radio1 --label after --json; assert_eq "$?" "6"
+  assert_contains "$(cat "$TEST_TMP/err")" "another radio change is still running; try again when it has finished"
+  assert_eq "$(jq -r '.radios.radio1.label' "$DXB_RADIOS_FILE")" "before"
+  cli release radio1; assert_eq "$?" "6"
+  assert_ok cli status --json
+  assert_ok cli apply
+  kill "$pid" 2> /dev/null; wait "$pid" 2> /dev/null
+  assert_ok cli set radio1 --label after
 }

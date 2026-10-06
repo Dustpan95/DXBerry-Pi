@@ -35,6 +35,18 @@ JSON=0
 # the commands that print nothing on success still owe --json an answer (spec section 6.2)
 json_ok() { (( JSON )) && printf '{"ok":true}\n'; return 0; }
 
+# lock_record: one change to the radio record at a time. add/set/remove/claim/release each load the
+# record, can work for two minutes (claim waits for Graywolf) and save it whole, so two at once
+# would overwrite each other. Held until the command exits. hotplug/apply never write the record and
+# take only the apply lock (fd 9, inside dxb_radio_apply), so taking this one first cannot deadlock.
+lock_record() {
+  local f=$DXB_RUN_DIR/record.lock
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  if ! exec 8> "$f"; then dxb_warn "could not open $f; changing the record without the record lock"; return 0; fi
+  if ! command -v flock > /dev/null 2>&1; then dxb_warn "flock is not installed; a concurrent radio change could overwrite this one"; return 0; fi
+  flock -w "${DXB_RADIO_LOCK_WAIT:-180}" 8 || { dxb_error "another radio change is still running; try again when it has finished"; return 6; }
+}
+
 # Loads dxberry.txt when present (GPS keys, Graywolf credentials fallback); absence is fine.
 load_config_if_any() {
   local f; f="$(dxb_boot_dir)/dxberry.txt"
@@ -126,6 +138,7 @@ main() {
   mkdir -p "$DXB_STATE_DIR" 2> /dev/null; chmod 700 "$DXB_STATE_DIR" 2> /dev/null
   DXB_LOG_FILE=${DXB_RADIO_LOG:-$DXB_STATE_DIR/radio.log}; : >> "$DXB_LOG_FILE" 2> /dev/null; chmod 600 "$DXB_LOG_FILE" 2> /dev/null
   load_config_if_any
+  case $cmd in add|set|remove|claim|release) lock_record || return 6 ;; esac
   case $cmd in
     scan) cmd_scan ;;
     add|set)
