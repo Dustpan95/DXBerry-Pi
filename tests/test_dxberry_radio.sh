@@ -39,7 +39,8 @@ cli() { cli_run "$@" > "$TEST_TMP/out" 2> "$TEST_TMP/err"; }
 # cli_to TAG ARGS...: cli_run with its own $TEST_TMP/TAG.out and TAG.err, for two commands at once.
 cli_to() { local tag=$1; shift; cli_run "$@" > "$TEST_TMP/$tag.out" 2> "$TEST_TMP/$tag.err"; }
 # cli_wait_for FILE: wait up to five seconds for FILE to appear (a background command reached a point).
-cli_wait_for() { local i; for (( i = 0; i < 100; i++ )); do [[ -e $1 ]] && return 0; sleep 0.05; done; return 1; }
+# `command sleep`: other test files' env helpers leave a no-op sleep() function in this shared shell.
+cli_wait_for() { local i; for (( i = 0; i < 100; i++ )); do [[ -e $1 ]] && return 0; command sleep 0.05; done; return 1; }
 out() { cat "$TEST_TMP/out"; }
 
 test_cli_scan_table_and_json() {
@@ -262,9 +263,9 @@ test_cli_radio_changes_take_turns_on_the_record() {
   cli add radio1 --audio usb-0:1.1:1.0 --cat usb-0:1.2:1.0 > /dev/null
   cli add radio2 --audio usb-0:1.3:1.0 --cat usb-0:1.4:1.0 > /dev/null
   assert_ok cli claim radio1 alpha
-  # the later definition wins when the module is sourced
+  # the later definition wins when the module is sourced; `command sleep` really waits (see cli_wait_for)
   cat >> "$DXB_APPS_DIR/alpha.sh" <<'APP'
-app_alpha_unwire() { : > "$TEST_TMP/unwiring"; sleep 2; echo "alpha unwire $1" >> "$TEST_TMP/calls"; }
+app_alpha_unwire() { : > "$TEST_TMP/unwiring"; command sleep 2; echo "alpha unwire $1" >> "$TEST_TMP/calls"; }
 APP
   cli_to release release radio1 &
   pid=$!
