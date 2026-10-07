@@ -7,6 +7,8 @@ Before=network-online.target
 [Service]
 Type=notify
 NotifyAccess=all
+# puts the previous tree back if a power cut hit between the two renames of an update (/opt/dxberry missing)
+ExecStartPre=-/bin/sh -c 'test -e /opt/dxberry || ! test -x /opt/dxberry.prev/bin/dxberry-netwatch || mv -T /opt/dxberry.prev /opt/dxberry'
 ExecStart=/opt/dxberry/bin/dxberry-netwatch run
 Restart=always
 RestartSec=3

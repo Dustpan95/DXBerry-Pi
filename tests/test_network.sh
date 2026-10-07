@@ -183,6 +183,39 @@ test_provision_network_applied_wifi_password_skips_import() {
   DXB_TEMPLATES=$saved_templates
 }
 
+# A power cut between an update's two renames (spec 11.3) leaves /opt/dxberry missing and the
+# previous tree at /opt/dxberry.prev; dxberry-netwatch's unit puts it back before it starts, so a
+# WiFi-only Pi still comes up on the network. The test runs the unit's own line, with /opt/dxberry
+# pointed at a temporary directory.
+test_netwatch_unit_puts_the_previous_tree_back_after_a_cut_swap() {
+  local unit body opt=$TEST_TMP/opt/dxberry pre start
+  net_env
+  dxb_net_install_netwatch > /dev/null 2>&1
+  unit=$DXB_SYSTEMD_DIR/dxberry-netwatch.service
+  assert_file_contains "$unit" "ExecStartPre=-/bin/sh -c 'test -e /opt/dxberry || ! test -x /opt/dxberry.prev/bin/dxberry-netwatch || mv -T /opt/dxberry.prev /opt/dxberry'"
+  pre=$(grep -n '^ExecStartPre=' "$unit" | cut -d: -f1); start=$(grep -n '^ExecStart=' "$unit" | cut -d: -f1)
+  if [[ -z $pre || -z $start ]] || (( pre > start )); then _fail "ExecStartPre must come before ExecStart"; fi
+  body=$(sed -n "s/^ExecStartPre=-\/bin\/sh -c '\(.*\)'$/\1/p" "$DXB_TEMPLATES/dxberry-netwatch.service")
+  [[ -n $body ]] || { _fail "no ExecStartPre=-/bin/sh -c '...' line in the template"; return; }
+  body=${body//\/opt\/dxberry/$opt}
+  # /opt/dxberry missing, a complete .prev: put back
+  mkdir -p "$opt.prev/bin" "$TEST_TMP/opt"
+  printf '#!/bin/sh\n' > "$opt.prev/bin/dxberry-netwatch"; chmod +x "$opt.prev/bin/dxberry-netwatch"; echo prev > "$opt.prev/VERSION"
+  /bin/sh -c "$body" || _fail "the restore line failed"
+  assert_eq "$(cat "$opt/VERSION" 2> /dev/null)" "prev"
+  [[ -e $opt.prev ]] && _fail ".prev must have been moved back into place"
+  # /opt/dxberry there: nothing moves
+  mkdir -p "$opt.prev/bin"; printf '#!/bin/sh\n' > "$opt.prev/bin/dxberry-netwatch"; chmod +x "$opt.prev/bin/dxberry-netwatch"
+  /bin/sh -c "$body" || _fail "the restore line failed with /opt/dxberry in place"
+  assert_eq "$(cat "$opt/VERSION")" "prev"
+  [[ -x $opt.prev/bin/dxberry-netwatch && ! -e $opt/dxberry.prev ]] || _fail "nothing may move while /opt/dxberry is there"
+  # neither tree usable: nothing to do (and the line never fails the unit: it is "-")
+  rm -rf "$opt" "$opt.prev"; mkdir -p "$opt.prev"
+  /bin/sh -c "$body"
+  [[ -e $opt ]] && _fail "a .prev without dxberry-netwatch must never be moved into place"
+  return 0
+}
+
 # DietPi's WiFi-disabled path blacklists the WiFi modules, so wlan0 may simply not exist. The
 # status file must never promise failover through an interface that is not there.
 test_provision_network_enables_wifi_modules_and_checks_wlan0() {

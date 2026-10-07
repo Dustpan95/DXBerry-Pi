@@ -319,6 +319,117 @@ test_update_apply_dxberry_a_failed_second_rename_leaves_opt_intact() {
   assert_eq "$(cat "$TEST_TMP/provision-ran" 2> /dev/null)" ""
 }
 
+# up_swap FUNCTION: FUNCTION in a subshell whose mv and sync record themselves to $TEST_TMP/swap-log
+# - each mv with the TERM/INT/HUP dispositions in effect at that moment (trap -p) - then FUNCTION's
+# exit ("exit N") and the dispositions it left behind (after an "after:" line). An mv whose
+# arguments are exactly the content of $TEST_TMP/mv-fail fails instead of running.
+up_swap() {
+  (
+    # shellcheck disable=SC2317  # both invoked indirectly, as the real commands, by the function under test
+    mv() {
+      { echo "mv $*"; trap -p TERM INT HUP; } >> "$TEST_TMP/swap-log"
+      if [[ -s $TEST_TMP/mv-fail && "$*" == "$(< "$TEST_TMP/mv-fail")" ]]; then return 1; fi
+      command mv "$@"
+    }
+    # shellcheck disable=SC2317
+    sync() { echo sync >> "$TEST_TMP/swap-log"; }
+    "$@" > "$TEST_TMP/out" 2>&1
+    echo "exit $?" >> "$TEST_TMP/swap-log"
+    { echo "after:"; trap -p TERM INT HUP; } >> "$TEST_TMP/swap-log"
+  )
+}
+UP_IGNORED=$'trap -- \'\' SIGTERM\ntrap -- \'\' SIGINT\ntrap -- \'\' SIGHUP'
+# up_mv_ignored ARGS: 0 when the swap log's "mv ARGS" ran with TERM, INT and HUP ignored.
+up_mv_ignored() { [[ $(grep -A3 -xF -- "mv $1" "$TEST_TMP/swap-log" | tail -n +2) == "$UP_IGNORED" ]]; }
+# up_line PATTERN: the swap log's first line number that is exactly PATTERN (empty when none).
+up_line() { grep -n -xF -- "$1" "$TEST_TMP/swap-log" | head -1 | cut -d: -f1; }
+# up_synced_before ARGS: 0 when the swap log has a sync before its first "mv ARGS".
+up_synced_before() {
+  local s m
+  s=$(up_line sync); m=$(up_line "mv $1")
+  [[ -n $s && -n $m ]] && (( s < m ))
+}
+
+# The swap moment (spec 11.3): the unpacked tree reaches the disk (sync) before the first rename,
+# and the renames run with TERM, INT and HUP ignored - a restart from the Power card between two of
+# them would otherwise leave no /opt/dxberry on a WiFi-only Pi. Ignored, not trapped, so the mv
+# children ignore them too; and only for the renames: the setup run afterwards is stoppable again.
+test_update_apply_dxberry_renames_after_a_sync_and_ignore_term() {
+  up_env; up_provision_stub
+  up_tree "$DXB_OPT" 0.3.0-rc3
+  up_tree "$DXB_OPT.prev" 0.3.0-rc2
+  dxb_update_set_prereleases on
+  up_release_file 0.3.0-rc4
+  up_swap dxb_update_apply_dxberry
+  assert_eq "$(grep '^exit' "$TEST_TMP/swap-log")" "exit 0"
+  assert_eq "$(cat "$DXB_OPT/VERSION") $(cat "$DXB_OPT.prev/VERSION")" "0.3.0-rc4 0.3.0-rc3"
+  up_synced_before "-T $DXB_OPT.prev $DXB_OPT.old" || _fail "sync must run before the first rename: $(cat "$TEST_TMP/swap-log")"
+  up_mv_ignored "-T $DXB_OPT.prev $DXB_OPT.old" || _fail "the .prev -> .old rename must run with TERM/INT/HUP ignored"
+  up_mv_ignored "-T $DXB_OPT $DXB_OPT.prev" || _fail "the $DXB_OPT -> .prev rename must run with TERM/INT/HUP ignored"
+  up_mv_ignored "-T $DXB_OPT.new $DXB_OPT" || _fail "the .new -> $DXB_OPT rename must run with TERM/INT/HUP ignored"
+  # a sync after the swap too, and the release file's write (an mv -f after the renames) runs with
+  # the signals back to their defaults
+  (( $(grep -c -x sync "$TEST_TMP/swap-log") >= 2 )) || _fail "a sync must follow the swap too"
+  assert_eq "$(grep -A1 '^mv -f ' "$TEST_TMP/swap-log" | grep -c '^trap')" "0"
+  assert_eq "$(sed -n '/^after:$/,$p' "$TEST_TMP/swap-log")" "after:"
+}
+
+test_update_apply_dxberry_a_failed_rename_gives_term_back() {
+  local f
+  for f in "-T DXB_OPT.prev DXB_OPT.old" "-T DXB_OPT DXB_OPT.prev" "-T DXB_OPT.new DXB_OPT"; do
+    up_env; up_provision_stub
+    rm -rf "$DXB_OPT" "$DXB_OPT.prev" "$TEST_TMP/swap-log"
+    up_tree "$DXB_OPT" 0.3.0-rc3
+    up_tree "$DXB_OPT.prev" 0.3.0-rc2
+    dxb_update_set_prereleases on
+    up_release_file 0.3.0-rc4
+    echo "${f//DXB_OPT/$DXB_OPT}" > "$TEST_TMP/mv-fail"
+    up_swap dxb_update_apply_dxberry
+    assert_eq "$(grep '^exit' "$TEST_TMP/swap-log")" "exit 6"
+    assert_eq "$(sed -n '/^after:$/,$p' "$TEST_TMP/swap-log")" "after:"
+    assert_eq "$(cat "$DXB_OPT/VERSION") $(cat "$DXB_OPT.prev/VERSION")" "0.3.0-rc3 0.3.0-rc2"
+    [[ -e $DXB_OPT.new || -e $DXB_OPT.old ]] && _fail "no staging tree may be left behind ($f failed)"
+    rm -f "$TEST_TMP/mv-fail"
+  done
+}
+
+test_update_rollback_renames_after_a_sync_and_ignore_term() {
+  up_env; up_provision_stub
+  up_tree "$DXB_OPT" 0.3.0-rc4
+  up_tree "$DXB_OPT.prev" 0.3.0-rc3
+  up_swap dxb_update_apply_rollback
+  assert_eq "$(grep '^exit' "$TEST_TMP/swap-log")" "exit 0"
+  up_synced_before "-T $DXB_OPT $DXB_OPT.next" || _fail "sync must run before the first rename: $(cat "$TEST_TMP/swap-log")"
+  up_mv_ignored "-T $DXB_OPT $DXB_OPT.next" || _fail "the $DXB_OPT -> .next rename must run with TERM/INT/HUP ignored"
+  up_mv_ignored "-T $DXB_OPT.prev $DXB_OPT" || _fail "the .prev -> $DXB_OPT rename must run with TERM/INT/HUP ignored"
+  up_mv_ignored "-T $DXB_OPT.next $DXB_OPT.prev" || _fail "the .next -> .prev rename must run with TERM/INT/HUP ignored"
+  assert_eq "$(grep -A1 '^mv -f ' "$TEST_TMP/swap-log" | grep -c '^trap')" "0"
+  assert_eq "$(sed -n '/^after:$/,$p' "$TEST_TMP/swap-log")" "after:"
+}
+
+# Rollback's own failure branches: the first rename fails (nothing changed), the second fails (the
+# current tree is put back). Either way exit 6, the signals back to their defaults.
+test_update_rollback_failed_renames_change_nothing() {
+  local f
+  for f in "-T DXB_OPT DXB_OPT.next" "-T DXB_OPT.prev DXB_OPT"; do
+    up_env; up_provision_stub
+    rm -rf "$DXB_OPT" "$DXB_OPT.prev" "$DXB_OPT.next" "$TEST_TMP/swap-log" "$TEST_TMP/provision-ran"
+    up_tree "$DXB_OPT" 0.3.0-rc4
+    up_tree "$DXB_OPT.prev" 0.3.0-rc3
+    sed -i 's/0.3.0-rc3/0.3.0-rc4/' "$DXB_RELEASE_FILE"
+    echo "${f//DXB_OPT/$DXB_OPT}" > "$TEST_TMP/mv-fail"
+    up_swap dxb_update_apply_rollback
+    assert_eq "$(grep '^exit' "$TEST_TMP/swap-log")" "exit 6"
+    assert_contains "$(cat "$TEST_TMP/out")" "nothing changed"
+    assert_eq "$(cat "$DXB_OPT/VERSION") $(cat "$DXB_OPT.prev/VERSION")" "0.3.0-rc4 0.3.0-rc3"
+    [[ -e $DXB_OPT.next ]] && _fail "no .next may be left behind ($f failed)"
+    assert_file_contains "$DXB_RELEASE_FILE" "DXBERRY_VERSION=0.3.0-rc4"
+    assert_eq "$(cat "$TEST_TMP/provision-ran" 2> /dev/null)" ""
+    assert_eq "$(sed -n '/^after:$/,$p' "$TEST_TMP/swap-log")" "after:"
+    rm -f "$TEST_TMP/mv-fail"
+  done
+}
+
 test_update_apply_dxberry_reports_a_failed_setup_run() {
   up_env; up_provision_stub
   up_tree "$DXB_OPT" 0.3.0-rc3

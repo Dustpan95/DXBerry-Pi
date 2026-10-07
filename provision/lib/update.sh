@@ -252,11 +252,18 @@ dxb_update_apply_dxberry() {
   fi
   rm -rf "$dl"
   chown -R 0:0 "$new" 2> /dev/null || true
+  # the new tree's files reach the disk before a rename can make it the live one: otherwise a power
+  # cut could keep the renames but lose the files' contents (ext4 commits them separately)
+  sync
   # the previous tree is renamed aside, never deleted in place, so a failed swap can always put
   # everything back - a WiFi-only Pi must never end up without a working $DXB_OPT
+  [[ -e $prev ]] && rm -rf "$old"
+  # once begun, the renames run to the end: a TERM (a restart from the Power card), INT or HUP
+  # between two of them would leave no $DXB_OPT. Ignored, not trapped, so each mv ignores them too;
+  # given back on every way out of the sequence below (dxberry-netwatch's unit covers a power cut).
+  trap '' TERM INT HUP
   if [[ -e $prev ]]; then
-    rm -rf "$old"
-    if ! mv -T "$prev" "$old"; then echo "could not move $prev aside; nothing changed" >&2; rm -rf "$new"; return 6; fi
+    if ! mv -T "$prev" "$old"; then echo "could not move $prev aside; nothing changed" >&2; rm -rf "$new"; trap - TERM INT HUP; return 6; fi
     had_old=1
   fi
   # the tree about to become .prev carries its own real version/commit/date forward, so a later
@@ -270,6 +277,7 @@ dxb_update_apply_dxberry() {
     echo "could not move $DXB_OPT aside; nothing changed" >&2
     rm -rf "$new"
     if (( had_old )) && ! mv -T "$old" "$prev"; then echo "could not restore the previous DXBerry at $prev (it is at $old)" >&2; fi
+    trap - TERM INT HUP
     return 6
   fi
   if ! mv -T "$new" "$DXB_OPT"; then
@@ -277,9 +285,11 @@ dxb_update_apply_dxberry() {
     rm -rf "$new"
     if ! mv -T "$prev" "$DXB_OPT"; then echo "could not restore $DXB_OPT (the previous tree is at $prev)" >&2; fi
     if (( had_old )) && [[ -e $old ]] && ! mv -T "$old" "$prev"; then echo "could not restore the previous DXBerry at $prev (it is at $old)" >&2; fi
+    trap - TERM INT HUP
     return 6
   fi
   sync
+  trap - TERM INT HUP
   rm -rf "$old"
   dxb_update_release_from_tree "$DXB_OPT"
   dxb_update_link_commands
@@ -301,14 +311,20 @@ dxb_update_apply_rollback() {
     return 6
   fi
   rm -rf "$next"
-  if ! mv -T "$DXB_OPT" "$next"; then echo "could not move $DXB_OPT aside; nothing changed" >&2; return 6; fi
+  sync
+  # the same swap as an update's (dxb_update_apply_dxberry): TERM, INT and HUP ignored until the
+  # renames are done, given back on every way out
+  trap '' TERM INT HUP
+  if ! mv -T "$DXB_OPT" "$next"; then echo "could not move $DXB_OPT aside; nothing changed" >&2; trap - TERM INT HUP; return 6; fi
   if ! mv -T "$prev" "$DXB_OPT"; then
     echo "could not put the earlier tree back; nothing changed" >&2
     if ! mv -T "$next" "$DXB_OPT"; then echo "could not restore $DXB_OPT (the current tree is at $next)" >&2; fi
+    trap - TERM INT HUP
     return 6
   fi
   if ! mv -T "$next" "$prev"; then dxb_warn "the newer DXBerry stays at $next"; fi
   sync
+  trap - TERM INT HUP
   dxb_update_release_from_tree "$DXB_OPT"
   dxb_update_link_commands
   if [[ $(sed -n 's/^DXBERRY_VERSION=//p' "$DXB_RELEASE_FILE" 2> /dev/null | head -1) != "$(head -1 "$DXB_OPT/VERSION" 2> /dev/null)" ]]; then
