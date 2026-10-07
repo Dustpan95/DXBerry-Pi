@@ -188,8 +188,10 @@ let updCheckAnswer = {
 };
 let updJobAnswer = { now: 1700000000, reboot_required: false, job: null };
 
+// every setTimeout's delay, in order (nothing is ever run from it: the test calls what it needs)
+const timers = [];
 const ctx = {
-  document: doc, cockpit, console, setTimeout: (f) => 0, setInterval: () => 0, clearTimeout: () => 0,
+  document: doc, cockpit, console, setTimeout: (f, ms) => { timers.push(ms); return 0; }, setInterval: () => 0, clearTimeout: () => 0,
   window: { addEventListener() {} }, localStorage: { getItem: () => null }, location: { hostname: "10.0.0.90" }, Node: N,
 };
 vm.createContext(ctx);
@@ -511,7 +513,7 @@ const updatesPath = path.replace(/dxberry\.js$/, "updates.js");
     "OK runs dxberry-update graywolf --json: " + (gwStart && gwStart.args.join(" ")));
 
   // while the job runs: its output shows under Updates, and the update buttons are disabled
-  ok(utext().includes("Running: graywolf update"), "a running notice names what is updating: " + utext());
+  ok(utext().includes("Updating Graywolf…") && !utext().includes("Running:"), "a running notice names what is updating: " + utext());
   ok(utext().includes("downloading graywolf_0.14.14_arm64.deb"), "the job's output shows under Updates: " + utext());
   ok(ubtn("upd:graywolf").disabled && ubtn("upd:system").disabled && ubtn("upd:check").disabled, "the update buttons are disabled while the job runs");
 
@@ -563,6 +565,9 @@ const updatesPath = path.replace(/dxberry\.js$/, "updates.js");
   let rbText = confirmD.querySelector("p").textContent;
   ok(rbText.includes("0.3.0-rc2") && !rbText.includes("no Updates screen"),
     "Roll back names the kept version; no warning while that tree still has dxberry-update: " + rbText);
+  // after a rollback .prev holds the NEWER tree: the confirmation never claims "goes back"
+  ok(rbText.includes("Switch to DXBerry 0.3.0-rc2, the version that was installed before the last update or roll back?") && !rbText.includes("goes back"),
+    "the rollback confirmation is neutral about which way it goes: " + rbText);
   confirmD.returnValue = "cancel"; confirmD.close();
 
   // Roll back to a tree with no Updates command of its own: the confirmation adds the warning
@@ -575,6 +580,101 @@ const updatesPath = path.replace(/dxberry\.js$/, "updates.js");
   ok(rbText.includes("0.3.0-rc2 has no Updates screen") && rbText.includes("flashing a new image or copying DXBerry by hand"),
     "the confirmation warns that an older kept tree has no Updates screen: " + rbText);
   confirmD.returnValue = "cancel"; confirmD.close();
+
+  // Update DXBerry and Install the system updates ask first, saying what happens
+  ubtn("upd:dxberry").click();
+  const dxText = confirmD.querySelector("p").textContent;
+  ok(confirmD.open && confirmD.querySelector("h2").textContent === "Update DXBerry?" && dxText.includes("DXBerry 0.3.0-rc3 is replaced with 0.3.0-rc4")
+    && dxText.includes("the setup runs again") && dxText.includes("0.3.0-rc3 is kept for a rollback"), "Update DXBerry asks first, naming both versions: " + dxText);
+  confirmD.returnValue = "cancel"; confirmD.close();
+  ubtn("upd:system").click();
+  const sysText = confirmD.querySelector("p").textContent;
+  ok(confirmD.open && confirmD.querySelector("h2").textContent === "Install the system updates?" && sysText.includes("apt-get upgrades the Debian packages without asking")
+    && sysText.includes("you log in again"), "Install the system updates asks first: " + sysText);
+  confirmD.returnValue = "cancel"; confirmD.close();
+  ok(!calls.some(c => c.args && c.args[0].endsWith("dxberry-update") && ["dxberry", "system", "rollback"].includes(c.args[1])), "Cancel starts nothing");
+
+  // each kind's running label, and the notice when it ends: exit 6 says nothing changed (nothing
+  // rolled back, for a rollback), exit 8 that it was installed but a later step failed
+  const lastNotice = () => { const n = doc.getElementById("notices").children; return n.length ? n[n.length - 1].textContent : ""; };
+  const runThenEnd = async (kind, exit) => {
+    uJob = { now: 1700000300, reboot_required: false, job: { unit: "dxberry-job-update-" + kind + "-1", kind, started: 1700000300, state: "running", exit: null, finished: null, lines: ["working"] } };
+    vm.runInContext("updLoadJob()", ctx); await flush(); await flush(); await flush();
+    const running = utext();
+    uJob = { now: 1700000400, reboot_required: false, job: Object.assign({}, uJob.job, { state: "finished", exit, finished: 1700000400 }) };
+    vm.runInContext("updLoadJob()", ctx); await flush(); await flush(); await flush();
+    return { running, notice: lastNotice() };
+  };
+  let r = await runThenEnd("graywolf", 8);
+  ok(r.notice.includes("Graywolf update: installed, but a later step failed"), "exit 8 says installed, a later step failed: " + r.notice);
+  r = await runThenEnd("dxberry", 6);
+  ok(r.running.includes("Updating DXBerry…"), "running label for a DXBerry update: " + r.running);
+  ok(r.notice.includes("DXBerry update failed. Nothing changed"), "exit 6 of an update says nothing changed: " + r.notice);
+  r = await runThenEnd("rollback", 6);
+  ok(r.running.includes("Rolling back…") && !r.running.includes("rollback update"), "running label for a rollback: " + r.running);
+  ok(r.notice.includes("Rollback failed. Nothing was rolled back") && !r.notice.includes("Nothing changed"), "exit 6 of a rollback says nothing was rolled back: " + r.notice);
+  r = await runThenEnd("system", 6);
+  ok(r.running.includes("Updating system packages…"), "running label for the system packages: " + r.running);
+  ok(r.notice.includes("System update failed. Nothing changed"), "exit 6 of the system update says nothing changed: " + r.notice);
+
+  // a job answer that does not parse is a failed poll: said so, and asked again at the slower pace
+  answer = args => {
+    if (!args[0].endsWith("dxberry-update")) return Promise.reject({ problem: "not-found" });
+    if (args[1] === "job") return Promise.resolve("");
+    if (args[1] === "check") return Promise.resolve(JSON.stringify(updCheckAnswer));
+    return Promise.reject({ problem: "not-found" });
+  };
+  timers.length = 0;
+  vm.runInContext("updLoadJob()", ctx); await flush(); await flush(); await flush();
+  ok(updatesSec.querySelector(".error") && updatesSec.querySelector(".error").textContent.includes("could not be read"),
+    "an unparsable job answer is shown as a failed poll: " + utext());
+  ok(timers[timers.length - 1] === 10000, "and the job is asked for again at the slower interval: " + JSON.stringify(timers));
+  answer = args => {
+    if (!args[0].endsWith("dxberry-update")) return Promise.reject({ problem: "not-found" });
+    if (args[1] === "job") return Promise.reject({ exit_status: 1, message: "this command must run as root" });
+    if (args[1] === "check") return Promise.resolve(JSON.stringify(updCheckAnswer));
+    return Promise.reject({ problem: "not-found" });
+  };
+  timers.length = 0;
+  vm.runInContext("updLoadJob()", ctx); await flush(); await flush(); await flush();
+  ok(updatesSec.querySelector(".error") && timers[timers.length - 1] === 10000, "a failed job poll is shown too, and retried at the slower interval: " + utext());
+  answer = args => {
+    if (!args[0].endsWith("dxberry-update")) return Promise.reject({ problem: "not-found" });
+    if (args[1] === "job") return Promise.resolve(JSON.stringify(uJob));
+    if (args[1] === "check") return Promise.resolve(JSON.stringify(updCheckAnswer));
+    if (args[1] === "prereleases") return Promise.reject({ exit_status: 6, message: "could not write /var/lib/dxberry/update.conf" });
+    return Promise.reject({ problem: "not-found" });
+  };
+  vm.runInContext("updLoadJob()", ctx); await flush(); await flush(); await flush();
+  ok(!updatesSec.querySelector(".error"), "a good job answer clears the failed-poll message: " + utext());
+
+  // the pre-release switch's own failure message (not "the update failed")
+  const preBox3 = $("upd-prereleases");
+  preBox3.checked = !preBox3.checked;
+  preBox3.fire("change");
+  await flush(); await flush(); await flush();
+  ok(lastNotice().includes("Changing the pre-release setting failed") && lastNotice().includes("the setting could not be saved") && !lastNotice().includes("the update failed"),
+    "a failed pre-release switch says the setting was not saved: " + lastNotice());
+
+  // the DXBerry row: a pre-release latest is "the newest pre-release", never "the newest full release"
+  const dxRow = async d => {
+    updCheckAnswer = Object.assign({}, updCheckAnswer, { dxberry: d });
+    vm.runInContext("updLoadCheck(false)", ctx); await flush(); await flush(); await flush();
+    return utext();
+  };
+  let ut = await dxRow({ installed: "0.3.0-rc4", latest: "0.3.0-rc4", prerelease: true, update: false, include_prereleases: true });
+  ok(ut.includes("0.3.0-rc4, the newest pre-release") && !ut.includes("full release"), "a pre-release that is the newest says so: " + ut);
+  ut = await dxRow({ installed: "0.3.0-rc3", latest: null, prerelease: false, update: false, include_prereleases: false });
+  ok(ut.includes("0.3.0-rc3, no newer full release") && !ut.includes("the newest full release"),
+    "an installed pre-release with pre-releases off is not called the newest full release: " + ut);
+  ut = await dxRow({ installed: "0.3.0", latest: "0.3.0", prerelease: false, update: false, include_prereleases: false });
+  ok(ut.includes("0.3.0, the newest full release"), "a full release that is the newest says so: " + ut);
+  // the DXBerry part failed: its error shows, and the switch still shows the real setting
+  ut = await dxRow({ error: "the DXBerry release list could not be read", include_prereleases: true });
+  ok(ut.includes("the DXBerry release list could not be read"), "the DXBerry part's error shows: " + ut);
+  ok(Object.prototype.hasOwnProperty.call($("upd-prereleases").attributes, "checked"), "the pre-release switch shows the setting even when the DXBerry part failed");
+  ut = await dxRow({ error: "the DXBerry release list could not be read", include_prereleases: false });
+  ok(!Object.prototype.hasOwnProperty.call($("upd-prereleases").attributes, "checked"), "and shows it off when it is off");
 
   // the About card shows "update available" once release.update says so
   status.release.update = { graywolf: false, dxberry: true, system: 0, checked_at: 1700000000 };
