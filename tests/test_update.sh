@@ -105,6 +105,34 @@ test_update_dxberry_info_offers_only_releases_with_an_update_file() {
   dxb_update_dxberry_info > /dev/null 2>&1; assert_eq "$?" "1"
 }
 
+# What is installed is the tree in $DXB_OPT: its VERSION, not /etc/dxberry-release (a release file
+# that did not take after a swap must not offer the same update again). The release file still
+# gives the commit, and the version only when VERSION cannot be read.
+test_update_dxberry_info_reads_the_installed_version_from_the_tree() {
+  local j
+  up_env
+  up_tree "$DXB_OPT" 0.3.0-rc4
+  dxb_update_set_prereleases on
+  j=$(dxb_update_dxberry_info)
+  assert_eq "$(jq -c '{installed, commit, latest, update}' <<< "$j")" '{"installed":"0.3.0-rc4","commit":"abc1234","latest":"0.3.0-rc4","update":false}'
+  rm "$DXB_OPT/VERSION"
+  assert_eq "$(dxb_update_dxberry_info | jq -c '{installed, update}')" '{"installed":"0.3.0-rc3","update":true}'
+}
+
+# The pre-release switch shows the real setting even when the release list could not be read.
+test_update_check_keeps_the_prerelease_setting_when_dxberry_fails() {
+  local j
+  up_env
+  dxb_update_set_prereleases on
+  rm "$TEST_TMP/http/releases.json"
+  j=$( dpkg-query() { printf 'installed 0.14.13\n'; }; dxb_update_check refresh )
+  assert_contains "$(jq -r '.dxberry.error' <<< "$j")" "DXBerry"
+  assert_eq "$(jq -r '.dxberry.include_prereleases' <<< "$j")" "true"
+  dxb_update_set_prereleases off
+  j=$( dpkg-query() { printf 'installed 0.14.13\n'; }; dxb_update_check refresh )
+  assert_eq "$(jq -r '.dxberry.include_prereleases' <<< "$j")" "false"
+}
+
 # A release created later but numbered lower (a back-port, a re-tag) must not win just because
 # GitHub lists it first: the highest version among the candidates is "latest", not .[0] of the
 # listing order (creation date).
@@ -205,6 +233,42 @@ test_update_check_keeps_a_failed_answer_only_briefly() {
   jq -cn --argjson t "$(( now - 1000 ))" '{checked_at: $t, graywolf: {installed: "0.14.13"}, dxberry: {update: false}, system: {error: "z"}}' > "$DXB_UPDATE_CACHE"
   j=$( dpkg-query() { printf 'installed 0.14.13\n'; }; dxb_update_check )
   assert_eq "$(jq -r '.cached, .system.count' <<< "$j" | tr '\n' ' ')" "false 2 "
+}
+
+# A check that overlaps an update job must not cache what it read: the job drops the cache when it
+# finishes, and a check that started before that would put the old versions back for six hours.
+# Not written while a job runs, nor when the last job finished at or after the check began.
+# up_check_to_file: dxb_update_check into $TEST_TMP/check.json, Graywolf 0.14.13 installed and
+# systemctl is-active answering from $TEST_TMP/active (one unit per line).
+up_check_to_file() {
+  (
+    # shellcheck disable=SC2317  # invoked indirectly by dxb_update_check
+    dpkg-query() { printf 'installed 0.14.13\n'; }
+    # shellcheck disable=SC2317
+    systemctl() { case $1 in is-active) grep -qx "${*: -1}" "$TEST_TMP/active" ;; *) return 0 ;; esac; }
+    dxb_update_check > "$TEST_TMP/check.json"
+  )
+}
+test_update_check_never_caches_across_a_job() {
+  local now
+  up_env
+  now=$(date +%s)
+  : > "$TEST_TMP/active"
+  # a job is running
+  printf '{"unit":"dxberry-job-update-system-1","kind":"system","started":1}\n' > "$DXB_UPDATE_JOB_FILE"
+  echo dxberry-job-update-system-1 > "$TEST_TMP/active"
+  up_check_to_file
+  assert_eq "$(jq -r '.cached, .system.count' "$TEST_TMP/check.json" | tr '\n' ' ')" "false 2 "
+  [[ -e $DXB_UPDATE_CACHE ]] && _fail "a check made while an update job runs must not be cached"
+  # the job finished while the check ran (its result is no older than the check)
+  : > "$TEST_TMP/active"
+  jq -cn --argjson t "$(( now + 5 ))" '{exit: 0, finished: $t}' > "$DXB_UPDATE_RESULT"
+  up_check_to_file
+  [[ -e $DXB_UPDATE_CACHE ]] && _fail "a check that overlapped a job's end must not be cached"
+  # the job finished long before: cached as usual
+  jq -cn '{exit: 0, finished: 1}' > "$DXB_UPDATE_RESULT"
+  up_check_to_file
+  [[ -e $DXB_UPDATE_CACHE ]] || _fail "a check after the job finished is cached"
 }
 
 test_update_rollback_info() {
@@ -619,7 +683,8 @@ up_cli() {
 up_cli_env() {
   up_env
   # shellcheck disable=SC2031  # exported here, only ever read (never set) inside up_cli's subshell
-  export DXB_SYSTEMD_RUN=up_systemd_run DXB_UPDATE_CMD=/opt/dxberry/bin/dxberry-update DXB_CONFIG_JOB_FILE=$TEST_TMP/run/config-job.json
+  export DXB_SYSTEMD_RUN=up_systemd_run DXB_UPDATE_CMD=/opt/dxberry/bin/dxberry-update DXB_CONFIG_JOB_FILE=$TEST_TMP/run/config-job.json \
+    DXB_NETSAFE_DIR=$TEST_TMP/state/network-snapshot
   : > "$TEST_TMP/active"
 }
 up_systemd_run() { echo "systemd-run $*" >> "$TEST_TMP/calls"; [[ ! -f $TEST_TMP/systemd-run-fails ]]; }
@@ -655,6 +720,68 @@ test_update_cli_starts_jobs_and_refuses_while_busy() {
   : > "$TEST_TMP/active"
   touch "$TEST_TMP/systemd-run-fails"
   up_cli system --json; assert_eq "$?" "6"
+}
+
+# up_wait_for FILE: wait up to five seconds for FILE to appear (`command sleep`: another test file
+# leaves a no-op sleep() function in this shared shell).
+up_wait_for() { local i; for (( i = 0; i < 100; i++ )); do [[ -e $1 ]] && return 0; command sleep 0.05; done; return 1; }
+
+# One lock for settings and updates: an update start also takes dxberry-config's own lock, so it
+# never starts while a settings change is being started, kept or undone; and it refuses while a
+# network change waits to be kept or undone (its timer may yet run the provisioner's network files
+# back). Exit 5 either way, and nothing started.
+test_update_cli_shares_the_settings_lock_and_waits_for_a_network_change() {
+  local pid
+  up_cli_env
+  if command -v flock > /dev/null 2>&1; then
+    ( exec 8> "$DXB_RUN_DIR/config.lock"; flock 8; : > "$TEST_TMP/held"; exec sleep 10 ) &
+    pid=$!
+    up_wait_for "$TEST_TMP/held" || _fail "the background holder never took the settings lock"
+    DXB_CONFIG_LOCK_WAIT=1 up_cli system --json; assert_eq "$?" "5"
+    assert_contains "$(cat "$TEST_TMP/err")" "settings change"
+    assert_not_contains "$(cat "$TEST_TMP/calls")" "systemd-run"
+    kill "$pid" 2> /dev/null; wait "$pid" 2> /dev/null
+  fi
+  : > "$TEST_TMP/calls"
+  mkdir -p "$DXB_NETSAFE_DIR"; : > "$DXB_NETSAFE_DIR/manifest"
+  up_cli system --json; assert_eq "$?" "5"
+  assert_contains "$(cat "$TEST_TMP/err")" "network change"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemd-run"
+  rm -rf "$DXB_NETSAFE_DIR"
+  assert_ok up_cli system --json
+}
+
+# A start that fails must not erase the last job's result (the page would lose what happened); one
+# that succeeds drops it, so the new job's state never shows the old exit. A copy of the command
+# left from an earlier job is removed whatever the kind.
+test_update_cli_start_keeps_the_last_result_until_a_job_starts() {
+  up_cli_env
+  echo '{"exit":8,"finished":1700000000}' > "$DXB_UPDATE_RESULT"
+  mkdir -p "$DXB_UPDATE_WORK/run/bin"; : > "$DXB_UPDATE_WORK/run/bin/dxberry-update"
+  touch "$TEST_TMP/systemd-run-fails"
+  up_cli system --json; assert_eq "$?" "6"
+  assert_eq "$(cat "$DXB_UPDATE_RESULT" 2> /dev/null)" '{"exit":8,"finished":1700000000}'
+  rm -f "$TEST_TMP/systemd-run-fails"
+  assert_ok up_cli graywolf --json
+  [[ -e $DXB_UPDATE_RESULT ]] && _fail "a started job drops the last result"
+  [[ -e $DXB_UPDATE_WORK/run ]] && _fail "a leftover copy of the command is removed for every kind"
+  assert_eq "$(find "$DXB_RUN_DIR" -name 'update-result*' | wc -l)" "0"
+}
+
+# A job file that does not parse is no job (null), never an empty line the page cannot parse.
+test_update_cli_job_with_a_corrupt_job_file() {
+  up_cli_env
+  echo '{"unit":"dxberry-job-up' > "$DXB_UPDATE_JOB_FILE"
+  assert_ok up_cli job --json
+  assert_eq "$(jq -c '.job' "$TEST_TMP/out")" "null"
+  assert_eq "$(wc -l < "$TEST_TMP/out")" "1"
+  assert_ok up_cli job
+  assert_contains "$(cat "$TEST_TMP/out")" "no update yet"
+  # a result that does not parse leaves the job itself readable
+  printf '{"unit":"dxberry-job-update-system-1","kind":"system","started":1}\n' > "$DXB_UPDATE_JOB_FILE"
+  echo 'garbage' > "$DXB_UPDATE_RESULT"
+  assert_ok up_cli job --json
+  assert_eq "$(jq -c '[.job.kind, .job.state, .job.exit]' "$TEST_TMP/out")" '["system","finished",null]'
 }
 
 test_update_cli_dxberry_job_runs_from_a_copy() {

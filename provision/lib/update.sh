@@ -61,10 +61,13 @@ dxb_update_graywolf_info() {
 # dxb_update_dxberry_info: the installed DXBerry and the newest release that carries an update file
 # (pre-releases only when switched on). "Newest" is the highest version among the candidates, not
 # GitHub's listing order (creation date): a back-port or re-tag could be listed first but be
-# numbered lower, and must not hide the real latest release.
+# numbered lower, and must not hide the real latest release. What is installed is the tree in
+# $DXB_OPT (its VERSION); /etc/dxberry-release gives the commit, and the version only when VERSION
+# cannot be read.
 dxb_update_dxberry_info() {
-  local installed commit pre releases candidates pick='' latest='' c cl
-  installed=$(sed -n 's/^DXBERRY_VERSION=//p' "$DXB_RELEASE_FILE" 2> /dev/null | head -1)
+  local installed='' commit pre releases candidates pick='' latest='' c cl
+  [[ -r $DXB_OPT/VERSION ]] && installed=$(head -1 "$DXB_OPT/VERSION" 2> /dev/null)
+  [[ -n $installed ]] || installed=$(sed -n 's/^DXBERRY_VERSION=//p' "$DXB_RELEASE_FILE" 2> /dev/null | head -1)
   commit=$(sed -n 's/^DXBERRY_COMMIT=//p' "$DXB_RELEASE_FILE" 2> /dev/null | head -1)
   pre=$(dxb_update_prereleases)
   releases=$(_dxb_update_fetch "$DXB_UPDATE_API" 2> /dev/null) || return 1
@@ -112,9 +115,19 @@ dxb_update_rollback_info() {
     '{available: $a, version: (if $a and $v != "" then $v else null end), updates: $u}'
 }
 
+# _dxb_update_job_ended_since TIME: 0 when the last update job's result says it finished at or
+# after TIME (seconds).
+_dxb_update_job_ended_since() {
+  local f
+  f=$(jq -r '.finished // empty' "$DXB_UPDATE_RESULT" 2> /dev/null)
+  [[ $f =~ ^[0-9]+$ ]] && (( f >= $1 ))
+}
+
 # dxb_update_check [refresh]: the cached answer while it is younger than DXB_UPDATE_TTL_S (only
-# DXB_UPDATE_ERROR_TTL_S when a part of it could not be read), else a fresh one (written to the
-# cache). rollback and reboot_required are always worked out now.
+# DXB_UPDATE_ERROR_TTL_S when a part of it could not be read), else a fresh one, written to the
+# cache - unless an update job is running or finished since this check began: the job drops the
+# cache when it ends, and what this check read may be from before it. rollback and
+# reboot_required are always worked out now.
 dxb_update_check() {
   local now age='' ttl=$DXB_UPDATE_TTL_S j gw dx sy
   now=$(date +%s)
@@ -129,11 +142,15 @@ dxb_update_check() {
   else
     dxb_config_load "$(dxb_boot_dir)/dxberry.txt" > /dev/null 2>&1; dxb_config_validate > /dev/null 2>&1
     gw=$(dxb_update_graywolf_info) || gw='{"error":"Graywolf'\''s release list could not be read"}'
-    dx=$(dxb_update_dxberry_info) || dx='{"error":"the DXBerry release list could not be read"}'
+    # the error still carries the pre-release setting, so the page's switch shows the real one
+    dx=$(dxb_update_dxberry_info) || dx=$(jq -cn --argjson p "$([[ $(dxb_update_prereleases) == on ]] && echo true || echo false)" \
+      '{error: "the DXBerry release list could not be read", include_prereleases: $p}')
     sy=$(dxb_update_system_info) || sy='{"error":"apt-get could not simulate an upgrade"}'
     j=$(jq -cn --argjson t "$now" --argjson g "$gw" --argjson d "$dx" --argjson s "$sy" '{checked_at: $t, graywolf: $g, dxberry: $d, system: $s}')
-    mkdir -p "$(dirname "$DXB_UPDATE_CACHE")" 2> /dev/null
-    dxb_write_if_changed "$DXB_UPDATE_CACHE" "$j" 644 > /dev/null 2>&1
+    if ! dxb_update_job_running && ! _dxb_update_job_ended_since "$now"; then
+      mkdir -p "$(dirname "$DXB_UPDATE_CACHE")" 2> /dev/null
+      dxb_write_if_changed "$DXB_UPDATE_CACHE" "$j" 644 > /dev/null 2>&1
+    fi
     j=$(jq -c '. + {cached: false}' <<< "$j")
   fi
   jq -c --argjson r "$(dxb_update_rollback_info)" --argjson rb "$([[ -e $DXB_REBOOT_FLAG ]] && echo true || echo false)" \
@@ -294,8 +311,9 @@ dxb_update_apply_dxberry() {
   dxb_update_release_from_tree "$DXB_OPT"
   dxb_update_link_commands
   if [[ $(sed -n 's/^DXBERRY_VERSION=//p' "$DXB_RELEASE_FILE" 2> /dev/null | head -1) != "$(head -1 "$DXB_OPT/VERSION" 2> /dev/null)" ]]; then
-    # the swap itself succeeded - returning 6 here would offer the same update again and push
-    # the real previous tree out of .prev on the next run
+    # 8, never 6: the swap itself succeeded - the new tree is in place (the check reads what is
+    # installed from its VERSION, so it is not offered again) and only the record in the release
+    # file, which the About card and dxberry-status show, is behind; the setup run is skipped
     echo "$DXB_RELEASE_FILE does not show the new version; treating the update as failed" >&2
     return 8
   fi

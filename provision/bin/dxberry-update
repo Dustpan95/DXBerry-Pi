@@ -18,6 +18,7 @@ for _m in common config graywolf settings update; do
 done
 : "${DXB_UPDATE_CMD:=/opt/dxberry/bin/dxberry-update}"
 : "${DXB_UPDATE_LOCK_WAIT:=30}"
+: "${DXB_CONFIG_LOCK_WAIT:=30}"
 
 usage() { sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 JSON=0
@@ -29,6 +30,19 @@ lock_update() {
   exec 6> "$f" || return 0
   command -v flock > /dev/null 2>&1 || return 0
   flock -w "$DXB_UPDATE_LOCK_WAIT" 6 || { echo "another update command is running; try again" >&2; return 5; }
+}
+
+# lock_settings: dxberry-config's own lock (its lock_config: the same file, fd 7), taken after the
+# update lock, so an update never starts while a settings change is being started, kept or undone.
+# dxberry-config never takes the update lock, so the two commands can never wait on each other;
+# and it holds its lock only while it starts a job or keeps / undoes a network change, never for
+# a whole settings job.
+lock_settings() {
+  local f=$DXB_RUN_DIR/config.lock
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  exec 7> "$f" || return 0
+  command -v flock > /dev/null 2>&1 || return 0
+  flock -w "$DXB_CONFIG_LOCK_WAIT" 7 || { echo "a settings change is in progress; try again once it has started" >&2; return 5; }
 }
 
 cmd_check() {
@@ -49,21 +63,29 @@ cmd_check() {
 cmd_start() {
   local kind=$1 unit
   local -a cmd=("$DXB_UPDATE_CMD" apply "$kind")
+  lock_settings || return 5
   if dxb_update_job_running; then echo "an update is still running; wait for it to finish (sudo dxberry-update job)" >&2; return 5; fi
   if dxb_settings_job_running; then echo "a settings change is still being applied; wait for it to finish (sudo dxberry-config job)" >&2; return 5; fi
+  if dxb_netsafe_pending; then echo "the last network change waits to be kept or undone first (sudo dxberry-config confirm, or revert)" >&2; return 5; fi
+  # a copy left by an earlier job is dropped whatever this job's kind (no job is running now)
+  rm -rf "$DXB_UPDATE_WORK/run"
   if [[ $kind == dxberry || $kind == rollback ]]; then
     # the job replaces /opt/dxberry, so it runs from a copy of this command and its libraries
-    rm -rf "$DXB_UPDATE_WORK/run"
     if ! { ( umask 077; mkdir -p "$DXB_UPDATE_WORK/run" ) && cp -r "$DXB_OPT/bin" "$DXB_OPT/lib" "$DXB_UPDATE_WORK/run/"; }; then
       echo "could not copy the update command to $DXB_UPDATE_WORK/run" >&2; return 6
     fi
     cmd=(env "DXB_LIB=$DXB_UPDATE_WORK/run/lib" "$DXB_UPDATE_WORK/run/bin/dxberry-update" apply "$kind")
   fi
   unit="dxberry-job-update-$kind-$(date +%s)"
-  rm -f "$DXB_UPDATE_RESULT"
+  # the last job's result is moved aside, not deleted: the new job must never be shown with the old
+  # exit, but a start that fails puts it back (the page still shows what happened last)
+  rm -f "$DXB_UPDATE_RESULT.last"
+  if [[ -e $DXB_UPDATE_RESULT ]]; then mv -f "$DXB_UPDATE_RESULT" "$DXB_UPDATE_RESULT.last"; fi
   if ! "$DXB_SYSTEMD_RUN" --quiet --collect --unit="$unit" --description="DXBerry update ($kind)" "${cmd[@]}" > /dev/null 2>&1; then
+    if [[ -e $DXB_UPDATE_RESULT.last ]]; then mv -f "$DXB_UPDATE_RESULT.last" "$DXB_UPDATE_RESULT"; fi
     echo "could not start the update job" >&2; return 6
   fi
+  rm -f "$DXB_UPDATE_RESULT.last"
   mkdir -p "$DXB_RUN_DIR" 2> /dev/null
   jq -cn --arg u "$unit" --arg k "$kind" --argjson t "$(date +%s)" '{unit: $u, kind: $k, started: $t}' > "$DXB_UPDATE_JOB_FILE"
   if (( JSON )); then jq -cn --arg u "$unit" --arg k "$kind" '{ok: true, job: $u, kind: $k}'; else echo "started $unit (follow it with: sudo dxberry-update job)"; fi
@@ -86,16 +108,22 @@ cmd_apply() {
   return $rc
 }
 
+# cmd_job: a job file that does not parse is no job (null), and a result that does not parse is no
+# result: the answer is always one line of JSON the page can read.
 cmd_job() {
   local unit state result=null lines j=null
-  if [[ -f $DXB_UPDATE_JOB_FILE ]]; then
+  if [[ -f $DXB_UPDATE_JOB_FILE ]] && jq -e 'type == "object"' "$DXB_UPDATE_JOB_FILE" > /dev/null 2>&1; then
     unit=$(dxb_update_job_unit)
     if [[ -n $unit ]] && systemctl is-active --quiet "$unit"; then state=running
-    elif [[ -f $DXB_UPDATE_RESULT ]]; then state=finished; result=$(jq -c . "$DXB_UPDATE_RESULT" 2> /dev/null || echo null)
+    elif [[ -f $DXB_UPDATE_RESULT ]]; then
+      state=finished
+      result=$(jq -c 'if type == "object" then . else null end' "$DXB_UPDATE_RESULT" 2> /dev/null)
+      [[ -n $result ]] || result=null
     else state=ended; fi
     lines=$(journalctl -u "$unit" -o cat --no-pager -n 400 2> /dev/null | jq -Rsc 'split("\n") | map(select(length > 0))')
     j=$(jq -c --arg s "$state" --argjson r "$result" --argjson l "${lines:-[]}" \
-      '. + {state: $s, exit: ($r.exit // null), finished: ($r.finished // null), lines: $l}' "$DXB_UPDATE_JOB_FILE")
+      '. + {state: $s, exit: ($r.exit // null), finished: ($r.finished // null), lines: $l}' "$DXB_UPDATE_JOB_FILE" 2> /dev/null)
+    [[ -n $j ]] || j=null
   fi
   j=$(jq -cn --argjson j "$j" --argjson now "$(date +%s)" --argjson rb "$([[ -e $DXB_REBOOT_FLAG ]] && echo true || echo false)" \
     '{now: $now, reboot_required: $rb, job: $j}')
