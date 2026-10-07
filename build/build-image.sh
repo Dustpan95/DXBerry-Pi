@@ -370,6 +370,10 @@ if [[ -n ${SUDO_UID:-} ]]; then
   if ! chown "${SUDO_UID}:${SUDO_GID:-0}" "$final.xz" "$final.xz.sha256"; then
     die "failed to chown output artifacts back to the invoking user"
   fi
+  # out/ itself too (not recursive): a later step run as that user writes its own files there
+  if ! chown "${SUDO_UID}:${SUDO_GID:-0}" "$OUT"; then
+    die "failed to chown $OUT back to the invoking user"
+  fi
   if ! chown -R "${SUDO_UID}:${SUDO_GID:-0}" "$WORK"; then
     die "failed to chown $WORK back to the invoking user"
   fi

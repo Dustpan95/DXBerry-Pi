@@ -109,6 +109,22 @@ test_build_ships_the_update_command() {
   assert_contains "$executable" "provision/bin/dxberry-update"
 }
 
+# sudo build-image.sh creates out/ as root; the update file is made by the runner user, so it must
+# come first (the runner then owns out/, and root can still write the image into it) - and the
+# image build hands out/ itself back to the invoking user as well.
+test_build_release_makes_the_update_file_before_the_image() {
+  local wf=$DXB_ROOT/.github/workflows/release.yml upd img
+  upd=$(grep -n -- '- name: DXBerry update file$' "$wf" | cut -d: -f1)
+  img=$(grep -n -- '- name: Build image$' "$wf" | cut -d: -f1)
+  if [[ -z $upd || -z $img ]]; then
+    _fail "release.yml must have both a 'DXBerry update file' and a 'Build image' step (got '$upd' '$img')"
+  elif (( upd > img )); then
+    _fail "release.yml makes the update file (line $upd) after the image build (line $img), which leaves out/ owned by root"
+  fi
+  # shellcheck disable=SC2016  # the literal line, unexpanded
+  assert_file_contains "$DXB_ROOT/build/build-image.sh" 'chown "${SUDO_UID}:${SUDO_GID:-0}" "$OUT"'
+}
+
 test_build_makes_the_update_file() {
   local out=$TEST_TMP/out name list
   name=$( umask 002; "$DXB_ROOT/build/make-update-tarball.sh" v0.3.0-rc4 "$out" ) || _fail "make-update-tarball.sh failed"

@@ -31,10 +31,10 @@ jobs:
         run: build/build-image.sh --check
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y parted
-      - name: Build image
-        run: sudo build/build-image.sh --version "${GITHUB_REF_NAME#v}"
       - name: DXBerry update file
         run: build/make-update-tarball.sh "${GITHUB_REF_NAME#v}" out
+      - name: Build image
+        run: sudo build/build-image.sh --version "${GITHUB_REF_NAME#v}"
       - name: Release notes
         run: |
           {
