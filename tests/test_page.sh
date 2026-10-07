@@ -36,7 +36,7 @@ test_page_manifest_makes_dxberry_the_first_menu_entry() {
 # Cockpit's page policy allows this package's own files only: no inline script, handler or style.
 test_page_html_loads_only_its_own_files() {
   local html=$PG_DIR/index.html
-  assert_eq "$(grep -oE 'src="[^"]*"' "$html" | sort | tr '\n' ' ')" 'src="../base1/cockpit.js" src="dxberry.js" src="settings.js" '
+  assert_eq "$(grep -oE 'src="[^"]*"' "$html" | sort | tr '\n' ' ')" 'src="../base1/cockpit.js" src="dxberry.js" src="settings.js" src="updates.js" '
   assert_eq "$(grep -oE 'href="[^"]*"' "$html" | tr '\n' ' ')" 'href="dxberry.css" '
   assert_file_not_contains "$html" "http"
   assert_file_not_contains "$html" "style="
@@ -175,12 +175,15 @@ test_page_reads_only_fields_that_dxberry_status_produces() {
   cli status --json || _fail "dxberry-radio status --json failed: $(cat "$TEST_TMP/err")"
   cp "$TEST_TMP/out" "$TEST_TMP/radio.json"
   st_env
+  export DXB_UPDATE_CACHE=$TEST_TMP/state/update-check.json
+  echo '{"checked_at":1,"graywolf":{"update":true},"dxberry":{"update":false},"system":{"count":0}}' > "$DXB_UPDATE_CACHE"
   st_cli --json || _fail "dxberry-status --json failed: $(cat "$TEST_TMP/err")"
   for f in $(pg_fields); do
     n=$(( n + 1 ))
     pg_has_path "$TEST_TMP/out" "$f" || _fail "dxberry.js reads $f, which dxberry-status --json does not produce"
   done
   (( n >= 60 )) || _fail "only $n fields found between the markers in dxberry.js"
+  unset DXB_UPDATE_CACHE
 }
 
 # pg_radio_fields: "COMMAND:PATH" entries dxberry.js declares it reads from dxberry-radio's own answers.
@@ -434,4 +437,32 @@ console.log(JSON.stringify(cfgFormArgs()));")
   assert_contains "$(sed -n 7p <<< "$got")" '"error":"A password cannot start or end with a space'
   assert_eq "$(sed -n 8p <<< "$got")" '"PASSWORD=\"half quoted\n"'
   assert_contains "$(sed -n 9p <<< "$got")" '"error":"A password cannot start or end with a space'
+}
+
+pg_update_fields() { sed -n '/\/\* update-fields-begin/,/\/\* update-fields-end/p' "$PG_DIR/updates.js" | grep -oE '"[a-z]+:[A-Za-z0-9_.*]+"' | tr -d '"'; }
+
+test_page_reads_only_fields_that_dxberry_update_produces() {
+  local f n=0
+  up_cli_env
+  dxb_update_set_prereleases on
+  up_cli check --json || _fail "dxberry-update check --json failed: $(cat "$TEST_TMP/err")"; cp "$TEST_TMP/out" "$TEST_TMP/check.json"
+  up_cli system --json || _fail "dxberry-update system --json failed: $(cat "$TEST_TMP/err")"; cp "$TEST_TMP/out" "$TEST_TMP/start.json"
+  up_cli job --json || _fail "dxberry-update job --json failed"; cp "$TEST_TMP/out" "$TEST_TMP/job.json"
+  up_cli prereleases on --json; cp "$TEST_TMP/out" "$TEST_TMP/prereleases.json"
+  for f in $(pg_update_fields); do
+    n=$(( n + 1 ))
+    pg_has_path "$TEST_TMP/${f%%:*}.json" "${f#*:}" || _fail "updates.js reads ${f#*:} from dxberry-update ${f%%:*} --json, which it does not produce"
+  done
+  (( n >= 20 )) || _fail "only $n fields found between the update-fields markers in updates.js"
+}
+
+test_page_updates_script_keeps_to_its_own_names() {
+  local js=$PG_DIR/updates.js bad
+  bad=$(grep -oE '^(function|const|let|var) [A-Za-z_][A-Za-z0-9_]*' "$js" | awk '{print $2}' | grep -vE '^(upd|UPDATE)|^updates$' || true)
+  assert_eq "$bad" ""
+  assert_file_not_contains "$js" "innerHTML"
+  assert_file_contains "$js" 'const UPDATE = "/opt/dxberry/bin/dxberry-update";'
+  command -v node > /dev/null 2>&1 || return 0
+  cat "$PG_DIR/dxberry.js" "$PG_DIR/settings.js" "$js" > "$TEST_TMP/all.js"
+  node --check "$TEST_TMP/all.js" 2> "$TEST_TMP/node.err" || _fail "the three scripts do not parse as one: $(cat "$TEST_TMP/node.err")"
 }

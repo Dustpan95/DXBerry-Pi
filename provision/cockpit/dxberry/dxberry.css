@@ -106,3 +106,5 @@ h3 { font-size: 14px; margin: 18px 0 0; }
 pre.log { max-height: 260px; overflow: auto; margin: 8px 0 0; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line);
   border-radius: 6px; font: 12px/1.4 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; white-space: pre-wrap; }
 #settings-dialog { max-width: min(92vw, 560px); width: 100%; max-height: 90vh; overflow: auto; }
+.upd-switch { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; color: var(--muted); }
+#updates { margin-top: 16px; }

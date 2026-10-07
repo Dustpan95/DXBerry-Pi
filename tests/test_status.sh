@@ -169,6 +169,20 @@ test_status_release_reads_the_installed_versions() {
     '["0.3.0-rc1","abc1234","0.14.13","337-1+deb13u2",null]'
 }
 
+test_status_release_reports_the_cached_update_check() {
+  st_env
+  st_cli --json release || _fail "dxberry-status --json release failed: $(cat "$TEST_TMP/err")"
+  assert_eq "$(jq -c '.release.update' "$TEST_TMP/out")" "null"
+  export DXB_UPDATE_CACHE=$TEST_TMP/state/update-check.json
+  echo '{"checked_at":1700000000,"graywolf":{"update":true},"dxberry":{"update":false},"system":{"count":3}}' > "$DXB_UPDATE_CACHE"
+  st_cli --json release
+  assert_eq "$(jq -c '.release.update' "$TEST_TMP/out")" '{"graywolf":true,"dxberry":false,"system":3,"checked_at":1700000000}'
+  echo '{"checked_at":1700000000,"graywolf":{"error":"x"},"dxberry":{"error":"y"},"system":{"error":"z"}}' > "$DXB_UPDATE_CACHE"
+  st_cli --json release
+  assert_eq "$(jq -c '.release.update' "$TEST_TMP/out")" '{"graywolf":false,"dxberry":false,"system":0,"checked_at":1700000000}'
+  unset DXB_UPDATE_CACHE
+}
+
 test_status_services_lists_the_station_units_and_each_rigctld() {
   st_env
   : > "$DXB_RIGCTLD_RUN_DIR/radio1.env"

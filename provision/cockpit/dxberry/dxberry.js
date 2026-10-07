@@ -68,6 +68,7 @@ const FIELDS = [
   "radios.gps.fix", "radios.gps.receiver", "radios.gps.grid", "radios.gps.sats_used", "radios.gps.sats_seen",
   "time.ok", "time.synced", "time.source", "time.reference", "time.stratum", "time.offset_ms",
   "release.ok", "release.dxberry", "release.dxberry_commit", "release.graywolf", "release.cockpit",
+  "release.update.graywolf", "release.update.dxberry", "release.update.system",
   "services.ok", "services.units.*.unit", "services.units.*.load", "services.units.*.active", "services.units.*.sub",
   "services.units.*.result", "services.units.*.type",
 ];
@@ -462,11 +463,16 @@ function timeCard(t, r) {
 
 function aboutCard(r) {
   if (!r || !r.ok) return card("About", r);
-  return card("About", r, [kv([
+  const rows = [
     ["DXBerry-Pi", r.dxberry ? r.dxberry + (r.dxberry_commit ? ` (${r.dxberry_commit})` : "") : DASH],
     ["Graywolf", r.graywolf || "not installed"],
     ["Cockpit", r.cockpit || DASH],
-  ])]);
+  ];
+  if (r.update) {
+    rows.push(["Updates", r.update.graywolf || r.update.dxberry || r.update.system > 0
+      ? badge("update available", "warn") : badge("up to date", "good")]);
+  }
+  return card("About", r, [kv(rows)]);
 }
 
 function unitState(u) {

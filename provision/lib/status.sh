@@ -110,15 +110,19 @@ _dxb_status_pkg_version() {
   return 0
 }
 
-# update stays null until the update check (console spec section 11.1) exists
+# update: the cached update check (console spec section 11.1) in brief, or null before the first
+# check. Reading the cache never runs a check: that is the Updates card's job.
 dxb_status_release() {
-  local v='' c=''
+  local v='' c='' cache=${DXB_UPDATE_CACHE:-$DXB_STATE_DIR/update-check.json} u=null
   if [[ -r $DXB_RELEASE_FILE ]]; then
     v=$(sed -n 's/^DXBERRY_VERSION=//p' "$DXB_RELEASE_FILE" | head -1)
     c=$(sed -n 's/^DXBERRY_COMMIT=//p' "$DXB_RELEASE_FILE" | head -1)
   fi
-  jq -cn --arg v "$v" --arg c "$c" --arg g "$(dxb_gw_installed_version)" --arg k "$(_dxb_status_pkg_version cockpit-ws)" \
-    '{dxberry: $v, dxberry_commit: $c, graywolf: $g, cockpit: $k, update: null}'
+  if [[ -r $cache ]]; then
+    u=$(jq -c '{graywolf: (.graywolf.update == true), dxberry: (.dxberry.update == true), system: (.system.count // 0), checked_at: (.checked_at // null)}' "$cache" 2> /dev/null) || u=null
+  fi
+  jq -cn --arg v "$v" --arg c "$c" --arg g "$(dxb_gw_installed_version)" --arg k "$(_dxb_status_pkg_version cockpit-ws)" --argjson u "${u:-null}" \
+    '{dxberry: $v, dxberry_commit: $c, graywolf: $g, cockpit: $k, update: $u}'
 }
 
 # ---- services ------------------------------------------------------------------------------
