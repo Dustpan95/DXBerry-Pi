@@ -295,6 +295,26 @@ test_update_apply_dxberry_reports_a_failed_setup_run() {
   assert_eq "$(cat "$DXB_OPT/VERSION")" "0.3.0-rc4"
 }
 
+# When /etc/dxberry-release's own write does not take (its directory is not writable), the swap
+# itself has already completed - this must be 8 (changed, a later step failed), never 6: a 6 here
+# would offer the same update again and push the real previous tree out of .prev on the next run.
+# Guarded like test_settings_write_keeps_the_previous_file_private: root writes through the
+# permissions this test breaks, so the scenario cannot be forced that way as root.
+test_update_apply_dxberry_reports_8_when_the_release_file_does_not_take() {
+  up_env; up_provision_stub
+  up_tree "$DXB_OPT" 0.3.0-rc3
+  dxb_update_set_prereleases on
+  up_release_file 0.3.0-rc4
+  if (( EUID != 0 )); then
+    chmod 500 "$(dirname "$DXB_RELEASE_FILE")"
+    dxb_update_apply_dxberry > "$TEST_TMP/out" 2>&1; local rc=$?
+    chmod 700 "$(dirname "$DXB_RELEASE_FILE")"
+    assert_eq "$rc" "8"
+    assert_contains "$(cat "$TEST_TMP/out")" "does not show the new version"
+    assert_eq "$(cat "$DXB_OPT/VERSION")" "0.3.0-rc4"
+  fi
+}
+
 test_update_rollback_swaps_back_and_forth() {
   up_env; up_provision_stub
   up_tree "$DXB_OPT" 0.3.0-rc4
@@ -333,6 +353,22 @@ test_update_dxberry_release_keeps_other_lines_through_update_and_rollback() {
   assert_file_contains "$DXB_RELEASE_FILE" "DIETPI_IMAGE_SHA256=deadbeefcafe"
   assert_file_contains "$DXB_RELEASE_FILE" "DXBERRY_VERSION=0.3.0-rc3"
   assert_file_contains "$DXB_RELEASE_FILE" "DXBERRY_COMMIT=abc1234"
+}
+
+# A link of ours (one that points into $DXB_OPT/bin/) left dangling by a tree change - e.g.
+# dxberry-update after a rollback to a tree that predates it - is removed; a dangling link that
+# points somewhere else entirely is left alone (it is not this function's business).
+test_update_link_commands_drops_only_a_dangling_link_of_ours() {
+  up_env
+  up_tree "$DXB_OPT" 0.3.0-rc3
+  rm -f "$DXB_OPT/bin/dxberry-update"
+  dxb_update_link_commands
+  [[ -L $DXB_SBIN/dxberry-config ]] || _fail "existing commands must still be linked"
+  ln -sf "$DXB_OPT/bin/dxberry-update" "$DXB_SBIN/dxberry-update"
+  ln -sf /nonexistent/elsewhere "$DXB_SBIN/dxberry-elsewhere"
+  dxb_update_link_commands
+  [[ -L $DXB_SBIN/dxberry-update ]] && _fail "a dangling link of ours must be removed"
+  [[ -L $DXB_SBIN/dxberry-elsewhere ]] || _fail "a dangling link pointing elsewhere must be left alone"
 }
 
 test_update_apply_graywolf_installs_rebuilds_and_restarts() {
@@ -412,6 +448,16 @@ test_update_apply_system_upgrades_without_questions() {
   # only the upgrade call fails: partway through
   echo upgrade > "$TEST_TMP/apt-fail-on"
   dxb_update_apply_system > /dev/null 2>&1; assert_eq "$?" "8"
+}
+
+# An interrupted dpkg must be healed before anything else runs; if it cannot be healed, apt-get is
+# never called at all (nothing changed yet).
+test_update_apply_system_never_calls_apt_when_dpkg_configure_fails() {
+  up_env
+  echo 1 > "$TEST_TMP/dpkg-rc"
+  dxb_update_apply_system > "$TEST_TMP/out" 2>&1; assert_eq "$?" "6"
+  assert_contains "$(cat "$TEST_TMP/out")" "dpkg --configure -a failed"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "apt-get"
 }
 
 # up_cli ARGS...: dxberry-update's main in a subshell with stubs; stdout $TEST_TMP/out, stderr $TEST_TMP/err.

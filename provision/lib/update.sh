@@ -236,7 +236,8 @@ dxb_update_apply_dxberry() {
   fi
   rm -rf "$new"
   if ! mkdir -p "$new"; then echo "could not create $new" >&2; rm -rf "$new" "$dl"; return 6; fi
-  if ! tar -xzf "$dl/$name" -C "$new" --strip-components=1 --no-same-owner || [[ ! -x $new/bin/dxberry-provision || ! -f $new/VERSION ]]; then
+  if ! tar -xzf "$dl/$name" -C "$new" --strip-components=1 --no-same-owner \
+    || [[ ! -x $new/bin/dxberry-provision || ! -f $new/VERSION || ! -f $new/lib/common.sh ]]; then
     echo "the update file is incomplete; nothing changed" >&2; rm -rf "$new" "$dl"; return 6
   fi
   chmod 755 "$new" 2> /dev/null || true
