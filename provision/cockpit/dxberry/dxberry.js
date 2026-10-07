@@ -468,9 +468,12 @@ function aboutCard(r) {
     ["Graywolf", r.graywolf || "not installed"],
     ["Cockpit", r.cockpit || DASH],
   ];
+  // a part the check could not read is null: "check failed", never "up to date"
   if (r.update) {
-    rows.push(["Updates", r.update.graywolf || r.update.dxberry || r.update.system > 0
-      ? badge("update available", "warn") : badge("up to date", "good")]);
+    const u = r.update;
+    rows.push(["Updates", u.graywolf === true || u.dxberry === true || u.system > 0 ? badge("update available", "warn")
+      : [u.graywolf, u.dxberry, u.system].some(p => p === null || p === undefined) ? badge("check failed", "warn")
+      : badge("up to date", "good")]);
   }
   return card("About", r, [kv(rows)]);
 }

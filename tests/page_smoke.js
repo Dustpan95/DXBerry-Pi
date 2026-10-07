@@ -585,6 +585,17 @@ const updatesPath = path.replace(/dxberry\.js$/, "updates.js");
   doc.getElementById("refresh").click();
   await flush(); await flush(); await flush();
   ok(text().includes("update available"), "the About card shows an update-available badge once release.update says so: " + text());
+  const about = () => { const s = cards.querySelectorAll("section").find(e => e.querySelector("h2").textContent === "About"); return s ? s.textContent : ""; };
+  const aboutAfter = async u => { status.release.update = u; doc.getElementById("refresh").click(); await flush(); await flush(); await flush(); return about(); };
+  let ab = await aboutAfter({ graywolf: null, dxberry: false, system: 0, checked_at: 1700000000 });
+  ok(ab.includes("check failed") && !ab.includes("up to date") && !ab.includes("update available"),
+    "a part the check could not read (null) shows 'check failed', never 'up to date': " + ab);
+  ab = await aboutAfter({ graywolf: true, dxberry: null, system: null, checked_at: 1700000000 });
+  ok(ab.includes("update available") && !ab.includes("check failed"), "an update that is known wins over a part that failed: " + ab);
+  ab = await aboutAfter({ graywolf: false, dxberry: false, system: 0, checked_at: 1700000000 });
+  ok(ab.includes("up to date") && !ab.includes("check failed"), "every part read and nothing out: 'up to date': " + ab);
+  ab = await aboutAfter(null);
+  ok(!ab.includes("Updates"), "no Updates row before the first check: " + ab);
 
   console.log(failures ? `${failures} failure(s)` : "all ok");
   process.exit(failures ? 1 : 0);

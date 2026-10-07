@@ -177,9 +177,20 @@ test_status_release_reports_the_cached_update_check() {
   echo '{"checked_at":1700000000,"graywolf":{"update":true},"dxberry":{"update":false},"system":{"count":3}}' > "$DXB_UPDATE_CACHE"
   st_cli --json release
   assert_eq "$(jq -c '.release.update' "$TEST_TMP/out")" '{"graywolf":true,"dxberry":false,"system":3,"checked_at":1700000000}'
+  # a part the check could not read is null (not known), never false/0 (which would read "up to date")
   echo '{"checked_at":1700000000,"graywolf":{"error":"x"},"dxberry":{"error":"y"},"system":{"error":"z"}}' > "$DXB_UPDATE_CACHE"
   st_cli --json release
-  assert_eq "$(jq -c '.release.update' "$TEST_TMP/out")" '{"graywolf":false,"dxberry":false,"system":0,"checked_at":1700000000}'
+  assert_eq "$(jq -c '.release.update' "$TEST_TMP/out")" '{"graywolf":null,"dxberry":null,"system":null,"checked_at":1700000000}'
+  echo '{"checked_at":1700000000,"graywolf":{"error":"x"},"dxberry":{"update":false},"system":{"count":0}}' > "$DXB_UPDATE_CACHE"
+  st_cli --json release
+  assert_eq "$(jq -c '.release.update' "$TEST_TMP/out")" '{"graywolf":null,"dxberry":false,"system":0,"checked_at":1700000000}'
+  # a corrupt cache is no answer at all
+  echo '{"checked_at":17000' > "$DXB_UPDATE_CACHE"
+  st_cli --json release
+  assert_eq "$(jq -c '.release.update' "$TEST_TMP/out")" "null"
+  echo '[1,2]' > "$DXB_UPDATE_CACHE"
+  st_cli --json release
+  assert_eq "$(jq -c '.release.update' "$TEST_TMP/out")" "null"
   unset DXB_UPDATE_CACHE
 }
 

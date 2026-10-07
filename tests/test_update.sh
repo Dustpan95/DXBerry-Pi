@@ -183,6 +183,30 @@ test_update_check_caches_and_keeps_the_live_parts_live() {
   assert_eq "$(jq -r '.dxberry.update' <<< "$j")" "true"
 }
 
+# An answer in which a part could not be read (offline, GitHub down) is kept only for
+# DXB_UPDATE_ERROR_TTL_S (15 minutes), not the six hours of a good one: an offline Pi asks again soon.
+test_update_check_keeps_a_failed_answer_only_briefly() {
+  local j now
+  up_env
+  now=$(date +%s)
+  jq -cn --argjson t "$(( now - 1000 ))" '{checked_at: $t, graywolf: {error: "x"}, dxberry: {update: false}, system: {count: 0}}' > "$DXB_UPDATE_CACHE"
+  j=$( dpkg-query() { printf 'installed 0.14.13\n'; }; dxb_update_check )
+  assert_eq "$(jq -r '.cached, .graywolf.latest' <<< "$j" | tr '\n' ' ')" "false 0.14.14 "
+  # younger than 15 minutes: still the cached answer
+  jq -cn --argjson t "$(( now - 100 ))" '{checked_at: $t, graywolf: {installed: "0.14.13"}, dxberry: {error: "y"}, system: {count: 0}}' > "$DXB_UPDATE_CACHE"
+  : > "$TEST_TMP/calls"
+  j=$( dpkg-query() { printf 'installed 0.14.13\n'; }; dxb_update_check )
+  assert_eq "$(jq -r '.cached' <<< "$j")" "true"
+  assert_eq "$(cat "$TEST_TMP/calls")" ""
+  # an answer without an error keeps its six hours
+  jq -cn --argjson t "$(( now - 1000 ))" '{checked_at: $t, graywolf: {installed: "0.14.13"}, dxberry: {update: false}, system: {count: 0}}' > "$DXB_UPDATE_CACHE"
+  j=$( dpkg-query() { printf 'installed 0.14.13\n'; }; dxb_update_check )
+  assert_eq "$(jq -r '.cached' <<< "$j")" "true"
+  jq -cn --argjson t "$(( now - 1000 ))" '{checked_at: $t, graywolf: {installed: "0.14.13"}, dxberry: {update: false}, system: {error: "z"}}' > "$DXB_UPDATE_CACHE"
+  j=$( dpkg-query() { printf 'installed 0.14.13\n'; }; dxb_update_check )
+  assert_eq "$(jq -r '.cached, .system.count' <<< "$j" | tr '\n' ' ')" "false 2 "
+}
+
 test_update_rollback_info() {
   up_env
   assert_eq "$(dxb_update_rollback_info)" '{"available":false,"version":null,"updates":false}'

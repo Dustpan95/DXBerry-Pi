@@ -7,6 +7,8 @@
 : "${DXB_UPDATE_CACHE:=$DXB_STATE_DIR/update-check.json}"
 : "${DXB_UPDATE_CONF:=$DXB_STATE_DIR/update.conf}"
 : "${DXB_UPDATE_TTL_S:=21600}"
+# an answer in which a part could not be read (offline, GitHub down) is kept only this long
+: "${DXB_UPDATE_ERROR_TTL_S:=900}"
 : "${DXB_UPDATE_API:=https://api.github.com/repos/Dustpan95/DXBerry-Pi/releases?per_page=30}"
 : "${DXB_UPDATE_CURL:=curl}"
 : "${DXB_DPKG:=dpkg}"
@@ -110,15 +112,19 @@ dxb_update_rollback_info() {
     '{available: $a, version: (if $a and $v != "" then $v else null end), updates: $u}'
 }
 
-# dxb_update_check [refresh]: the cached answer while it is younger than DXB_UPDATE_TTL_S, else a
-# fresh one (written to the cache). rollback and reboot_required are always worked out now.
+# dxb_update_check [refresh]: the cached answer while it is younger than DXB_UPDATE_TTL_S (only
+# DXB_UPDATE_ERROR_TTL_S when a part of it could not be read), else a fresh one (written to the
+# cache). rollback and reboot_required are always worked out now.
 dxb_update_check() {
-  local now age='' j gw dx sy
+  local now age='' ttl=$DXB_UPDATE_TTL_S j gw dx sy
   now=$(date +%s)
   if [[ ${1:-} != refresh && -f $DXB_UPDATE_CACHE ]]; then
     age=$(( now - $(jq -r '.checked_at // 0' "$DXB_UPDATE_CACHE" 2> /dev/null || echo 0) ))
+    if jq -e '[.graywolf.error, .dxberry.error, .system.error] | any(. != null)' "$DXB_UPDATE_CACHE" > /dev/null 2>&1; then
+      ttl=$DXB_UPDATE_ERROR_TTL_S
+    fi
   fi
-  if [[ -n $age ]] && (( age >= 0 && age < DXB_UPDATE_TTL_S )); then
+  if [[ -n $age ]] && (( age >= 0 && age < ttl )); then
     j=$(jq -c '. + {cached: true}' "$DXB_UPDATE_CACHE")
   else
     dxb_config_load "$(dxb_boot_dir)/dxberry.txt" > /dev/null 2>&1; dxb_config_validate > /dev/null 2>&1
