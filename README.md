@@ -99,6 +99,15 @@ beacon, iGate and digipeater settings stay in Graywolf's own page. On the comman
 landing in the shell's history:
 `read -rsp 'New password: ' p && printf 'PASSWORD=%s\n' "$p" | sudo dxberry-config set --stdin; unset p`.
 
+The Updates card checks Graywolf, DXBerry and the Debian packages against what is out (cached for
+six hours; **Check now** asks again) and installs each with one click: Graywolf from its releases
+(unless `GRAYWOLF_VERSION` pins it), DXBerry from the newest DXBerry release that carries an update
+file (`dxberry-pi-<version>.tar.gz`, checked against its sha256; pre-releases only with **Include
+DXBerry pre-releases** on), and the system packages with `apt-get upgrade`. Each runs as a background
+job whose output the page shows. A DXBerry update keeps the previous version for **Roll back**. The
+checksum proves the file arrived intact, not who made it. On the command line: `sudo dxberry-update
+check`, `sudo dxberry-update dxberry`, `sudo dxberry-update job`.
+
 The console is [Cockpit](https://cockpit-project.org) from Debian with one extra page; `CONSOLE=off` in
 `dxberry.txt` turns it off. `sudo dxberry-status` prints the same report in a terminal, and
 `sudo dxberry-status --json` gives it to scripts.
@@ -137,10 +146,12 @@ Output goes to `out/DXBerry-Pi-<version>-rpi234-arm64.img.xz` and a matching `.s
 ## Layout
 
 - `boot/` — files for the boot partition and DietPi's automation hooks
-- `provision/` — the provisioner installed at `/opt/dxberry` (`dxberry-preboot`, `dxberry-provision`, `dxberry-netwatch`, `dxberry-radio`, `dxberry-status`, `dxberry-config`, and the console page under `cockpit/`)
+- `provision/` — the provisioner installed at `/opt/dxberry` (`dxberry-preboot`, `dxberry-provision`, `dxberry-netwatch`, `dxberry-radio`, `dxberry-status`, `dxberry-config`, `dxberry-update`, and the console page under `cockpit/`)
   - `bin/dxberry-config` — settings management
   - `lib/settings.sh` — settings provisioning library
-- `build/` — image build
+  - `bin/dxberry-update` — update check and install
+  - `lib/update.sh` — update library
+- `build/` — image build, and the update file (`make-update-tarball.sh`)
 - `docs/design/` — design specifications; `docs/plans/` — implementation plans
 
 ## Credits and license
