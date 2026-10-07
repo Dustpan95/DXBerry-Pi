@@ -72,7 +72,7 @@ full_env() {
     DXB_GPSD_DEFAULT=$TEST_TMP/etc/default/gpsd DXB_CHRONY_DROPIN=$TEST_TMP/etc/chrony/conf.d/dxberry.conf \
     DXB_RPI_CONFIG_TXT=$TEST_TMP/bootfs/config.txt DXB_GPSPIPE=fake_gpspipe DXB_RUN_DIR=$TEST_TMP/run \
     DXB_COCKPIT_SRC=$TEST_TMP/cockpit-src DXB_COCKPIT_LINK=$TEST_TMP/usr-share-cockpit/dxberry \
-    DXB_COCKPIT_DROPIN=$TEST_TMP/cockpit.socket.d/dxberry-listen.conf
+    DXB_COCKPIT_DROPIN=$TEST_TMP/cockpit.socket.d/dxberry-listen.conf DXB_REBOOT_FLAG=$TEST_TMP/run/reboot-required
   mkdir -p "$DXB_BOOT_DIR" "$DXB_SYSTEMD_DIR" "$DXB_ZONEINFO_DIR" "$DXB_SYS_NET/eth0" "$DXB_SYS_NET/wlan0" \
     "$DXB_SYSFS_ROOT" "$TEST_TMP/etc" "$DXB_RIGCTLD_RUN_DIR" "$DXB_TMPFILES_DIR" "$TEST_TMP/cockpit-src"
   : > "$DXB_ZONEINFO_DIR/UTC"
@@ -543,5 +543,39 @@ test_run_mode_writes_the_reboot_flag_when_a_reboot_is_needed() {
   ) > /dev/null 2>&1
   [[ -e $DXB_REBOOT_FLAG ]] && _fail "a run that needs no reboot must not write $DXB_REBOOT_FLAG"
   unset DXB_REBOOT_FLAG
+  return 0
+}
+
+# A changed network file takes effect only at the next restart (netwatch adopts an interface that
+# is already up), so a run that changed one says so where Debian and the console look, besides
+# restarting netwatch and its own warning.
+test_run_mode_flags_a_restart_when_the_network_files_change() {
+  full_env
+  printf 'PASSWORD=secretpass\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  (
+    # shellcheck disable=SC1091
+    source "$DXB_ROOT/provision/bin/dxberry-provision"
+    dxb_require_root() { :; }
+    dxb_gw_install() { return 0; }
+    dxb_gw_seed() { return 0; }
+    # shellcheck disable=SC2030
+    provision_network() { DXB_NET_CHANGED=1; }
+    main
+  ) > /dev/null 2>&1
+  assert_file_contains "$DXB_REBOOT_FLAG" "System restart required"
+  assert_eq "$(tail -1 "$TEST_TMP/calls")" "systemd-run --quiet --on-active=3 systemctl restart dxberry-netwatch"
+  assert_file_contains "$DXB_LOG_FILE" "run sudo reboot to apply the change"
+  # first boot reboots anyway: no flag there
+  rm -f "$DXB_REBOOT_FLAG"
+  (
+    # shellcheck disable=SC1091
+    source "$DXB_ROOT/provision/bin/dxberry-provision"
+    dxb_require_root() { :; }
+    dxb_gw_install() { return 0; }
+    dxb_gw_seed() { return 0; }
+    provision_network() { DXB_NET_CHANGED=1; }
+    main --first-boot
+  ) > /dev/null 2>&1
+  [[ -e $DXB_REBOOT_FLAG ]] && _fail "first boot writes no restart flag (it reboots)"
   return 0
 }
