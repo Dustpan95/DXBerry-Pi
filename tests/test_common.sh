@@ -112,3 +112,11 @@ test_cfgtxt_ensure_line_needs_no_header_without_sections() {
   assert_ok dxb_cfgtxt_ensure_line "$f" 'enable_uart=1'
   assert_eq "$(cat "$f")" $'arm_64bit=1\nenable_uart=1'
 }
+
+# tests/run.sh: an assertion that fails inside a subshell is recorded where run.sh can see it
+test_harness_records_a_failure_inside_a_subshell() {
+  local inner=$TEST_TMP/inner-failures
+  # the nested assertion writes to its own log, so it does not fail this test
+  ( TESTS_FAIL_LOG=$inner; ( assert_eq a b ) 2> /dev/null )
+  assert_ok test -s "$inner"
+}

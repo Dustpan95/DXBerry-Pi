@@ -17,8 +17,13 @@ for t in $(declare -F | awk '{print $3}' | grep '^test_' | sort); do
   export TEST_TMP
   before=$TESTS_FAILED
   err=$(mktemp)
+  TESTS_FAIL_LOG=$(mktemp)
+  export TESTS_FAIL_LOG
   "$t" 2> "$err"
   rm -rf "$TEST_TMP"
+  # an assertion that failed only inside a subshell still fails its test
+  if (( TESTS_FAILED == before )) && [[ -s $TESTS_FAIL_LOG ]]; then TESTS_FAILED=$((TESTS_FAILED + 1)); fi
+  rm -f "$TESTS_FAIL_LOG"
   if (( TESTS_FAILED == before )); then echo "ok   $t"; else echo "FAIL $t"; cat "$err" >&2; fi
   rm -f "$err"
 done

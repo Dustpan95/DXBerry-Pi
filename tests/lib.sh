@@ -4,8 +4,11 @@
 TESTS_RUN=0
 TESTS_FAILED=0
 
+# A failure inside a subshell ( ... ) cannot raise the counter of the shell that runs the test,
+# so it is also written to TESTS_FAIL_LOG, a per-test file run.sh checks after every test.
 _fail() {
   TESTS_FAILED=$((TESTS_FAILED + 1))
+  if [[ -n ${TESTS_FAIL_LOG:-} ]]; then printf '%s\n' "$1" >> "$TESTS_FAIL_LOG"; fi
   printf '    FAIL in %s: %s\n' "${FUNCNAME[2]:-?}" "$1" >&2
 }
 assert_eq() { [[ "$1" == "$2" ]] || _fail "expected '$2', got '$1'"; }
