@@ -326,3 +326,10 @@ dxb_update_apply_system() {
     || { echo "apt-get upgrade failed" >&2; return 8; }
   return 0
 }
+
+# ---- the update job ------------------------------------------------------------------------
+: "${DXB_UPDATE_JOB_FILE:=$DXB_RUN_DIR/update-job.json}"
+: "${DXB_UPDATE_RESULT:=$DXB_RUN_DIR/update-result.json}"
+
+dxb_update_job_unit() { [[ -f $DXB_UPDATE_JOB_FILE ]] && jq -r '.unit // empty' "$DXB_UPDATE_JOB_FILE" 2> /dev/null; return 0; }
+dxb_update_job_running() { local u; u=$(dxb_update_job_unit); [[ -n $u ]] && systemctl is-active --quiet "$u"; }

@@ -413,3 +413,106 @@ test_update_apply_system_upgrades_without_questions() {
   echo upgrade > "$TEST_TMP/apt-fail-on"
   dxb_update_apply_system > /dev/null 2>&1; assert_eq "$?" "8"
 }
+
+# up_cli ARGS...: dxberry-update's main in a subshell with stubs; stdout $TEST_TMP/out, stderr $TEST_TMP/err.
+up_cli() {
+  (
+    source "$DXB_ROOT/provision/bin/dxberry-update"
+    dxb_require_root() { :; }
+    systemctl() { echo "systemctl $*" >> "$TEST_TMP/calls"; case $1 in is-active) grep -qx "${*: -1}" "$TEST_TMP/active" 2> /dev/null ;; *) return 0 ;; esac; }
+    journalctl() { printf 'downloading dxberry-pi-0.3.0-rc4.tar.gz\nrunning the setup\n'; }
+    dpkg-query() { printf 'installed 0.14.13\n'; }
+    main "$@"
+  ) > "$TEST_TMP/out" 2> "$TEST_TMP/err"
+}
+up_cli_env() {
+  up_env
+  # shellcheck disable=SC2031  # exported here, only ever read (never set) inside up_cli's subshell
+  export DXB_SYSTEMD_RUN=up_systemd_run DXB_UPDATE_CMD=/opt/dxberry/bin/dxberry-update DXB_CONFIG_JOB_FILE=$TEST_TMP/run/config-job.json
+  : > "$TEST_TMP/active"
+}
+up_systemd_run() { echo "systemd-run $*" >> "$TEST_TMP/calls"; [[ ! -f $TEST_TMP/systemd-run-fails ]]; }
+
+test_update_cli_check() {
+  up_cli_env
+  assert_ok up_cli check --json
+  assert_eq "$(jq -r '.graywolf.latest, .system.count' "$TEST_TMP/out" | tr '\n' ' ')" "0.14.14 2 "
+  assert_ok up_cli check
+  assert_contains "$(cat "$TEST_TMP/out")" "Graywolf 0.14.13 -> 0.14.14"
+  : > "$TEST_TMP/calls"
+  assert_ok up_cli check --json
+  assert_eq "$(jq -r '.cached' "$TEST_TMP/out")" "true"
+  assert_ok up_cli check --refresh --json
+  assert_eq "$(jq -r '.cached' "$TEST_TMP/out")" "false"
+}
+
+test_update_cli_starts_jobs_and_refuses_while_busy() {
+  local unit
+  up_cli_env
+  assert_ok up_cli graywolf --json
+  unit=$(jq -r '.job' "$TEST_TMP/out")
+  assert_contains "$unit" "dxberry-job-update-graywolf-"
+  assert_contains "$(cat "$TEST_TMP/calls")" "--unit=$unit --description=DXBerry update (graywolf) /opt/dxberry/bin/dxberry-update apply graywolf"
+  echo "$unit" > "$TEST_TMP/active"
+  up_cli system --json; assert_eq "$?" "5"
+  assert_contains "$(cat "$TEST_TMP/err")" "still running"
+  # a settings job is busy too
+  : > "$TEST_TMP/active"
+  printf '{"unit":"dxberry-job-config-1"}\n' > "$DXB_CONFIG_JOB_FILE"; echo dxberry-job-config-1 > "$TEST_TMP/active"
+  up_cli system --json; assert_eq "$?" "5"
+  assert_contains "$(cat "$TEST_TMP/err")" "settings"
+  : > "$TEST_TMP/active"
+  touch "$TEST_TMP/systemd-run-fails"
+  up_cli system --json; assert_eq "$?" "6"
+}
+
+test_update_cli_dxberry_job_runs_from_a_copy() {
+  up_cli_env
+  up_tree "$DXB_OPT" 0.3.0-rc3
+  assert_ok up_cli dxberry --json
+  # the job replaces /opt/dxberry, so it runs this command from a copy under the work directory
+  assert_contains "$(cat "$TEST_TMP/calls")" "env DXB_LIB=$DXB_UPDATE_WORK/run/lib $DXB_UPDATE_WORK/run/bin/dxberry-update apply dxberry"
+  [[ -x $DXB_UPDATE_WORK/run/bin/dxberry-update && -f $DXB_UPDATE_WORK/run/lib/update.sh ]] || _fail "the copy must be complete"
+}
+
+test_update_cli_apply_records_the_result_and_drops_the_cache() {
+  up_cli_env
+  echo '{"checked_at":1}' > "$DXB_UPDATE_CACHE"
+  (
+    source "$DXB_ROOT/provision/bin/dxberry-update"
+    dxb_require_root() { :; }
+    dxb_update_apply_system() { echo "upgrading"; return 8; }
+    main apply system
+  ) > /dev/null 2>&1; assert_eq "$?" "8"
+  assert_eq "$(jq -r '.exit' "$DXB_UPDATE_RESULT")" "8"
+  [[ -e $DXB_UPDATE_CACHE ]] && _fail "a finished job drops the cached check"
+  return 0
+}
+
+test_update_cli_job_reports() {
+  local unit
+  up_cli_env
+  assert_ok up_cli job --json
+  assert_eq "$(jq -c '.job' "$TEST_TMP/out")" "null"
+  up_cli system --json; unit=$(jq -r '.job' "$TEST_TMP/out"); echo "$unit" > "$TEST_TMP/active"
+  assert_ok up_cli job --json
+  assert_eq "$(jq -r '.job.kind, .job.state' "$TEST_TMP/out" | tr '\n' ' ')" "system running "
+  assert_eq "$(jq -c '.job.lines' "$TEST_TMP/out")" '["downloading dxberry-pi-0.3.0-rc4.tar.gz","running the setup"]'
+  : > "$TEST_TMP/active"; echo '{"exit":0,"finished":1700000000}' > "$DXB_UPDATE_RESULT"
+  assert_ok up_cli job --json
+  assert_eq "$(jq -r '.job.state, .job.exit' "$TEST_TMP/out" | tr '\n' ' ')" "finished 0 "
+}
+
+test_update_cli_prereleases_and_usage() {
+  up_cli_env
+  echo '{"checked_at":1}' > "$DXB_UPDATE_CACHE"
+  assert_ok up_cli prereleases on --json
+  assert_eq "$(cat "$TEST_TMP/out")" '{"ok":true,"include_prereleases":true}'
+  [[ -e $DXB_UPDATE_CACHE ]] && _fail "switching pre-releases drops the cached check"
+  up_cli prereleases sometimes; assert_eq "$?" "2"
+  up_cli; assert_eq "$?" "2"
+  up_cli frobnicate; assert_eq "$?" "2"
+  up_cli apply nonsense; assert_eq "$?" "2"
+  assert_ok up_cli -h
+  assert_contains "$(cat "$TEST_TMP/out")" "rollback"
+}

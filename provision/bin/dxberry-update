@@ -1,0 +1,150 @@
+#!/bin/bash
+# dxberry-update: check for and install updates. Spec: docs/design/2026-09-29-console.md section 11
+#   check [--refresh]          installed against latest for Graywolf, DXBerry and Debian (cached six hours)
+#   graywolf                   update Graywolf (unless dxberry.txt pins GRAYWOLF_VERSION)
+#   dxberry                    update DXBerry to the newest release with an update file
+#   rollback                   go back to the DXBerry before the last update
+#   system                     apt-get upgrade, never asking
+#   job                        the last update: running or finished, its exit and output
+#   prereleases on|off         whether DXBerry pre-releases are offered
+#   apply KIND                 an update job itself, started by the commands above
+# --json on any subcommand. Exit: 0 ok, 1 not root, 2 usage, 5 busy, 6 failed (nothing changed), 8 changed with a failed later step.
+# shellcheck disable=SC2178,SC2128  # cmd is a local array in cmd_start() and a local string in main(); separate functions, separately scoped
+set -uo pipefail
+
+DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
+for _m in common config graywolf settings update; do
+  # shellcheck disable=SC1090
+  source "$DXB_LIB/$_m.sh"
+done
+: "${DXB_UPDATE_CMD:=/opt/dxberry/bin/dxberry-update}"
+: "${DXB_UPDATE_LOCK_WAIT:=30}"
+
+usage() { sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+JSON=0
+REFRESH=0
+
+lock_update() {
+  local f=$DXB_RUN_DIR/update.lock
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  exec 6> "$f" || return 0
+  command -v flock > /dev/null 2>&1 || return 0
+  flock -w "$DXB_UPDATE_LOCK_WAIT" 6 || { echo "another update command is running; try again" >&2; return 5; }
+}
+
+cmd_check() {
+  local j
+  if (( REFRESH )); then j=$(dxb_update_check refresh); else j=$(dxb_update_check); fi
+  if (( JSON )); then printf '%s\n' "$j"; return 0; fi
+  jq -r '
+    (.graywolf | if .error then "Graywolf: \(.error)" elif .pinned then "Graywolf \(.installed) (pinned to \(.pinned))"
+      elif .update then "Graywolf \(.installed) -> \(.latest)" else "Graywolf \(.installed) is the newest" end),
+    (.dxberry | if .error then "DXBerry: \(.error)" elif .update then "DXBerry \(.installed) -> \(.latest)\(if .prerelease then " (pre-release)" else "" end)"
+      else "DXBerry \(.installed) is the newest\(if .include_prereleases then "" else " (pre-releases are off)" end)" end),
+    (.system | if .error then "System: \(.error)" elif .count == 0 then "System packages are up to date" else "System: \(.count) packages to upgrade" end),
+    (if .rollback.available then "Rollback to DXBerry \(.rollback.version) is possible" else empty end),
+    (if .reboot_required then "A restart is needed" else empty end),
+    "checked \(.checked_at | todate)\(if .cached then " (cached)" else "" end)"' <<< "$j"
+}
+
+cmd_start() {
+  local kind=$1 unit
+  local -a cmd=("$DXB_UPDATE_CMD" apply "$kind")
+  if dxb_update_job_running; then echo "an update is still running; wait for it to finish (sudo dxberry-update job)" >&2; return 5; fi
+  if dxb_settings_job_running; then echo "a settings change is still being applied; wait for it to finish (sudo dxberry-config job)" >&2; return 5; fi
+  if [[ $kind == dxberry || $kind == rollback ]]; then
+    # the job replaces /opt/dxberry, so it runs from a copy of this command and its libraries
+    rm -rf "$DXB_UPDATE_WORK/run"
+    if ! { ( umask 077; mkdir -p "$DXB_UPDATE_WORK/run" ) && cp -r "$DXB_OPT/bin" "$DXB_OPT/lib" "$DXB_UPDATE_WORK/run/"; }; then
+      echo "could not copy the update command to $DXB_UPDATE_WORK/run" >&2; return 6
+    fi
+    cmd=(env "DXB_LIB=$DXB_UPDATE_WORK/run/lib" "$DXB_UPDATE_WORK/run/bin/dxberry-update" apply "$kind")
+  fi
+  unit="dxberry-job-update-$kind-$(date +%s)"
+  rm -f "$DXB_UPDATE_RESULT"
+  if ! "$DXB_SYSTEMD_RUN" --quiet --collect --unit="$unit" --description="DXBerry update ($kind)" "${cmd[@]}" > /dev/null 2>&1; then
+    echo "could not start the update job" >&2; return 6
+  fi
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  jq -cn --arg u "$unit" --arg k "$kind" --argjson t "$(date +%s)" '{unit: $u, kind: $k, started: $t}' > "$DXB_UPDATE_JOB_FILE"
+  if (( JSON )); then jq -cn --arg u "$unit" --arg k "$kind" '{ok: true, job: $u, kind: $k}'; else echo "started $unit (follow it with: sudo dxberry-update job)"; fi
+}
+
+cmd_apply() {
+  local kind=$1 rc
+  case $kind in
+    graywolf) dxb_update_apply_graywolf ;;
+    dxberry) dxb_update_apply_dxberry ;;
+    rollback) dxb_update_apply_rollback ;;
+    system) dxb_update_apply_system ;;
+  esac
+  rc=$?
+  # the next check shows what is installed now
+  rm -f "$DXB_UPDATE_CACHE"
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  jq -cn --argjson e "$rc" --argjson t "$(date +%s)" '{exit: $e, finished: $t}' > "$DXB_UPDATE_RESULT"
+  echo "finished with exit $rc"
+  return $rc
+}
+
+cmd_job() {
+  local unit state result=null lines j=null
+  if [[ -f $DXB_UPDATE_JOB_FILE ]]; then
+    unit=$(dxb_update_job_unit)
+    if [[ -n $unit ]] && systemctl is-active --quiet "$unit"; then state=running
+    elif [[ -f $DXB_UPDATE_RESULT ]]; then state=finished; result=$(jq -c . "$DXB_UPDATE_RESULT" 2> /dev/null || echo null)
+    else state=ended; fi
+    lines=$(journalctl -u "$unit" -o cat --no-pager -n 400 2> /dev/null | jq -Rsc 'split("\n") | map(select(length > 0))')
+    j=$(jq -c --arg s "$state" --argjson r "$result" --argjson l "${lines:-[]}" \
+      '. + {state: $s, exit: ($r.exit // null), finished: ($r.finished // null), lines: $l}' "$DXB_UPDATE_JOB_FILE")
+  fi
+  j=$(jq -cn --argjson j "$j" --argjson now "$(date +%s)" --argjson rb "$([[ -e $DXB_REBOOT_FLAG ]] && echo true || echo false)" \
+    '{now: $now, reboot_required: $rb, job: $j}')
+  if (( JSON )); then printf '%s\n' "$j"; return 0; fi
+  jq -r '(if .job == null then "no update yet" else "last update: \(.job.kind) - \(.job.state)\(if .job.exit != null then " (exit \(.job.exit))" else "" end)" end),
+    (if .reboot_required then "a restart is needed to finish" else empty end),
+    (.job.lines // [] | .[] | "  " + .)' <<< "$j"
+}
+
+cmd_prereleases() {
+  local rc
+  [[ ${1:-} == on || ${1:-} == off ]] || { echo "usage: dxberry-update prereleases on|off" >&2; return 2; }
+  dxb_update_set_prereleases "$1"; rc=$?
+  (( rc == 0 )) || { echo "could not write $DXB_UPDATE_CONF" >&2; return 6; }
+  rm -f "$DXB_UPDATE_CACHE"
+  if (( JSON )); then jq -cn --argjson p "$([[ $1 == on ]] && echo true || echo false)" '{ok: true, include_prereleases: $p}'; else echo "pre-releases $1"; fi
+}
+
+main() {
+  local cmd='' a
+  local -a args=()
+  for a in "$@"; do
+    case $a in
+      --json) JSON=1 ;;
+      --refresh) REFRESH=1 ;;
+      *) args+=("$a") ;;
+    esac
+  done
+  cmd=${args[0]:-}; args=("${args[@]:1}")
+  case $cmd in
+    -h|--help) usage; return 0 ;;
+    check|graywolf|dxberry|rollback|system|job|prereleases) ;;
+    apply) [[ ${args[0]:-} =~ ^(graywolf|dxberry|rollback|system)$ ]] || { echo "usage: dxberry-update apply graywolf|dxberry|rollback|system" >&2; return 2; } ;;
+    '') usage >&2; return 2 ;;
+    *) echo "unknown subcommand: $cmd" >&2; usage >&2; return 2 ;;
+  esac
+  dxb_require_root
+  mkdir -p "$DXB_STATE_DIR" 2> /dev/null; chmod 700 "$DXB_STATE_DIR" 2> /dev/null
+  # remember the provisioner's own log before this command's lines go to the journal only
+  : "${DXB_PROVISION_LOG:=$DXB_LOG_FILE}"
+  export DXB_LOG_FILE=/dev/null
+  case $cmd in
+    check) cmd_check ;;
+    graywolf|dxberry|rollback|system) lock_update || return 5; cmd_start "$cmd" ;;
+    job) cmd_job ;;
+    prereleases) cmd_prereleases "${args[0]:-}" ;;
+    apply) cmd_apply "${args[0]}" ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; exit $?; fi

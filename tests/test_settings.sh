@@ -636,3 +636,12 @@ test_config_usage() {
   assert_ok se_cli -h
   assert_contains "$(se_out)" "set KEY=VALUE"
 }
+
+# a settings change waits while an update runs (both run the provisioner)
+test_config_set_refuses_while_an_update_runs() {
+  se_cli_env
+  export DXB_UPDATE_JOB_FILE=$TEST_TMP/run/update-job.json
+  printf '{"unit":"dxberry-job-update-system-1"}\n' > "$DXB_UPDATE_JOB_FILE"; echo dxberry-job-update-system-1 > "$TEST_TMP/active"
+  se_cli set HOSTNAME=waiting; assert_eq "$?" "5"
+  assert_contains "$(cat "$TEST_TMP/err")" "update"
+}

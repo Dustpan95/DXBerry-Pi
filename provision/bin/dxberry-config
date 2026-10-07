@@ -11,7 +11,7 @@
 set -uo pipefail
 
 DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
-for _m in common config graywolf settings; do
+for _m in common config graywolf settings update; do
   # shellcheck disable=SC1090
   source "$DXB_LIB/$_m.sh"
 done
@@ -80,6 +80,7 @@ cmd_set() {
   file="$(dxb_boot_dir)/dxberry.txt"
   [[ -f $file ]] || { echo "no $file; nothing to change" >&2; return 4; }
   if dxb_settings_job_running; then echo "a settings change is still being applied; wait for it to finish (sudo dxberry-config job)" >&2; return 5; fi
+  if dxb_update_job_running; then echo "an update is running; wait for it to finish (sudo dxberry-update job)" >&2; return 5; fi
   if dxb_netsafe_pending; then echo "the last network change waits to be kept or undone first (sudo dxberry-config confirm, or revert)" >&2; return 5; fi
   content=$(< "$file"); new=$content
   for a in "$@"; do

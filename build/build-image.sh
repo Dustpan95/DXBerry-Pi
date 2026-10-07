@@ -73,10 +73,11 @@ REQUIRED_FILES=(
   provision/cockpit/dxberry/manifest.json provision/cockpit/dxberry/index.html provision/cockpit/dxberry/dxberry.js provision/cockpit/dxberry/dxberry.css
   provision/cockpit/dxberry/settings.js
   provision/bin/dxberry-config provision/lib/settings.sh provision/templates/dxberry-config-boot.service
+  provision/bin/dxberry-update provision/lib/update.sh
 )
 EXECUTABLE_FILES=(
   provision/bin/dxberry-preboot provision/bin/dxberry-provision provision/bin/dxberry-netwatch provision/bin/dxberry-radio
-  provision/bin/dxberry-status provision/bin/dxberry-config
+  provision/bin/dxberry-status provision/bin/dxberry-config provision/bin/dxberry-update
   boot/Automation_Custom_PreScript.sh boot/Automation_Custom_Script.sh
 )
 
@@ -315,6 +316,9 @@ if ! ln -sf /opt/dxberry/bin/dxberry-status "$MNT/root/usr/local/sbin/dxberry-st
 fi
 if ! ln -sf /opt/dxberry/bin/dxberry-config "$MNT/root/usr/local/sbin/dxberry-config"; then
   die "failed to symlink dxberry-config"
+fi
+if ! ln -sf /opt/dxberry/bin/dxberry-update "$MNT/root/usr/local/sbin/dxberry-update"; then
+  die "failed to symlink dxberry-update"
 fi
 if ! cat > "$MNT/root/etc/dxberry-release" << EOF
 DXBERRY_VERSION=$VERSION
