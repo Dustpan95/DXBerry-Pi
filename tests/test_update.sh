@@ -246,6 +246,16 @@ test_update_apply_dxberry_changes_nothing_on_a_bad_download() {
   dxb_update_apply_dxberry > "$TEST_TMP/out" 2>&1; assert_eq "$?" "6"
   assert_eq "$(cat "$DXB_OPT/VERSION")" "0.3.0-rc3"
   assert_eq "$(cat "$TEST_TMP/provision-ran" 2> /dev/null)" ""
+  # an archive with a provisioner and a VERSION but no lib/common.sh is refused too - a tree
+  # without it would later be refused for rollback anyway (dxb_update_rollback_info)
+  rm -rf "$TEST_TMP/bad"; mkdir -p "$TEST_TMP/bad/dxberry/bin"
+  : > "$TEST_TMP/bad/dxberry/bin/dxberry-provision"; chmod +x "$TEST_TMP/bad/dxberry/bin/dxberry-provision"
+  echo 0.3.0-rc4 > "$TEST_TMP/bad/dxberry/VERSION"
+  tar -czf "$TEST_TMP/http/dxberry-pi-0.3.0-rc4.tar.gz" -C "$TEST_TMP/bad" dxberry
+  ( cd "$TEST_TMP/http" && sha256sum dxberry-pi-0.3.0-rc4.tar.gz > dxberry-pi-0.3.0-rc4.tar.gz.sha256 )
+  dxb_update_apply_dxberry > "$TEST_TMP/out" 2>&1; assert_eq "$?" "6"
+  assert_eq "$(cat "$DXB_OPT/VERSION")" "0.3.0-rc3"
+  assert_eq "$(cat "$TEST_TMP/provision-ran" 2> /dev/null)" ""
 }
 
 # The archive's own VERSION must agree with the release metadata ("latest") that picked it: a
