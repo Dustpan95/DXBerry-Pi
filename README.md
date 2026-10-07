@@ -100,7 +100,7 @@ landing in the shell's history:
 `read -rsp 'New password: ' p && printf 'PASSWORD=%s\n' "$p" | sudo dxberry-config set --stdin; unset p`.
 
 The Updates card checks Graywolf, DXBerry and the Debian packages against what is out (cached for
-six hours; **Check now** asks again) and installs each with one click: Graywolf from its releases
+six hours; **Check now** asks again) and installs each after you confirm: Graywolf from its releases
 (unless `GRAYWOLF_VERSION` pins it), DXBerry from the newest DXBerry release that carries an update
 file (`dxberry-pi-<version>.tar.gz`, checked against its sha256; pre-releases only with **Include
 DXBerry pre-releases** on), and the system packages with `apt-get upgrade`. Each runs as a background
