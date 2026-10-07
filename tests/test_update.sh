@@ -364,6 +364,27 @@ test_update_apply_dxberry_refuses_a_version_mismatch() {
   [[ -e $DXB_OPT.prev || -e $DXB_OPT.new || -e $DXB_OPT.old ]] && _fail "a refused update leaves no other tree"
 }
 
+# An archive member that climbs out of the tree (dxberry/../../x) is refused, nothing changed, and
+# nothing is written outside the staging tree.
+test_update_apply_dxberry_refuses_an_archive_member_outside_the_tree() {
+  up_env; up_provision_stub
+  up_tree "$DXB_OPT" 0.3.0-rc3
+  dxb_update_set_prereleases on
+  up_release_file 0.3.0-rc4
+  mkdir -p "$TEST_TMP/evil"
+  tar -xzf "$TEST_TMP/http/dxberry-pi-0.3.0-rc4.tar.gz" -C "$TEST_TMP/evil"
+  echo escaped > "$TEST_TMP/evil/payload"
+  tar -czf "$TEST_TMP/http/dxberry-pi-0.3.0-rc4.tar.gz" -C "$TEST_TMP/evil" --transform='s,^payload$,dxberry/../../payload,' dxberry payload
+  ( cd "$TEST_TMP/http" && sha256sum dxberry-pi-0.3.0-rc4.tar.gz > dxberry-pi-0.3.0-rc4.tar.gz.sha256 )
+  tar -tzf "$TEST_TMP/http/dxberry-pi-0.3.0-rc4.tar.gz" 2> /dev/null | grep -qx 'dxberry/../../payload' || _fail "the crafted archive lacks its ../ member"
+  dxb_update_apply_dxberry > "$TEST_TMP/out" 2>&1; assert_eq "$?" "6"
+  assert_contains "$(cat "$TEST_TMP/out")" "nothing changed"
+  assert_eq "$(cat "$DXB_OPT/VERSION")" "0.3.0-rc3"
+  [[ -e $DXB_OPT.prev || -e $DXB_OPT.new || -e $DXB_OPT.old ]] && _fail "a refused update leaves no other tree"
+  assert_eq "$(find "$TEST_TMP" -name payload ! -path "$TEST_TMP/evil/*")" ""
+  assert_eq "$(cat "$TEST_TMP/provision-ran" 2> /dev/null)" ""
+}
+
 # A failed second rename (the new tree into place, after the old one was already moved aside to
 # .prev) must restore /opt/dxberry exactly as it was and leave no .new/.old behind - a WiFi-only
 # Pi must never end up without a working /opt/dxberry.
@@ -838,6 +859,28 @@ test_update_cli_apply_records_the_result_and_drops_the_cache() {
   assert_eq "$(jq -r '.exit' "$DXB_UPDATE_RESULT")" "8"
   [[ -e $DXB_UPDATE_CACHE ]] && _fail "a finished job drops the cached check"
   return 0
+}
+
+# dxberry-update's own log handling (the rc3 bug class): its own lines go to the journal only
+# (DXB_LOG_FILE=/dev/null in the job), but the setup run it starts gets the real provision log -
+# the DXB_LOG_FILE it was started with - even when no DXB_PROVISION_LOG is set; never /dev/null.
+test_update_cli_apply_hands_the_setup_run_the_real_log() {
+  local rc
+  up_env; up_provision_stub
+  up_tree "$DXB_OPT" 0.3.0-rc4
+  up_tree "$DXB_OPT.prev" 0.3.0-rc3
+  (
+    unset DXB_PROVISION_LOG
+    # shellcheck disable=SC2031  # set only inside this subshell, on purpose: the command's own start
+    export DXB_LOG_FILE=$TEST_TMP/real-provision.log
+    source "$DXB_ROOT/provision/bin/dxberry-update"
+    dxb_require_root() { :; }
+    main apply rollback
+  ) > "$TEST_TMP/out" 2>&1
+  rc=$?
+  assert_eq "$rc" "0"
+  assert_eq "$(sed -n 's/.*LOG=\([^ ]*\) .*/\1/p' "$TEST_TMP/provision-ran")" "$TEST_TMP/real-provision.log"
+  assert_eq "$(cat "$DXB_OPT/VERSION")" "0.3.0-rc3"
 }
 
 test_update_cli_job_reports() {
