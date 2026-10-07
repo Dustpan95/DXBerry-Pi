@@ -357,14 +357,25 @@ dxb_update_apply_rollback() {
 # dxb_update_apply_system: dpkg --configure -a (heals an interrupted install) then apt-get update
 # and upgrade, never asking (keeps changed config files) and waiting out a concurrent apt/dpkg
 # lock instead of failing at once. 6 when nothing changed yet (configure or update failed), 8 when
-# the upgrade itself failed partway through.
+# the upgrade itself failed partway through. A kernel or firmware package is used only after a
+# restart, so once one is upgraded the restart flag is written (as the provisioner writes it).
 dxb_update_apply_system() {
+  local pkgs p restart=0
   DEBIAN_FRONTEND=noninteractive "$DXB_DPKG_CMD" --configure -a --force-confdef --force-confold \
     || { echo "dpkg --configure -a failed" >&2; return 6; }
   DEBIAN_FRONTEND=noninteractive "$DXB_APT_GET" update -o DPkg::Lock::Timeout=120 || { echo "apt-get update failed" >&2; return 6; }
+  # what the upgrade will change, read as dxb_update_system_info reads it
+  pkgs=$("$DXB_APT_GET" -s -o Debug::NoLocking=1 upgrade 2> /dev/null | awk '/^Inst /{ print $2 }')
   DEBIAN_FRONTEND=noninteractive "$DXB_APT_GET" -y --no-install-recommends \
     -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade -o DPkg::Lock::Timeout=120 \
     || { echo "apt-get upgrade failed" >&2; return 8; }
+  for p in $pkgs; do
+    case $p in linux-image-*|raspi-firmware|raspberrypi-kernel*|raspberrypi-bootloader*|firmware-*) restart=1 ;; esac
+  done
+  if (( restart )); then
+    printf '*** System restart required ***\n' > "$DXB_REBOOT_FLAG" 2> /dev/null || true
+    echo "a restart is needed to use the new kernel or firmware"
+  fi
   return 0
 }
 

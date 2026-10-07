@@ -659,6 +659,39 @@ test_update_apply_system_upgrades_without_questions() {
   dxb_update_apply_system > /dev/null 2>&1; assert_eq "$?" "8"
 }
 
+# A kernel or firmware package is only used after a restart: once such an upgrade succeeded, the
+# restart flag is written (where the page and dxberry-update job look) and the job says so. Not for
+# other packages, and not when the upgrade failed.
+test_update_apply_system_flags_a_restart_after_a_kernel_or_firmware_upgrade() {
+  local p
+  for p in linux-image-6.12.47+rpt-rpi-v8 raspi-firmware raspberrypi-kernel raspberrypi-bootloader firmware-brcm80211; do
+    up_env
+    rm -f "$DXB_REBOOT_FLAG" "$TEST_TMP/apt-fail-on" "$TEST_TMP/apt-rc"
+    printf 'Inst libfoo1 [1.0] (1.1 Debian:13/stable [arm64])\nInst %s [1] (2 Debian:13/stable [arm64])\n' "$p" > "$TEST_TMP/apt-sim"
+    dxb_update_apply_system > "$TEST_TMP/out" 2>&1; assert_eq "$?" "0"
+    assert_file_contains "$DXB_REBOOT_FLAG" "System restart required"
+    assert_contains "$(cat "$TEST_TMP/out")" "a restart is needed to use the new kernel or firmware"
+  done
+  # the list is what apt-get would upgrade, asked after apt-get update
+  assert_eq "$(grep -n 'apt-get' "$TEST_TMP/calls" | grep -c -- ' -s ')" "1"
+  if (( $(grep -n '^apt-get update' "$TEST_TMP/calls" | cut -d: -f1) > $(grep -n '^apt-get -s ' "$TEST_TMP/calls" | cut -d: -f1) )); then
+    _fail "the upgrade list must be asked for after apt-get update: $(cat "$TEST_TMP/calls")"
+  fi
+  # other packages: no restart
+  up_env; rm -f "$DXB_REBOOT_FLAG"
+  dxb_update_apply_system > "$TEST_TMP/out" 2>&1; assert_eq "$?" "0"
+  [[ -e $DXB_REBOOT_FLAG ]] && _fail "an upgrade without a kernel or firmware package needs no restart"
+  assert_not_contains "$(cat "$TEST_TMP/out")" "restart"
+  # a failed upgrade: no restart flag
+  printf 'Inst linux-image-6.12.47+rpt-rpi-v8 [1] (2 Debian:13/stable [arm64])\n' > "$TEST_TMP/apt-sim"
+  # only the real upgrade carries -y: the list is still read, the upgrade itself fails
+  printf -- '-y\n' > "$TEST_TMP/apt-fail-on"
+  dxb_update_apply_system > "$TEST_TMP/out" 2>&1; assert_eq "$?" "8"
+  [[ -e $DXB_REBOOT_FLAG ]] && _fail "a failed upgrade writes no restart flag"
+  rm -f "$TEST_TMP/apt-fail-on"
+  return 0
+}
+
 # An interrupted dpkg must be healed before anything else runs; if it cannot be healed, apt-get is
 # never called at all (nothing changed yet).
 test_update_apply_system_never_calls_apt_when_dpkg_configure_fails() {
