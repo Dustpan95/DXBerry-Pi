@@ -9,7 +9,6 @@
 #   prereleases on|off         whether DXBerry pre-releases are offered
 #   apply KIND                 an update job itself, started by the commands above
 # --json on any subcommand. Exit: 0 ok, 1 not root, 2 usage, 5 busy, 6 failed (nothing changed), 8 changed with a failed later step.
-# shellcheck disable=SC2178,SC2128  # cmd is a local array in cmd_start() and a local string in main(); separate functions, separately scoped
 set -uo pipefail
 
 DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
@@ -115,6 +114,7 @@ cmd_prereleases() {
   if (( JSON )); then jq -cn --argjson p "$([[ $1 == on ]] && echo true || echo false)" '{ok: true, include_prereleases: $p}'; else echo "pre-releases $1"; fi
 }
 
+# shellcheck disable=SC2178,SC2128  # cmd is a local array in cmd_start() and a local string here; separate functions, separately scoped
 main() {
   local cmd='' a
   local -a args=()
