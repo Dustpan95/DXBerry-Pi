@@ -697,6 +697,43 @@ const updatesPath = path.replace(/dxberry\.js$/, "updates.js");
   ab = await aboutAfter(null);
   ok(!ab.includes("Updates"), "no Updates row before the first check: " + ab);
 
+  // Administrative access off when the page opened: Settings and Updates say so in words (not
+  // Cockpit's raw "not permitted"), keep asking at the status refresh's pace, and fill once allowed
+  answer = args => {
+    if (args[0].endsWith("dxberry-config") || args[0].endsWith("dxberry-update")) return Promise.reject({ problem: "access-denied", message: "Not permitted to perform this action." });
+    return Promise.reject({ problem: "not-found" });
+  };
+  timers.length = 0;
+  vm.runInContext("cfgLoadValues(); updLoadCheck(false)", ctx);
+  await flush(); await flush(); await flush();
+  ok(stext().includes("Administrative access is off") && !stext().includes("Not permitted"),
+    "Settings says administrative access is off, not Cockpit's raw refusal: " + stext());
+  ok(utext().includes("Administrative access is off") && !utext().includes("Not permitted"),
+    "Updates says administrative access is off, not Cockpit's raw refusal: " + utext());
+  ok(timers.filter(ms => ms === 10000).length >= 2, "both ask again in 10 s: " + timers.join(","));
+  answer = args => {
+    if (args[0].endsWith("dxberry-config") && args[1] === "get") return Promise.resolve(cfgGetAnswer());
+    if (args[0].endsWith("dxberry-update") && args[1] === "check") return Promise.resolve(JSON.stringify(updCheckAnswer));
+    return Promise.reject({ problem: "not-found" });
+  };
+  timers.length = 0;
+  vm.runInContext("cfgLoadValues(); updLoadCheck(false)", ctx);
+  await flush(); await flush(); await flush();
+  ok(!stext().includes("Administrative access is off") && stext().includes("Change system settings"),
+    "Settings fills once access is on: " + stext());
+  ok(!utext().includes("Administrative access is off") && utext().includes("Graywolf"), "Updates fills once access is on: " + utext());
+  ok(!timers.includes(10000), "no retry is scheduled once the load worked: " + timers.join(","));
+  // a refusal for another reason is still shown as it is, and not retried every 10 s
+  answer = args => args[0].endsWith("dxberry-update") ? Promise.reject({ problem: "not-found", exit_status: 6, message: "boom" }) : Promise.reject({ problem: "not-found" });
+  timers.length = 0;
+  vm.runInContext("updLoadCheck(false)", ctx);
+  await flush(); await flush(); await flush();
+  ok(utext().includes("boom") && !timers.includes(10000), "other failures show their own text and wait for Check now: " + utext());
+
+  // Services spans the whole row of cards, so its unit names and buttons are not squeezed
+  const svc = cards.querySelectorAll("section").find(e => e.querySelector("h2").textContent === "Services");
+  ok(svc && svc.className.split(" ").includes("wide"), "the Services card is a wide card: " + (svc && svc.className));
+
   console.log(failures ? `${failures} failure(s)` : "all ok");
   process.exit(failures ? 1 : 0);
 })().catch(e => { console.log("CRASH " + (e && e.stack || e)); process.exit(2); });

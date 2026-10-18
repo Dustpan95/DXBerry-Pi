@@ -498,7 +498,8 @@ function servicesCard(s) {
     return [u.unit, unitState(u), el("span", { class: "row-actions" }, acts),
       btn("Log", () => openLog(u.unit), { cls: "link", key: `unit:${u.unit}:log`, aria: `Log of ${u.unit}` })];
   });
-  return card("Services", s, [table(["Unit", "State", srOnly("Actions"), srOnly("Log")], rows)]);
+  // wide: it spans the whole row of cards, so unit names and their buttons are not squeezed
+  return card("Services", s, [table(["Unit", "State", srOnly("Actions"), srOnly("Log")], rows)], null, "wide");
 }
 
 function powerCard() {
@@ -547,10 +548,14 @@ function problemText(ex, exits) {
   return head + (errorText(ex && ex.message) || (ex && ex.problem) || "unknown error");
 }
 
+// accessDenied EX: the command was refused because Cockpit's administrative access is off.
+const ACCESS_OFF = "Administrative access is off. Turn it on with the “Limited access” button at the top of the page.";
+function accessDenied(ex) {
+  return !!ex && (ex.problem === "access-denied" || ex.problem === "not-authorized");
+}
+
 function failure(what, ex, exits) {
-  if (ex && (ex.problem === "access-denied" || ex.problem === "not-authorized")) {
-    return notice("Administrative access is off. Turn it on with the “Limited access” button at the top of the page, then try again.", "bad");
-  }
+  if (accessDenied(ex)) return notice(ACCESS_OFF + " Then try again.", "bad");
   return notice(`${what} failed. ${problemText(ex, exits)}`, "bad");
 }
 

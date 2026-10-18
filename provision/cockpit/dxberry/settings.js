@@ -35,7 +35,7 @@ const CONFIG_FIELDS = [
 
 // values: dxberry-config get's answer (or {failed: text}); job: dxberry-config job's answer and when
 // it arrived (fetchedAt, for the countdown); form: the open dialog; logOpen: the output disclosure.
-const settings = { values: null, job: null, fetchedAt: 0, form: null, poll: null, logOpen: false, undoing: false };
+const settings = { values: null, job: null, fetchedAt: 0, form: null, poll: null, retry: null, logOpen: false, undoing: false };
 
 function cfgRun(args, input) {
   return run([CONFIG, ...args, "--json"], input);
@@ -45,13 +45,18 @@ function cfgParse(out) {
   try { return JSON.parse(out); } catch (e) { return null; }
 }
 
+// cfgLoadValues: dxberry-config get. Refused because administrative access is off (as when the page
+// opened before it was turned on), it says so and asks again at the status refresh's pace, so the
+// section fills once access is on without a reload.
 function cfgLoadValues() {
+  clearTimeout(settings.retry);
   cfgRun(["get"]).then(out => {
     settings.values = cfgParse(out) || { failed: "dxberry-config did not return the settings." };
     cfgRender();
   }, ex => {
-    settings.values = { failed: problemText(ex, CONFIG_EXITS) };
+    settings.values = { failed: accessDenied(ex) ? ACCESS_OFF : problemText(ex, CONFIG_EXITS) };
     cfgRender();
+    if (accessDenied(ex)) settings.retry = setTimeout(cfgLoadValues, REFRESH_MS);
   });
 }
 

@@ -466,3 +466,12 @@ test_page_updates_script_keeps_to_its_own_names() {
   cat "$PG_DIR/dxberry.js" "$PG_DIR/settings.js" "$js" > "$TEST_TMP/all.js"
   node --check "$TEST_TMP/all.js" 2> "$TEST_TMP/node.err" || _fail "the three scripts do not parse as one: $(cat "$TEST_TMP/node.err")"
 }
+
+# Services is a wide card (all grid columns) and its unit names and buttons may wrap: on a computer
+# its table must never need a sideways scroll inside a 340 px column.
+test_page_services_card_spans_the_row_and_wraps() {
+  local css=$DXB_ROOT/provision/cockpit/dxberry/dxberry.css
+  assert_ok grep -qE '^\.card\.wide \{[^}]*grid-column: 1 / -1' "$css"
+  assert_ok grep -qE '^\.card\.wide (td|th)[^{]*\{[^}]*white-space: normal' "$css"
+  assert_ok grep -qE '^\.row-actions \{[^}]*flex-wrap: wrap' "$css"
+}

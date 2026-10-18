@@ -36,7 +36,7 @@ const UPDATE_FIELDS = [
 
 // check: dxberry-update check's answer (or {failed: text}); job: dxberry-update job's answer;
 // jobError: why the last job poll could not be read (null once one is).
-const updates = { check: null, job: null, jobError: null, poll: null, logOpen: false, checking: false };
+const updates = { check: null, job: null, jobError: null, poll: null, retry: null, logOpen: false, checking: false };
 
 function updRun(args) {
   return run([UPDATE, ...args, "--json"]);
@@ -46,7 +46,10 @@ function updParse(out) {
   try { return JSON.parse(out); } catch (e) { return null; }
 }
 
+// updLoadCheck: dxberry-update check. Refused because administrative access is off, it says so and
+// asks again at the status refresh's pace (like settings.js), so the card fills once access is on.
 function updLoadCheck(refresh) {
+  clearTimeout(updates.retry);
   updates.checking = true;
   updRender();
   updRun(refresh ? ["check", "--refresh"] : ["check"]).then(out => {
@@ -55,8 +58,9 @@ function updLoadCheck(refresh) {
     updRender();
   }, ex => {
     updates.checking = false;
-    updates.check = { failed: problemText(ex, UPDATE_EXITS) };
+    updates.check = { failed: accessDenied(ex) ? ACCESS_OFF : problemText(ex, UPDATE_EXITS) };
     updRender();
+    if (accessDenied(ex)) updates.retry = setTimeout(() => updLoadCheck(false), REFRESH_MS);
   });
 }
 
@@ -82,7 +86,11 @@ function updLoadJob() {
     updRender();
     if (j.job && j.job.state === "running") updates.poll = setTimeout(updLoadJob, UPDATE_POLL_MS);
     else if (wasRunning) updFinished(j.job);
-  }, ex => updJobFailed(`The update job's state could not be read (${problemText(ex, UPDATE_EXITS)}); trying again.`));
+  }, ex => {
+    // access off: the check above already says so; ask again quietly once it may be on
+    if (accessDenied(ex)) { updates.poll = setTimeout(updLoadJob, REFRESH_MS); return; }
+    updJobFailed(`The update job's state could not be read (${problemText(ex, UPDATE_EXITS)}); trying again.`);
+  });
 }
 
 function updFinished(job) {
