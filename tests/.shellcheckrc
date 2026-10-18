@@ -1,0 +1,4 @@
+# Test stubs (systemctl(), dpkg-query(), mv() ...) replace real commands and are called by the
+# code under test, never by the test file itself; shellcheck 0.11's SC2329 ("function is never
+# invoked") flags every one of them. Disabled for tests/ only: provision/ and build/ keep it.
+disable=SC2329
