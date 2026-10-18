@@ -39,9 +39,9 @@ h2 { font-size: 15px; margin: 0 0 10px; }
 
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 16px; align-items: start; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px; min-width: 0; }
-/* a wide card takes the whole row of cards (Services: long unit names next to their buttons) */
-.card.wide { grid-column: 1 / -1; }
+/* a wide card (Radios, Services; .card.wide below) wraps its table cells instead of scrolling */
 .card.wide td, .card.wide th { white-space: normal; overflow-wrap: anywhere; }
+.card.wide .badge { overflow-wrap: normal; white-space: nowrap; }
 
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
 .kv dt { color: var(--muted); }
