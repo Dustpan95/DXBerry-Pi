@@ -567,10 +567,11 @@ DXB_RADIO_REBOOT_NEEDED=0
 # provision_radio (spec section 10): packages, units, modprobe pinning, gpsd/chrony, time
 # handoff from systemd-timesyncd to chrony, derived radio state, and the status lines. A failed
 # apt install is a failed step named "radio", never fatal - the rest of the step still runs.
+# --no-upgrade: installs what is missing, never upgrades (that is the Updates card's job).
 provision_radio() {
   local n present=0 total=0 fix='{"fix":0,"receiver":false}'
   # shellcheck disable=SC2086
-  if ! DEBIAN_FRONTEND=noninteractive apt-get install -y $DXB_RADIO_PACKAGES > /dev/null 2>&1; then
+  if ! DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade $DXB_RADIO_PACKAGES > /dev/null 2>&1; then
     dxb_step_failed radio "could not install $DXB_RADIO_PACKAGES (no network?); rigctld and gpsd will be missing until a re-run"
   fi
   dxb_rigctld_install_units; (( $? == 6 )) && dxb_step_failed radio "could not install the rigctld or hotplug units"

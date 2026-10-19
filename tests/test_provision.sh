@@ -378,7 +378,8 @@ test_provision_radio_installs_and_reports() {
   full_env; provision_cfg 'PASSWORD=examplepass' 'GPS_DEVICE=uart'
   fx_scene "$DXB_SYSFS_ROOT" none
   provision_radio
-  assert_contains "$(cat "$TEST_TMP/calls")" "apt-get install -y libhamlib-utils gpsd gpsd-clients chrony alsa-utils"
+  # install-only: a setup run never upgrades them (system upgrades are the Updates card's job)
+  assert_contains "$(cat "$TEST_TMP/calls")" "apt-get install -y --no-upgrade libhamlib-utils gpsd gpsd-clients chrony alsa-utils"
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl disable --now systemd-timesyncd"
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl mask systemd-timesyncd"
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl enable chrony"
