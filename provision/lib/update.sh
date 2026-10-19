@@ -231,6 +231,10 @@ dxb_update_apply_graywolf() {
   DXB_GW_UPGRADE=1 dxb_gw_install || install_rc=1
   after=$(dxb_gw_installed_version)
   if (( install_rc )) && [[ $before == "$after" ]]; then
+    # dpkg stops the old Graywolf before it unpacks, so a failed install can leave it stopped
+    if (( was_active )) && ! systemctl is-active --quiet graywolf.service; then
+      systemctl start graywolf.service || echo "graywolf.service could not be started again; start it with: sudo systemctl start graywolf" >&2
+    fi
     echo "graywolf: ${before:-not installed} -> ${after:-not installed}"
     (( ${#DXB_FAILED_STEPS[@]} )) && printf '  %s\n' "${DXB_FAILED_STEPS[@]}"
     return 6

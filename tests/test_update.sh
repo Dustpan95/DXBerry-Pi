@@ -680,6 +680,24 @@ test_update_apply_graywolf_brings_back_a_graywolf_the_package_stopped() {
   assert_contains "$(cat "$TEST_TMP/out")" "is not running"
 }
 
+# dpkg stops the old Graywolf (prerm) before it unpacks; when the install then fails with the
+# version unchanged, nothing changed - but a Graywolf that ran before must run again.
+test_update_apply_graywolf_failed_install_starts_a_graywolf_it_stopped() {
+  up_env
+  local rc
+  touch "$TEST_TMP/gw-active"
+  (
+    dpkg-query() { printf 'installed 0.14.13\n'; }
+    dxb_gw_install() { rm -f "$TEST_TMP/gw-active"; return 1; }
+    dxb_gw_history_in_ram() { :; }
+    systemctl() { up_gw_systemctl "$@"; }
+    dxb_update_apply_graywolf > "$TEST_TMP/out" 2>&1
+  )
+  rc=$?
+  assert_eq "$rc" "6"
+  assert_ok test -f "$TEST_TMP/gw-active"
+}
+
 # Exit 8 means "installed, but a later step failed" - it must never be returned when nothing
 # actually changed. An offline/failed install with the version unchanged is 6, no restart (and,
 # symmetrically, an install that succeeds but changes nothing - already at the latest - restarts
