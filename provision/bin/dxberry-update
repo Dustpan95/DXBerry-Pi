@@ -120,7 +120,10 @@ cmd_job() {
       result=$(jq -c 'if type == "object" then . else null end' "$DXB_UPDATE_RESULT" 2> /dev/null)
       [[ -n $result ]] || result=null
     else state=ended; fi
-    lines=$(journalctl -u "$unit" -o cat --no-pager -n 400 2> /dev/null | jq -Rsc 'split("\n") | map(select(length > 0))')
+    # systemd's own "Failed to open /run/systemd/transient/..." lines, logged once a --collect
+    # unit is gone, are not the job's output
+    lines=$(journalctl -u "$unit" -o cat --no-pager -n 400 2> /dev/null \
+      | jq -Rsc 'split("\n") | map(select(length > 0 and (test(": Failed to open /run/systemd/transient/") | not)))')
     j=$(jq -c --arg s "$state" --argjson r "$result" --argjson l "${lines:-[]}" \
       '. + {state: $s, exit: ($r.exit // null), finished: ($r.finished // null), lines: $l}' "$DXB_UPDATE_JOB_FILE" 2> /dev/null)
     [[ -n $j ]] || j=null

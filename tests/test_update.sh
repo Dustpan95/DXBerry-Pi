@@ -784,7 +784,7 @@ up_cli() {
     source "$DXB_ROOT/provision/bin/dxberry-update"
     dxb_require_root() { :; }
     systemctl() { echo "systemctl $*" >> "$TEST_TMP/calls"; case $1 in is-active) grep -qx "${*: -1}" "$TEST_TMP/active" 2> /dev/null ;; *) return 0 ;; esac; }
-    journalctl() { printf 'downloading dxberry-pi-0.3.0-rc4.tar.gz\nrunning the setup\n'; }
+    journalctl() { printf 'downloading dxberry-pi-0.3.0-rc4.tar.gz\nrunning the setup\ndxberry-job-x.service: Failed to open /run/systemd/transient/dxberry-job-x.service: No such file or directory\n'; }
     dpkg-query() { printf 'installed 0.14.13\n'; }
     main "$@"
   ) > "$TEST_TMP/out" 2> "$TEST_TMP/err"

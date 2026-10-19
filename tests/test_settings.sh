@@ -240,7 +240,7 @@ se_cli() {
         *) return 0 ;;
       esac
     }
-    journalctl() { printf 'applying: HOSTNAME\nfinished: all steps completed\n'; }
+    journalctl() { printf 'applying: HOSTNAME\nfinished: all steps completed\ndxberry-job-x.service: Failed to open /run/systemd/transient/dxberry-job-x.service: No such file or directory\n'; }
     main "$@"
   ) > "$TEST_TMP/out" 2> "$TEST_TMP/err"
 }
