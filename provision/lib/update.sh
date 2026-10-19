@@ -213,7 +213,7 @@ dxb_update_link_commands() {
 # ignored) and when the install failed without changing the installed version (nothing changed);
 # 8 when the version did change but a later step (the drop-in, the restart) failed.
 dxb_update_apply_graywolf() {
-  local before after rc=0 install_rc=0
+  local before after rc=0 install_rc=0 was_active=0
   if ! dxb_config_load "$(dxb_boot_dir)/dxberry.txt" > /dev/null 2>&1; then
     echo "dxberry.txt could not be read; nothing changed" >&2
     return 6
@@ -224,6 +224,10 @@ dxb_update_apply_graywolf() {
     return 0
   fi
   before=$(dxb_gw_installed_version)
+  # whether Graywolf ran BEFORE the install decides whether it runs after: the package stops the
+  # service while it upgrades and leaves it stopped (a "restart if running" afterwards never brought
+  # it back). One stopped on purpose stays stopped.
+  systemctl is-active --quiet graywolf.service && was_active=1
   DXB_GW_UPGRADE=1 dxb_gw_install || install_rc=1
   after=$(dxb_gw_installed_version)
   if (( install_rc )) && [[ $before == "$after" ]]; then
@@ -234,8 +238,12 @@ dxb_update_apply_graywolf() {
   (( install_rc )) && rc=8
   # the position-history drop-in is rebuilt from the new package's own unit (spec 11.2)
   dxb_gw_history_in_ram || rc=8
-  # try-restart, never restart: an operator who stopped Graywolf on purpose keeps it stopped
-  if [[ $before != "$after" ]]; then systemctl try-restart graywolf.service || rc=8; fi
+  if [[ $before != "$after" ]] && (( was_active )); then
+    if ! systemctl restart graywolf.service || ! systemctl is-active --quiet graywolf.service; then
+      echo "graywolf.service is not running after the update; start it with: sudo systemctl start graywolf" >&2
+      rc=8
+    fi
+  fi
   echo "graywolf: ${before:-not installed} -> ${after:-not installed}"
   (( ${#DXB_FAILED_STEPS[@]} )) && printf '  %s\n' "${DXB_FAILED_STEPS[@]}"
   return $rc

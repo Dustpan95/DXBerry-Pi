@@ -610,7 +610,7 @@ test_update_apply_graywolf_installs_rebuilds_and_restarts() {
     systemctl() { echo "systemctl $*" >> "$TEST_TMP/calls"; }
     dxb_update_apply_graywolf > /dev/null 2>&1 || exit 1
   ) || _fail "the Graywolf update failed"
-  assert_eq "$(tr '\n' '|' < "$TEST_TMP/calls")" "install UPGRADE=1|history drop-in|systemctl try-restart graywolf.service|"
+  assert_eq "$(tr '\n' '|' < "$TEST_TMP/calls")" "systemctl is-active --quiet graywolf.service|install UPGRADE=1|history drop-in|systemctl restart graywolf.service|systemctl is-active --quiet graywolf.service|"
   # pinned: nothing installed, and a regression can never fall through to the real dpkg-query/systemctl
   printf 'PASSWORD=<applied>\nGRAYWOLF_VERSION=v0.14.13\n' > "$DXB_BOOT_DIR/dxberry.txt"; : > "$TEST_TMP/calls"
   (
@@ -623,6 +623,61 @@ test_update_apply_graywolf_installs_rebuilds_and_restarts() {
   )
   assert_eq "$(cat "$TEST_TMP/calls")" ""
   assert_contains "$(cat "$TEST_TMP/out")" "pinned"
+}
+
+# The real graywolf .deb stops the service while it upgrades and does not start it again, so a
+# "restart only if running" after the install never brought it back (the rc4 bug seen on the Pi).
+# What counts is whether Graywolf ran BEFORE the install: running -> running on the new version;
+# stopped on purpose -> left stopped; a restart that does not bring it up -> 8.
+up_gw_systemctl() {
+  echo "systemctl $*" >> "$TEST_TMP/calls"
+  case $1 in
+    is-active) [[ -f $TEST_TMP/gw-active ]] ;;
+    restart | start) [[ -f $TEST_TMP/gw-start-fails ]] || touch "$TEST_TMP/gw-active" ;;
+    try-restart) if [[ -f $TEST_TMP/gw-active ]]; then touch "$TEST_TMP/gw-active"; fi ;;
+    *) return 0 ;;
+  esac
+}
+test_update_apply_graywolf_brings_back_a_graywolf_the_package_stopped() {
+  up_env
+  local rc
+  touch "$TEST_TMP/gw-active"
+  (
+    dpkg-query() { if [[ -f $TEST_TMP/gw-new ]]; then printf 'installed 0.14.14\n'; else printf 'installed 0.14.13\n'; fi; }
+    # like the real package: the upgrade stops graywolf.service and leaves it stopped
+    dxb_gw_install() { rm -f "$TEST_TMP/gw-active"; touch "$TEST_TMP/gw-new"; }
+    dxb_gw_history_in_ram() { :; }
+    systemctl() { up_gw_systemctl "$@"; }
+    dxb_update_apply_graywolf > "$TEST_TMP/out" 2>&1
+  )
+  rc=$?
+  assert_eq "$rc" "0"
+  assert_ok test -f "$TEST_TMP/gw-active"
+  # stopped on purpose before the update: stays stopped
+  rm -f "$TEST_TMP/gw-active" "$TEST_TMP/gw-new"; : > "$TEST_TMP/calls"
+  (
+    dpkg-query() { if [[ -f $TEST_TMP/gw-new ]]; then printf 'installed 0.14.14\n'; else printf 'installed 0.14.13\n'; fi; }
+    dxb_gw_install() { rm -f "$TEST_TMP/gw-active"; touch "$TEST_TMP/gw-new"; }
+    dxb_gw_history_in_ram() { :; }
+    systemctl() { up_gw_systemctl "$@"; }
+    dxb_update_apply_graywolf > "$TEST_TMP/out" 2>&1
+  )
+  rc=$?
+  assert_eq "$rc" "0"
+  assert_fails test -f "$TEST_TMP/gw-active"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "restart"
+  # ran before, but does not come back: 8 (installed, a later step failed), and it says so
+  touch "$TEST_TMP/gw-active" "$TEST_TMP/gw-start-fails"; rm -f "$TEST_TMP/gw-new"
+  (
+    dpkg-query() { if [[ -f $TEST_TMP/gw-new ]]; then printf 'installed 0.14.14\n'; else printf 'installed 0.14.13\n'; fi; }
+    dxb_gw_install() { rm -f "$TEST_TMP/gw-active"; touch "$TEST_TMP/gw-new"; }
+    dxb_gw_history_in_ram() { :; }
+    systemctl() { up_gw_systemctl "$@"; }
+    dxb_update_apply_graywolf > "$TEST_TMP/out" 2>&1
+  )
+  rc=$?
+  assert_eq "$rc" "8"
+  assert_contains "$(cat "$TEST_TMP/out")" "is not running"
 }
 
 # Exit 8 means "installed, but a later step failed" - it must never be returned when nothing
@@ -638,7 +693,7 @@ test_update_apply_graywolf_failed_install_or_unchanged_never_restarts() {
     systemctl() { echo "systemctl $*" >> "$TEST_TMP/calls"; }
     dxb_update_apply_graywolf > "$TEST_TMP/out" 2>&1; assert_eq "$?" "6"
   )
-  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "start"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "history drop-in"
   : > "$TEST_TMP/calls"
   (
@@ -648,7 +703,7 @@ test_update_apply_graywolf_failed_install_or_unchanged_never_restarts() {
     systemctl() { echo "systemctl $*" >> "$TEST_TMP/calls"; }
     assert_ok dxb_update_apply_graywolf > /dev/null 2>&1
   )
-  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "start"
 }
 
 # A pin in dxberry.txt must never be silently ignored because the file could not be read.
