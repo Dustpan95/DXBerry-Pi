@@ -19,7 +19,7 @@ fx_apps_env() {
     DXB_APPS_HOME=$TEST_TMP/home/dxbapps DXB_APPS_STATE=$TEST_TMP/state/apps DXB_APPS_WORK=$TEST_TMP/state/apps-work \
     DXB_GH_API=http://gh DXB_APPS_CURL=ap_curl DXB_APT_GET=ap_apt DXB_DPKG_QUERY=ap_dpkgq DXB_APT_CACHE=ap_aptcache \
     DXB_USERADD=ap_useradd DXB_GROUPADD=ap_groupadd DXB_USERMOD=ap_usermod DXB_CHOWN=ap_chown DXB_GETENT=ap_getent \
-    DXB_SYSTEMCTL=fx_systemctl DXB_APPS_EXTRACT=ap_extract DXB_GPSPIPE=$TEST_TMP/bin/gpspipe
+    DXB_SYSTEMCTL=fx_systemctl DXB_RUNUSER=ap_runuser DXB_GPSPIPE=$TEST_TMP/bin/gpspipe
   unset DXB_CONSOLE_USER
   mkdir -p "$DXB_STATE_DIR" "$DXB_RUN_DIR" "$TEST_TMP/http" "$TEST_TMP/bin"
   : > "$TEST_TMP/calls"; : > "$TEST_TMP/curl-calls"; : > "$TEST_TMP/active"
@@ -100,8 +100,17 @@ ap_useradd() {
 }
 ap_usermod() { echo "usermod $*" >> "$TEST_TMP/calls"; }
 ap_chown() { echo "chown $*" >> "$TEST_TMP/calls"; }
-# ap_extract FILE: an AppImage's --appimage-extract, run in the target directory.
-ap_extract() {
-  echo "extract ${1##*/}" >> "$TEST_TMP/calls"
-  mkdir -p squashfs-root && printf '#!/bin/sh\n' > squashfs-root/AppRun
+# ap_runuser -u USER -- CMD ARGS...: runuser - records the call. An AppImage's --appimage-extract
+# makes ./squashfs-root (an AppRun and a setuid helper, so a test can see the bit taken off);
+# any other command runs as it is.
+ap_runuser() {
+  echo "runuser $*" >> "$TEST_TMP/calls"
+  [[ $1 == -u && $3 == -- ]] || return 1
+  shift 3
+  if [[ " $* " == *" --appimage-extract "* ]]; then
+    mkdir -p squashfs-root && printf '#!/bin/sh\n' > squashfs-root/AppRun && chmod 755 squashfs-root/AppRun \
+      && : > squashfs-root/helper && chmod 4755 squashfs-root/helper
+    return
+  fi
+  "$@"
 }

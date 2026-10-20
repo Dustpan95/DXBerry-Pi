@@ -189,7 +189,6 @@ test_apps_install_appimage_unpacks_and_replaces_the_old_deb() {
   echo appimage > "$TEST_TMP/http/JS8Call-v3.0.3-aarch64.AppImage"
   AP_INSTALLED=js8call=3.0.2
   assert_ok dxb_apps_install js8call update > "$TEST_TMP/out"
-  assert_contains "$(cat "$TEST_TMP/calls")" "extract JS8Call-v3.0.3-aarch64.AppImage"
   [[ -f $DXB_APPS_OPT/js8call/squashfs-root/AppRun ]] || _fail "the AppImage was not unpacked into $DXB_APPS_OPT/js8call"
   assert_eq "$(cat "$DXB_APPS_OPT/js8call/VERSION")" "3.0.3"
   # the 3.0.2 package would otherwise still be what runs
@@ -197,6 +196,78 @@ test_apps_install_appimage_unpacks_and_replaces_the_old_deb() {
   AP_INSTALLED=''
   assert_ok dxb_apps_installed js8call
   assert_eq "$(dxb_apps_version js8call)" "3.0.3"
+}
+
+# A downloaded AppImage never runs as root: it unpacks itself as dxbapps in a directory of
+# dxbapps' own, and root then takes the tree over (no setuid/setgid bits, owned by root).
+test_apps_install_appimage_unpacks_as_dxbapps_never_as_root() {
+  fx_apps_env
+  ap_release JS8Call-improved/JS8Call-improved v3.0.3 JS8Call-v3.0.3-aarch64.AppImage
+  echo appimage > "$TEST_TMP/http/JS8Call-v3.0.3-aarch64.AppImage"
+  assert_ok dxb_apps_install js8call > "$TEST_TMP/out"
+  assert_contains "$(cat "$TEST_TMP/calls")" "chown -R dxbapps:dxbapps $DXB_APPS_WORK/extract-js8call"
+  assert_contains "$(cat "$TEST_TMP/calls")" "runuser -u dxbapps -- $DXB_APPS_WORK/extract-js8call/JS8Call-v3.0.3-aarch64.AppImage --appimage-extract"
+  assert_eq "$(grep -c -- '--appimage-extract' "$TEST_TMP/calls")" "$(grep -c '^runuser -u dxbapps -- .*--appimage-extract' "$TEST_TMP/calls")"
+  assert_contains "$(cat "$TEST_TMP/calls")" "chown -R root:root $DXB_APPS_OPT/.js8call.new/squashfs-root"
+  assert_eq "$(stat -c %a "$DXB_APPS_OPT/js8call/squashfs-root/helper")" "755"
+  assert_eq "$(stat -c %a "$DXB_APPS_OPT/js8call/squashfs-root/AppRun")" "755"
+  [[ ! -e $DXB_APPS_WORK ]] || _fail "the work directory was left behind"
+}
+
+# ap_forged_release URL [SUMS_URL]: a WSJT-X release whose asset (and SHA256SUMS) download from URL.
+ap_forged_release() {
+  mkdir -p "$TEST_TMP/http/WSJTX/wsjtx/releases"
+  jq -n --arg u "$1" --arg s "${2:-}" '{tag_name: "v3.0.2", assets: ([{name: "wsjtx-3.0.2-linux-aarch64.deb", browser_download_url: $u}]
+    + (if $s == "" then [] else [{name: "SHA256SUMS", browser_download_url: $s}] end))}' > "$TEST_TMP/http/WSJTX/wsjtx/releases/latest"
+}
+
+test_apps_latest_refuses_urls_that_are_not_https() {
+  local u
+  fx_apps_env
+  echo deb-bytes > "$TEST_TMP/http/wsjtx-3.0.2-linux-aarch64.deb"
+  for u in -o/etc/passwd file:///etc/passwd ' http://dl/x'; do
+    ap_forged_release "$u"; : > "$TEST_TMP/curl-calls"
+    dxb_apps_latest wsjtx > /dev/null 2>&1; assert_eq "$?" "1"
+    dxb_apps_install wsjtx > /dev/null 2>&1; assert_eq "$?" "6"
+    assert_eq "$(grep -vc '/releases/latest$' "$TEST_TMP/curl-calls")" "0"
+  done
+  # the checksum file's URL too
+  ap_forged_release http://dl/wsjtx-3.0.2-linux-aarch64.deb file:///etc/passwd
+  dxb_apps_latest wsjtx > /dev/null 2>&1; assert_eq "$?" "1"
+  # the tests' http:// stand-in works only because the configured API is http://; against an
+  # https:// API an http:// asset is refused
+  ap_forged_release http://dl/wsjtx-3.0.2-linux-aarch64.deb
+  assert_ok dxb_apps_latest wsjtx > /dev/null
+  DXB_GH_API=https://gh
+  dxb_apps_latest wsjtx > /dev/null 2>&1; assert_eq "$?" "1"
+  ap_forged_release https://dl/wsjtx-3.0.2-linux-aarch64.deb
+  assert_eq "$(dxb_apps_latest wsjtx | jq -r .url)" "https://dl/wsjtx-3.0.2-linux-aarch64.deb"
+}
+
+# 8, not 6, once something changed: the shared packages went in, then the program did not
+test_apps_install_exit_8_when_packages_went_in_but_the_program_did_not() {
+  fx_apps_env
+  ap_release WSJTX/wsjtx v3.0.2 wsjtx-3.0.2-linux-aarch64.deb
+  echo deb-bytes > "$TEST_TMP/http/wsjtx-3.0.2-linux-aarch64.deb"
+  echo "$DXB_APPS_WORK/wsjtx-3.0.2-linux-aarch64.deb" > "$TEST_TMP/apt-fail-on"
+  dxb_apps_install wsjtx > "$TEST_TMP/out" 2>&1; assert_eq "$?" "8"
+  # with every shared package already there, nothing changed: 6
+  : > "$TEST_TMP/calls"; AP_INSTALLED='tigervnc-standalone-server openbox socat'
+  dxb_apps_install wsjtx > "$TEST_TMP/out" 2>&1; assert_eq "$?" "6"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "--no-upgrade"
+  # only the missing ones are asked for
+  : > "$TEST_TMP/calls"; AP_INSTALLED='openbox'
+  dxb_apps_install wsjtx > /dev/null 2>&1
+  assert_contains "$(cat "$TEST_TMP/calls")" "--no-upgrade tigervnc-standalone-server socat -o"
+}
+
+test_apps_remove_exit_8_after_stopping_sessions() {
+  fx_apps_env
+  AP_INSTALLED=fldigi; echo remove > "$TEST_TMP/apt-fail-on"
+  echo dxberry-screen@fldigi-radio2.service >> "$TEST_TMP/active"
+  dxb_apps_remove fldigi > /dev/null 2>&1; assert_eq "$?" "8"
+  : > "$TEST_TMP/active"; echo enabled > "$TEST_TMP/enabled-dxberry-screen@fldigi-radio1.service"
+  dxb_apps_remove fldigi > /dev/null 2>&1; assert_eq "$?" "8"
 }
 
 test_apps_fetch_install_places_a_bare_binary() {
