@@ -635,15 +635,58 @@ test_claim_session_failure_disables_unit_and_releases() {
 test_apply_stops_and_restarts_sessions_by_presence() {
   radio_env; fake_apps; two_radios
   dxb_radio_claim r1 gamma > /dev/null; : > "$TEST_TMP/calls"
+  echo enabled > "$TEST_TMP/enabled-dxberry-screen@gamma-r1.service"   # claim enabled it
   fx_unplug "$DXB_SYSFS_ROOT" r1-audio            # the r1 card disappears
   dxb_radio_apply hotplug > /dev/null 2>&1
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-screen@gamma-r1.service"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "disable"
+  [[ -f $DXB_RUN_DIR/screens/gamma-r1.waiting ]] || _fail "the stopped session was not marked as waiting for its radio"
   : > "$TEST_TMP/calls"; fx_replug "$DXB_SYSFS_ROOT" r1-audio
-  echo enabled > "$TEST_TMP/enabled-dxberry-screen@gamma-r1.service"
   dxb_radio_apply hotplug > /dev/null 2>&1
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl --no-block start dxberry-screen@gamma-r1.service"
   assert_not_contains "$(appcalls)" "gamma wire"
+  [[ -e $DXB_RUN_DIR/screens/gamma-r1.waiting ]] && _fail "the waiting marker outlived the restart"
+}
+
+# A program the operator quit from its own menu ends its session but stays enabled; only the next
+# boot or Start brings it back (ruling 9), never an apply - unless apply itself stopped it for an
+# unplugged radio (the .waiting marker). A Start by hand clears a marker left behind.
+test_apply_leaves_a_quit_session_stopped_without_a_marker() {
+  radio_env; fake_apps; two_radios
+  dxb_radio_claim r1 gamma > /dev/null
+  echo enabled > "$TEST_TMP/enabled-dxberry-screen@gamma-r1.service"
+  sed -i '/^dxberry-screen@gamma-r1.service$/d' "$TEST_TMP/active"; : > "$TEST_TMP/calls"   # quit from its menu
+  assert_ok dxb_radio_apply hotplug
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "start dxberry-screen@gamma-r1.service"
+  mkdir -p "$DXB_RUN_DIR/screens"; : > "$DXB_RUN_DIR/screens/gamma-r1.waiting"
+  assert_ok dxb_radio_claim r1 gamma                                   # Start by hand
+  [[ -e $DXB_RUN_DIR/screens/gamma-r1.waiting ]] && _fail "a session started by hand is no longer waiting"
+}
+
+# Graywolf -> session on a cm108 radio while Graywolf keeps another radio: its unwire only queues
+# a restart, so the claim waits for it to be up again (without the radio's HID) before rigctld
+# opens the HID; a module without wait_ready is restarted with a blocking try-restart.
+test_handover_to_session_waits_for_the_old_owner_before_rigctld() {
+  radio_env; fake_apps; two_radios
+  dxb_radio_set r1 '{"ptt":"cm108"}' > /dev/null
+  dxb_radio_claim r1 alpha > /dev/null; dxb_radio_claim r2 alpha > /dev/null
+  dxb_radio_apply > /dev/null 2>&1                                     # rigctld@r1 up with the Graywolf env
+  # the later definition wins when the module is sourced: log to the same file as systemctl
+  cat >> "$DXB_APPS_DIR/alpha.sh" <<'APP'
+app_alpha_unwire() { echo "alpha unwire $1" >> "$TEST_TMP/calls"; }
+app_alpha_wait_ready() { echo "alpha ready" >> "$TEST_TMP/calls"; }
+APP
+  : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_claim r1 gamma
+  assert_eq "$(grep -n '^alpha \|restart rigctld@r1\|enable dxberry-screen@gamma-r1' "$TEST_TMP/calls" | cut -d: -f2 | tr '\n' ';')" \
+    'alpha unwire r1;alpha ready;systemctl restart rigctld@r1.service;systemctl enable dxberry-screen@gamma-r1.service;'
+  radio_env; fake_apps; two_radios
+  dxb_radio_set r1 '{"ptt":"cm108"}' > /dev/null
+  dxb_radio_claim r1 beta > /dev/null; dxb_radio_claim r2 beta > /dev/null
+  dxb_radio_apply > /dev/null 2>&1; : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_claim r1 gamma
+  assert_eq "$(grep -n 'try-restart beta.service\|restart rigctld@r1\|enable dxberry-screen@gamma-r1' "$TEST_TMP/calls" | cut -d: -f2 | tr '\n' ';')" \
+    'systemctl try-restart beta.service;systemctl restart rigctld@r1.service;systemctl enable dxberry-screen@gamma-r1.service;'
 }
 
 test_catalog_lists_installed_radio_programs_with_kind() {

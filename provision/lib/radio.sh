@@ -9,6 +9,9 @@
 : "${DXB_RADIO_PROFILES:=$DXB_SHARE/radio-profiles.tsv}"
 : "${DXB_RADIOS_FILE:=$DXB_STATE_DIR/radios.json}"
 : "${DXB_RUN_DIR:=/run/dxberry}"
+# DXB_SCREENS_DIR (default $DXB_RUN_DIR/screens) holds the sessions' runtime files, among them the
+# <app>-<radio>.waiting markers apply leaves for a session it stopped because its radio was
+# unplugged. Worked out when used (_dxb_screens_dir), so a DXB_RUN_DIR set later still counts.
 : "${DXB_RADIOS_STATE:=$DXB_RUN_DIR/radios-state.json}"
 # the wiring marks ({"NAME": "hash the owner was last wired with"}) live next to the record, not
 # in the /run mirror: a mark that vanished at every boot made the boot-time hotplug apply re-wire
@@ -472,17 +475,26 @@ _dxb_radio_apply() {
   return $rc
 }
 
-# _dxb_radio_apply_session NAME APP: an unplugged radio's session is stopped (never disabled, so
-# it comes back with the radio); a present radio's enabled session that is not running is started
-# without waiting (this can run inside dxberry-radio-hotplug.service). 0 ok, 1 start failed.
+# _dxb_radio_apply_session NAME APP: an unplugged radio's session is stopped (never disabled) and,
+# while enabled, marked as waiting for its radio; when the radio is back, an enabled session that
+# is not running is started without waiting (this can run inside dxberry-radio-hotplug.service) -
+# but only when the marker says the radio's absence stopped it. A program the operator quit from
+# its own menu stays stopped until the next boot or Start (ruling 9). 0 ok, 1 start failed.
 _dxb_radio_apply_session() {
-  local n=$1 app=$2 u
-  u=$(dxb_app_session_unit "$app" "$n")
+  local n=$1 app=$2 u marker waiting=0
+  u=$(dxb_app_session_unit "$app" "$n"); marker=$(_dxb_session_marker "$app" "$n")
   if ! dxb_radio_present "$n"; then
     systemctl stop "$u" > /dev/null 2>&1 || dxb_warn "radio $n: could not stop $u"
+    if [[ $(systemctl is-enabled "$u" 2> /dev/null) == enabled ]]; then
+      { mkdir -p "$(_dxb_screens_dir)" && : > "$marker"; } 2> /dev/null \
+        || dxb_warn "radio $n: could not write $marker; start $app again by hand when the radio is back"
+    fi
     return 0
   fi
   dxb_radio_alsa_levels "$n"
+  [[ -e $marker ]] && waiting=1
+  rm -f "$marker"
+  (( waiting )) || return 0
   [[ $(systemctl is-enabled "$u" 2> /dev/null) == enabled ]] || return 0
   systemctl is-active --quiet "$u" && return 0
   systemctl --no-block start "$u" || { dxb_error "radio $n: could not start $u"; return 1; }
@@ -556,12 +568,16 @@ dxb_app_start() {
 # A session is enabled when it is claimed and disabled when it is stopped, switched or released,
 # so a reboot starts exactly the sessions that were running.
 dxb_app_session_unit() { printf 'dxberry-screen@%s-%s.service\n' "$1" "$2"; }
+_dxb_screens_dir() { printf '%s\n' "${DXB_SCREENS_DIR:-$DXB_RUN_DIR/screens}"; }
+# _dxb_session_marker APP RADIO: the file that says "waiting for its radio to come back".
+_dxb_session_marker() { printf '%s/%s-%s.waiting\n' "$(_dxb_screens_dir)" "$1" "$2"; }
 
 # dxb_app_session_start APP RADIO: enable and start the session, then wait up to
 # DXB_SESSION_WAIT_S seconds (30) for it to be active. 0 ok, 5 failed.
 dxb_app_session_start() {
   local u i wait=${DXB_SESSION_WAIT_S:-30}
   u=$(dxb_app_session_unit "$1" "$2")
+  rm -f "$(_dxb_session_marker "$1" "$2")"   # started by hand now: no longer waiting for the radio
   systemctl enable "$u" > /dev/null 2>&1 || { dxb_error "could not enable $u"; return 5; }
   systemctl start "$u" || { dxb_error "could not start $u"; return 5; }
   for (( i = 0; ; i++ )); do
@@ -576,6 +592,7 @@ dxb_app_session_start() {
 # dxb_app_session_stop APP RADIO: stop and disable the session. Always 0 (a failure is a warning).
 dxb_app_session_stop() {
   local u; u=$(dxb_app_session_unit "$1" "$2")
+  rm -f "$(_dxb_session_marker "$1" "$2")"
   systemctl disable --now "$u" > /dev/null 2>&1 || dxb_warn "could not stop and disable $u"
   return 0
 }
@@ -631,6 +648,25 @@ _dxb_radio_rigctld_for() {
     || dxb_warn "radio $1: rigctld could not be updated for its new owner; the next apply tries again"
 }
 
+# _dxb_radio_settle NAME OLD: after a non-session OLD owner let go of NAME and is still running (it
+# owns other radios), wait until it has really restarted without NAME's channel, so it no longer
+# holds NAME's HID or GPIO line when rigctld opens them: its app_<old>_wait_ready when the module
+# has one (Graywolf's unwire queued a --no-block restart), else a blocking try-restart. A failure
+# is a warning: the old owner is then not running, so it holds nothing.
+_dxb_radio_settle() {
+  local name=$1 cur=$2 u
+  dxb_app_load "$cur" 2> /dev/null || return 0
+  dxb_app_is_session "$cur" && return 0
+  u=$(dxb_app_unit "$cur")
+  systemctl is-active --quiet "$u" || return 0
+  if declare -F "app_${cur}_wait_ready" > /dev/null; then
+    "app_${cur}_wait_ready" || dxb_warn "radio $name: $cur did not become ready again after letting go"
+  else
+    systemctl try-restart "$u" || dxb_warn "radio $name: could not restart $u after it let go"
+  fi
+  return 0
+}
+
 # _dxb_radio_claim_session NAME APP CUR: claim for a session program (APP loaded). The old owner
 # lets go first (Graywolf must have closed the HID before rigctld opens it for CM108 PTT), then
 # rigctld follows, then the session starts; it wires itself in its own prepare step (ruling 7).
@@ -647,6 +683,7 @@ _dxb_radio_claim_session() {
   if [[ -n $cur ]]; then
     _dxb_radio_let_go "$name" "$cur" || return 6
     dxb_info "radio $name released by $cur"
+    _dxb_radio_settle "$name" "$cur"
   fi
   _dxb_radio_set_owner "$name" "$app" || return 6
   dxb_radio_alsa_levels "$name"
