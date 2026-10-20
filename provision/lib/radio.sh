@@ -475,17 +475,19 @@ _dxb_radio_apply() {
   return $rc
 }
 
-# _dxb_radio_apply_session NAME APP: an unplugged radio's session is stopped (never disabled) and,
-# while enabled, marked as waiting for its radio; when the radio is back, an enabled session that
-# is not running is started without waiting (this can run inside dxberry-radio-hotplug.service) -
-# but only when the marker says the radio's absence stopped it. A program the operator quit from
-# its own menu stays stopped until the next boot or Start (ruling 9). 0 ok, 1 start failed.
+# _dxb_radio_apply_session NAME APP: an unplugged radio's session is stopped (never disabled); one
+# that was running and is enabled is marked as waiting for its radio. When the radio is back, an
+# enabled session that is not running is started without waiting (this can run inside
+# dxberry-radio-hotplug.service) - but only when the marker says the radio's absence stopped it.
+# A program the operator quit from its own menu, before or after an unplug, stays stopped until
+# the next boot or Start (ruling 9). 0 ok, 1 start failed.
 _dxb_radio_apply_session() {
-  local n=$1 app=$2 u marker waiting=0
+  local n=$1 app=$2 u marker waiting=0 was_active=0
   u=$(dxb_app_session_unit "$app" "$n"); marker=$(_dxb_session_marker "$app" "$n")
   if ! dxb_radio_present "$n"; then
+    systemctl is-active --quiet "$u" && was_active=1
     systemctl stop "$u" > /dev/null 2>&1 || dxb_warn "radio $n: could not stop $u"
-    if [[ $(systemctl is-enabled "$u" 2> /dev/null) == enabled ]]; then
+    if (( was_active )) && [[ $(systemctl is-enabled "$u" 2> /dev/null) == enabled ]]; then
       { mkdir -p "$(_dxb_screens_dir)" && : > "$marker"; } 2> /dev/null \
         || dxb_warn "radio $n: could not write $marker; start $app again by hand when the radio is back"
     fi
@@ -649,20 +651,21 @@ _dxb_radio_rigctld_for() {
 }
 
 # _dxb_radio_settle NAME OLD: after a non-session OLD owner let go of NAME and is still running (it
-# owns other radios), wait until it has really restarted without NAME's channel, so it no longer
-# holds NAME's HID or GPIO line when rigctld opens them: its app_<old>_wait_ready when the module
-# has one (Graywolf's unwire queued a --no-block restart), else a blocking try-restart. A failure
-# is a warning: the old owner is then not running, so it holds nothing.
+# owns other radios), make sure it has really restarted without NAME's channel, so it no longer
+# holds NAME's HID or GPIO line when rigctld opens them. Graywolf's unwire only queued a
+# --no-block restart, which the old process can outlive; a blocking try-restart merges with that
+# job (or restarts once more) and returns only when the old process is gone. Then the module's
+# app_<old>_wait_ready, when it has one. A failure is a warning: an old owner that is not running
+# holds nothing.
 _dxb_radio_settle() {
   local name=$1 cur=$2 u
   dxb_app_load "$cur" 2> /dev/null || return 0
   dxb_app_is_session "$cur" && return 0
   u=$(dxb_app_unit "$cur")
   systemctl is-active --quiet "$u" || return 0
+  systemctl try-restart "$u" || { dxb_warn "radio $name: could not restart $u after it let go"; return 0; }
   if declare -F "app_${cur}_wait_ready" > /dev/null; then
     "app_${cur}_wait_ready" || dxb_warn "radio $name: $cur did not become ready again after letting go"
-  else
-    systemctl try-restart "$u" || dxb_warn "radio $name: could not restart $u after it let go"
   fi
   return 0
 }
