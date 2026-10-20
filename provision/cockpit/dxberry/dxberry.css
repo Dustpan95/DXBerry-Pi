@@ -111,3 +111,10 @@ pre.log { max-height: 260px; overflow: auto; margin: 8px 0 0; padding: 8px 10px;
 #settings-dialog { max-width: min(92vw, 560px); width: 100%; max-height: 90vh; overflow: auto; }
 .upd-switch { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; color: var(--muted); }
 #updates { margin-top: 16px; }
+
+/* The program tab (screen.html): a slim bar over a screen that fills the rest of the window. */
+body.screen-page { height: 100vh; padding: 0; display: flex; flex-direction: column; }
+.screenbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 16px; background: var(--card); border-bottom: 1px solid var(--line); }
+.screenbar a { margin-left: auto; }
+#screen { flex: 1; min-height: 0; background: #000; overflow: auto; }
+.screen-note { margin: 16px; padding: 12px 16px; background: var(--card); color: var(--text); border-radius: 6px; }

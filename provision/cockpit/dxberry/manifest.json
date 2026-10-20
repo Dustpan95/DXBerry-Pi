@@ -10,5 +10,6 @@
         { "matches": ["ham", "radio", "aprs", "graywolf", "igate", "station", "dxberry"] }
       ]
     }
-  }
+  },
+  "content-security-policy": "connect-src 'self' wss:"
 }

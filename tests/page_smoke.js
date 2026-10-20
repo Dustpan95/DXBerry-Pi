@@ -87,6 +87,85 @@ const doc = {
   documentElement: { dataset: {} },
 };
 const mk = (tag, id, cls) => { const e = new E(tag); if (id) e.setAttribute("id", id); if (cls) e.setAttribute("class", cls); return e; };
+// ---- --screen mode: the program tab (screen.js) ---------------------------------------------------
+// node tests/page_smoke.js --screen provision/cockpit/dxberry/screen.js. The module's one import line
+// is replaced here (not in the file) by a stub RFB class that records what it was given.
+if (process.argv[2] === "--screen") {
+  (async () => {
+    const src = fs.readFileSync(process.argv[3], "utf8");
+    const importLine = /^import RFB from "\.\/novnc\/core\/rfb\.js";$/m;
+    ok(importLine.test(src), "screen.js imports RFB from ./novnc/core/rfb.js");
+    const code = src.replace(importLine, "const RFB = globalThis.FakeRFB;");
+    const flush2 = () => new Promise(r => setImmediate(r));
+    const run = async (hash, info, fail) => {
+      doc.body.replaceChildren();
+      for (const [tag, id, cls] of [["strong", "program"], ["span", "radio"], ["span", "state"], ["button", "reconnect", "btn"], ["a", "back"], ["main", "screen"]]) doc.body.append(mk(tag, id, cls));
+      const spawns = []; const rfbs = [];
+      class FakeRFB {
+        constructor(target, url, opts) { this.target = target; this.url = url; this.opts = opts; this.listeners = {}; rfbs.push(this); }
+        addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); }
+        emit(t) { (this.listeners[t] || []).forEach(f => f({ detail: {} })); }
+        disconnect() { this.gone = true; }
+      }
+      const sctx = {
+        document: doc, console, FakeRFB, btoa: s => Buffer.from(s, "binary").toString("base64"), decodeURIComponent,
+        location: { hash, host: "pi" }, JSON,
+        cockpit: {
+          spawn(args, opts) { spawns.push({ args, opts }); return fail ? Promise.reject(fail) : Promise.resolve(JSON.stringify(info)); },
+          transport: { csrf_token: "TOKEN", wait: f => { setImmediate(f); } },
+        },
+      };
+      sctx.globalThis = sctx;
+      vm.createContext(sctx);
+      vm.runInContext(code, sctx);
+      await flush2(); await flush2(); await flush2();
+      return { spawns, rfbs, text: () => doc.body.textContent, el: id => doc.getElementById(id), sctx };
+    };
+    const base = { session: "wsjtx-radio2", app: "wsjtx", radio: "radio2", label: "WSJT-X", radio_label: "radio2", open: { kind: "screen" }, access: true };
+
+    let r = await run("#wsjtx-radio2", { ...base, state: "stopped", socket: null });
+    ok(r.text().includes("WSJT-X is not running on radio2. Start it from the station page."), "stopped: says so: " + r.text());
+    ok(r.rfbs.length === 0, "stopped: no RFB is created");
+    ok(r.spawns.length === 1 && JSON.stringify(r.spawns[0].args) === JSON.stringify(["/opt/dxberry/bin/dxberry-app", "screen", "wsjtx-radio2", "--json"]), "stopped: asked dxberry-app screen");
+    ok(!JSON.stringify(r.spawns[0].opts || {}).includes("superuser"), "the screen question is asked without superuser");
+    ok(r.text().includes("Go to the station page"), "stopped: links to the station page");
+
+    r = await run("#wsjtx-radio2", { ...base, state: "running", socket: "/run/dxberry/screens/wsjtx-radio2.sock" });
+    ok(r.rfbs.length === 1, "running: one RFB is created");
+    const u = r.rfbs[0] ? r.rfbs[0].url : "";
+    ok(u.startsWith("wss://pi/cockpit/channel/TOKEN?"), "running: channel URL: " + u);
+    const q = u.includes("?") ? JSON.parse(Buffer.from(u.split("?")[1], "base64").toString()) : null;
+    ok(JSON.stringify(q) === JSON.stringify({ payload: "stream", binary: "raw", unix: "/run/dxberry/screens/wsjtx-radio2.sock" }), "running: query decodes to the stream/raw/unix channel: " + JSON.stringify(q));
+    ok(r.rfbs[0] && r.rfbs[0].opts.shared === true && r.rfbs[0].scaleViewport === false && r.rfbs[0].resizeSession === true, "running: shared, no viewport scaling, session resizes");
+    ok(r.rfbs[0] && r.rfbs[0].target === r.el("screen"), "running: RFB draws into #screen");
+    ok(r.el("state").textContent === "Connecting", "running: shows Connecting: " + r.el("state").textContent);
+    r.rfbs[0].emit("connect");
+    ok(r.el("state").textContent === "Connected", "shows Connected");
+    r.rfbs[0].emit("disconnect");
+    ok(r.el("state").textContent === "Disconnected" && !r.text().includes("Log out of the console"), "shows Disconnected after a good session");
+    ok(r.sctx.document.getElementById("program").textContent === "WSJT-X" && r.el("radio").textContent === "radio2", "bar names program and radio");
+    ok(doc.title === "WSJT-X \u00b7 radio2", "tab title is program and radio: " + doc.title);
+    r.el("reconnect").click();
+    await flush2(); await flush2(); await flush2();
+    ok(r.spawns.length === 2 && r.rfbs.length === 2 && r.rfbs[1].url === u, "Reconnect re-runs the whole sequence (spawn + new RFB)");
+    // refused before ever connecting
+    r.rfbs[1].emit("disconnect");
+    ok(r.text().includes("This login cannot open the program's screen yet. Log out of the console and back in once, then reload this tab."), "refused channel: log out and in: " + r.text());
+
+    r = await run("#wsjtx-radio2", { session: "wsjtx-radio2", access: false });
+    ok(r.rfbs.length === 0 && r.text().includes("Log out of the console and back in once, then reload this tab."), "no dxbscreen access: the log out/in message, no RFB");
+
+    r = await run("#../etc", null);
+    ok(r.text().includes("No program is named here.") && r.spawns.length === 0 && r.rfbs.length === 0, "bad hash: named nowhere, nothing spawned: " + r.text());
+
+    r = await run("#wsjtx-radio9", null, { exit_status: 3, message: "no such session" });
+    ok(r.text().includes("No program is named here.") && r.rfbs.length === 0, "unknown session (exit 3): named nowhere");
+
+    console.log(failures ? `${failures} failure(s)` : "all ok");
+    process.exit(failures ? 1 : 0);
+  })().catch(e => { console.log("CRASH " + (e && e.stack || e)); process.exit(2); });
+  return;
+}
 // index.html's elements, by hand (only what dxberry.js looks up)
 const confirmD = mk("dialog", "confirm");
 const cf = mk("form"); const okBtn = mk("button", "", "btn danger ok");

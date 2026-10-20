@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DXBerry program</title>
+  <link rel="stylesheet" href="dxberry.css">
+</head>
+<body class="screen-page">
+  <header class="screenbar">
+    <strong id="program"></strong>
+    <span id="radio" class="muted"></span>
+    <span id="state" class="muted" aria-live="polite"></span>
+    <button id="reconnect" class="btn" type="button">Reconnect</button>
+    <a id="back" class="muted" href="/cockpit/@localhost/dxberry/index.html">Back to the station</a>
+  </header>
+  <main id="screen"></main>
+  <script src="../base1/cockpit.js"></script>
+  <script type="module" src="screen.js"></script>
+</body>
+</html>
