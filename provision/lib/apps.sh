@@ -14,8 +14,7 @@
 : "${DXB_APPS_HOME:=/var/lib/dxberry-apps}"
 # first-fill marks and the modules' own bookkeeping
 : "${DXB_APPS_STATE:=$DXB_STATE_DIR/apps}"
-# downloads land here (0711: traversable, not listable; each download 0600 root) and are removed
-# after every install
+# downloads land here (0700 root; each download 0600) and are removed after every install
 : "${DXB_APPS_WORK:=$DXB_STATE_DIR/apps-work}"
 : "${DXB_GH_API:=https://api.github.com/repos}"
 : "${DXB_APPS_CURL:=curl}"
@@ -31,6 +30,9 @@
 # runs a command as dxbapps: runuser -u dxbapps -- CMD... (a downloaded AppImage unpacks itself
 # this way, never as root)
 : "${DXB_RUNUSER:=runuser}"
+# where an AppImage unpacks itself as dxbapps, in a fresh mktemp directory: outside the state
+# directory, which is 0700 root on the Pi and so out of dxbapps' reach
+: "${DXB_APPS_EXTRACT_BASE:=/var/tmp}"
 
 # what every program with a screen session needs (not a service, not Graywolf)
 DXB_APPS_BASE_PACKAGES='tigervnc-standalone-server openbox socat'
@@ -92,8 +94,12 @@ _dxb_apps_has() {
 }
 
 # ---- the newest release --------------------------------------------------------------------
-_dxb_apps_api() { "$DXB_APPS_CURL" -fsSL --connect-timeout 10 --max-time 30 -H 'Accept: application/vnd.github+json' "$1"; }
-_dxb_apps_get() { "$DXB_APPS_CURL" -fsSL --connect-timeout 10 --max-time 60 "$1"; }
+# _dxb_apps_curl ARGS... URL: curl; an https URL may only ever be fetched (and redirected) over https
+_dxb_apps_curl() {
+  if [[ ${*: -1} == https://* ]]; then "$DXB_APPS_CURL" --proto =https --proto-redir =https "$@"; else "$DXB_APPS_CURL" "$@"; fi
+}
+_dxb_apps_api() { _dxb_apps_curl -fsSL --connect-timeout 10 --max-time 30 -H 'Accept: application/vnd.github+json' "$1"; }
+_dxb_apps_get() { _dxb_apps_curl -fsSL --connect-timeout 10 --max-time 60 "$1"; }
 # _dxb_apps_url_ok URL: a URL taken from a release answer is fetched only when it is https:// (or
 # uses the configured API's own scheme, so a stand-in API works) - never a file:// URL, never
 # something curl would read as an option, never one with spaces or control characters.
@@ -300,12 +306,12 @@ dxb_apps_download() {
   asset=$(jq -r .asset <<< "$1"); url=$(jq -r '.url // ""' <<< "$1"); sha=$(jq -r '.sha256 // empty' <<< "$1")
   file=$DXB_APPS_WORK/$asset
   _dxb_apps_url_ok "$url" || { echo "refusing to download $asset from $url; nothing changed" >&2; return 6; }
-  if ! { ( umask 077; mkdir -p "$DXB_APPS_WORK" ) && chmod 711 "$DXB_APPS_WORK"; }; then
+  if ! { ( umask 077; mkdir -p "$DXB_APPS_WORK" ) && chmod 700 "$DXB_APPS_WORK"; }; then
     echo "could not create $DXB_APPS_WORK; nothing changed" >&2; return 6
   fi
   rm -f "$file"
   echo "downloading $asset"
-  if ! ( umask 077; "$DXB_APPS_CURL" -fsSL --connect-timeout 15 --max-time 1800 -o "$file" "$url" ); then
+  if ! ( umask 077; _dxb_apps_curl -fsSL --connect-timeout 15 --max-time 1800 -o "$file" "$url" ); then
     rm -f "$file"; echo "the download of $asset failed; nothing changed" >&2; return 6
   fi
   if [[ -z $sha ]]; then
@@ -323,16 +329,37 @@ dxb_apps_download() {
 # program keeps from its earlier install - the module's optional app_NAME_keep.
 _dxb_apps_keep() { if _dxb_apps_has "$1" keep; then "app_$1_keep"; fi; }
 
+# _dxb_apps_unpack_appimage FILE DEST: FILE (an AppImage) unpacks itself - as dxbapps, never as
+# root - in a fresh directory under DXB_APPS_EXTRACT_BASE that only dxbapps can enter, with that
+# directory as HOME (the AppImage never sees /root). Root then moves the tree to DEST, out of
+# dxbapps' reach first (nothing it runs can add to the tree after that), owns it and takes off
+# every setuid/setgid bit and every write bit but its own. The directory is deleted on every way
+# out. 0 ok, 1 failed (an error on stderr).
+_dxb_apps_unpack_appimage() {
+  local file=$1 dest=$2 asset=${1##*/} x rc=1
+  x=$(mktemp -d "$DXB_APPS_EXTRACT_BASE/dxberry-appimage.XXXXXXXX") || { echo "could not create a directory in $DXB_APPS_EXTRACT_BASE to unpack $asset" >&2; return 1; }
+  if ! { cp "$file" "$x/$asset" && chmod 700 "$x" "$x/$asset" && "$DXB_CHOWN" -R "$DXB_APPS_USER:$DXB_APPS_USER" "$x"; }; then
+    echo "could not prepare $x to unpack $asset" >&2
+  elif ! ( cd "$x" && "$DXB_RUNUSER" -u "$DXB_APPS_USER" -- env HOME="$x" "$x/$asset" --appimage-extract ) > /dev/null 2>&1 \
+      || [[ -L $x/squashfs-root || ! -d $x/squashfs-root ]]; then
+    echo "$asset could not be unpacked" >&2
+  elif ! { mv -T "$x/squashfs-root" "$dest" && "$DXB_CHOWN" -R root:root "$dest" && chmod -R u-s,g-s,go-w,a+rX "$dest"; }; then
+    echo "$asset could not be taken over from $DXB_APPS_USER" >&2
+  else
+    rc=0
+  fi
+  rm -rf "$x"
+  return $rc
+}
+
 # dxb_apps_place NAME LATEST [FILE_NAME]: put LATEST's downloaded file in place. deb: apt-get
-# installs it (its dependencies resolve) and an unpacked copy of NAME is removed. appimage: it
-# unpacks itself as dxbapps (never as root) in a dxbapps-owned work directory; root then moves the
-# tree out of there, owns it and takes off every setuid/setgid bit and every write bit but its
-# own, so it lands in $DXB_APPS_OPT/NAME/squashfs-root read-only to dxbapps. bin: $DXB_APPS_OPT/NAME/FILE_NAME (default NAME),
+# installs it (its dependencies resolve) and an unpacked copy of NAME is removed. appimage:
+# _dxb_apps_unpack_appimage, into $DXB_APPS_OPT/NAME/squashfs-root read-only to dxbapps. bin: $DXB_APPS_OPT/NAME/FILE_NAME (default NAME),
 # mode 755. tarball: unpacked into $DXB_APPS_OPT/NAME, keeping what _dxb_apps_keep names. Each
 # unpacked kind gets $DXB_APPS_OPT/NAME/VERSION and replaces the old directory only once the new
 # one is complete. 0 ok, 6 the program was left as it was.
 dxb_apps_place() {
-  local name=$1 bin=${3:-$1} type asset ver file dir stage old k x
+  local name=$1 bin=${3:-$1} type asset ver file dir stage old k
   type=$(jq -r .type <<< "$2"); asset=$(jq -r .asset <<< "$2"); ver=$(jq -r .version <<< "$2")
   file=$DXB_APPS_WORK/$asset; dir=$DXB_APPS_OPT/$name
   [[ -f $file ]] || { echo "$asset was not downloaded; $name was left as it was" >&2; return 6; }
@@ -350,23 +377,7 @@ dxb_apps_place() {
   fi
   echo "unpacking $asset"
   case $type in
-    appimage)
-      x=$DXB_APPS_WORK/extract-$name
-      rm -rf "$x"
-      if ! { mkdir -p "$x" && cp "$file" "$x/$asset" && chmod 700 "$x" "$x/$asset" \
-          && "$DXB_CHOWN" -R "$DXB_APPS_USER:$DXB_APPS_USER" "$x"; }; then
-        echo "could not prepare $x; $name was left as it was" >&2; rm -rf "$stage" "$x"; return 6
-      fi
-      if ! ( cd "$x" && "$DXB_RUNUSER" -u "$DXB_APPS_USER" -- "$x/$asset" --appimage-extract ) > /dev/null 2>&1 \
-          || [[ -L $x/squashfs-root || ! -d $x/squashfs-root ]]; then
-        echo "$asset could not be unpacked; $name was left as it was" >&2; rm -rf "$stage" "$x"; return 6
-      fi
-      # out of dxbapps' reach first (nothing it runs can add to the tree after this), then root's
-      if ! { mv -T "$x/squashfs-root" "$stage/squashfs-root" && "$DXB_CHOWN" -R root:root "$stage/squashfs-root" \
-          && chmod -R u-s,g-s,go-w,a+rX "$stage/squashfs-root"; }; then
-        echo "$asset could not be taken over from dxbapps; $name was left as it was" >&2; rm -rf "$stage" "$x"; return 6
-      fi
-      rm -rf "$x" ;;
+    appimage) _dxb_apps_unpack_appimage "$file" "$stage/squashfs-root" || { rm -rf "$stage"; return 6; } ;;
     bin)
       if ! { cp "$file" "$stage/$bin" && chmod 755 "$stage/$bin"; }; then
         echo "$asset could not be copied; $name was left as it was" >&2; rm -rf "$stage"; return 6

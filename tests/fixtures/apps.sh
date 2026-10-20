@@ -4,8 +4,8 @@
 #   radio1 - rigctld 4532, VOX PTT, no CAT pin
 #   radio2 - rigctld 4534, PTT through rigctld (CAT)
 # Stand-ins record into $TEST_TMP/calls ("apt-get ...", "useradd ...", "systemctl ...", ...);
-# downloads (ap_curl) are recorded apart, in $TEST_TMP/curl-calls, so a test can say a file never
-# reached apt by looking at calls alone.
+# downloads (ap_curl) are recorded apart, in $TEST_TMP/curl-calls ("curl URL") and with every
+# option in $TEST_TMP/curl-args, so a test can say a file never reached apt by looking at calls alone.
 # shellcheck disable=SC2034,SC2317
 
 # shellcheck source=tests/fixtures/sysfs.sh
@@ -19,10 +19,11 @@ fx_apps_env() {
     DXB_APPS_HOME=$TEST_TMP/home/dxbapps DXB_APPS_STATE=$TEST_TMP/state/apps DXB_APPS_WORK=$TEST_TMP/state/apps-work \
     DXB_GH_API=http://gh DXB_APPS_CURL=ap_curl DXB_APT_GET=ap_apt DXB_DPKG_QUERY=ap_dpkgq DXB_APT_CACHE=ap_aptcache \
     DXB_USERADD=ap_useradd DXB_GROUPADD=ap_groupadd DXB_USERMOD=ap_usermod DXB_CHOWN=ap_chown DXB_GETENT=ap_getent \
-    DXB_SYSTEMCTL=fx_systemctl DXB_RUNUSER=ap_runuser DXB_GPSPIPE=$TEST_TMP/bin/gpspipe
+    DXB_SYSTEMCTL=fx_systemctl DXB_RUNUSER=ap_runuser DXB_GPSPIPE=$TEST_TMP/bin/gpspipe \
+    DXB_APPS_EXTRACT_BASE=$TEST_TMP/vartmp
   unset DXB_CONSOLE_USER
-  mkdir -p "$DXB_STATE_DIR" "$DXB_RUN_DIR" "$TEST_TMP/http" "$TEST_TMP/bin"
-  : > "$TEST_TMP/calls"; : > "$TEST_TMP/curl-calls"; : > "$TEST_TMP/active"
+  mkdir -p "$DXB_STATE_DIR" "$DXB_RUN_DIR" "$TEST_TMP/http" "$TEST_TMP/bin" "$DXB_APPS_EXTRACT_BASE"
+  : > "$TEST_TMP/calls"; : > "$TEST_TMP/curl-calls"; : > "$TEST_TMP/curl-args"; : > "$TEST_TMP/active"
   # gpsd answers with $TEST_TMP/gpspipe.out (nothing: no receiver); timeout needs a real file
   printf '#!/bin/bash\ncat "%s/gpspipe.out" 2> /dev/null\nexit 0\n' "$TEST_TMP" > "$TEST_TMP/bin/gpspipe"
   chmod 755 "$TEST_TMP/bin/gpspipe"
@@ -31,7 +32,8 @@ fx_apps_env() {
   printf 'audio:x:29:\ndialout:x:20:\ndietpi:x:1000:\n' > "$TEST_TMP/group"
   # AP_INSTALLED: Debian packages dpkg-query reports installed, "name" (version 1.0) or "name=version"
   # AP_CANDIDATE: what apt-cache policy offers ("" = no candidate)
-  AP_INSTALLED=''; AP_CANDIDATE=1.0
+  # AP_RUNUSER_RC: when set, ap_runuser fails with it
+  AP_INSTALLED=''; AP_CANDIDATE=1.0; AP_RUNUSER_RC=''
   DXB_CFG=()
   DXB_RADIOS='{"version":1,"gps":{"device":"auto","baud":9600,"pps":""},"radios":{
     "radio1":{"label":"FT-818","profile":"generic","audio":{"path":"usb-0:1.3:1.0","vidpid":"0d8c:013c","serial":""},"cat":null,"hid":null,"ptt_serial":null,
@@ -55,6 +57,7 @@ ap_release() {
 # $TEST_TMP/http; -o FILE writes it there; a missing file is curl's 22.
 ap_curl() {
   local url='' out='' f
+  echo "curl $*" >> "$TEST_TMP/curl-args"
   while (( $# )); do case $1 in -o) out=$2; shift ;; -H) shift ;; http*) url=$1 ;; esac; shift; done
   echo "curl $url" >> "$TEST_TMP/curl-calls"
   f=${url#*://}; f=$TEST_TMP/http/${f#*/}
@@ -105,6 +108,7 @@ ap_chown() { echo "chown $*" >> "$TEST_TMP/calls"; }
 # any other command runs as it is.
 ap_runuser() {
   echo "runuser $*" >> "$TEST_TMP/calls"
+  [[ -z ${AP_RUNUSER_RC:-} ]] || return "$AP_RUNUSER_RC"
   [[ $1 == -u && $3 == -- ]] || return 1
   shift 3
   if [[ " $* " == *" --appimage-extract "* ]]; then
