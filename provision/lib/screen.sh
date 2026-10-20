@@ -32,6 +32,8 @@
 : "${DXB_SCREEN_STOP_WAIT_S:=10}"
 # seconds prepare waits for the radio's rigctld
 : "${DXB_RIGCTLD_WAIT_S:=30}"
+# seconds the session waits for Xvnc's X socket
+: "${DXB_XVNC_WAIT_S:=30}"
 # the env file's keys, in the order they are written
 DXB_SCREEN_KEYS='APP RADIO LABEL RADIO_LABEL INDEX DEVICE CARD RIGCTLD AUDIO SCREEN GEOMETRY DISPLAY_NUM'
 
@@ -178,15 +180,15 @@ _dxb_screen_logbook() {
 }
 
 # dxb_screen_settings_input S STEP...: the one JSON object the settings step reads on stdin
-# (root builds it): only S's radio from the record, the station keys, the logbook (its key
-# travels only here, never in an argument), and the steps to run.
+# (root builds it): only S's radio from the record, the station keys, the logbook, and the steps
+# to run. The logbook (its API key) reaches jq on stdin: only data that is no secret is ever in
+# an argument, where any user could read it in /proc.
 dxb_screen_settings_input() {
   local s=$1 r; shift
   r=${s#*-}
-  jq -cn --argjson rec "$(jq -c --arg r "$r" '{version, gps, radios: {($r): .radios[$r]}}' <<< "$DXB_RADIOS")" \
+  _dxb_screen_logbook | jq -c --argjson rec "$(jq -c --arg r "$r" '{version, gps, radios: {($r): .radios[$r]}}' <<< "$DXB_RADIOS")" \
     --arg c "${DXB_CFG[CALLSIGN]:-}" --arg la "${DXB_CFG[LATITUDE]:-}" --arg lo "${DXB_CFG[LONGITUDE]:-}" \
-    --argjson lb "$(_dxb_screen_logbook)" \
-    '{radios: $rec, cfg: {CALLSIGN: $c, LATITUDE: $la, LONGITUDE: $lo}, logbook: $lb, steps: $ARGS.positional}' --args "$@"
+    '{radios: $rec, cfg: {CALLSIGN: $c, LATITUDE: $la, LONGITUDE: $lo}, logbook: ., steps: $ARGS.positional}' --args "$@"
 }
 
 # dxb_screen_settings S: the settings step itself, as dxbapps: one JSON object
@@ -333,13 +335,17 @@ _dxb_screen_free_display() {
   local n=$1 lock xs pid=''
   lock=$DXB_X_LOCK_DIR/.X$n-lock; xs=$DXB_X11_UNIX_DIR/X$n
   if [[ -e $lock || -L $lock ]]; then
+    # what it is, before anything reads it: a symlink, a FIFO or another user's file is never opened
+    if [[ -L $lock || ! -f $lock ]]; then
+      echo "display :$n: $lock is not a lock file; remove it (sudo rm $lock)" >&2; return 1
+    fi
+    if [[ ! -O $lock ]]; then
+      echo "display :$n is locked by another user ($lock); if no X server runs there, remove it (sudo rm $lock $xs)" >&2; return 1
+    fi
     read -r pid < "$lock" 2> /dev/null
     pid=${pid//[[:space:]]/}
     if [[ $pid =~ ^[0-9]+$ && -e /proc/$pid ]]; then
       echo "display :$n is in use (process $pid, $lock)" >&2; return 1
-    fi
-    if [[ ! -O $lock || -L $lock ]]; then
-      echo "display :$n has a stale lock $lock that belongs to another user; remove it (sudo rm $lock $xs)" >&2; return 1
     fi
     rm -f "$lock" || { echo "could not remove the stale $lock" >&2; return 1; }
   fi
@@ -348,6 +354,15 @@ _dxb_screen_free_display() {
     rm -f "$xs"
   fi
   return 0
+}
+
+# _dxb_screen_x_ready XS PID: Xvnc (PID) runs and its X socket XS is there: a socket (not a
+# symlink) of this user's own. DXB_X_SOCKET_TYPE=file accepts a plain file instead (only the
+# tests: they cannot make a unix socket).
+_dxb_screen_x_ready() {
+  kill -0 "$2" 2> /dev/null || return 1
+  [[ -O $1 && ! -L $1 ]] || return 1
+  if [[ ${DXB_X_SOCKET_TYPE:-socket} == file ]]; then [[ -f $1 ]]; else [[ -S $1 ]]; fi
 }
 
 # _dxb_screen_cookie FILE N: a new X authority FILE for display :N with a random cookie. The
@@ -362,7 +377,8 @@ _dxb_screen_cookie() {
 
 # dxb_screen_session_run S: the session itself. Reads S.env (never the radio record), writes
 # client.conf (no sound server may spawn) and the X cookie into S.d, starts Xvnc on the session's
-# fixed display (SCREEN=yes; ready when its X socket exists) and openbox, the private PulseAudio
+# fixed display (SCREEN=yes; ready once it runs and its X socket is a socket of this user's own)
+# and openbox, the private PulseAudio
 # (AUDIO=pulse), then the program (app_APP_command RADIO INDEX, one argument per line) with
 # HOME, DISPLAY, XAUTHORITY, XDG_RUNTIME_DIR=S.d and PULSE_SERVER / PULSE_CLIENTCONFIG set for
 # every program (an ALSA one too). The program also sees APP, RADIO, INDEX, DEVICE, CARD, RIGCTLD
@@ -402,13 +418,13 @@ dxb_screen_session_run() {
     xs=$DXB_X11_UNIX_DIR/X$n
     "${xv[@]}" &
     xpid=$!
-    for (( i = 0; i < 300; i++ )); do
-      [[ -e $xs ]] && break
+    for (( i = 0; i < DXB_XVNC_WAIT_S * 10; i++ )); do
+      _dxb_screen_x_ready "$xs" "$xpid" && break
       kill -0 "$xpid" 2> /dev/null || break
       (( _DXB_SCREEN_TERM )) && break
       command sleep 0.1
     done
-    if [[ ! -e $xs ]]; then
+    if ! _dxb_screen_x_ready "$xs" "$xpid"; then
       (( _DXB_SCREEN_TERM )) || echo "Xvnc did not start for $s (display :$n)" >&2
       _dxb_screen_end "$xpid"
       (( _DXB_SCREEN_TERM )) && return 0

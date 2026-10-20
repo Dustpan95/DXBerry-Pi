@@ -246,9 +246,6 @@ dxb_apps_user_ensure() {
   return $rc
 }
 
-# dxb_apps_own PATH...: hand PATHs (and everything under them) to dxbapps.
-dxb_apps_own() { (( $# )) || return 0; "$DXB_CHOWN" -R "$DXB_APPS_USER:$DXB_APPS_USER" "$@"; }
-
 # ---- first fill ----------------------------------------------------------------------------
 # A program's settings for a radio are filled once (callsign, grid, ...); the mark says it was
 # done, and it outlives a removal so a reinstall continues where the operator left off.
@@ -535,7 +532,7 @@ dxb_apps_remove() {
 # packages - delete $DXB_APPS_OPT/NAME (all but what the module's app_NAME_keep names), then the
 # module's optional app_NAME_remove_extra. Settings under $DXB_APPS_HOME and the first-fill marks
 # stay, so a reinstall continues where the operator left off. 0 ok, 3 unknown, 5 a radio runs it,
-# 6 nothing changed, 8 something changed (a running or enabled session was stopped, the package
+# 6 nothing changed (also: the radio record could not be read), 8 something changed (a running or enabled session was stopped, the package
 # went) but a later step failed.
 _dxb_apps_remove() {
   local name=$1 row src label pkg u rc=0 fail=6 owners
@@ -543,7 +540,10 @@ _dxb_apps_remove() {
   src=$(_dxb_apps_source "$name") || return 6
   label=$(jq -r .label <<< "$row")
   [[ $(jq -r .type <<< "$src") != builtin ]] || { _dxb_apps_builtin_refusal "$label"; return 6; }
-  if [[ -f $DXB_RADIOS_FILE ]]; then dxb_radio_load > /dev/null 2>&1 || DXB_RADIOS=$(dxb_radio_empty_record); fi
+  # a record that cannot be read could hide an owner: nothing is removed then
+  if [[ -f $DXB_RADIOS_FILE ]] && ! dxb_radio_load > /dev/null 2>&1; then
+    echo "the radio record could not be read; nothing removed" >&2; return 6
+  fi
   [[ -n ${DXB_RADIOS:-} ]] || DXB_RADIOS=$(dxb_radio_empty_record)
   owners=$(jq -r --arg a "$name" '[.radios | to_entries[] | select(.value.owner == $a) | .key] | join(", ")' <<< "$DXB_RADIOS")
   [[ -z $owners ]] || { echo "$name runs on $owners; switch $owners to another program first" >&2; return 5; }

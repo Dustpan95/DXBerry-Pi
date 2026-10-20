@@ -473,8 +473,3 @@ test_apps_wiring_carries_label_hash_and_every_ptt_method() {
   dxb_apps_wiring nope > /dev/null 2>&1; assert_eq "$?" "3"
 }
 
-test_apps_own_hands_paths_to_dxbapps() {
-  fx_apps_env
-  assert_ok dxb_apps_own "$DXB_APPS_HOME/.config" "$DXB_APPS_HOME/.fldigi-radio2"
-  assert_contains "$(cat "$TEST_TMP/calls")" "chown -R dxbapps:dxbapps $DXB_APPS_HOME/.config $DXB_APPS_HOME/.fldigi-radio2"
-}

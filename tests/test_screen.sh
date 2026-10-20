@@ -19,7 +19,7 @@ source "$DXB_ROOT/tests/fixtures/apps.sh"
 sc_env() {
   fx_apps_env
   # sc_fakes' stand-ins are exported into this shared shell: never into the next test
-  unset GAMMA_FAIL GAMMA_CMD
+  unset GAMMA_FAIL GAMMA_CMD DXB_X_SOCKET_TYPE DXB_XVNC_WAIT_S
   GAMMA_AUDIO=''
   export DXB_XVNC=Xvnc DXB_OPENBOX=openbox DXB_PULSEAUDIO=pulseaudio DXB_SCREEN_STOP_WAIT_S=10
   export DXB_APPS_DIR=$TEST_TMP/apps DXB_APPS_TSV=$TEST_TMP/apps.tsv DXB_SHARE=$DXB_ROOT/provision/share \
@@ -232,6 +232,18 @@ test_screen_prepare_writes_settings_as_dxbapps_with_input_on_stdin() {
   assert_eq "$(jq -r .key "$TEST_TMP/gamma-logbook")" "SECRET-KEY-123"
   assert_eq "$(jq -c . "$TEST_TMP/gamma-station")" '{"call":"W0BTE","grid":"EM28qv"}'
   assert_eq "$(jq -r .rigctld "$TEST_TMP/gamma-wiring")" "127.0.0.1:4534"
+  # no root process ever has the key in its arguments (/proc/PID/cmdline is world-readable): jq,
+  # which builds the input, is watched through a shim on PATH for this one command
+  local real; real=$(command -v jq)
+  mkdir -p "$TEST_TMP/shim"
+  printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/jq-argv"\nexec %s "$@"\n' "$TEST_TMP" "$real" > "$TEST_TMP/shim/jq"
+  chmod 755 "$TEST_TMP/shim/jq"
+  rm -f "$DXB_APPS_STATE/firstfill/gamma-radio2" "$TEST_TMP/settings-stdin"
+  assert_ok env PATH="$TEST_TMP/shim:$PATH" DXB_LIB="$TEST_TMP/lib" "$DXB_ROOT/provision/bin/dxberry-app" prepare gamma-radio2
+  [[ -s $TEST_TMP/jq-argv ]] || _fail "the jq shim was never called"
+  assert_contains "$(cat "$TEST_TMP/jq-argv")" "logbook: ."
+  assert_not_contains "$(cat "$TEST_TMP/jq-argv")" "SECRET-KEY-123"
+  assert_eq "$(jq -r '.logbook.key' "$TEST_TMP/settings-stdin")" "SECRET-KEY-123"
   # nothing to do: no settings step at all
   : > "$TEST_TMP/calls"
   assert_ok sc_app prepare gamma-radio2
@@ -402,7 +414,8 @@ esac
 while :; do sleep 0.1; done
 PROG
   chmod 755 "$b/Xvnc" "$b/openbox" "$b/prog"
-  export DXB_XVNC=$b/Xvnc DXB_OPENBOX=$b/openbox GAMMA_CMD=$b/prog DXB_SCREEN_STOP_WAIT_S=1
+  # the stand-in makes a plain file where Xvnc makes a socket (a test cannot make a unix socket)
+  export DXB_XVNC=$b/Xvnc DXB_OPENBOX=$b/openbox GAMMA_CMD=$b/prog DXB_SCREEN_STOP_WAIT_S=1 DXB_X_SOCKET_TYPE=file
 }
 sc_wait_for() { local i; for (( i = 0; i < 100; i++ )); do [[ -e $1 ]] && return 0; command sleep 0.05; done; return 1; }
 sc_session() { PROG_MODE=${PROG_MODE:-exit} DXB_FAKE_EUID=900 timeout 20 "$DXB_ROOT/provision/bin/dxberry-app" session gamma-radio2; }
@@ -438,6 +451,25 @@ test_screen_session_clears_a_stale_display_lock_only() {
   sc_session 2> "$TEST_TMP/err"; assert_eq "$?" "6"
   assert_contains "$(cat "$TEST_TMP/err")" "display :102 is in use (process $$"
   [[ -e $TEST_TMP/prog-env ]] && _fail "nothing starts on a display that is in use"
+  # a FIFO or a symlink in the lock's place is refused before anything reads it (never hangs)
+  rm -f "$DXB_X_LOCK_DIR/.X102-lock"; mkfifo "$DXB_X_LOCK_DIR/.X102-lock"
+  sc_session 2> "$TEST_TMP/err"; assert_eq "$?" "6"
+  assert_contains "$(cat "$TEST_TMP/err")" "is not a lock file"
+  rm -f "$DXB_X_LOCK_DIR/.X102-lock"; echo "  $$" > "$TEST_TMP/other"; ln -s "$TEST_TMP/other" "$DXB_X_LOCK_DIR/.X102-lock"
+  sc_session 2> "$TEST_TMP/err"; assert_eq "$?" "6"
+  assert_contains "$(cat "$TEST_TMP/err")" "is not a lock file"
+  [[ -e $TEST_TMP/prog-env ]] && _fail "nothing starts behind a lock that is not a file"
+}
+
+# Xvnc is ready only once it runs and its X socket is a socket of the session's own: a plain file
+# (what the stand-in makes) is not, and the session fails rather than start the program blind
+test_screen_session_waits_for_a_real_x_socket() {
+  sc_env; sc_owned radio2 gamma; sc_app prepare gamma-radio2; sc_fakes
+  unset DXB_X_SOCKET_TYPE
+  DXB_XVNC_WAIT_S=1 sc_session 2> "$TEST_TMP/err"; assert_eq "$?" "6"
+  assert_contains "$(cat "$TEST_TMP/err")" "Xvnc did not start for gamma-radio2 (display :102)"
+  [[ -e $TEST_TMP/prog-env ]] && _fail "the program never starts without its screen"
+  assert_eq "$(cat "$TEST_TMP/helpers")" "Xvnc ended"
 }
 
 # ruling 9: a stop sends the program TERM; one that ignores it is killed after the wait. Either
@@ -470,6 +502,11 @@ test_screen_remove_job_rechecks_the_owner_under_the_record_lock() {
   DXB_RADIOS=$(dxb_radio_empty_record)          # what the command saw: nobody runs gamma
   dxb_apps_remove gamma > /dev/null 2> "$TEST_TMP/err"; assert_eq "$?" "5"
   assert_contains "$(cat "$TEST_TMP/err")" "gamma runs on radio2; switch radio2 to another program first"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "apt-get"
+  # a record that cannot be read could hide an owner: nothing is removed
+  echo '{"radios":' > "$DXB_RADIOS_FILE"
+  dxb_apps_remove gamma > /dev/null 2> "$TEST_TMP/err"; assert_eq "$?" "6"
+  assert_contains "$(cat "$TEST_TMP/err")" "the radio record could not be read; nothing removed"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "apt-get"
   if command -v flock > /dev/null 2>&1; then
     ( exec 8> "$DXB_RUN_DIR/record.lock"; flock 8; : > "$TEST_TMP/held"; exec sleep 5 ) &
