@@ -7,43 +7,20 @@
 #   system                     apt-get upgrade, never asking
 #   job                        the last update: running or finished, its exit and output
 #   prereleases on|off         whether DXBerry pre-releases are offered
-#   apply KIND                 an update job itself, started by the commands above
+#   apply KIND [NAME]          an update job itself, started by the commands above or dxberry-app
 # --json on any subcommand. Exit: 0 ok, 1 not root, 2 usage, 5 busy, 6 failed (nothing changed), 8 changed with a failed later step.
 set -uo pipefail
 
 DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
-for _m in common config graywolf settings update; do
+# gps, radio and apps: the program jobs' bodies (dxb_apps_install, dxb_apps_remove)
+for _m in common config graywolf settings update gps radio apps; do
   # shellcheck disable=SC1090
   source "$DXB_LIB/$_m.sh"
 done
-: "${DXB_UPDATE_CMD:=/opt/dxberry/bin/dxberry-update}"
-: "${DXB_UPDATE_LOCK_WAIT:=30}"
-: "${DXB_CONFIG_LOCK_WAIT:=30}"
 
 usage() { sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 JSON=0
 REFRESH=0
-
-lock_update() {
-  local f=$DXB_RUN_DIR/update.lock
-  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
-  exec 6> "$f" || return 0
-  command -v flock > /dev/null 2>&1 || return 0
-  flock -w "$DXB_UPDATE_LOCK_WAIT" 6 || { echo "another update command is running; try again" >&2; return 5; }
-}
-
-# lock_settings: dxberry-config's own lock (its lock_config: the same file, fd 7), taken after the
-# update lock, so an update never starts while a settings change is being started, kept or undone.
-# dxberry-config never takes the update lock, so the two commands can never wait on each other;
-# and it holds its lock only while it starts a job or keeps / undoes a network change, never for
-# a whole settings job.
-lock_settings() {
-  local f=$DXB_RUN_DIR/config.lock
-  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
-  exec 7> "$f" || return 0
-  command -v flock > /dev/null 2>&1 || return 0
-  flock -w "$DXB_CONFIG_LOCK_WAIT" 7 || { echo "a settings change is in progress; try again once it has started" >&2; return 5; }
-}
 
 cmd_check() {
   local j
@@ -60,44 +37,24 @@ cmd_check() {
     "checked \(.checked_at | todate)\(if .cached then " (cached)" else "" end)"' <<< "$j"
 }
 
+# cmd_start KIND: start an update job (dxb_update_job_start; the update lock is held). 5 busy, 6 not started.
 cmd_start() {
-  local kind=$1 unit
-  local -a cmd=("$DXB_UPDATE_CMD" apply "$kind")
-  lock_settings || return 5
-  if dxb_update_job_running; then echo "an update is still running; wait for it to finish (sudo dxberry-update job)" >&2; return 5; fi
-  if dxb_settings_job_running; then echo "a settings change is still being applied; wait for it to finish (sudo dxberry-config job)" >&2; return 5; fi
-  if dxb_netsafe_pending; then echo "the last network change waits to be kept or undone first (sudo dxberry-config confirm, or revert)" >&2; return 5; fi
-  # a copy left by an earlier job is dropped whatever this job's kind (no job is running now)
-  rm -rf "$DXB_UPDATE_WORK/run"
-  if [[ $kind == dxberry || $kind == rollback ]]; then
-    # the job replaces /opt/dxberry, so it runs from a copy of this command and its libraries
-    if ! { ( umask 077; mkdir -p "$DXB_UPDATE_WORK/run" ) && cp -r "$DXB_OPT/bin" "$DXB_OPT/lib" "$DXB_UPDATE_WORK/run/"; }; then
-      echo "could not copy the update command to $DXB_UPDATE_WORK/run" >&2; return 6
-    fi
-    cmd=(env "DXB_LIB=$DXB_UPDATE_WORK/run/lib" "$DXB_UPDATE_WORK/run/bin/dxberry-update" apply "$kind")
-  fi
-  unit="dxberry-job-update-$kind-$(date +%s)"
-  # the last job's result is moved aside, not deleted: the new job must never be shown with the old
-  # exit, but a start that fails puts it back (the page still shows what happened last)
-  rm -f "$DXB_UPDATE_RESULT.last"
-  if [[ -e $DXB_UPDATE_RESULT ]]; then mv -f "$DXB_UPDATE_RESULT" "$DXB_UPDATE_RESULT.last"; fi
-  if ! "$DXB_SYSTEMD_RUN" --quiet --collect --unit="$unit" --description="DXBerry update ($kind)" "${cmd[@]}" > /dev/null 2>&1; then
-    if [[ -e $DXB_UPDATE_RESULT.last ]]; then mv -f "$DXB_UPDATE_RESULT.last" "$DXB_UPDATE_RESULT"; fi
-    echo "could not start the update job" >&2; return 6
-  fi
-  rm -f "$DXB_UPDATE_RESULT.last"
-  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
-  jq -cn --arg u "$unit" --arg k "$kind" --argjson t "$(date +%s)" '{unit: $u, kind: $k, started: $t}' > "$DXB_UPDATE_JOB_FILE"
-  if (( JSON )); then jq -cn --arg u "$unit" --arg k "$kind" '{ok: true, job: $u, kind: $k}'; else echo "started $unit (follow it with: sudo dxberry-update job)"; fi
+  local kind=$1 rc
+  dxb_update_job_start "$kind"; rc=$?
+  (( rc == 0 )) || return $rc
+  if (( JSON )); then jq -cn --arg u "$DXB_UPDATE_JOB_UNIT" --arg k "$kind" '{ok: true, job: $u, kind: $k}'
+  else echo "started $DXB_UPDATE_JOB_UNIT (follow it with: sudo dxberry-update job)"; fi
 }
 
 cmd_apply() {
-  local kind=$1 rc
+  local kind=$1 name=${2:-} rc
   case $kind in
     graywolf) dxb_update_apply_graywolf ;;
     dxberry) dxb_update_apply_dxberry ;;
     rollback) dxb_update_apply_rollback ;;
     system) dxb_update_apply_system ;;
+    app-install) dxb_apps_install "$name" ;;
+    app-remove) dxb_apps_remove "$name" ;;
   esac
   rc=$?
   # the next check shows what is installed now
@@ -145,7 +102,6 @@ cmd_prereleases() {
   if (( JSON )); then jq -cn --argjson p "$([[ $1 == on ]] && echo true || echo false)" '{ok: true, include_prereleases: $p}'; else echo "pre-releases $1"; fi
 }
 
-# shellcheck disable=SC2178,SC2128  # cmd is a local array in cmd_start() and a local string here; separate functions, separately scoped
 main() {
   local cmd='' a
   local -a args=()
@@ -160,7 +116,12 @@ main() {
   case $cmd in
     -h|--help) usage; return 0 ;;
     check|graywolf|dxberry|rollback|system|job|prereleases) ;;
-    apply) [[ ${args[0]:-} =~ ^(graywolf|dxberry|rollback|system)$ ]] || { echo "usage: dxberry-update apply graywolf|dxberry|rollback|system" >&2; return 2; } ;;
+    apply)
+      if [[ ${args[0]:-} =~ ^(app-install|app-remove)$ ]]; then
+        [[ ${#args[@]} -eq 2 && ${args[1]} =~ ^[a-z][a-z0-9_]{0,15}$ ]] || { echo "usage: dxberry-update apply ${args[0]} NAME" >&2; return 2; }
+      else
+        [[ ${args[0]:-} =~ ^(graywolf|dxberry|rollback|system)$ ]] || { echo "usage: dxberry-update apply graywolf|dxberry|rollback|system|app-install NAME|app-remove NAME" >&2; return 2; }
+      fi ;;
     '') usage >&2; return 2 ;;
     *) echo "unknown subcommand: $cmd" >&2; usage >&2; return 2 ;;
   esac
@@ -171,10 +132,10 @@ main() {
   export DXB_LOG_FILE=/dev/null
   case $cmd in
     check) cmd_check ;;
-    graywolf|dxberry|rollback|system) lock_update || return 5; cmd_start "$cmd" ;;
+    graywolf|dxberry|rollback|system) dxb_update_lock || return 5; cmd_start "$cmd" ;;
     job) cmd_job ;;
     prereleases) cmd_prereleases "${args[0]:-}" ;;
-    apply) cmd_apply "${args[0]}" ;;
+    apply) cmd_apply "${args[0]}" "${args[1]:-}" ;;
   esac
 }
 

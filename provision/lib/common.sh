@@ -57,7 +57,9 @@ dxb_status_write() {
   } > "$f"
 }
 
-dxb_require_root() { (( EUID == 0 )) || { echo "this command must run as root (use sudo)" >&2; exit 1; }; }
+# dxb_require_root: exit 1 unless running as root. DXB_FAKE_EUID stands in for the real EUID (the
+# tests run the commands as themselves).
+dxb_require_root() { (( ${DXB_FAKE_EUID:-$EUID} == 0 )) || { echo "this command must run as root (use sudo)" >&2; exit 1; }; }
 
 # Single-quote STRING for a bash-array style file such as dietpi-wifi.txt.
 dxb_squote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }

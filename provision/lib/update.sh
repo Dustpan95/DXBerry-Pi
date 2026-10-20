@@ -397,3 +397,74 @@ dxb_update_apply_system() {
 
 dxb_update_job_unit() { [[ -f $DXB_UPDATE_JOB_FILE ]] && jq -r '.unit // empty' "$DXB_UPDATE_JOB_FILE" 2> /dev/null; return 0; }
 dxb_update_job_running() { local u; u=$(dxb_update_job_unit); [[ -n $u ]] && systemctl is-active --quiet "$u"; }
+
+# ---- starting a job (dxberry-update, and dxberry-app's install and remove: ruling 12) --------
+# A job is "dxberry-update apply KIND [NAME]" in a transient unit. Expects settings.sh (the
+# settings job, the pending network change and DXB_SYSTEMD_RUN).
+: "${DXB_UPDATE_CMD:=/opt/dxberry/bin/dxberry-update}"
+: "${DXB_UPDATE_LOCK_WAIT:=30}"
+: "${DXB_CONFIG_LOCK_WAIT:=30}"
+
+# dxb_update_lock: the update lock (update.lock, fd 6), held until the command exits: one update,
+# install or removal is started at a time. 0 ok (also when there is no flock), 5 busy.
+dxb_update_lock() {
+  local f=$DXB_RUN_DIR/update.lock
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  exec 6> "$f" || return 0
+  command -v flock > /dev/null 2>&1 || return 0
+  flock -w "$DXB_UPDATE_LOCK_WAIT" 6 || { echo "another update command is running; try again" >&2; return 5; }
+}
+
+# dxb_update_lock_settings: dxberry-config's own lock (its lock_config: the same file, fd 7), taken
+# after the update lock, so an update never starts while a settings change is being started, kept
+# or undone. dxberry-config never takes the update lock, so the two commands can never wait on
+# each other; and it holds its lock only while it starts a job or keeps / undoes a network change,
+# never for a whole settings job. 0 ok, 5 busy.
+dxb_update_lock_settings() {
+  local f=$DXB_RUN_DIR/config.lock
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  exec 7> "$f" || return 0
+  command -v flock > /dev/null 2>&1 || return 0
+  flock -w "$DXB_CONFIG_LOCK_WAIT" 7 || { echo "a settings change is in progress; try again once it has started" >&2; return 5; }
+}
+
+# dxb_update_job_start KIND [NAME]: start the job "dxberry-update apply KIND [NAME]" and record it
+# in the job file ({unit, kind, name (null without one), started}); the unit's name is left in
+# DXB_UPDATE_JOB_UNIT. The caller holds dxb_update_lock; this takes the settings lock and refuses
+# while an update or settings job runs or a network change waits to be kept or undone. A dxberry
+# or rollback job runs from a copy of the command, because it replaces $DXB_OPT. 0 started, 5
+# busy, 6 not started.
+DXB_UPDATE_JOB_UNIT=''
+dxb_update_job_start() {
+  local kind=$1 name=${2:-} unit
+  local -a cmd=("$DXB_UPDATE_CMD" apply "$kind")
+  [[ -z $name ]] || cmd+=("$name")
+  DXB_UPDATE_JOB_UNIT=''
+  dxb_update_lock_settings || return 5
+  if dxb_update_job_running; then echo "an update is still running; wait for it to finish (sudo dxberry-update job)" >&2; return 5; fi
+  if dxb_settings_job_running; then echo "a settings change is still being applied; wait for it to finish (sudo dxberry-config job)" >&2; return 5; fi
+  if dxb_netsafe_pending; then echo "the last network change waits to be kept or undone first (sudo dxberry-config confirm, or revert)" >&2; return 5; fi
+  # a copy left by an earlier job is dropped whatever this job's kind (no job is running now)
+  rm -rf "$DXB_UPDATE_WORK/run"
+  if [[ $kind == dxberry || $kind == rollback ]]; then
+    if ! { ( umask 077; mkdir -p "$DXB_UPDATE_WORK/run" ) && cp -r "$DXB_OPT/bin" "$DXB_OPT/lib" "$DXB_UPDATE_WORK/run/"; }; then
+      echo "could not copy the update command to $DXB_UPDATE_WORK/run" >&2; return 6
+    fi
+    cmd=(env "DXB_LIB=$DXB_UPDATE_WORK/run/lib" "$DXB_UPDATE_WORK/run/bin/dxberry-update" apply "$kind")
+  fi
+  unit="dxberry-job-update-$kind${name:+-$name}-$(date +%s)"
+  # the last job's result is moved aside, not deleted: the new job must never be shown with the old
+  # exit, but a start that fails puts it back (the page still shows what happened last)
+  rm -f "$DXB_UPDATE_RESULT.last"
+  if [[ -e $DXB_UPDATE_RESULT ]]; then mv -f "$DXB_UPDATE_RESULT" "$DXB_UPDATE_RESULT.last"; fi
+  if ! "$DXB_SYSTEMD_RUN" --quiet --collect --unit="$unit" --description="DXBerry update ($kind${name:+ $name})" "${cmd[@]}" > /dev/null 2>&1; then
+    if [[ -e $DXB_UPDATE_RESULT.last ]]; then mv -f "$DXB_UPDATE_RESULT.last" "$DXB_UPDATE_RESULT"; fi
+    echo "could not start the update job" >&2; return 6
+  fi
+  rm -f "$DXB_UPDATE_RESULT.last"
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  jq -cn --arg u "$unit" --arg k "$kind" --arg n "$name" --argjson t "$(date +%s)" \
+    '{unit: $u, kind: $k, name: (if $n == "" then null else $n end), started: $t}' > "$DXB_UPDATE_JOB_FILE"
+  # shellcheck disable=SC2034  # read by the commands that start jobs (dxberry-update, dxberry-app)
+  DXB_UPDATE_JOB_UNIT=$unit
+}

@@ -1,0 +1,231 @@
+#!/bin/bash
+# dxberry-app: programs and their screen sessions. Spec: docs/design/2026-10-19-applications.md sections 7 and 12
+#   list                       every program: installed or not, its version, where it comes from, its sessions
+#   install NAME               install a program, as an update job (follow it with: dxberry-update job)
+#   remove NAME                remove a program, as an update job; its settings stay
+#   start RADIO                start the program that owns RADIO
+#   stop RADIO                 stop it; the radio stays its own
+#   screen SESSION             a session's state and screen socket (needs no root)
+#   prepare SESSION            the session unit's root step: first fill, wiring, environment
+#   present SESSION            the session unit's condition: 0 when its radio is plugged in
+#   stopped SESSION            after a session ended: wait for a radio that was unplugged
+#   session SESSION            the session itself (its unit runs it as dxbapps)
+# SESSION is PROGRAM-RADIO, e.g. wsjtx-radio2. --json on any subcommand.
+# Exit: 0 ok, 1 not root, 2 usage, 3 no such program/radio/session, 4 radio unplugged, 5 busy, 6 failed (nothing changed), 7 first fill or wiring failed, 8 changed with a failed later step.
+set -uo pipefail
+
+DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
+for _m in common config graywolf settings update gps radio rigctld apps screen; do
+  # shellcheck disable=SC1090
+  source "$DXB_LIB/$_m.sh"
+done
+# the libraries call systemctl by name; DXB_SYSTEMCTL stands in for it everywhere in this command
+if [[ $DXB_SYSTEMCTL != systemctl ]]; then systemctl() { "$DXB_SYSTEMCTL" "$@"; }; fi
+
+usage() { sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+JSON=0
+json_ok() { (( JSON )) && jq -cn '{ok: true}'; return 0; }
+
+# lock_record: dxberry-radio's record lock (fd 8): a start or stop never runs while a claim,
+# release or other change to the radio record is under way.
+lock_record() {
+  local f=$DXB_RUN_DIR/record.lock
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  if ! exec 8> "$f"; then dxb_warn "could not open $f; going on without the record lock"; return 0; fi
+  command -v flock > /dev/null 2>&1 || return 0
+  flock -w "${DXB_RADIO_LOCK_WAIT:-180}" 8 || { dxb_error "a radio change is still running; try again when it has finished"; return 5; }
+}
+
+# load_config: dxberry.txt for the first fill (callsign, position); its absence is fine.
+# shellcheck disable=SC2034  # the GPS keys are read by gps.sh, which the first fill reaches for the grid
+load_config() {
+  local f; f="$(dxb_boot_dir)/dxberry.txt"
+  if [[ -f $f ]]; then dxb_config_load "$f" > /dev/null 2>&1; dxb_config_validate > /dev/null 2>&1; return 0; fi
+  DXB_CFG[_GPS]=1; DXB_CFG[GPS_DEVICE]=auto; DXB_CFG[GPS_PPS]=''; DXB_CFG[_GPS_PATH]=''; DXB_CFG[GPS_BAUD]=9600
+  return 0
+}
+
+# _source_kind SOURCE: where a catalog source comes from, as the page says it.
+_source_kind() { case $1 in builtin) echo builtin ;; apt:*) echo debian ;; *) echo upstream ;; esac; }
+
+# _program_facts NAME: {sessions, single_copy, open} from NAME's module (none: no sessions, not
+# single-copy, nothing to open). The module is loaded in a subshell, so it defines nothing here.
+_program_facts() (
+  local name=$1 single=false open=null session=0 loaded=0 r st sess='[]'
+  if dxb_app_load "$name" 2> /dev/null; then
+    loaded=1
+    dxb_app_is_multi "$name" || single=true
+    if dxb_app_is_session "$name"; then session=1; open=$(dxb_screen_open "$name"); fi
+  fi
+  for r in $(jq -r --arg a "$name" '.radios | to_entries[] | select(.value.owner == $a) | .key' <<< "$DXB_RADIOS"); do
+    if (( session )); then st=$(dxb_screen_state "$name-$r")
+    elif (( loaded )) && declare -F "app_${name}_unit" > /dev/null; then st=$(dxb_screen_unit_state "$(dxb_app_unit "$name" "$r")")
+    else st=stopped; fi
+    sess=$(jq -c --arg r "$r" --arg s "$st" '. + [{radio: $r, state: $s}]' <<< "$sess")
+  done
+  jq -cn --argjson s "$sess" --argjson c "$single" --argjson o "$open" '{sessions: $s, single_copy: $c, open: $o}'
+)
+
+cmd_list() {
+  local rows name row v facts out='[]'
+  rows=$(dxb_apps_rows) || return 6
+  dxb_radio_load 2> /dev/null || DXB_RADIOS=$(dxb_radio_empty_record)
+  for name in $(jq -r '.[].name' <<< "$rows"); do
+    row=$(jq -c --arg n "$name" '.[] | select(.name == $n)' <<< "$rows")
+    v=$(dxb_apps_version "$name" 2> /dev/null)
+    facts=$(_program_facts "$name")
+    out=$(jq -c --argjson r "$row" --arg src "$(_source_kind "$(jq -r .source <<< "$row")")" --arg v "$v" --argjson f "$facts" \
+      '. + [{name: $r.name, label: $r.label, kind: $r.kind, description: $r.description, source: $src,
+             installed: ($v != ""), version: (if $v == "" then null else $v end)} + $f]' <<< "$out")
+  done
+  if (( JSON )); then printf '%s\n' "$out"; return 0; fi
+  jq -r '.[] | "\(.name)  \(.label)  \(if .installed then "installed \(.version)" else "not installed" end)  from \(.source)\(
+    if (.sessions | length) > 0 then "  " + ([.sessions[] | "\(.radio): \(.state)"] | join(", ")) else "" end)"' <<< "$out"
+}
+
+# cmd_job install|remove NAME: start the program's install or removal as an update job (ruling 12).
+cmd_job() {
+  local what=$1 name=$2 row radios
+  row=$(dxb_apps_row "$name" 2> /dev/null) || { echo "no such program: $name" >&2; return 3; }
+  if [[ $(jq -r .source <<< "$row") == builtin ]]; then _dxb_apps_builtin_refusal "$(jq -r .label <<< "$row")"; return 6; fi
+  if [[ $what == remove ]]; then
+    dxb_radio_load || return 6
+    radios=$(jq -r --arg a "$name" '[.radios | to_entries[] | select(.value.owner == $a) | .key] | join(", ")' <<< "$DXB_RADIOS")
+    [[ -z $radios ]] || { echo "$name runs on $radios; switch $radios to another program first" >&2; return 5; }
+  fi
+  dxb_update_lock || return 5
+  dxb_update_job_start "app-$what" "$name" || return $?
+  if (( JSON )); then jq -cn --arg u "$DXB_UPDATE_JOB_UNIT" --arg k "app-$what" --arg n "$name" '{ok: true, job: $u, kind: $k, name: $n}'
+  else echo "started $DXB_UPDATE_JOB_UNIT (follow it with: sudo dxberry-update job)"; fi
+}
+
+# cmd_session_ctl start|stop RADIO: start or stop the session of RADIO's owner (a session program).
+cmd_session_ctl() {
+  local what=$1 r=$2 owner s
+  lock_record || return 5
+  dxb_radio_load || return 6
+  dxb_radio_get "$r" > /dev/null || return 3
+  owner=$(jq -r --arg n "$r" '.radios[$n].owner' <<< "$DXB_RADIOS")
+  [[ -n $owner ]] || { dxb_error "no program owns radio $r; choose one for it first"; return 3; }
+  if ! dxb_app_load "$owner" 2> /dev/null || ! dxb_app_is_session "$owner"; then
+    dxb_error "$owner on radio $r does not run in a screen session"; return 3
+  fi
+  s="$owner-$r"
+  if [[ $what == start ]]; then
+    dxb_radio_scan_cache
+    dxb_radio_present "$r" || { dxb_error "radio $r is not plugged in"; return 4; }
+    dxb_app_session_start "$owner" "$r" || return 5
+  else
+    dxb_app_session_stop "$owner" "$r"
+  fi
+  if (( JSON )); then jq -cn --arg s "$s" --arg st "$(dxb_screen_state "$s")" '{ok: true, session: $s, state: $st}'; fi
+  return 0
+}
+
+# cmd_screen SESSION: what the program tab needs, for any user. The env file is read as data.
+cmd_screen() {
+  local s=$1 ar a r envf state label rlabel scr=yes open='{"kind":"screen"}' sock j
+  ar=$(dxb_screen_split "$s") || return 2
+  a=${ar% *}; r=${ar#* }
+  envf=$(dxb_screen_envfile "$s"); state=$(dxb_screen_state "$s")
+  if dxb_app_load "$a" 2> /dev/null; then
+    open=$(dxb_screen_open "$a"); label=$(dxb_screen_label "$a"); scr=$(dxb_screen_wants_screen "$a")
+  else
+    label=$a
+  fi
+  rlabel=$r
+  if [[ -r $envf ]]; then
+    dxb_screen_parse "$(< "$envf")"
+    label=${DXB_SCREEN_ENV[LABEL]:-$label}; rlabel=${DXB_SCREEN_ENV[RADIO_LABEL]:-$rlabel}; scr=${DXB_SCREEN_ENV[SCREEN]:-$scr}
+  elif [[ $state == stopped ]]; then
+    echo "no such session: $s (never prepared and not running)" >&2; return 3
+  fi
+  sock=$(dxb_screen_sock "$s")
+  [[ $state == running && $scr == yes ]] || sock=''
+  j=$(jq -cn --arg s "$s" --arg a "$a" --arg r "$r" --arg l "$label" --arg rl "$rlabel" --arg st "$state" --arg k "$sock" --argjson o "$open" \
+    '{session: $s, app: $a, radio: $r, label: $l, radio_label: $rl, state: $st, socket: (if $k == "" then null else $k end), open: $o}')
+  if (( JSON )); then printf '%s\n' "$j"; return 0; fi
+  jq -r '"\(.label) on \(.radio_label): \(.state)\(if .socket then " (screen \(.socket))" else "" end)"' <<< "$j"
+}
+
+cmd_prepare() {
+  local rc
+  dxb_radio_load || return 6
+  dxb_radio_scan_cache
+  load_config
+  dxb_screen_prepare "$1"; rc=$?
+  (( rc == 0 )) && json_ok
+  return $rc
+}
+
+# cmd_present SESSION: 0 when the radio is plugged in; else the session waits for it, 1 (systemd
+# skips the start: the unit stays inactive, not failed).
+cmd_present() {
+  local ar r
+  ar=$(dxb_screen_split "$1") || return 2
+  r=${ar#* }
+  dxb_radio_load || return 6
+  dxb_radio_get "$r" > /dev/null || return 3
+  dxb_radio_scan_cache
+  if dxb_radio_present "$r"; then (( JSON )) && jq -cn '{present: true}'; return 0; fi
+  dxb_info "radio $r is not plugged in; $1 waits for it"
+  dxb_screen_mark_waiting "$1"
+  (( JSON )) && jq -cn '{present: false}'
+  return 1
+}
+
+cmd_stopped() {
+  dxb_radio_load 2> /dev/null || return 0
+  dxb_radio_scan_cache
+  dxb_screen_stopped "$1"
+  json_ok
+}
+
+cmd_session() {
+  if (( ${DXB_FAKE_EUID:-$EUID} == 0 )); then
+    echo "a session runs as $DXB_APPS_USER (dxberry-screen@$1.service starts it), never as root" >&2; return 1
+  fi
+  dxb_screen_split "$1" > /dev/null || return 2
+  dxb_screen_session_run "$1"
+}
+
+main() {
+  local cmd='' a
+  local -a args=()
+  for a in "$@"; do case $a in --json) JSON=1 ;; *) args+=("$a") ;; esac; done
+  cmd=${args[0]:-}; args=("${args[@]:1}")
+  case $cmd in
+    -h|--help) usage; return 0 ;;
+    list) [[ ${#args[@]} -eq 0 ]] || { echo "usage: dxberry-app list" >&2; return 2; } ;;
+    install|remove) [[ ${#args[@]} -eq 1 ]] || { echo "usage: dxberry-app $cmd NAME" >&2; return 2; } ;;
+    start|stop) [[ ${#args[@]} -eq 1 ]] || { echo "usage: dxberry-app $cmd RADIO" >&2; return 2; } ;;
+    screen|prepare|present|stopped|session) [[ ${#args[@]} -eq 1 ]] || { echo "usage: dxberry-app $cmd SESSION" >&2; return 2; } ;;
+    '') usage >&2; return 2 ;;
+    *) echo "unknown subcommand: $cmd" >&2; usage >&2; return 2 ;;
+  esac
+  case $cmd in
+    screen) export DXB_LOG_FILE=/dev/null; cmd_screen "${args[0]}"; return $? ;;
+    session) export DXB_LOG_FILE=/dev/null; cmd_session "${args[0]}"; return $? ;;
+  esac
+  dxb_require_root
+  mkdir -p "$DXB_STATE_DIR" 2> /dev/null; chmod 700 "$DXB_STATE_DIR" 2> /dev/null
+  if [[ $cmd == start || $cmd == stop ]]; then
+    # a start or stop is a radio change: it goes to the radio log, as dxberry-radio's do
+    DXB_LOG_FILE=${DXB_RADIO_LOG:-$DXB_STATE_DIR/radio.log}
+    if [[ ! -e $DXB_LOG_FILE || -f $DXB_LOG_FILE ]]; then : >> "$DXB_LOG_FILE" 2> /dev/null; chmod 600 "$DXB_LOG_FILE" 2> /dev/null; fi
+  else
+    # the unit steps and the job starts log to the journal (their stderr) only
+    : "${DXB_PROVISION_LOG:=$DXB_LOG_FILE}"
+    export DXB_LOG_FILE=/dev/null
+  fi
+  case $cmd in
+    list) cmd_list ;;
+    install|remove) cmd_job "$cmd" "${args[0]}" ;;
+    start|stop) cmd_session_ctl "$cmd" "${args[0]}" ;;
+    prepare) cmd_prepare "${args[0]}" ;;
+    present) cmd_present "${args[0]}" ;;
+    stopped) cmd_stopped "${args[0]}" ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; exit $?; fi

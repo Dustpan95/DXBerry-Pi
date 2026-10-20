@@ -1,0 +1,22 @@
+[Unit]
+Description=DXBerry-Pi program session %i
+Documentation=file:///opt/dxberry/bin/dxberry-app
+After=dxberry-radio-hotplug.service network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=dxbapps
+Group=dxbapps
+SupplementaryGroups=audio dialout dxbscreen
+UMask=0007
+ExecCondition=+/opt/dxberry/bin/dxberry-app present %i
+ExecStartPre=+/opt/dxberry/bin/dxberry-app prepare %i
+ExecStart=/opt/dxberry/bin/dxberry-app session %i
+ExecStopPost=+/opt/dxberry/bin/dxberry-app stopped %i
+TimeoutStopSec=20
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
