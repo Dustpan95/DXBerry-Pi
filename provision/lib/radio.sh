@@ -384,7 +384,8 @@ _dxb_radio_unmark_wired() {
   _dxb_radio_wired_write "$(jq -c --arg n "$1" 'del(.[$n])' <<< "$(_dxb_radio_wired_load)")"
 }
 
-# dxb_radio_apply [hotplug]: derive everything from the record. 0 ok, 6 derived-state error, 7 re-wire error.
+# dxb_radio_apply [hotplug]: derive everything from the record. 0 ok, 6 derived-state error, 7 re-wire error
+# (or an enabled session that could not be started again).
 # udev can start a hotplug apply at any moment, so the whole run is serialized on
 # $DXB_RUN_DIR/apply.lock (fd 9); a second apply waits there instead of interleaving its writes.
 # Without flock (or without the lock file) the run goes ahead with a warning: apply is idempotent,
@@ -410,6 +411,7 @@ dxb_radio_apply() {
 
 _dxb_radio_apply() {
   local mode=${1:-full} n r present rc=0 wrc h wired owner
+  local -A kinds=()
   dxb_radio_load || return 6
   dxb_radio_scan_cache
   if [[ $mode != hotplug ]]; then
@@ -420,18 +422,25 @@ _dxb_radio_apply() {
     r=$(dxb_radio_get "$n")
     if dxb_radio_present "$n"; then present=1; else present=0; dxb_info "radio $n: device absent"; fi
     (( present )) && _dxb_radio_report_alsa_id "$n"
-    dxb_rigctld_sync "$n" "$r" "$present" || rc=6
+    kinds[$n]=$(dxb_radio_owner_kind "$n")
+    dxb_rigctld_sync "$n" "$r" "$present" "${kinds[$n]}" || rc=6
   done
   # shellcheck disable=SC2046
   dxb_rigctld_stop_all_except $(dxb_radio_names)
   dxb_radio_write_state || rc=6
   for n in $(dxb_radio_names); do
     r=$(dxb_radio_get "$n"); owner=$(jq -r '.owner' <<< "$r")
-    if [[ -z $owner ]] || ! dxb_radio_present "$n"; then continue; fi
+    [[ -n $owner ]] || continue
+    # a session program wires itself when its session starts (ruling 7): apply only follows presence
+    if [[ ${kinds[$n]:-} == session ]]; then
+      _dxb_radio_apply_session "$n" "$owner" || { (( rc == 0 )) && rc=7; }
+      continue
+    fi
+    dxb_radio_present "$n" || continue
     dxb_radio_alsa_levels "$n"
     h=$(dxb_radio_wire_hash "$r"); wired=$(_dxb_radio_wired_get "$n")
     [[ $h == "$wired" ]] && continue
-    # apply never starts units, and wiring needs the owner's API. At boot the hotplug apply runs
+    # apply never starts these owners' units, and wiring needs the owner's API. At boot the hotplug apply runs
     # before graywolf.service, so a due re-wire is left for dxberry-radio-wire.service (the same
     # apply, ordered after graywolf) or the next udev event; a hand-run apply says so louder.
     if dxb_app_load "$owner" 2> /dev/null; then
@@ -463,6 +472,23 @@ _dxb_radio_apply() {
   return $rc
 }
 
+# _dxb_radio_apply_session NAME APP: an unplugged radio's session is stopped (never disabled, so
+# it comes back with the radio); a present radio's enabled session that is not running is started
+# without waiting (this can run inside dxberry-radio-hotplug.service). 0 ok, 1 start failed.
+_dxb_radio_apply_session() {
+  local n=$1 app=$2 u
+  u=$(dxb_app_session_unit "$app" "$n")
+  if ! dxb_radio_present "$n"; then
+    systemctl stop "$u" > /dev/null 2>&1 || dxb_warn "radio $n: could not stop $u"
+    return 0
+  fi
+  dxb_radio_alsa_levels "$n"
+  [[ $(systemctl is-enabled "$u" 2> /dev/null) == enabled ]] || return 0
+  systemctl is-active --quiet "$u" && return 0
+  systemctl --no-block start "$u" || { dxb_error "radio $n: could not start $u"; return 1; }
+  dxb_info "radio $n: starting $app again"
+}
+
 # ---- applications --------------------------------------------------------------------------
 dxb_app_list() { local f; for f in "$DXB_APPS_DIR"/*.sh; do [[ -f $f ]] || continue; f=${f##*/}; echo "${f%.sh}"; done; }
 dxb_app_load() {
@@ -471,19 +497,46 @@ dxb_app_load() {
   source "$DXB_APPS_DIR/$1.sh"
 }
 
-# dxb_app_catalog: [{name, label}] for every application module, the label from the module's
-# optional app_<app>_label (else the name). Each module is read in a subshell, so loading one for
-# its label defines nothing here.
+# The module contract's optional functions and their defaults (spec 6.2): app_<a>_kind prints
+# radio | rigcontrol | service (absent: radio); app_<a>_session prints yes when the program runs
+# one session unit per radio (absent: no); app_<a>_installed returns 0 when the program is
+# installed (absent: installed); app_<a>_multi prints no when it runs on one radio at a time
+# (absent: yes). Every one of these needs the module loaded first (dxb_app_load).
+dxb_app_kind() { if declare -F "app_$1_kind" > /dev/null; then "app_$1_kind"; else echo radio; fi; }
+dxb_app_is_session() { declare -F "app_$1_session" > /dev/null && [[ $("app_$1_session") == yes ]]; }
+dxb_app_is_installed() { declare -F "app_$1_installed" > /dev/null || return 0; "app_$1_installed"; }
+dxb_app_is_multi() { declare -F "app_$1_multi" > /dev/null || return 0; [[ $("app_$1_multi") != no ]]; }
+
+# dxb_app_load_owner APP: dxb_app_load for a program that is about to own a radio. 0 ok, 3 when
+# the module is missing, is not a radio program, or the program is not installed.
+dxb_app_load_owner() {
+  dxb_app_load "$1" || return 3
+  [[ $(dxb_app_kind "$1") == radio ]] || { dxb_error "$1 cannot own a radio"; return 3; }
+  dxb_app_is_installed "$1" || { dxb_error "$1 is not installed; install it from Programs"; return 3; }
+}
+
+# dxb_app_catalog: [{name, label, kind, session, installed}] for every radio-kind module, the label
+# from the module's optional app_<app>_label (else the name). Each module is read in a subshell,
+# so loading one defines nothing here; one that cannot be loaded is left out.
 dxb_app_catalog() {
-  local a label out='[]'
+  local a row out='[]'
   for a in $(dxb_app_list); do
-    label=$( dxb_app_load "$a" 2> /dev/null && declare -F "app_${a}_label" > /dev/null && "app_${a}_label" ) || label=''
-    out=$(jq -c --arg n "$a" --arg l "${label:-$a}" '. + [{name: $n, label: $l}]' <<< "$out")
+    row=$(
+      dxb_app_load "$a" 2> /dev/null || exit 1
+      [[ $(dxb_app_kind "$a") == radio ]] || exit 1
+      label=''; declare -F "app_${a}_label" > /dev/null && label=$("app_${a}_label")
+      session=false; dxb_app_is_session "$a" && session=true
+      installed=false; dxb_app_is_installed "$a" && installed=true
+      jq -cn --arg n "$a" --arg l "${label:-$a}" --argjson s "$session" --argjson i "$installed" \
+        '{name: $n, label: $l, kind: "radio", session: $s, installed: $i}'
+    ) || continue
+    out=$(jq -c --argjson r "$row" '. + [$r]' <<< "$out")
   done
   printf '%s\n' "$out"
 }
 dxb_app_owned() { jq -r --arg a "$1" '[.radios[] | select(.owner == $a)] | length' <<< "$DXB_RADIOS"; }
-dxb_app_unit() { "app_$1_unit"; }
+# dxb_app_unit APP [RADIO]: the unit that runs APP (for RADIO, when the program runs one per radio).
+dxb_app_unit() { "app_$1_unit" "${@:2}"; }
 dxb_app_wire() {
   dxb_radio_alsa_levels "$2"   # the card's level, whatever the wiring mode - a names app plays through it too
   [[ $(jq -r --arg n "$2" '.radios[$n].wiring' <<< "$DXB_RADIOS") == names ]] && return 0
@@ -498,7 +551,52 @@ dxb_app_start() {
   if declare -F "app_$1_wait_ready" > /dev/null; then "app_$1_wait_ready" || { dxb_error "$u did not become ready"; return 5; }; fi
   return 0
 }
-dxb_app_stop_if_idle() { (( $(dxb_app_owned "$1") == 0 )) || return 0; systemctl stop "$(dxb_app_unit "$1")" && dxb_info "$1 stopped (owns no radio)"; }
+
+# ---- program sessions (spec 7.2): one unit per program per radio ----------------------------
+# A session is enabled when it is claimed and disabled when it is stopped, switched or released,
+# so a reboot starts exactly the sessions that were running.
+dxb_app_session_unit() { printf 'dxberry-screen@%s-%s.service\n' "$1" "$2"; }
+
+# dxb_app_session_start APP RADIO: enable and start the session, then wait up to
+# DXB_SESSION_WAIT_S seconds (30) for it to be active. 0 ok, 5 failed.
+dxb_app_session_start() {
+  local u i wait=${DXB_SESSION_WAIT_S:-30}
+  u=$(dxb_app_session_unit "$1" "$2")
+  systemctl enable "$u" > /dev/null 2>&1 || { dxb_error "could not enable $u"; return 5; }
+  systemctl start "$u" || { dxb_error "could not start $u"; return 5; }
+  for (( i = 0; ; i++ )); do
+    systemctl is-active --quiet "$u" && return 0
+    (( i >= wait )) && break
+    command sleep 1
+  done
+  dxb_error "$u did not become active within ${wait}s"
+  return 5
+}
+
+# dxb_app_session_stop APP RADIO: stop and disable the session. Always 0 (a failure is a warning).
+dxb_app_session_stop() {
+  local u; u=$(dxb_app_session_unit "$1" "$2")
+  systemctl disable --now "$u" > /dev/null 2>&1 || dxb_warn "could not stop and disable $u"
+  return 0
+}
+
+# dxb_app_stop_if_idle APP [RADIO]: a session program stops (and disables) RADIO's session only;
+# any other program stops its one unit once it owns no radio.
+dxb_app_stop_if_idle() {
+  if dxb_app_is_session "$1"; then
+    [[ -n ${2:-} ]] && dxb_app_session_stop "$1" "$2"
+    return 0
+  fi
+  (( $(dxb_app_owned "$1") == 0 )) || return 0; systemctl stop "$(dxb_app_unit "$1")" && dxb_info "$1 stopped (owns no radio)"
+}
+
+# dxb_radio_owner_kind NAME: what owns NAME, as rigctld sees it - session (a session program),
+# graywolf (any other owner, also one whose module cannot be loaded), or none.
+dxb_radio_owner_kind() {
+  local owner; owner=$(jq -r --arg n "$1" '.radios[$n].owner // ""' <<< "$DXB_RADIOS")
+  [[ -n $owner ]] || { echo none; return 0; }
+  if dxb_app_load "$owner" 2> /dev/null && dxb_app_is_session "$owner"; then echo session; else echo graywolf; fi
+}
 
 # dxb_app_rewire NAME: re-run the current owner's wiring (apply calls this when the inputs changed).
 dxb_app_rewire() {
@@ -508,16 +606,73 @@ dxb_app_rewire() {
   dxb_app_wire "$owner" "$1"
 }
 
+# _dxb_radio_let_go NAME OLD: the old owner lets go of NAME and the record shows it unowned. A
+# session program's session is stopped and disabled (it wires itself when it starts, so there is
+# nothing to unwire); any other owner is unwired and stopped if idle, as before. 0 ok, 6 record error.
+_dxb_radio_let_go() {
+  local name=$1 cur=$2
+  if dxb_app_load "$cur" 2> /dev/null && dxb_app_is_session "$cur"; then
+    dxb_app_stop_if_idle "$cur" "$name"
+    _dxb_radio_set_owner "$name" "" || return 6
+  else
+    if dxb_app_load "$cur"; then dxb_app_unwire "$cur" "$name"; fi
+    _dxb_radio_set_owner "$name" "" || return 6
+    dxb_app_load "$cur" 2> /dev/null && dxb_app_stop_if_idle "$cur"
+  fi
+  return 0
+}
+
+# _dxb_radio_rigctld_for NAME KIND: rigctld follows the owner's kind (cm108/gpio PTT keyed by
+# rigctld only for a session program). A failure is a warning: the next apply tries again.
+_dxb_radio_rigctld_for() {
+  local present=0
+  dxb_radio_present "$1" && present=1
+  dxb_rigctld_sync "$1" "$(dxb_radio_get "$1")" "$present" "$2" \
+    || dxb_warn "radio $1: rigctld could not be updated for its new owner; the next apply tries again"
+}
+
+# _dxb_radio_claim_session NAME APP CUR: claim for a session program (APP loaded). The old owner
+# lets go first (Graywolf must have closed the HID before rigctld opens it for CM108 PTT), then
+# rigctld follows, then the session starts; it wires itself in its own prepare step (ruling 7).
+_dxb_radio_claim_session() {
+  local name=$1 app=$2 cur=$3 other
+  if ! dxb_app_is_multi "$app"; then
+    other=$(jq -r --arg n "$name" --arg a "$app" '[.radios | to_entries[] | select(.key != $n and .value.owner == $a) | .key] | .[0] // empty' <<< "$DXB_RADIOS")
+    [[ -z $other ]] || { dxb_error "$app runs on one radio at a time ($other)"; return 5; }
+  fi
+  if [[ $cur == "$app" ]]; then
+    dxb_app_session_start "$app" "$name" || return 5
+    return 0
+  fi
+  if [[ -n $cur ]]; then
+    _dxb_radio_let_go "$name" "$cur" || return 6
+    dxb_info "radio $name released by $cur"
+  fi
+  _dxb_radio_set_owner "$name" "$app" || return 6
+  dxb_radio_alsa_levels "$name"
+  _dxb_radio_rigctld_for "$name" session
+  if ! dxb_app_session_start "$app" "$name"; then
+    dxb_app_session_stop "$app" "$name"
+    _dxb_radio_set_owner "$name" ""
+    _dxb_radio_rigctld_for "$name" none
+    dxb_error "radio $name: $app could not take it; left released"
+    return 5
+  fi
+  dxb_info "radio $name now owned by $app"
+}
+
 # dxb_radio_claim NAME APP (spec section 9.2). 0 ok, 3 unknown, 4 absent, 5 failed (released), 6 record error.
-# rigctld is never touched here (spec 9.2): it belongs to the radio, not the hand-over, so this
-# function only ever runs the two apps' unit and app_<app>_* functions; the mirror is refreshed
-# only as a side effect of recording the wiring mark.
+# rigctld belongs to the radio, not the hand-over (spec 9.2), so it is only touched when a session
+# program gains or loses the radio: its env follows the owner's kind (rigctld keys cm108/gpio PTT
+# for a session program). Between Graywolf-like owners nothing but the two apps' unit and
+# app_<app>_* functions runs; the mirror is refreshed only as a side effect of the wiring mark.
 dxb_radio_claim() {
-  local name=$1 app=$2 cur
+  local name=$1 app=$2 cur from_session=0
   dxb_radio_get "$name" > /dev/null || return 3
-  dxb_app_load "$app" || return 3
+  dxb_app_load_owner "$app" || return 3
   dxb_radio_present "$name" || { dxb_error "radio $name is not plugged in"; return 4; }
   cur=$(jq -r --arg n "$name" '.radios[$n].owner' <<< "$DXB_RADIOS")
+  if dxb_app_is_session "$app"; then _dxb_radio_claim_session "$name" "$app" "$cur"; return $?; fi
   if [[ $cur == "$app" ]]; then
     # the unit may be stopped (a re-wire skipped at boot tells the operator to run this)
     dxb_app_start "$app" || return 5
@@ -527,12 +682,13 @@ dxb_radio_claim() {
     return 0
   fi
   if [[ -n $cur ]]; then
-    if dxb_app_load "$cur"; then dxb_app_unwire "$cur" "$name"; fi
-    _dxb_radio_set_owner "$name" "" || return 6
-    dxb_app_load "$cur" 2> /dev/null && dxb_app_stop_if_idle "$cur"
+    [[ $(dxb_radio_owner_kind "$name") == session ]] && from_session=1
+    _dxb_radio_let_go "$name" "$cur" || return 6
     dxb_info "radio $name released by $cur"
   fi
   _dxb_radio_set_owner "$name" "$app" || return 6
+  # a session program had rigctld key cm108/gpio PTT: hand that back before Graywolf opens the HID
+  (( from_session )) && _dxb_radio_rigctld_for "$name" graywolf
   if ! dxb_app_start "$app" || ! dxb_app_wire "$app" "$name"; then
     dxb_app_unwire "$app" "$name"
     _dxb_radio_set_owner "$name" ""
@@ -545,15 +701,16 @@ dxb_radio_claim() {
   dxb_info "radio $name now owned by $app"
 }
 
-# dxb_radio_release NAME (spec section 9.2, steps 3-4 with an empty owner). rigctld untouched, as above.
+# dxb_radio_release NAME (spec section 9.2, steps 3-4 with an empty owner). rigctld is untouched
+# unless a session program let go (its cm108/gpio PTT goes back to the radio's default).
 dxb_radio_release() {
-  local name=$1 cur
+  local name=$1 cur kind
   dxb_radio_get "$name" > /dev/null || return 3
   cur=$(jq -r --arg n "$name" '.radios[$n].owner' <<< "$DXB_RADIOS")
   [[ -n $cur ]] || return 0
-  dxb_app_load "$cur" && dxb_app_unwire "$cur" "$name"
-  _dxb_radio_set_owner "$name" "" || return 6
-  dxb_app_load "$cur" 2> /dev/null && dxb_app_stop_if_idle "$cur"
+  kind=$(dxb_radio_owner_kind "$name")
+  _dxb_radio_let_go "$name" "$cur" || return 6
+  [[ $kind == session ]] && _dxb_radio_rigctld_for "$name" none
   dxb_info "radio $name released"
 }
 

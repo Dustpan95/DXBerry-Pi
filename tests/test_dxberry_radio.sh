@@ -246,7 +246,7 @@ app_beta_label() { echo "Beta Modem"; }
 EOF
   assert_ok cli status --json
   assert_eq "$(jq -r '[.candidates[].port] | join(" ")' "$TEST_TMP/out")" "usb-0:1.1 usb-0:1.2 usb-0:1.3 usb-0:1.4"
-  assert_eq "$(jq -c '.apps' "$TEST_TMP/out")" '[{"name":"alpha","label":"alpha"},{"name":"beta","label":"Beta Modem"}]'
+  assert_eq "$(jq -c '.apps' "$TEST_TMP/out")" '[{"name":"alpha","label":"alpha","kind":"radio","session":false,"installed":true},{"name":"beta","label":"Beta Modem","kind":"radio","session":false,"installed":true}]'
   assert_eq "$(jq -c '.warnings' "$TEST_TMP/out")" '[]'
   # pinning the first DigiRig (codec on 1.1, CP2102 on 1.2) takes both of its candidates off the list
   assert_ok cli add radio1 --audio usb-0:1.1:1.0 --cat usb-0:1.2:1.0

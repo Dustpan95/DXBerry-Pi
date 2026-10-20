@@ -3,8 +3,13 @@
 # Graywolf as a radio owner: one audio device + channel + PTT per radio, through the REST API (spec 9.3).
 # Expects common.sh, graywolf.sh and radio.sh to be sourced.
 
+# One service for every radio (a channel each), so the unit ignores the radio argument; not a
+# session program (no app_graywolf_session), so the hand-over core treats it exactly as before.
 app_graywolf_unit() { echo graywolf.service; }
 app_graywolf_label() { echo Graywolf; }
+app_graywolf_kind() { echo radio; }
+app_graywolf_installed() { [[ -n $(dxb_gw_installed_version) ]]; }
+app_graywolf_version() { dxb_gw_installed_version; }
 app_graywolf_needs_service_restart() { echo no; }
 app_graywolf_wait_ready() { dxb_gw_wait_ready; }
 

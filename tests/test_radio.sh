@@ -290,6 +290,20 @@ app_beta_wire() { echo "beta wire $1" >> "$TEST_TMP/appcalls"; return "${BETA_WI
 app_beta_unwire() { echo "beta unwire $1" >> "$TEST_TMP/appcalls"; }
 app_beta_needs_service_restart() { echo yes; }
 EOF
+  cat > "$DXB_APPS_DIR/gamma.sh" <<'EOF'
+app_gamma_kind() { echo radio; }
+app_gamma_session() { echo yes; }
+app_gamma_installed() { return "${GAMMA_MISSING:-0}"; }
+app_gamma_multi() { echo "${GAMMA_MULTI:-yes}"; }
+app_gamma_unit() { echo "dxberry-screen@gamma-$1.service"; }
+app_gamma_wire() { echo "gamma wire $1" >> "$TEST_TMP/appcalls"; }
+app_gamma_unwire() { echo "gamma unwire $1" >> "$TEST_TMP/appcalls"; }
+app_gamma_needs_service_restart() { echo no; }
+EOF
+  cat > "$DXB_APPS_DIR/delta.sh" <<'EOF'
+app_delta_kind() { echo rigcontrol; }
+app_delta_unit() { echo delta.service; }
+EOF
 }
 appcalls() { tr '\n' ';' < "$TEST_TMP/appcalls"; }
 two_radios() {
@@ -452,7 +466,7 @@ test_claim_failure_rolls_back_to_released() {
 test_claim_errors_absent_radio_unknown_app() {
   radio_env; fake_apps; two_radios
   dxb_radio_claim nope alpha; assert_eq "$?" "3"
-  dxb_radio_claim r1 gamma; assert_eq "$?" "3"
+  dxb_radio_claim r1 nosuch; assert_eq "$?" "3"
   rm -rf "$DXB_SYSFS_ROOT"; fx_scene "$DXB_SYSFS_ROOT" none; dxb_radio_scan_cache
   dxb_radio_claim r1 alpha; assert_eq "$?" "4"
 }
@@ -478,7 +492,7 @@ test_names_wiring_skips_wire_but_starts_unit() {
 
 test_app_list_and_rewire() {
   radio_env; fake_apps; two_radios
-  assert_eq "$(dxb_app_list | tr '\n' ' ')" "alpha beta "
+  assert_eq "$(dxb_app_list | tr '\n' ' ')" "alpha beta delta gamma "
   dxb_radio_claim r1 alpha > /dev/null; : > "$TEST_TMP/appcalls"
   assert_ok dxb_app_rewire r1
   assert_eq "$(appcalls)" "alpha wire r1;"
@@ -574,4 +588,86 @@ test_mark_wired_rebuilds_an_unparsable_mirror_before_merging() {
   assert_eq "$(jq -r '.radios.radio1.present' "$DXB_RADIOS_STATE")" "true"
   assert_eq "$(jq -r '.radios.radio1.kernel.audio' "$DXB_RADIOS_STATE")" "card1"
   assert_eq "$(jq -r '.generated != null' "$DXB_RADIOS_STATE")" "true"
+}
+
+test_claim_session_app_enables_and_starts_its_radio_unit() {
+  radio_env; fake_apps; two_radios
+  assert_ok dxb_radio_claim r1 gamma
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl enable dxberry-screen@gamma-r1.service"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start dxberry-screen@gamma-r1.service"
+  assert_not_contains "$(appcalls)" "gamma wire"   # a session is wired by its own prepare step
+  assert_eq "$(jq -r '.owner' <<< "$(dxb_radio_get r1)")" "gamma"
+}
+
+test_handover_from_session_app_stops_only_that_radios_unit() {
+  radio_env; fake_apps; two_radios
+  dxb_radio_claim r1 gamma > /dev/null; dxb_radio_claim r2 gamma > /dev/null; : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_claim r1 alpha
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl disable --now dxberry-screen@gamma-r1.service"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "dxberry-screen@gamma-r2.service"
+}
+
+test_claim_refuses_uninstalled_and_non_radio_programs() {
+  radio_env; fake_apps; two_radios
+  GAMMA_MISSING=1 dxb_radio_claim r1 gamma 2> "$TEST_TMP/err"; assert_eq "$?" "3"
+  assert_contains "$(cat "$TEST_TMP/err")" "gamma is not installed"
+  dxb_radio_claim r1 delta 2> "$TEST_TMP/err"; assert_eq "$?" "3"
+  assert_contains "$(cat "$TEST_TMP/err")" "delta cannot own a radio"
+}
+
+test_claim_refuses_second_copy_of_single_copy_program() {
+  radio_env; fake_apps; two_radios
+  GAMMA_MULTI=no; dxb_radio_claim r1 gamma > /dev/null
+  dxb_radio_claim r2 gamma 2> "$TEST_TMP/err"; assert_eq "$?" "5"
+  assert_contains "$(cat "$TEST_TMP/err")" "gamma runs on one radio at a time (r1)"
+  assert_eq "$(jq -r '.owner' <<< "$(dxb_radio_get r2)")" ""
+  unset GAMMA_MULTI
+}
+
+test_claim_session_failure_disables_unit_and_releases() {
+  radio_env; fake_apps; two_radios
+  DXB_SESSION_WAIT_S=0 FX_SYSTEMCTL_FAIL_START='dxberry-screen@gamma-r1.service' dxb_radio_claim r1 gamma > /dev/null 2>&1
+  assert_eq "$?" "5"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl disable --now dxberry-screen@gamma-r1.service"
+  assert_eq "$(jq -r '.owner' <<< "$(dxb_radio_get r1)")" ""
+}
+
+test_apply_stops_and_restarts_sessions_by_presence() {
+  radio_env; fake_apps; two_radios
+  dxb_radio_claim r1 gamma > /dev/null; : > "$TEST_TMP/calls"
+  fx_unplug "$DXB_SYSFS_ROOT" r1-audio            # the r1 card disappears
+  dxb_radio_apply hotplug > /dev/null 2>&1
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-screen@gamma-r1.service"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "disable"
+  : > "$TEST_TMP/calls"; fx_replug "$DXB_SYSFS_ROOT" r1-audio
+  echo enabled > "$TEST_TMP/enabled-dxberry-screen@gamma-r1.service"
+  dxb_radio_apply hotplug > /dev/null 2>&1
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl --no-block start dxberry-screen@gamma-r1.service"
+  assert_not_contains "$(appcalls)" "gamma wire"
+}
+
+test_catalog_lists_installed_radio_programs_with_kind() {
+  radio_env; fake_apps
+  assert_eq "$(dxb_app_catalog | jq -c 'map(select(.name == "gamma" or .name == "delta"))')" \
+    '[{"name":"gamma","label":"gamma","kind":"radio","session":true,"installed":true}]'
+  GAMMA_MISSING=1; assert_eq "$(dxb_app_catalog | jq -r '.[] | select(.name == "gamma") | .installed')" "false"; unset GAMMA_MISSING
+}
+
+# rigctld keys cm108 PTT only while a session program owns the radio; handing the radio to a
+# Graywolf-like owner stops the session first, then gives the HID back before that owner starts.
+test_session_owner_moves_cm108_ptt_into_rigctld_and_back() {
+  radio_env; fake_apps; two_radios
+  dxb_radio_set r1 '{"ptt":"cm108"}' > /dev/null
+  assert_ok dxb_radio_claim r1 gamma
+  assert_file_contains "$DXB_RIGCTLD_RUN_DIR/r1.env" "PTT_ARGS=-P CM108 -p /dev/dxberry/r1-hid"
+  : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_claim r1 alpha
+  assert_file_not_contains "$DXB_RIGCTLD_RUN_DIR/r1.env" "CM108"
+  assert_eq "$(grep -n 'disable --now dxberry-screen@gamma-r1\|restart rigctld@r1\|start alpha.service' "$TEST_TMP/calls" | cut -d: -f2 | tr '\n' ';')" \
+    'systemctl disable --now dxberry-screen@gamma-r1.service;systemctl restart rigctld@r1.service;systemctl start alpha.service;'
+  dxb_radio_claim r1 gamma > /dev/null; : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_release r1
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl disable --now dxberry-screen@gamma-r1.service"
+  assert_file_not_contains "$DXB_RIGCTLD_RUN_DIR/r1.env" "CM108"
+  assert_eq "$(jq -r '.owner' <<< "$(dxb_radio_get r1)")" ""
 }

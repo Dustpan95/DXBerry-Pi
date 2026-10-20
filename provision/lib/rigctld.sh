@@ -8,9 +8,12 @@
 : "${DXB_RIGCTL:=rigctl}"
 : "${DXB_TEMPLATES:=/opt/dxberry/templates}"
 
-# dxb_rigctld_env NAME RADIO_JSON: the EnvironmentFile content for rigctld@NAME.
+# dxb_rigctld_env NAME RADIO_JSON [OWNER_KIND]: the EnvironmentFile content for rigctld@NAME.
+# OWNER_KIND is dxb_radio_owner_kind's answer (graywolf | session | none; absent = none). Graywolf
+# keys cm108 and gpio PTT itself, so only a session program's radio has rigctld key them (spec
+# 9.1): the program then uses CAT PTT through rigctld like on any other radio.
 dxb_rigctld_env() {
-  local name=$1 r=$2 model port baud ptt cat='' pttdev='' rig_args='' ptt_args=''
+  local name=$1 r=$2 kind=${3:-none} model port baud ptt cat='' pttdev='' rig_args='' ptt_args=''
   model=$(jq -r '.rig.model' <<< "$r"); port=$(jq -r '.rigctld_port' <<< "$r")
   baud=$(jq -r '.rig.baud' <<< "$r"); ptt=$(jq -r '.rig.ptt_type' <<< "$r")
   [[ $(jq -r '.cat' <<< "$r") == null ]] || cat="/dev/dxberry/$name-cat"
@@ -20,6 +23,12 @@ dxb_rigctld_env() {
     RIG) ptt_args='-P RIG' ;;
     RTS|DTR) [[ -n ${pttdev:-$cat} ]] && ptt_args="-P $ptt -p ${pttdev:-$cat}" ;;
   esac
+  if [[ $kind == session ]]; then
+    case $(jq -r '.ptt.method // empty' <<< "$r") in
+      cm108) ptt_args="-P CM108 -p /dev/dxberry/$name-hid" ;;
+      gpio) ptt_args="-P GPIO -p $(jq -r '.ptt.gpio_line // 0' <<< "$r")" ;;
+    esac
+  fi
   printf 'MODEL=%s\nPORT=%s\nRIG_ARGS=%s\nPTT_ARGS=%s\n' "$model" "$port" "$rig_args" "$ptt_args"
 }
 
@@ -29,12 +38,13 @@ dxb_rigctld_state() {
   case $s in inactive|failed|activating|deactivating) echo "$s" ;; *) echo unknown ;; esac
 }
 
-# dxb_rigctld_sync NAME RADIO_JSON PRESENT(0|1): env file + start/stop/restart. 0 ok, 6 error.
+# dxb_rigctld_sync NAME RADIO_JSON PRESENT(0|1) [OWNER_KIND]: env file + start/stop/restart
+# (restart only when the env file changed). 0 ok, 6 error.
 dxb_rigctld_sync() {
-  local name=$1 r=$2 present=$3 env f changed=0 unit="rigctld@$1.service"
+  local name=$1 r=$2 present=$3 kind=${4:-none} env f changed=0 unit="rigctld@$1.service"
   f="$DXB_RIGCTLD_RUN_DIR/$name.env"
   mkdir -p "$DXB_RIGCTLD_RUN_DIR" 2> /dev/null || { dxb_error "cannot create $DXB_RIGCTLD_RUN_DIR"; return 6; }
-  env=$(dxb_rigctld_env "$name" "$r")
+  env=$(dxb_rigctld_env "$name" "$r" "$kind")
   if dxb_write_if_changed "$f" "$env" 644; then
     [[ $(< "$f") == "$env" ]] || { dxb_error "could not write $f"; return 6; }
     changed=1

@@ -34,19 +34,48 @@ fx_onboard_card() {
 }
 # fx_systemctl ARGS...: a systemctl stand-in shared by the radio tests. Records every call in
 # $TEST_TMP/calls and keeps an "active units" list in $TEST_TMP/active. is-active prints the
-# state (unless --quiet) and returns 0/3 like the real command.
+# state (unless --quiet) and returns 0/3 like the real command. is-enabled U prints the content
+# of $TEST_TMP/enabled-U ("disabled" when there is none) and returns 0 only for "enabled".
+# FX_SYSTEMCTL_FAIL_START=U makes "start U" fail (exit 1, the unit stays inactive).
 fx_systemctl() {
   echo "systemctl $*" >> "$TEST_TMP/calls"
-  local u=${*: -1}
+  local u=${*: -1} st
   case $1 in
     is-active)
       if grep -qx "$u" "$TEST_TMP/active" 2> /dev/null; then [[ $2 == --quiet ]] || echo active; return 0
       else [[ $2 == --quiet ]] || echo inactive; return 3; fi ;;
     is-failed) if grep -qx "$u" "$TEST_TMP/failed" 2> /dev/null; then return 0; else return 1; fi ;;
-    start|restart) grep -qx "$u" "$TEST_TMP/active" 2> /dev/null || echo "$u" >> "$TEST_TMP/active" ;;
+    is-enabled)
+      st=disabled; [[ -f $TEST_TMP/enabled-$u ]] && read -r st < "$TEST_TMP/enabled-$u"
+      echo "$st"; [[ $st == enabled ]]; return $? ;;
+    start|restart)
+      [[ $1 == start && -n ${FX_SYSTEMCTL_FAIL_START:-} && $u == "$FX_SYSTEMCTL_FAIL_START" ]] && return 1
+      grep -qx "$u" "$TEST_TMP/active" 2> /dev/null || echo "$u" >> "$TEST_TMP/active" ;;
     stop) grep -vx "$u" "$TEST_TMP/active" > "$TEST_TMP/active.n" 2> /dev/null; mv -f "$TEST_TMP/active.n" "$TEST_TMP/active" ;;
   esac
   return 0
+}
+
+# fx_unplug ROOT WHAT / fx_replug ROOT WHAT: take one function of the two-digirigs scene off the
+# bus and put it back, by moving its class/ link aside (the device tree stays). WHAT names it the
+# way test_radio.sh's two_radios pins it: r1-audio (card1 on 1-1.3), r1-cat (ttyUSB0 on 1-1.4),
+# r2-audio (card2 on 1-1.1), r2-cat (ttyUSB1 on 1-1.2).
+_fx_plug_link() {
+  case $1 in
+    r1-audio) echo class/sound/card1 ;;
+    r1-cat) echo class/tty/ttyUSB0 ;;
+    r2-audio) echo class/sound/card2 ;;
+    r2-cat) echo class/tty/ttyUSB1 ;;
+    *) echo "fx: unknown function $1" >&2; return 1 ;;
+  esac
+}
+fx_unplug() {
+  local l; l=$(_fx_plug_link "$2") || return 1
+  mkdir -p "$1/.unplugged"; mv "$1/$l" "$1/.unplugged/$2"
+}
+fx_replug() {
+  local l; l=$(_fx_plug_link "$2") || return 1
+  mv "$1/.unplugged/$2" "$1/$l"
 }
 
 # fx_scene ROOT NAME: digirig | ic705 | split | two-digirigs | none

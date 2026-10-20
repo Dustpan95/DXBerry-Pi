@@ -94,3 +94,12 @@ test_rigctld_install_units_fails_when_the_tmpfiles_conf_cannot_be_written() {
   dxb_rigctld_install_units 2> /dev/null; assert_eq "$?" "6"
   [[ -f $DXB_TMPFILES_DIR/dxberry-radio.conf ]] && _fail "the tmpfiles conf cannot exist here"
 }
+
+test_rigctld_env_keys_cm108_and_gpio_for_session_owners_only() {
+  local r='{"cat":null,"ptt_serial":null,"hid":{"path":"usb-0:1.3:1.3"},"ptt":{"method":"cm108","gpio_line":null},"rig":{"model":1,"baud":0,"ptt_type":"NONE"},"rigctld_port":4534}'
+  assert_contains "$(dxb_rigctld_env r2 "$r" session)" 'PTT_ARGS=-P CM108 -p /dev/dxberry/r2-hid'
+  assert_contains "$(dxb_rigctld_env r2 "$r" graywolf)"$'\n' 'PTT_ARGS='$'\n'
+  assert_eq "$(dxb_rigctld_env r2 "$r")" "$(dxb_rigctld_env r2 "$r" graywolf)"
+  r=$(jq -c '.ptt = {method: "gpio", gpio_line: 17}' <<< "$r")
+  assert_contains "$(dxb_rigctld_env r2 "$r" session)" 'PTT_ARGS=-P GPIO -p 17'
+}

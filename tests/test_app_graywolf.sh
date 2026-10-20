@@ -153,3 +153,17 @@ test_gwapp_contract_functions() {
   assert_eq "$(app_graywolf_needs_service_restart)" "no"
   assert_ok app_graywolf_wait_ready
 }
+
+# Graywolf is a radio program like the others in the catalog, never a session one: it keeps its
+# one service and its own wiring. Installed means dpkg says so (the provisioner installs it).
+test_gwapp_kind_installed_and_version() {
+  gwapp_env
+  assert_eq "$(app_graywolf_kind)" "radio"
+  declare -F app_graywolf_session > /dev/null && _fail "graywolf must not be a session program"
+  ( dxb_gw_installed_version() { echo 0.14.13; }
+    assert_ok app_graywolf_installed
+    assert_eq "$(app_graywolf_version)" "0.14.13" )
+  ( dxb_gw_installed_version() { :; }
+    assert_fails app_graywolf_installed
+    assert_eq "$(app_graywolf_version)" "" )
+}
