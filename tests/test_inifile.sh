@@ -87,3 +87,14 @@ test_prefs_set_appends_missing_key_in_dot_section() {
   assert_eq "$(dxb_prefs_get "$TEST_TMP/p" brand_new_key)" "7"
   assert_eq "$(diff "$DXB_ROOT/tests/fixtures/apps/flrig.prefs" "$TEST_TMP/p" | grep -c '^[<>]')" "1"
 }
+test_ini_setters_refuse_an_empty_path_and_create_nothing() {
+  local d=$TEST_TMP/scratch rc=0
+  mkdir -p "$d"
+  ( cd "$d" || exit 9
+    dxb_ini_set "" Configuration MyCall W0BTE; r1=$?
+    dxb_prefs_set "" key value; r2=$?
+    dxb_xml_set "" TAG text; r3=$?
+    [[ $r1 == 6 && $r2 == 6 && $r3 == 6 ]] ) || rc=1
+  assert_eq "$rc" "0"
+  assert_eq "$(find "$d" -mindepth 1 | wc -l)" "0"
+}

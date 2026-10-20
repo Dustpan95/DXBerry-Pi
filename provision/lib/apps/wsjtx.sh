@@ -62,5 +62,5 @@ app_wsjtx_wire() {
 # app_wsjtx_command RADIO INDEX: the command line, one argument per line (runs as dxbapps, which
 # reads no radio record).
 app_wsjtx_command() {
-printf '%s\n' wsjtx "--rig-name=$1"
+  printf '%s\n' wsjtx "--rig-name=$1"
 }

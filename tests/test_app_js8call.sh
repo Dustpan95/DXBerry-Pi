@@ -16,7 +16,7 @@ js_env() {
   fx_apps_env
   js_deb_installed=0
   DXB_DPKG_QUERY=js_dpkgq
-  DXB_CFG=([CALLSIGN]=W0BTE-7 [LATITUDE]=38.55 [LONGITUDE]=-92.25)
+  DXB_CFG=([CALLSIGN]=W0BTE-7 [LATITUDE]=38.88 [LONGITUDE]=-94.6)
   local f; f=$(app_js8call_settings_file radio2)
   mkdir -p "${f%/*}"; cp "$DXB_ROOT/tests/fixtures/apps/js8call.ini" "$f"
 }
@@ -29,17 +29,33 @@ test_js8call_firstfill_then_wire_from_the_real_file() {
   assert_ok app_js8call_firstfill radio2
   assert_ok app_js8call_wire radio2
   local f; f=$(app_js8call_settings_file radio2)
+  [[ -n $f ]] || _fail "no settings path"
   assert_eq "$(dxb_ini_get "$f" Configuration MyCall)" "W0BTE"
+  assert_eq "$(dxb_ini_get "$f" Configuration MyGrid)" "EM28qv"
+  assert_eq "$(dxb_ini_get "$f" Configuration N1MMServer)" "127.0.0.1"
+  assert_eq "$(dxb_ini_get "$f" Configuration N1MMServerPort)" "2333"
   assert_eq "$(dxb_ini_get "$f" Configuration BroadcastToN1MM)" "true"
   assert_eq "$(dxb_ini_get "$f" Configuration SoundInName)" 'RADIO2'
   assert_eq "$(dxb_ini_get "$f" Configuration Rig)" "Hamlib NET rigctl"
   assert_eq "$(dxb_ini_get "$f" Configuration CATNetworkPort)" "127.0.0.1:4534"
   assert_contains "$(dxb_ini_get "$f" Configuration PTTMethod)" "PTT_method_CAT"
 }
+test_js8call_firstfill_without_a_grid_leaves_it_alone() {
+  js_env; DXB_CFG=([CALLSIGN]=W0BTE-7 [LATITUDE]='' [LONGITUDE]='')
+  assert_ok app_js8call_firstfill radio2
+  local f; f=$(app_js8call_settings_file radio2)
+  [[ -n $f ]] || _fail "no settings path"
+  assert_eq "$(dxb_ini_get "$f" Configuration MyGrid)" ""
+  assert_eq "$(dxb_ini_get "$f" Configuration MyCall)" "W0BTE"
+  assert_eq "$(dxb_ini_get "$f" Configuration BroadcastToN1MM)" "true"
+  assert_eq "$(dxb_ini_get "$f" Configuration N1MMServerPort)" "2333"
+}
 test_js8call_rewire_keeps_operator_keys() {
   js_env; app_js8call_firstfill radio2; app_js8call_wire radio2
   local f; f=$(app_js8call_settings_file radio2)
-  dxb_ini_set "$f" Configuration MyCall K0XYZ; dxb_ini_set "$f" Common DialFreq 7074000
+  [[ -n $f ]] || _fail "no settings path"
+  assert_ok dxb_ini_set "$f" Configuration MyCall K0XYZ
+  assert_ok dxb_ini_set "$f" Common DialFreq 7074000
   cp "$f" "$TEST_TMP/before"
   js_set_ptt radio2 vox; app_js8call_wire radio2
   assert_eq "$(dxb_ini_get "$f" Configuration MyCall)" "K0XYZ"

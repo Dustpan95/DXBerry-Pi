@@ -59,6 +59,7 @@ _dxb_commit() {
 # _dxb_kv_set FILE SECTION KEY VALUE SEP
 _dxb_kv_set() {
   local file=$1 sec=$2 key=$3 val=$4 sep=$5 src=/dev/null out
+  [[ -n $file ]] || return 6
   if [[ $val == *$'\n'* || $key == *$'\n'* ]]; then return 6; fi
   [[ -f $file ]] && src=$file
   out=$(_DXB_S=$sec _DXB_K=$key _DXB_V=$val _DXB_SEP=$sep _dxb_awk "$_DXB_KV_SET_AWK" "$src") || return 6
@@ -178,6 +179,7 @@ dxb_xml_get() {
 
 dxb_xml_set() {
   local file=$1 tag=$2 text=$3 src out rc esc
+  [[ -n $file ]] || return 6
   if [[ $text == *$'\n'* ]]; then return 6; fi
   esc=${text//&/'&amp;'}
   esc=${esc//</'&lt;'}
