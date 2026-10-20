@@ -13,6 +13,7 @@ radio_env() {
     DXB_UDEV_RULES_FILE=$TEST_TMP/etc/70.rules DXB_MODPROBE_FILE=$TEST_TMP/etc/dxberry-audio.conf DXB_UDEVADM=fake_udevadm \
     DXB_RIGCTLD_RUN_DIR=$TEST_TMP/run/rigctld DXB_SYSTEMD_DIR=$TEST_TMP/systemd DXB_TMPFILES_DIR=$TEST_TMP/tmpfiles \
     DXB_RADIOS_STATE=$TEST_TMP/run/radios-state.json DXB_RUN_DIR=$TEST_TMP/run DXB_WIRED_FILE=$TEST_TMP/state/wired.json DXB_AMIXER=fake_amixer DXB_ALSACTL=fake_alsactl
+  unset DXB_SCREENS_DIR DXB_SESSIONS_DIR
   mkdir -p "$DXB_STATE_DIR" "$TEST_TMP/etc"
   : > "$TEST_TMP/calls"; : > "$TEST_TMP/active"
   systemctl() { fx_systemctl "$@"; }
@@ -640,12 +641,12 @@ test_apply_stops_and_restarts_sessions_by_presence() {
   dxb_radio_apply hotplug > /dev/null 2>&1
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-screen@gamma-r1.service"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "disable"
-  [[ -f $DXB_RUN_DIR/screens/gamma-r1.waiting ]] || _fail "the stopped session was not marked as waiting for its radio"
+  [[ -f $DXB_RUN_DIR/sessions/gamma-r1.waiting ]] || _fail "the stopped session was not marked as waiting for its radio"
   : > "$TEST_TMP/calls"; fx_replug "$DXB_SYSFS_ROOT" r1-audio
   dxb_radio_apply hotplug > /dev/null 2>&1
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl --no-block start dxberry-screen@gamma-r1.service"
   assert_not_contains "$(appcalls)" "gamma wire"
-  [[ -e $DXB_RUN_DIR/screens/gamma-r1.waiting ]] && _fail "the waiting marker outlived the restart"
+  [[ -e $DXB_RUN_DIR/sessions/gamma-r1.waiting ]] && _fail "the waiting marker outlived the restart"
 }
 
 # A program the operator quit from its own menu ends its session but stays enabled; only the next
@@ -660,7 +661,7 @@ test_apply_leaves_a_quit_session_stopped_across_an_unplug() {
   sed -i '/^dxberry-screen@gamma-r1.service$/d' "$TEST_TMP/active"   # quit from its menu
   fx_unplug "$DXB_SYSFS_ROOT" r1-audio
   dxb_radio_apply hotplug > /dev/null 2>&1
-  [[ -e $DXB_RUN_DIR/screens/gamma-r1.waiting ]] && _fail "a session that was not running must not be marked as waiting"
+  [[ -e $DXB_RUN_DIR/sessions/gamma-r1.waiting ]] && _fail "a session that was not running must not be marked as waiting"
   fx_replug "$DXB_SYSFS_ROOT" r1-audio; : > "$TEST_TMP/calls"
   dxb_radio_apply hotplug > /dev/null 2>&1
   assert_not_contains "$(cat "$TEST_TMP/calls")" "start dxberry-screen@gamma-r1.service"
@@ -673,9 +674,9 @@ test_apply_leaves_a_quit_session_stopped_without_a_marker() {
   sed -i '/^dxberry-screen@gamma-r1.service$/d' "$TEST_TMP/active"; : > "$TEST_TMP/calls"   # quit from its menu
   assert_ok dxb_radio_apply hotplug
   assert_not_contains "$(cat "$TEST_TMP/calls")" "start dxberry-screen@gamma-r1.service"
-  mkdir -p "$DXB_RUN_DIR/screens"; : > "$DXB_RUN_DIR/screens/gamma-r1.waiting"
+  mkdir -p "$DXB_RUN_DIR/sessions"; : > "$DXB_RUN_DIR/sessions/gamma-r1.waiting"
   assert_ok dxb_radio_claim r1 gamma                                   # Start by hand
-  [[ -e $DXB_RUN_DIR/screens/gamma-r1.waiting ]] && _fail "a session started by hand is no longer waiting"
+  [[ -e $DXB_RUN_DIR/sessions/gamma-r1.waiting ]] && _fail "a session started by hand is no longer waiting"
 }
 
 # Graywolf -> session on a cm108 radio while Graywolf keeps another radio: its unwire only queues

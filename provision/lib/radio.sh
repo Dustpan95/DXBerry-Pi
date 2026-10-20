@@ -488,7 +488,7 @@ _dxb_radio_apply_session() {
     systemctl is-active --quiet "$u" && was_active=1
     systemctl stop "$u" > /dev/null 2>&1 || dxb_warn "radio $n: could not stop $u"
     if (( was_active )) && [[ $(systemctl is-enabled "$u" 2> /dev/null) == enabled ]]; then
-      { mkdir -p "$(_dxb_screens_dir)" && : > "$marker"; } 2> /dev/null \
+      { _dxb_sessions_ensure && : > "$marker"; } 2> /dev/null \
         || dxb_warn "radio $n: could not write $marker; start $app again by hand when the radio is back"
     fi
     return 0
@@ -570,9 +570,20 @@ dxb_app_start() {
 # A session is enabled when it is claimed and disabled when it is stopped, switched or released,
 # so a reboot starts exactly the sessions that were running.
 dxb_app_session_unit() { printf 'dxberry-screen@%s-%s.service\n' "$1" "$2"; }
+# the screen sockets only (sticky, written by the sessions themselves; root never writes there)
 _dxb_screens_dir() { printf '%s\n' "${DXB_SCREENS_DIR:-$DXB_RUN_DIR/screens}"; }
+# root's own session files: env files, waiting markers, the sessions' private directories
+_dxb_sessions_dir() { printf '%s\n' "${DXB_SESSIONS_DIR:-$DXB_RUN_DIR/sessions}"; }
+# _dxb_sessions_ensure: the sessions directory as tmpfiles makes it (0750 root:dxbscreen), when it
+# is missing. 0 ok, 1 it could not be created.
+_dxb_sessions_ensure() {
+  local d; d=$(_dxb_sessions_dir)
+  [[ -d $d ]] && return 0
+  mkdir -p "$d" && chmod 0750 "$d" || return 1
+  "${DXB_CHOWN:-chown}" "root:${DXB_APPS_SCREEN_GROUP:-dxbscreen}" "$d" 2> /dev/null || true
+}
 # _dxb_session_marker APP RADIO: the file that says "waiting for its radio to come back".
-_dxb_session_marker() { printf '%s/%s-%s.waiting\n' "$(_dxb_screens_dir)" "$1" "$2"; }
+_dxb_session_marker() { printf '%s/%s-%s.waiting\n' "$(_dxb_sessions_dir)" "$1" "$2"; }
 
 # dxb_app_session_start APP RADIO: enable and start the session, then wait up to
 # DXB_SESSION_WAIT_S seconds (30) for it to be active. 0 ok, 5 failed.

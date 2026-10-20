@@ -1,1 +1,2 @@
-d /run/dxberry/screens 2770 root dxbscreen -
+d /run/dxberry/screens 3770 root dxbscreen -
+d /run/dxberry/sessions 0750 root dxbscreen -

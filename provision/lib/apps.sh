@@ -35,7 +35,7 @@
 : "${DXB_APPS_EXTRACT_BASE:=/var/tmp}"
 
 # what every program with a screen session needs (not a service, not Graywolf)
-DXB_APPS_BASE_PACKAGES='tigervnc-standalone-server openbox socat'
+DXB_APPS_BASE_PACKAGES='tigervnc-standalone-server openbox socat xauth'
 DXB_APPS_USER=dxbapps
 DXB_APPS_SCREEN_GROUP=dxbscreen
 
@@ -510,19 +510,43 @@ _dxb_apps_delete_unpacked() {
   if (( any )); then mv -T "$kept" "$dir" || return 1; else rm -rf "$kept"; fi
 }
 
-# dxb_apps_remove NAME: stop and disable every session of NAME, apt-get remove (never purge) the
-# program's own package - not the shared packages - delete $DXB_APPS_OPT/NAME (all but what the
-# module's app_NAME_keep names), then the module's optional app_NAME_remove_extra. Settings
-# under $DXB_APPS_HOME and the first-fill marks stay, so a reinstall continues where the operator
-# left off. 0 ok, 3 unknown, 6 nothing changed, 8 something changed (a running or enabled session
-# was stopped, the package went) but a later step failed.
+# _dxb_apps_lock_record: dxberry-radio's record lock (record.lock, fd 8), so no radio is handed to
+# a program while it is being removed. 0 ok (also without flock), 5 busy.
+_dxb_apps_lock_record() {
+  local f=$DXB_RUN_DIR/record.lock
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  exec 8> "$f" || return 0
+  command -v flock > /dev/null 2>&1 || return 0
+  flock -w "${DXB_RADIO_LOCK_WAIT:-180}" 8 || { echo "a radio change is still running; try again when it has finished" >&2; return 5; }
+}
+
+# dxb_apps_remove NAME: _dxb_apps_remove under the record lock (released when it returns).
 dxb_apps_remove() {
-  local name=$1 row src label pkg u rc=0 fail=6
+  local rc
+  _dxb_apps_lock_record || return 5
+  _dxb_apps_remove "$@"; rc=$?
+  exec 8>&-
+  return $rc
+}
+
+# _dxb_apps_remove NAME: refused (5) while a radio is NAME's - the record is read again here,
+# under the lock, whatever the command that started the job saw. Then: stop and disable every
+# session of NAME, apt-get remove (never purge) the program's own package - not the shared
+# packages - delete $DXB_APPS_OPT/NAME (all but what the module's app_NAME_keep names), then the
+# module's optional app_NAME_remove_extra. Settings under $DXB_APPS_HOME and the first-fill marks
+# stay, so a reinstall continues where the operator left off. 0 ok, 3 unknown, 5 a radio runs it,
+# 6 nothing changed, 8 something changed (a running or enabled session was stopped, the package
+# went) but a later step failed.
+_dxb_apps_remove() {
+  local name=$1 row src label pkg u rc=0 fail=6 owners
   row=$(dxb_apps_row "$name") || return 3
   src=$(_dxb_apps_source "$name") || return 6
   label=$(jq -r .label <<< "$row")
   [[ $(jq -r .type <<< "$src") != builtin ]] || { _dxb_apps_builtin_refusal "$label"; return 6; }
-  [[ -n ${DXB_RADIOS:-} ]] || dxb_radio_load > /dev/null 2>&1 || DXB_RADIOS=$(dxb_radio_empty_record)
+  if [[ -f $DXB_RADIOS_FILE ]]; then dxb_radio_load > /dev/null 2>&1 || DXB_RADIOS=$(dxb_radio_empty_record); fi
+  [[ -n ${DXB_RADIOS:-} ]] || DXB_RADIOS=$(dxb_radio_empty_record)
+  owners=$(jq -r --arg a "$name" '[.radios | to_entries[] | select(.value.owner == $a) | .key] | join(", ")' <<< "$DXB_RADIOS")
+  [[ -z $owners ]] || { echo "$name runs on $owners; switch $owners to another program first" >&2; return 5; }
   while IFS= read -r u; do
     [[ -n $u ]] || continue
     if "$DXB_SYSTEMCTL" is-active --quiet "$u" 2> /dev/null || [[ $("$DXB_SYSTEMCTL" is-enabled "$u" 2> /dev/null) == enabled ]]; then
@@ -535,7 +559,7 @@ dxb_apps_remove() {
     for u in $(jq -r '.radios | keys[]' <<< "$DXB_RADIOS" 2> /dev/null); do dxb_app_session_unit "$name" "$u"; done
     "$DXB_SYSTEMCTL" list-units --all --plain --no-legend "dxberry-screen@$name-*" 2> /dev/null | awk '{ print $1 }'
   } | sort -u)
-  rm -f "$(_dxb_screens_dir)/$name"-*.waiting 2> /dev/null
+  rm -f "$(_dxb_sessions_dir)/$name"-*.waiting 2> /dev/null
   pkg=$(_dxb_apps_package "$name" "$src")
   if [[ -n $pkg && -n $(_dxb_apps_dpkg_version "$pkg") ]]; then
     echo "removing $pkg"

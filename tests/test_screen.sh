@@ -16,72 +16,58 @@ source "$DXB_ROOT/tests/fixtures/apps.sh"
 # two-digirigs scene), a fake session program "gamma" in $TEST_TMP/apps and in the catalog. gamma
 # records firstfill, wire and command in $TEST_TMP/appcalls; GAMMA_AUDIO picks its audio (alsa);
 # GAMMA_FAIL=firstfill|wire makes that step fail (exported, so the command sees it).
-# Every test file is sourced into one shell, and the brief's test_app_* names sort among other
-# files' tests (test_radio's test_apply_*, whose radio_env never resets DXB_SCREENS_DIR), so sc_env
-# leaves nothing behind: what it and fx_apps_env set is saved first and put back when the test
-# that called it returns (a RETURN trap fires when sc_env returns and when its caller does;
-# functions the test calls do not inherit it).
-SC_NAMES='DXB_STATE_DIR DXB_LOG_FILE DXB_RUN_DIR DXB_RADIOS_FILE DXB_WIRED_FILE DXB_SCREENS_DIR DXB_APPS_DIR
-  DXB_APPS_TSV DXB_APPS_OPT DXB_APPS_HOME DXB_APPS_STATE DXB_APPS_WORK DXB_GH_API DXB_APPS_CURL DXB_APT_GET DXB_DPKG_QUERY
-  DXB_APT_CACHE DXB_USERADD DXB_GROUPADD DXB_USERMOD DXB_CHOWN DXB_GETENT DXB_SYSTEMCTL DXB_RUNUSER DXB_GPSPIPE
-  DXB_APPS_EXTRACT_BASE DXB_CONSOLE_USER DXB_SHARE DXB_SYSFS_ROOT DXB_RADIOS_STATE DXB_RIGCTLD_RUN_DIR DXB_SYSTEMD_RUN
-  DXB_AMIXER DXB_ALSACTL DXB_UPDATE_JOB_FILE DXB_UPDATE_RESULT DXB_UPDATE_WORK DXB_UPDATE_CACHE DXB_CONFIG_JOB_FILE
-  DXB_NETSAFE_DIR DXB_UPDATE_CMD DXB_BOOT_DIR DXB_RADIO_LOG DXB_FAKE_EUID DXB_RIGCTLD_WAIT_S DXB_SESSION_WAIT_S
-  DXB_UPDATE_LOCK_WAIT DXB_CONFIG_LOCK_WAIT DXB_XVNC DXB_OPENBOX DXB_PULSEAUDIO DXB_SCREEN_STOP_WAIT_S
-  GAMMA_CMD GAMMA_FAIL GAMMA_AUDIO'
-SC_SAVED=''
-SC_ARMED=0
-sc_save() {
-  local n d
-  SC_SAVED=''
-  for n in $SC_NAMES; do
-    if [[ -v $n ]]; then d=$(declare -p "$n"); SC_SAVED+="declare -g ${d#declare }"$'\n'; else SC_SAVED+="unset $n"$'\n'; fi
-  done
-}
-_sc_restore() {
-  [[ ${FUNCNAME[1]:-} == test_* ]] || return 0
-  trap - RETURN
-  SC_ARMED=0
-  eval "$SC_SAVED"
-}
 sc_env() {
-  if (( ! SC_ARMED )); then sc_save; SC_ARMED=1; trap _sc_restore RETURN; fi
   fx_apps_env
   # sc_fakes' stand-ins are exported into this shared shell: never into the next test
   unset GAMMA_FAIL GAMMA_CMD
-  export DXB_XVNC=Xvnc DXB_OPENBOX=openbox DXB_PULSEAUDIO=pulseaudio DXB_SCREEN_STOP_WAIT_S=10
   GAMMA_AUDIO=''
+  export DXB_XVNC=Xvnc DXB_OPENBOX=openbox DXB_PULSEAUDIO=pulseaudio DXB_SCREEN_STOP_WAIT_S=10
   export DXB_APPS_DIR=$TEST_TMP/apps DXB_APPS_TSV=$TEST_TMP/apps.tsv DXB_SHARE=$DXB_ROOT/provision/share \
+    DXB_SESSIONS_DIR=$TEST_TMP/run/sessions DXB_APP_CMD=$DXB_ROOT/provision/bin/dxberry-app \
     DXB_SYSFS_ROOT=$TEST_TMP/sys DXB_RADIOS_STATE=$TEST_TMP/run/radios-state.json DXB_RIGCTLD_RUN_DIR=$TEST_TMP/run/rigctld \
     DXB_SYSTEMCTL=$TEST_TMP/bin/systemctl DXB_CHOWN=$TEST_TMP/bin/chown DXB_SYSTEMD_RUN=$TEST_TMP/bin/systemd-run \
     DXB_DPKG_QUERY=$TEST_TMP/bin/dpkg-query DXB_AMIXER=$TEST_TMP/bin/none DXB_ALSACTL=$TEST_TMP/bin/none \
+    DXB_RUNUSER=$TEST_TMP/bin/runuser DXB_XAUTH=$TEST_TMP/bin/xauth DXB_ID=$TEST_TMP/bin/id \
+    DXB_X_LOCK_DIR=$TEST_TMP/xtmp DXB_X11_UNIX_DIR=$TEST_TMP/xtmp/.X11-unix \
     DXB_UPDATE_JOB_FILE=$TEST_TMP/run/update-job.json DXB_UPDATE_RESULT=$TEST_TMP/run/update-result.json \
     DXB_UPDATE_WORK=$TEST_TMP/state/update-work DXB_UPDATE_CACHE=$TEST_TMP/state/update-check.json \
     DXB_CONFIG_JOB_FILE=$TEST_TMP/run/config-job.json DXB_NETSAFE_DIR=$TEST_TMP/state/network-snapshot \
     DXB_UPDATE_CMD=/opt/dxberry/bin/dxberry-update DXB_BOOT_DIR=$TEST_TMP/boot DXB_RADIO_LOG=$TEST_TMP/state/radio.log \
     DXB_FAKE_EUID=0 DXB_RIGCTLD_WAIT_S=0 DXB_SESSION_WAIT_S=0 DXB_UPDATE_LOCK_WAIT=1 DXB_CONFIG_LOCK_WAIT=1
-  mkdir -p "$DXB_APPS_DIR" "$DXB_BOOT_DIR" "$DXB_SCREENS_DIR"
+  mkdir -p "$DXB_APPS_DIR" "$DXB_BOOT_DIR" "$DXB_SCREENS_DIR" "$DXB_SESSIONS_DIR" "$DXB_X11_UNIX_DIR"
   : > "$TEST_TMP/appcalls"
   printf '#!/bin/bash\nsource "$DXB_ROOT/tests/fixtures/sysfs.sh"\nfx_systemctl "$@"\n' > "$TEST_TMP/bin/systemctl"
   printf '#!/bin/bash\necho "chown $*" >> "$TEST_TMP/calls"\n' > "$TEST_TMP/bin/chown"
   printf '#!/bin/bash\necho "systemd-run $*" >> "$TEST_TMP/calls"\n[[ ! -f $TEST_TMP/systemd-run-fails ]]\n' > "$TEST_TMP/bin/systemd-run"
   # gamma's own package is installed (1.0); nothing else is
   printf '#!/bin/bash\nif [[ ${*: -1} == gamma ]]; then echo "installed 1.0"; exit 0; fi\nexit 1\n' > "$TEST_TMP/bin/dpkg-query"
-  chmod 755 "$TEST_TMP/bin/systemctl" "$TEST_TMP/bin/chown" "$TEST_TMP/bin/systemd-run" "$TEST_TMP/bin/dpkg-query"
-  cat > "$DXB_APPS_DIR/gamma.sh" <<'EOF'
+  # runuser -u USER -- CMD...: recorded with its arguments, its stdin kept in settings-stdin; CMD
+  # then runs as "not root"
+  printf '#!/bin/bash\necho "runuser $*" >> "$TEST_TMP/calls"\n[[ $1 == -u && $3 == -- ]] || exit 1\nshift 3\ntee -a "$TEST_TMP/settings-stdin" | DXB_FAKE_EUID=900 "$@"\nexit "${PIPESTATUS[1]}"\n' > "$TEST_TMP/bin/runuser"
+  printf '#!/bin/bash\necho "xauth $*" >> "$TEST_TMP/xauth-calls"\n' > "$TEST_TMP/bin/xauth"
+  # id -nG: the caller's groups (no dxbscreen once $TEST_TMP/no-access exists)
+  printf '#!/bin/bash\nif [[ -e $TEST_TMP/no-access ]]; then echo dietpi; else echo "dietpi dxbscreen"; fi\n' > "$TEST_TMP/bin/id"
+  chmod 755 "$TEST_TMP/bin/systemctl" "$TEST_TMP/bin/chown" "$TEST_TMP/bin/systemd-run" "$TEST_TMP/bin/dpkg-query" \
+    "$TEST_TMP/bin/runuser" "$TEST_TMP/bin/xauth" "$TEST_TMP/bin/id"
+  cat > "$DXB_APPS_DIR/gamma.sh" <<'GAMMA'
 app_gamma_kind() { echo radio; }
 app_gamma_session() { echo yes; }
 app_gamma_installed() { return 0; }
 app_gamma_label() { echo Gamma; }
 app_gamma_unit() { dxb_app_session_unit gamma "$1"; }
 app_gamma_audio() { echo "${GAMMA_AUDIO:-alsa}"; }
-app_gamma_settings_file() { echo "$DXB_APPS_HOME/.config/gamma/$1.ini"; }
-app_gamma_firstfill() { echo "gamma firstfill $1" >> "$TEST_TMP/appcalls"; [[ ${GAMMA_FAIL:-} != firstfill ]]; }
+app_gamma_firstfill() {
+  echo "gamma firstfill $1" >> "$TEST_TMP/appcalls"
+  dxb_apps_station > "$TEST_TMP/gamma-station"
+  dxb_apps_wiring "$1" > "$TEST_TMP/gamma-wiring"
+  declare -F dxb_logbook_fldigi_values > /dev/null && dxb_logbook_fldigi_values > "$TEST_TMP/gamma-logbook"
+  [[ ${GAMMA_FAIL:-} != firstfill ]]
+}
 app_gamma_wire() { echo "gamma wire $1" >> "$TEST_TMP/appcalls"; [[ ${GAMMA_FAIL:-} != wire ]]; }
 app_gamma_unwire() { :; }
 app_gamma_needs_service_restart() { echo no; }
 app_gamma_command() { echo "gamma command $1 $2" >> "$TEST_TMP/appcalls"; printf '%s\n--rig-name=%s\n' "${GAMMA_CMD:-gamma}" "$1"; }
-EOF
+GAMMA
   { cat "$DXB_ROOT/provision/share/apps.tsv"; printf 'gamma\tGamma\tradio\tapt:gamma\t-\tA program for the tests\n'; } > "$DXB_APPS_TSV"
   fx_scene "$DXB_SYSFS_ROOT" two-digirigs
   # radio2's CAT is the second digirig's serial port in this scene
@@ -168,7 +154,8 @@ test_screen_unit_template_and_tmpfiles_are_exact() {
   assert_file_contains "$u" "SupplementaryGroups=audio dialout dxbscreen"
   assert_file_contains "$u" "KillMode=mixed"
   assert_eq "$(grep -c . "$u")" "20"
-  assert_eq "$(cat "$DXB_ROOT/provision/templates/dxberry-apps.tmpfiles")" "d /run/dxberry/screens 2770 root dxbscreen -"
+  assert_eq "$(cat "$DXB_ROOT/provision/templates/dxberry-apps.tmpfiles")" \
+    "$(printf '%s\n' "d /run/dxberry/screens 3770 root dxbscreen -" "d /run/dxberry/sessions 0750 root dxbscreen -")"
 }
 
 # present skips an unplugged radio's start and leaves the session waiting for it (the hotplug
@@ -176,7 +163,7 @@ test_screen_unit_template_and_tmpfiles_are_exact() {
 # its radio was gone, and nothing when the radio is there (quit from its menu, or Stop).
 test_screen_present_and_stopped_leave_a_session_waiting_for_its_radio() {
   sc_env; sc_owned radio2 gamma
-  local m=$DXB_SCREENS_DIR/gamma-radio2.waiting
+  local m=$DXB_SESSIONS_DIR/gamma-radio2.waiting
   assert_ok sc_app present gamma-radio2
   [[ -e $m ]] && _fail "a plugged-in radio leaves no marker"
   sc_unplug radio2
@@ -196,28 +183,62 @@ test_screen_present_and_stopped_leave_a_session_waiting_for_its_radio() {
   sc_app stopped nonsense; assert_eq "$?" "0"
 }
 
-# prepare writes the session's environment (0640 root:dxbscreen), a fresh private directory
-# (0700 dxbapps, no sound server may spawn) and hands the program's settings to dxbapps.
+# prepare writes the session's environment (0640 root:dxbscreen) in root's own sessions
+# directory and makes a fresh private directory (0700 dxbapps) that it writes nothing into; the
+# screens directory (the sockets) it never touches.
 test_screen_prepare_writes_the_env_file_and_private_dir() {
   sc_env; sc_owned radio2 gamma
-  mkdir -p "$DXB_APPS_HOME/.config/gamma"; : > "$DXB_SCREENS_DIR/gamma-radio2.sock"
+  : > "$DXB_SCREENS_DIR/gamma-radio2.sock"
   assert_ok sc_app prepare gamma-radio2
-  local f=$DXB_SCREENS_DIR/gamma-radio2.env d=$DXB_SCREENS_DIR/gamma-radio2.d
+  local f=$DXB_SESSIONS_DIR/gamma-radio2.env d=$DXB_SESSIONS_DIR/gamma-radio2.d
   assert_eq "$(stat -c %a "$f")" "640"
   assert_eq "$(cat "$f")" "$(dxb_screen_env gamma-radio2)"
   assert_contains "$(cat "$f")" "AUDIO=alsa"
   assert_contains "$(cat "$f")" "SCREEN=yes"
   assert_contains "$(cat "$f")" "GEOMETRY=1280x800"
   assert_contains "$(cat "$f")" "RIGCTLD=127.0.0.1:4534"
+  assert_contains "$(cat "$f")" "DISPLAY_NUM=102"
   assert_eq "$(stat -c %a "$d")" "700"
-  assert_eq "$(cat "$d/client.conf")" "autospawn = no"
-  [[ -e $DXB_SCREENS_DIR/gamma-radio2.sock ]] && _fail "a stale screen socket is removed"
+  assert_eq "$(find "$d" -mindepth 1 | wc -l)" "0"
+  [[ -e $DXB_SCREENS_DIR/gamma-radio2.sock ]] || _fail "root never removes anything in the screens directory"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "$DXB_SCREENS_DIR"
   # owned while it is still a temp file, then renamed into place
-  assert_contains "$(cat "$TEST_TMP/calls")" "chown root:dxbscreen $DXB_SCREENS_DIR/.dxbtmp."
+  assert_contains "$(cat "$TEST_TMP/calls")" "chown root:dxbscreen $DXB_SESSIONS_DIR/.dxbtmp."
   assert_contains "$(cat "$TEST_TMP/calls")" "chown -h dxbapps:dxbapps $d"
-  assert_contains "$(cat "$TEST_TMP/calls")" "chown -R dxbapps:dxbapps $DXB_APPS_HOME/.config/gamma"
-  assert_contains "$(cat "$TEST_TMP/calls")" "chown -h dxbapps:dxbapps $DXB_APPS_HOME/.config"
+  assert_not_contains "$(grep '^chown' "$TEST_TMP/calls")" "$DXB_APPS_HOME"     # nothing to hand over: dxbapps wrote it
   [[ -f $DXB_APPS_STATE/firstfill/gamma-radio2 ]] || _fail "the first fill is marked"
+}
+
+# the display number is fixed per radio (100 + 2 x index; flrig one above)
+test_screen_display_numbers() {
+  assert_eq "$(dxb_screen_display wsjtx 0) $(dxb_screen_display wsjtx 1) $(dxb_screen_display flrig 1)" "100 102 103"
+}
+
+# the program's settings are written as dxbapps: prepare runs "dxberry-app settings" through
+# runuser with everything it needs on stdin - only its radio, the station, the logbook (whose
+# key is never in an argument) and the steps
+test_screen_prepare_writes_settings_as_dxbapps_with_input_on_stdin() {
+  sc_env; sc_owned radio2 gamma
+  printf 'CALLSIGN=W0BTE-9\nLATITUDE=38.9\nLONGITUDE=-94.6\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  mkdir -p "$TEST_TMP/lib"; cp -r "$DXB_ROOT/provision/lib/." "$TEST_TMP/lib/"
+  echo 'dxb_logbook_fldigi_values() { echo '"'"'{"url":"https://log.example/","key":"SECRET-KEY-123","station_id":"1"}'"'"'; }' > "$TEST_TMP/lib/logbook.sh"
+  assert_ok env DXB_LIB="$TEST_TMP/lib" "$DXB_ROOT/provision/bin/dxberry-app" prepare gamma-radio2
+  assert_contains "$(cat "$TEST_TMP/calls")" "runuser -u dxbapps -- env HOME=$DXB_APPS_HOME $DXB_ROOT/provision/bin/dxberry-app settings gamma-radio2"
+  assert_eq "$(jq -c '.steps' "$TEST_TMP/settings-stdin")" '["firstfill","wire"]'
+  assert_eq "$(jq -r '.radios.radios | keys | join(" ")' "$TEST_TMP/settings-stdin")" "radio2"
+  assert_eq "$(jq -r '.logbook.key' "$TEST_TMP/settings-stdin")" "SECRET-KEY-123"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "SECRET-KEY-123"
+  # the module sees the logbook, the station and its radio's wiring from that input alone
+  assert_eq "$(jq -r .key "$TEST_TMP/gamma-logbook")" "SECRET-KEY-123"
+  assert_eq "$(jq -c . "$TEST_TMP/gamma-station")" '{"call":"W0BTE","grid":"EM28qv"}'
+  assert_eq "$(jq -r .rigctld "$TEST_TMP/gamma-wiring")" "127.0.0.1:4534"
+  # nothing to do: no settings step at all
+  : > "$TEST_TMP/calls"
+  assert_ok sc_app prepare gamma-radio2
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "runuser"
+  # the step itself never runs as root and reads only JSON
+  echo '{}' | sc_app settings gamma-radio2 2> /dev/null; assert_eq "$?" "1"
+  echo 'nonsense' | DXB_FAKE_EUID=900 sc_app settings gamma-radio2 2> /dev/null; assert_eq "$?" "2"
 }
 
 test_screen_prepare_refusals() {
@@ -250,29 +271,35 @@ test_screen_xvnc_and_openbox_argv() {
   sc_env; sc_owned radio2 gamma
   dxb_screen_session_argv gamma-radio2 xvnc > "$TEST_TMP/argv"
   assert_eq "$(tr '\n' ' ' < "$TEST_TMP/argv")" \
-    "Xvnc -displayfd 3 -rfbunixpath $DXB_SCREENS_DIR/gamma-radio2.sock -rfbunixmode 0660 -rfbport -1 -SecurityTypes None -geometry 1280x800 -nolisten tcp -desktop Gamma · IC-7300 "
+    "Xvnc :102 -auth $DXB_SESSIONS_DIR/gamma-radio2.d/Xauthority -rfbunixpath $DXB_SCREENS_DIR/gamma-radio2.sock -rfbunixmode 0660 -rfbport -1 -SecurityTypes None -geometry 1280x800 -nolisten tcp -desktop Gamma · IC-7300 "
   assert_eq "$(dxb_screen_session_argv gamma-radio2 openbox | tr '\n' ' ')" "openbox --sm-disable "
   assert_eq "$(dxb_screen_session_argv gamma-radio2 pulse | tail -1)" \
-    "module-native-protocol-unix socket=$DXB_SCREENS_DIR/gamma-radio2.d/pulse.sock"
+    "module-native-protocol-unix socket=$DXB_SESSIONS_DIR/gamma-radio2.d/pulse.sock"
   # the runner reads the env file prepare wrote, never the radio record
   sc_app prepare gamma-radio2
-  DXB_RADIOS='' DXB_RADIOS_FILE=$TEST_TMP/none dxb_screen_session_argv gamma-radio2 xvnc "$DXB_SCREENS_DIR/gamma-radio2.env" > "$TEST_TMP/argv2"
+  DXB_RADIOS='' DXB_RADIOS_FILE=$TEST_TMP/none dxb_screen_session_argv gamma-radio2 xvnc "$DXB_SESSIONS_DIR/gamma-radio2.env" > "$TEST_TMP/argv2"
   assert_eq "$(cat "$TEST_TMP/argv2")" "$(cat "$TEST_TMP/argv")"
 }
 
-# the screen answer reads its labels from the env file as data: a file that tries to run code
-# is never run (the program user can replace files in the screens directory)
+# the screen answer reads its labels from the env file as data (a file that tries to run code is
+# never run), only from a regular file, and says when the caller cannot open screens yet
 test_screen_answer_states_and_never_runs_the_env_file() {
   sc_env; sc_owned radio2 gamma
   sc_app screen gamma-radio2 --json > /dev/null 2>&1; assert_eq "$?" "3"     # never prepared, not running
   sc_app prepare gamma-radio2
   assert_eq "$(DXB_FAKE_EUID=1000 sc_app screen gamma-radio2 --json)" \
-    '{"session":"gamma-radio2","app":"gamma","radio":"radio2","label":"Gamma","radio_label":"IC-7300","state":"stopped","socket":null,"open":{"kind":"screen"}}'
+    '{"session":"gamma-radio2","app":"gamma","radio":"radio2","label":"Gamma","radio_label":"IC-7300","state":"stopped","socket":null,"open":{"kind":"screen"},"access":true}'
   echo dxberry-screen@gamma-radio2.service > "$TEST_TMP/failed"
   assert_eq "$(sc_app screen gamma-radio2 --json | jq -r .state)" "failed"
-  printf 'LABEL=$(touch %s/ran)\nRADIO_LABEL=`touch %s/ran`\n' "$TEST_TMP" "$TEST_TMP" > "$DXB_SCREENS_DIR/gamma-radio2.env"
+  printf 'LABEL=$(touch %s/ran)\nRADIO_LABEL=`touch %s/ran`\n' "$TEST_TMP" "$TEST_TMP" > "$DXB_SESSIONS_DIR/gamma-radio2.env"
   assert_eq "$(sc_app screen gamma-radio2 --json | jq -r .label)" '$(touch '"$TEST_TMP"'/ran)'
   [[ -e $TEST_TMP/ran ]] && _fail "the env file must never be run"
+  # a FIFO in its place is never opened (it would hang the tab)
+  rm -f "$DXB_SESSIONS_DIR/gamma-radio2.env"; mkfifo "$DXB_SESSIONS_DIR/gamma-radio2.env"
+  assert_eq "$(timeout 10 "$DXB_ROOT/provision/bin/dxberry-app" screen gamma-radio2 --json | jq -r '.label, .radio_label' | tr '\n' ' ')" "Gamma radio2 "
+  # not in dxbscreen (yet): the tab is told so, and nothing else
+  touch "$TEST_TMP/no-access"
+  assert_eq "$(DXB_FAKE_EUID=1000 sc_app screen gamma-radio2 --json)" '{"session":"gamma-radio2","access":false}'
   sc_app screen ../etc --json > /dev/null 2>&1; assert_eq "$?" "2"
 }
 
@@ -354,16 +381,17 @@ test_screen_usage_lines() {
   assert_eq "$(sed -n '15p' "$DXB_ROOT/provision/bin/dxberry-app" | grep -c '^#')" "0"
 }
 
-# sc_fakes: stand-ins for Xvnc (answers display 7 on fd 3), openbox and the program. The program
-# writes its environment to $TEST_TMP/prog-env, then by PROG_MODE: exit (ends 3), wait (ends 0 on
-# TERM) or stubborn (ignores TERM). Xvnc and openbox log "NAME ended" in $TEST_TMP/helpers.
+# sc_fakes: stand-ins for Xvnc (records its arguments, then makes its X socket and runs), openbox
+# and the program. The program writes its environment to $TEST_TMP/prog-env, then by PROG_MODE:
+# exit (ends 3), wait (ends 0 on TERM) or stubborn (ignores TERM). Xvnc and openbox log
+# "NAME ended" in $TEST_TMP/helpers.
 sc_fakes() {
   local b=$TEST_TMP/bin
-  printf '#!/bin/bash\ntrap '\''echo "Xvnc ended" >> "$TEST_TMP/helpers"; exit 0'\'' TERM\necho 7 >&3\nexec 3>&-\nwhile :; do sleep 0.1; done\n' > "$b/Xvnc"
+  printf '#!/bin/bash\necho "$*" > "$TEST_TMP/xvnc-args"\ntrap '\''echo "Xvnc ended" >> "$TEST_TMP/helpers"; exit 0'\'' TERM\n: > "$DXB_X11_UNIX_DIR/X${1#:}"\nwhile :; do sleep 0.1; done\n' > "$b/Xvnc"
   printf '#!/bin/bash\ntrap '\''echo "openbox ended" >> "$TEST_TMP/helpers"; exit 0'\'' TERM\nwhile :; do sleep 0.1; done\n' > "$b/openbox"
   cat > "$b/prog" <<'PROG'
 #!/bin/bash
-env | grep -E '^(DISPLAY|HOME|XDG_RUNTIME_DIR|PULSE_SERVER|PULSE_CLIENTCONFIG|DEVICE|RADIO|RIGCTLD)=' | sort > "$TEST_TMP/prog-env"
+env | grep -E '^(DISPLAY|XAUTHORITY|HOME|XDG_RUNTIME_DIR|PULSE_SERVER|PULSE_CLIENTCONFIG|DEVICE|RADIO|RIGCTLD)=' | sort > "$TEST_TMP/prog-env"
 echo "args $*" >> "$TEST_TMP/prog-env"
 case $PROG_MODE in
   exit) exit 3 ;;
@@ -377,16 +405,39 @@ PROG
   export DXB_XVNC=$b/Xvnc DXB_OPENBOX=$b/openbox GAMMA_CMD=$b/prog DXB_SCREEN_STOP_WAIT_S=1
 }
 sc_wait_for() { local i; for (( i = 0; i < 100; i++ )); do [[ -e $1 ]] && return 0; command sleep 0.05; done; return 1; }
+sc_session() { PROG_MODE=${PROG_MODE:-exit} DXB_FAKE_EUID=900 timeout 20 "$DXB_ROOT/provision/bin/dxberry-app" session gamma-radio2; }
 
+# the session writes its own client.conf and X cookie, starts Xvnc on its fixed display with
+# that cookie (never on the command line of anything but xauth), and gives the program DISPLAY
+# and XAUTHORITY; it ends with the program's status, the helpers with it
 test_screen_session_runs_the_program_and_ends_with_it() {
   sc_env; sc_owned radio2 gamma; sc_app prepare gamma-radio2; sc_fakes
-  PROG_MODE=exit DXB_FAKE_EUID=900 timeout 20 "$DXB_ROOT/provision/bin/dxberry-app" session gamma-radio2 2> "$TEST_TMP/err"
+  sc_session 2> "$TEST_TMP/err"
   assert_eq "$?" "3"
-  local d=$DXB_SCREENS_DIR/gamma-radio2.d
-  assert_eq "$(cat "$TEST_TMP/prog-env")" "$(printf '%s\n' "DEVICE=plughw:CARD=RADIO2,DEV=0" "DISPLAY=:7" "HOME=$DXB_APPS_HOME" \
+  local d=$DXB_SESSIONS_DIR/gamma-radio2.d cookie
+  assert_eq "$(cat "$TEST_TMP/prog-env")" "$(printf '%s\n' "DEVICE=plughw:CARD=RADIO2,DEV=0" "DISPLAY=:102" "HOME=$DXB_APPS_HOME" \
     "PULSE_CLIENTCONFIG=$d/client.conf" "PULSE_SERVER=unix:$d/pulse.sock" "RADIO=radio2" "RIGCTLD=127.0.0.1:4534" \
-    "XDG_RUNTIME_DIR=$d" "args --rig-name=radio2")"
+    "XAUTHORITY=$d/Xauthority" "XDG_RUNTIME_DIR=$d" "args --rig-name=radio2")"
   assert_eq "$(LC_ALL=C sort "$TEST_TMP/helpers" | tr '\n' ';')" "Xvnc ended;openbox ended;"
+  assert_eq "$(cat "$d/client.conf")" "autospawn = no"
+  cookie=$(sed -n "s|^xauth -q -f $d/Xauthority add :102 MIT-MAGIC-COOKIE-1 \([0-9a-f]*\)$|\1|p" "$TEST_TMP/xauth-calls")
+  assert_eq "${#cookie}" "32"
+  assert_contains "$(cat "$TEST_TMP/xvnc-args")" ":102 -auth $d/Xauthority -rfbunixpath"
+  assert_not_contains "$(cat "$TEST_TMP/xvnc-args")" "$cookie"
+}
+
+# a stale X lock of the session's own user is cleared; a live one is never taken over
+test_screen_session_clears_a_stale_display_lock_only() {
+  local dead
+  sc_env; sc_owned radio2 gamma; sc_app prepare gamma-radio2; sc_fakes
+  ( exit 0 ) & dead=$!; wait "$dead"
+  printf '%10d\n' "$dead" > "$DXB_X_LOCK_DIR/.X102-lock"; : > "$DXB_X11_UNIX_DIR/X102"
+  sc_session 2> "$TEST_TMP/err"; assert_eq "$?" "3"
+  [[ -e $DXB_X_LOCK_DIR/.X102-lock ]] && _fail "a stale lock of our own is removed"
+  printf '%10d\n' "$$" > "$DXB_X_LOCK_DIR/.X102-lock"; rm -f "$TEST_TMP/prog-env"
+  sc_session 2> "$TEST_TMP/err"; assert_eq "$?" "6"
+  assert_contains "$(cat "$TEST_TMP/err")" "display :102 is in use (process $$"
+  [[ -e $TEST_TMP/prog-env ]] && _fail "nothing starts on a display that is in use"
 }
 
 # ruling 9: a stop sends the program TERM; one that ignores it is killed after the wait. Either
@@ -410,4 +461,22 @@ test_screen_session_forwards_term_then_kills() {
   done
   assert_contains "$(cat "$TEST_TMP/err-stubborn")" "did not end within 1s of TERM; killing it"
   assert_not_contains "$(cat "$TEST_TMP/err-wait")" "killing it"
+}
+
+# the removal job reads the record again under the record lock: a radio handed to the program
+# after the command's own check still stops it (5, same words)
+test_screen_remove_job_rechecks_the_owner_under_the_record_lock() {
+  sc_env; sc_owned radio2 gamma
+  DXB_RADIOS=$(dxb_radio_empty_record)          # what the command saw: nobody runs gamma
+  dxb_apps_remove gamma > /dev/null 2> "$TEST_TMP/err"; assert_eq "$?" "5"
+  assert_contains "$(cat "$TEST_TMP/err")" "gamma runs on radio2; switch radio2 to another program first"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "apt-get"
+  if command -v flock > /dev/null 2>&1; then
+    ( exec 8> "$DXB_RUN_DIR/record.lock"; flock 8; : > "$TEST_TMP/held"; exec sleep 5 ) &
+    local holder=$!
+    sc_wait_for "$TEST_TMP/held" || _fail "the holder never took the record lock"
+    DXB_RADIO_LOCK_WAIT=1 dxb_apps_remove gamma > /dev/null 2> "$TEST_TMP/err"; assert_eq "$?" "5"
+    assert_contains "$(cat "$TEST_TMP/err")" "a radio change is still running"
+    kill "$holder" 2> /dev/null; wait "$holder" 2> /dev/null
+  fi
 }

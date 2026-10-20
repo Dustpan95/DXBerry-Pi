@@ -2,27 +2,38 @@
 # shellcheck shell=bash
 # Program sessions (applications spec section 7): one unit per program per radio,
 # dxberry-screen@<app>-<radio>.service, named by its session S = APP-RADIO (APP has no "-"). The
-# unit's root steps (dxberry-app present / prepare / stopped) and the session runner
-# (dxberry-app session, as dxbapps) are built from these functions. Every file of a session lives
-# in the screens directory (/run/dxberry/screens, 2770 root:dxbscreen): S.sock (the VNC socket),
-# S.env (0640 root:dxbscreen, what the runner and the program tab read), S.d/ (0700 dxbapps: the
-# private PulseAudio socket, client.conf, the runtime directory) and S.waiting (radio.sh).
-# Expects common.sh, radio.sh and apps.sh to be sourced.
+# unit's root steps (dxberry-app present / prepare / stopped), the settings step and the session
+# runner (dxberry-app settings / session, as dxbapps) are built from these functions.
 #
-# The screens directory is writable by its group (dxbapps, the console user), so nothing here
-# ever sources an env file, and root never writes through a name a group member could have
-# planted: new files are made with mktemp and renamed into place.
+# Two directories:
+# - the screens directory (/run/dxberry/screens, 3770 root:dxbscreen, sticky) holds only the VNC
+#   sockets S.sock, made by Xvnc as dxbapps. Root never writes, chmods or chowns anything there.
+# - the sessions directory (/run/dxberry/sessions, 0750 root:dxbscreen, root's) holds S.env
+#   (0640 root:dxbscreen: what the runner and the program tab read), the S.waiting markers
+#   (radio.sh) and each session's private directory S.d (0700 dxbapps: client.conf, the X
+#   cookie, the PulseAudio socket, the runtime directory - all written by the session itself).
+# The program's settings files are written as dxbapps (dxberry-app settings), never as root.
+# Nothing here ever sources an env file: it is read back as data.
+# Expects common.sh, radio.sh and apps.sh to be sourced.
 
 : "${DXB_SCREEN_GEOMETRY:=1280x800}"
+: "${DXB_SYSTEMCTL:=systemctl}"
 : "${DXB_XVNC:=Xvnc}"
 : "${DXB_OPENBOX:=openbox}"
 : "${DXB_PULSEAUDIO:=pulseaudio}"
+: "${DXB_XAUTH:=xauth}"
+: "${DXB_ID:=id}"
+# where X servers keep their lock files and sockets
+: "${DXB_X_LOCK_DIR:=/tmp}"
+: "${DXB_X11_UNIX_DIR:=/tmp/.X11-unix}"
+# this command, run again as dxbapps for the settings step
+: "${DXB_APP_CMD:=/opt/dxberry/bin/dxberry-app}"
 # seconds a stopping program gets between TERM and KILL (ruling 9)
 : "${DXB_SCREEN_STOP_WAIT_S:=10}"
 # seconds prepare waits for the radio's rigctld
 : "${DXB_RIGCTLD_WAIT_S:=30}"
 # the env file's keys, in the order they are written
-DXB_SCREEN_KEYS='APP RADIO LABEL RADIO_LABEL INDEX DEVICE CARD RIGCTLD AUDIO SCREEN GEOMETRY'
+DXB_SCREEN_KEYS='APP RADIO LABEL RADIO_LABEL INDEX DEVICE CARD RIGCTLD AUDIO SCREEN GEOMETRY DISPLAY_NUM'
 
 # dxb_screen_split S: "APP RADIO". 2 when S is not a session name.
 dxb_screen_split() {
@@ -30,8 +41,8 @@ dxb_screen_split() {
   printf '%s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
 }
 dxb_screen_sock() { printf '%s/%s.sock\n' "$(_dxb_screens_dir)" "$1"; }
-dxb_screen_envfile() { printf '%s/%s.env\n' "$(_dxb_screens_dir)" "$1"; }
-dxb_screen_dir() { printf '%s/%s.d\n' "$(_dxb_screens_dir)" "$1"; }
+dxb_screen_envfile() { printf '%s/%s.env\n' "$(_dxb_sessions_dir)" "$1"; }
+dxb_screen_dir() { printf '%s/%s.d\n' "$(_dxb_sessions_dir)" "$1"; }
 
 # ---- what the module says (the module loaded: dxb_app_load) ----------------------------------
 # dxb_screen_audio APP: alsa (the program opens plughw:CARD=<RADIO>,DEV=0 itself) or pulse (it
@@ -47,19 +58,24 @@ dxb_screen_open() {
   printf '%s\n' "${v:-$def}"
 }
 
+# dxb_screen_display APP INDEX: the session's fixed X display number: 100 + 2 x the radio's index,
+# + 1 for flrig (its rig-control session on the same radio).
+dxb_screen_display() { local f=0; [[ $1 == flrig ]] && f=1; echo $(( 100 + 2 * $2 + f )); }
+
 # dxb_screen_env S: the session's env file text (root: it reads the radio record), one KEY=VALUE
 # per line in DXB_SCREEN_KEYS order, each value printf %q-quoted. Only S's own radio and card are
 # named. 2 bad name, 3 no such program or radio.
 dxb_screen_env() {
-  local ar a r w
+  local ar a r w i
   ar=$(dxb_screen_split "$1") || return 2
   a=${ar% *}; r=${ar#* }
   dxb_app_load "$a" || return 3
   w=$(dxb_apps_wiring "$r") || return 3
+  i=$(jq -r .index <<< "$w")
   printf '%s=%q\n' APP "$a" RADIO "$r" LABEL "$(dxb_screen_label "$a")" RADIO_LABEL "$(jq -r .label <<< "$w")" \
-    INDEX "$(jq -r .index <<< "$w")" DEVICE "$(jq -r .device <<< "$w")" CARD "$(jq -r .card <<< "$w")" \
+    INDEX "$i" DEVICE "$(jq -r .device <<< "$w")" CARD "$(jq -r .card <<< "$w")" \
     RIGCTLD "$(jq -r .rigctld <<< "$w")" AUDIO "$(dxb_screen_audio "$a")" SCREEN "$(dxb_screen_wants_screen "$a")" \
-    GEOMETRY "$DXB_SCREEN_GEOMETRY"
+    GEOMETRY "$DXB_SCREEN_GEOMETRY" DISPLAY_NUM "$(dxb_screen_display "$a" "$i")"
 }
 
 # _dxb_screen_unq VALUE: a printf %q value read back as data (never evaluated): $'...' through
@@ -90,11 +106,12 @@ dxb_screen_parse() {
 }
 
 # dxb_screen_session_argv S xvnc|openbox|pulse [ENVFILE]: one argument per line, the command
-# first: Xvnc on S's unix socket only (no TCP, security None: the socket's group and Cockpit's
-# login are the protection), the window manager, or a PulseAudio that loads only S's card (a sink
-# and a source named after it) and a native socket in S.d. The values come from ENVFILE (the
-# runner, which cannot read the radio record) or else from dxb_screen_env S. Pure: it starts
-# nothing. 2 bad name or list, 3 unknown, 6 ENVFILE unreadable.
+# first: Xvnc on its fixed display with S's X cookie, its VNC on S's unix socket only (no TCP,
+# security None: the socket's group and Cockpit's login are the protection), the window manager,
+# or a PulseAudio that loads only S's card (a sink and a source named after it) and a native
+# socket in S.d. The values come from ENVFILE (the runner, which cannot read the radio record) or
+# else from dxb_screen_env S. Pure: it starts nothing. 2 bad name or list, 3 unknown, 6 ENVFILE
+# unreadable.
 dxb_screen_session_argv() {
   local s=$1 what=$2 text sock dir dev card
   dxb_screen_split "$s" > /dev/null || return 2
@@ -104,7 +121,8 @@ dxb_screen_session_argv() {
   dev=${DXB_SCREEN_ENV[DEVICE]:-}; card=${DXB_SCREEN_ENV[CARD]:-}
   case $what in
     xvnc)
-      printf '%s\n' "$DXB_XVNC" -displayfd 3 -rfbunixpath "$sock" -rfbunixmode 0660 -rfbport -1 -SecurityTypes None \
+      printf '%s\n' "$DXB_XVNC" ":${DXB_SCREEN_ENV[DISPLAY_NUM]:-}" -auth "$dir/Xauthority" \
+        -rfbunixpath "$sock" -rfbunixmode 0660 -rfbport -1 -SecurityTypes None \
         -geometry "${DXB_SCREEN_ENV[GEOMETRY]:-$DXB_SCREEN_GEOMETRY}" -nolisten tcp \
         -desktop "${DXB_SCREEN_ENV[LABEL]:-} · ${DXB_SCREEN_ENV[RADIO_LABEL]:-}" ;;
     openbox) printf '%s\n' "$DXB_OPENBOX" --sm-disable ;;
@@ -117,16 +135,8 @@ dxb_screen_session_argv() {
 }
 
 # ---- the unit's root steps -------------------------------------------------------------------
-# _dxb_screen_ensure_dir: the screens directory as tmpfiles makes it, when it is missing.
-_dxb_screen_ensure_dir() {
-  local d; d=$(_dxb_screens_dir)
-  [[ -d $d ]] && return 0
-  mkdir -p "$d" && chmod 2770 "$d" && "$DXB_CHOWN" "root:$DXB_APPS_SCREEN_GROUP" "$d"
-}
-
-# _dxb_screen_put FILE CONTENT MODE OWNER: FILE in the screens directory, made new with mktemp and
-# renamed over whatever was there (a symlink a group member planted is replaced, never written
-# through). 0 ok, 1 failed.
+# _dxb_screen_put FILE CONTENT MODE OWNER: FILE (in the root-only sessions directory) made new
+# with mktemp and renamed over whatever was there. 0 ok, 1 failed.
 _dxb_screen_put() {
   local f=$1 tmp
   tmp=$(mktemp "${f%/*}/.dxbtmp.XXXXXXXX") || return 1
@@ -138,27 +148,10 @@ _dxb_screen_put() {
 # dxb_screen_mark_waiting S: S waits for its radio (radio.sh's apply starts it when the radio is
 # back). Always 0: a marker that cannot be written is a warning.
 dxb_screen_mark_waiting() {
-  local f; f=$(_dxb_screens_dir)/$1.waiting
-  { _dxb_screen_ensure_dir && _dxb_screen_put "$f" '' 600 root:root; } 2> /dev/null \
+  local f; f=$(_dxb_sessions_dir)/$1.waiting
+  { _dxb_sessions_ensure && _dxb_screen_put "$f" '' 600 root:root; } 2> /dev/null \
     || dxb_warn "could not write $f; start $1 by hand when its radio is back"
   return 0
-}
-
-# _dxb_screen_own APP RADIO: the program's settings to dxbapps (prepare's first fill and wiring
-# write them as root): the directory of app_APP_settings_file RADIO and everything under it, and
-# every directory between it and the program home on its own. chown never follows a symlink here.
-_dxb_screen_own() {
-  local f d p
-  declare -F "app_$1_settings_file" > /dev/null || return 0
-  f=$("app_$1_settings_file" "$2") || return 0
-  d=${f%/*}
-  [[ $d == "$DXB_APPS_HOME"/* && $d != *..* && -d $d ]] || return 0
-  dxb_apps_own "$d" || return 1
-  p=${d%/*}
-  while [[ $p == "$DXB_APPS_HOME"/* ]]; do
-    "$DXB_CHOWN" -h "$DXB_APPS_USER:$DXB_APPS_USER" "$p" || return 1
-    p=${p%/*}
-  done
 }
 
 # _dxb_screen_wait_rigctld RADIO WIRING: when the program talks to the radio through rigctld (it
@@ -168,7 +161,7 @@ _dxb_screen_wait_rigctld() {
   local u="rigctld@$1.service" i
   [[ $(jq -r --arg n "$1" '.radios[$n].cat != null' <<< "$DXB_RADIOS") == true || $(jq -r .ptt <<< "$2") == cat ]] || return 0
   for (( i = 0; ; i++ )); do
-    systemctl is-active --quiet "$u" && return 0
+    "$DXB_SYSTEMCTL" is-active --quiet "$u" && return 0
     (( i >= DXB_RIGCTLD_WAIT_S )) && break
     command sleep 1
   done
@@ -176,16 +169,76 @@ _dxb_screen_wait_rigctld() {
   return 0
 }
 
+# _dxb_screen_logbook: the logbook a program is told about ({"url","key","station_id"} or {}),
+# from logbook.sh when it is loaded.
+_dxb_screen_logbook() {
+  local j='' none='{}'
+  declare -F dxb_logbook_fldigi_values > /dev/null && j=$(dxb_logbook_fldigi_values 2> /dev/null | jq -ce 'select(type == "object")' 2> /dev/null)
+  printf '%s\n' "${j:-$none}"
+}
+
+# dxb_screen_settings_input S STEP...: the one JSON object the settings step reads on stdin
+# (root builds it): only S's radio from the record, the station keys, the logbook (its key
+# travels only here, never in an argument), and the steps to run.
+dxb_screen_settings_input() {
+  local s=$1 r; shift
+  r=${s#*-}
+  jq -cn --argjson rec "$(jq -c --arg r "$r" '{version, gps, radios: {($r): .radios[$r]}}' <<< "$DXB_RADIOS")" \
+    --arg c "${DXB_CFG[CALLSIGN]:-}" --arg la "${DXB_CFG[LATITUDE]:-}" --arg lo "${DXB_CFG[LONGITUDE]:-}" \
+    --argjson lb "$(_dxb_screen_logbook)" \
+    '{radios: $rec, cfg: {CALLSIGN: $c, LATITUDE: $la, LONGITUDE: $lo}, logbook: $lb, steps: $ARGS.positional}' --args "$@"
+}
+
+# dxb_screen_settings S: the settings step itself, as dxbapps: one JSON object
+# (dxb_screen_settings_input) on stdin; DXB_RADIOS and DXB_CFG come from it alone, and
+# dxb_logbook_fldigi_values answers its logbook. Runs app_APP_firstfill and / or app_APP_wire
+# RADIO in the order given (a module without the hook has nothing to do) and prints "done STEP"
+# after each one; the module's own output goes to stderr. 0 ok, 2 bad input, 3 unknown program
+# or radio, 7 a step failed.
+DXB_APPS_LOGBOOK='{}'
+dxb_screen_settings() {
+  local s=$1 ar a r in step
+  ar=$(dxb_screen_split "$s") || return 2
+  a=${ar% *}; r=${ar#* }
+  in=$(cat)
+  jq -e 'type == "object" and (.radios | type) == "object" and (.steps | type) == "array"' <<< "$in" > /dev/null 2>&1 \
+    || { echo "the settings step reads one JSON object on stdin" >&2; return 2; }
+  DXB_RADIOS=$(jq -c '.radios' <<< "$in")
+  dxb_radio_get "$r" > /dev/null || return 3
+  DXB_CFG=()
+  DXB_CFG[CALLSIGN]=$(jq -r '.cfg.CALLSIGN // ""' <<< "$in")
+  DXB_CFG[LATITUDE]=$(jq -r '.cfg.LATITUDE // ""' <<< "$in")
+  DXB_CFG[LONGITUDE]=$(jq -r '.cfg.LONGITUDE // ""' <<< "$in")
+  DXB_CFG[_GPS]=1; DXB_CFG[GPS_DEVICE]=auto; DXB_CFG[GPS_PPS]=''; DXB_CFG[_GPS_PATH]=''; DXB_CFG[GPS_BAUD]=9600
+  DXB_APPS_LOGBOOK=$(jq -c '.logbook // {} | if type == "object" then . else {} end' <<< "$in")
+  # shellcheck disable=SC2329  # called by the modules (fldigi's first fill), not here
+  dxb_logbook_fldigi_values() { printf '%s\n' "$DXB_APPS_LOGBOOK"; }
+  dxb_app_load "$a" || return 3
+  for step in $(jq -r '.steps[]' <<< "$in"); do
+    case $step in
+      firstfill|wire) ;;
+      *) echo "unknown settings step: $step" >&2; return 2 ;;
+    esac
+    if declare -F "app_${a}_$step" > /dev/null; then
+      "app_${a}_$step" "$r" >&2 || { echo "$s: $step failed" >&2; return 7; }
+    fi
+    echo "done $step"
+  done
+  return 0
+}
+
 # dxb_screen_prepare S: the unit's ExecStartPre (root; DXB_RADIOS loaded, DXB_RADIO_SCAN fresh,
 # DXB_CFG loaded for the first fill). RADIO must exist, be owned by APP, APP an installed session
-# program, RADIO plugged in. Then: the first fill once per program per radio (app_APP_firstfill,
-# then its mark); the wiring (app_APP_wire) whenever the radio's wiring hash differs from the one
-# last wired for S (ruling 7; a radio set to "names" wiring is never wired); the settings handed to
-# dxbapps; S.env written; a fresh S.d (client.conf: no sound server may spawn); a stale S.sock
-# removed; rigctld waited for. 0 ok, 2 bad name, 3 not owned / not installed / unknown, 4 radio
-# absent, 6 the session's files could not be written, 7 first fill or wiring failed.
+# program, RADIO plugged in. Then the settings step as dxbapps (dxberry-app settings, input on
+# stdin): the first fill once per program per radio, and the wiring whenever the radio's wiring
+# hash differs from the one last wired for S (ruling 7; a radio set to "names" wiring is never
+# wired); root records each step the settings step reports done. Then S.env, a fresh S.d (root
+# only makes it and gives it to dxbapps) and the wait for rigctld. 0 ok, 2 bad name, 3 not owned /
+# not installed / unknown, 4 radio absent, 6 the session's files could not be made, 7 first fill
+# or wiring failed.
 dxb_screen_prepare() {
-  local s=$1 ar a r w h hf env dir
+  local s=$1 ar a r w h hf env dir out rc=0
+  local -a steps=()
   ar=$(dxb_screen_split "$s") || return 2
   a=${ar% *}; r=${ar#* }
   dxb_radio_get "$r" > /dev/null || return 3
@@ -193,29 +246,31 @@ dxb_screen_prepare() {
   dxb_app_load_owner "$a" || return 3
   dxb_app_is_session "$a" || { dxb_error "$a does not run in a screen session"; return 3; }
   dxb_radio_present "$r" || { dxb_error "radio $r is not plugged in"; return 4; }
-  if ! dxb_apps_firstfill_done "$a" "$r"; then
-    if declare -F "app_${a}_firstfill" > /dev/null; then "app_${a}_firstfill" "$r" || { dxb_error "$s: the first fill failed"; return 7; }; fi
-    dxb_apps_firstfill_mark "$a" "$r" || dxb_warn "$s: could not mark the first fill done; it runs again next time"
-  fi
   w=$(dxb_apps_wiring "$r") || return 3
   h=$(jq -r .hash <<< "$w"); hf=$DXB_APPS_STATE/wired/$s
+  dxb_apps_firstfill_done "$a" "$r" || steps+=(firstfill)
   if [[ $(cat "$hf" 2> /dev/null) != "$h" && $(jq -r --arg n "$r" '.radios[$n].wiring' <<< "$DXB_RADIOS") != names ]]; then
-    if declare -F "app_${a}_wire" > /dev/null; then "app_${a}_wire" "$r" || { dxb_error "$s: wiring $a to radio $r failed"; return 7; }; fi
-    { mkdir -p "${hf%/*}" && printf '%s\n' "$h" > "$hf"; } 2> /dev/null \
-      || dxb_warn "$s: could not record the wiring; it is wired again next time"
+    steps+=(wire)
   fi
-  _dxb_screen_own "$a" "$r" || dxb_warn "$s: could not hand $a's settings to $DXB_APPS_USER"
+  if (( ${#steps[@]} )); then
+    out=$(dxb_screen_settings_input "$s" "${steps[@]}" \
+      | "$DXB_RUNUSER" -u "$DXB_APPS_USER" -- env HOME="$DXB_APPS_HOME" "$DXB_APP_CMD" settings "$s"); rc=$?
+    if grep -qx 'done firstfill' <<< "$out"; then
+      dxb_apps_firstfill_mark "$a" "$r" || dxb_warn "$s: could not mark the first fill done; it runs again next time"
+    fi
+    if grep -qx 'done wire' <<< "$out"; then
+      { mkdir -p "${hf%/*}" && printf '%s\n' "$h" > "$hf"; } 2> /dev/null \
+        || dxb_warn "$s: could not record the wiring; it is wired again next time"
+    fi
+    (( rc == 0 )) || { dxb_error "$s: $a's settings could not be written (${steps[*]}; exit $rc)"; return 7; }
+  fi
   env=$(dxb_screen_env "$s") || return 3
   dir=$(dxb_screen_dir "$s")
-  _dxb_screen_ensure_dir || { dxb_error "could not create $(_dxb_screens_dir)"; return 6; }
+  _dxb_sessions_ensure || { dxb_error "could not create $(_dxb_sessions_dir)"; return 6; }
   _dxb_screen_put "$(dxb_screen_envfile "$s")" "$env" 640 "root:$DXB_APPS_SCREEN_GROUP" \
     || { dxb_error "could not write $(dxb_screen_envfile "$s")"; return 6; }
-  rm -f "$(dxb_screen_sock "$s")"
   rm -rf "$dir"
-  # client.conf is written while S.d is still root's, then the file and the directory are given
-  # to dxbapps (mkdir fails on anything a group member put back in the meantime)
-  if ! { mkdir -m 700 "$dir" && printf 'autospawn = no\n' > "$dir/client.conf" \
-      && "$DXB_CHOWN" -h "$DXB_APPS_USER:$DXB_APPS_USER" "$dir/client.conf" && "$DXB_CHOWN" -h "$DXB_APPS_USER:$DXB_APPS_USER" "$dir"; }; then
+  if ! { mkdir -m 700 "$dir" && "$DXB_CHOWN" -h "$DXB_APPS_USER:$DXB_APPS_USER" "$dir"; }; then
     dxb_error "could not prepare $dir"; return 6
   fi
   _dxb_screen_wait_rigctld "$r" "$w"
@@ -223,13 +278,13 @@ dxb_screen_prepare() {
 
 # dxb_screen_stopped S: after the session ended (its ExecStopPost, root). A radio that is gone
 # right now leaves S waiting for it, so a program that ended because its card vanished comes back
-# on replug; anything else (quit from its menu, Stop) leaves nothing. Always 0.
+# on replug; anything else (quit from its menu, Stop) leaves nothing. S.d goes; the screen socket
+# is the session's own (Xvnc removes it). Always 0.
 dxb_screen_stopped() {
   local ar r
   ar=$(dxb_screen_split "$1" 2> /dev/null) || return 0
   r=${ar#* }
   rm -rf "$(dxb_screen_dir "$1")"
-  rm -f "$(dxb_screen_sock "$1")"
   dxb_radio_get "$r" > /dev/null 2>&1 || return 0
   dxb_radio_present "$r" || dxb_screen_mark_waiting "$1"
   return 0
@@ -237,15 +292,22 @@ dxb_screen_stopped() {
 
 # dxb_screen_unit_state UNIT: running | starting | stopped | failed.
 dxb_screen_unit_state() {
-  case $(systemctl is-active "$1" 2> /dev/null) in
+  case $("$DXB_SYSTEMCTL" is-active "$1" 2> /dev/null) in
     active|reloading) echo running ;;
     activating) echo starting ;;
     failed) echo failed ;;
-    *) if systemctl is-failed --quiet "$1" 2> /dev/null; then echo failed; else echo stopped; fi ;;
+    *) if "$DXB_SYSTEMCTL" is-failed --quiet "$1" 2> /dev/null; then echo failed; else echo stopped; fi ;;
   esac
 }
 # dxb_screen_state S: dxb_screen_unit_state of S's unit.
 dxb_screen_state() { dxb_screen_unit_state "dxberry-screen@$1.service"; }
+
+# dxb_screen_access: 0 when the caller may open screen sockets (root, or in the dxbscreen group
+# right now - a login made before the user joined it is not).
+dxb_screen_access() {
+  (( ${DXB_FAKE_EUID:-$EUID} == 0 )) && return 0
+  [[ " $("$DXB_ID" -nG 2> /dev/null) " == *" $DXB_APPS_SCREEN_GROUP "* ]]
+}
 
 # ---- the session runner (as dxbapps) ---------------------------------------------------------
 _DXB_SCREEN_TERM=0
@@ -264,21 +326,56 @@ _dxb_screen_end() {
   return 0
 }
 
-# dxb_screen_session_run S: the session itself. Reads S.env (never the radio record), starts Xvnc
-# (SCREEN=yes: its display number comes back on fd 3) and openbox, the private PulseAudio
+# _dxb_screen_free_display N: display N may be started: a lock /tmp/.XN-lock whose process is gone
+# is removed (with its socket) when it is this user's own; one whose process lives, or another
+# user's stale one, is refused. 0 free, 1 not (the reason on stderr).
+_dxb_screen_free_display() {
+  local n=$1 lock xs pid=''
+  lock=$DXB_X_LOCK_DIR/.X$n-lock; xs=$DXB_X11_UNIX_DIR/X$n
+  if [[ -e $lock || -L $lock ]]; then
+    read -r pid < "$lock" 2> /dev/null
+    pid=${pid//[[:space:]]/}
+    if [[ $pid =~ ^[0-9]+$ && -e /proc/$pid ]]; then
+      echo "display :$n is in use (process $pid, $lock)" >&2; return 1
+    fi
+    if [[ ! -O $lock || -L $lock ]]; then
+      echo "display :$n has a stale lock $lock that belongs to another user; remove it (sudo rm $lock $xs)" >&2; return 1
+    fi
+    rm -f "$lock" || { echo "could not remove the stale $lock" >&2; return 1; }
+  fi
+  if [[ -e $xs || -L $xs ]]; then
+    [[ -O $xs && ! -L $xs ]] || { echo "$xs belongs to another user; remove it (sudo rm $xs)" >&2; return 1; }
+    rm -f "$xs"
+  fi
+  return 0
+}
+
+# _dxb_screen_cookie FILE N: a new X authority FILE for display :N with a random cookie. The
+# cookie is in xauth's own argument list, a process of this same user (dxbapps) - nobody else's.
+_dxb_screen_cookie() {
+  local c
+  c=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+  [[ $c =~ ^[0-9a-f]{32}$ ]] || return 1
+  rm -f "$1"
+  ( umask 077; "$DXB_XAUTH" -q -f "$1" add ":$2" MIT-MAGIC-COOKIE-1 "$c" )
+}
+
+# dxb_screen_session_run S: the session itself. Reads S.env (never the radio record), writes
+# client.conf (no sound server may spawn) and the X cookie into S.d, starts Xvnc on the session's
+# fixed display (SCREEN=yes; ready when its X socket exists) and openbox, the private PulseAudio
 # (AUDIO=pulse), then the program (app_APP_command RADIO INDEX, one argument per line) with
-# HOME, DISPLAY, XDG_RUNTIME_DIR=S.d and PULSE_SERVER / PULSE_CLIENTCONFIG set for every program
-# (an ALSA one too: nothing may spawn a sound server). The program also sees APP, RADIO, INDEX,
-# DEVICE, CARD, RIGCTLD and DXB_APPS_OPT. Ends with the program's own exit status; on TERM the
-# program gets TERM, then KILL after DXB_SCREEN_STOP_WAIT_S (ruling 9), and the session ends 0 (a
-# stop is not a failure). Xvnc and PulseAudio ending first end the program too (status 1); the
-# helpers always end with the program.
+# HOME, DISPLAY, XAUTHORITY, XDG_RUNTIME_DIR=S.d and PULSE_SERVER / PULSE_CLIENTCONFIG set for
+# every program (an ALSA one too). The program also sees APP, RADIO, INDEX, DEVICE, CARD, RIGCTLD
+# and DXB_APPS_OPT. Ends with the program's own exit status; on TERM the program gets TERM, then
+# KILL after DXB_SCREEN_STOP_WAIT_S (ruling 9), and the session ends 0 (a stop is not a failure).
+# Xvnc and PulseAudio ending first end the program too (status 1); the helpers always end with
+# the program.
 dxb_screen_session_run() {
-  local s=$1 envf dir fifo n='' rfd i rc=0 done_pid a r
+  local s=$1 envf dir sock n xs i rc=0 done_pid a r
   local xpid='' opid='' ppid='' prog='' why=''
   local -a argv=() xv=() ob=() pa=() live=()
-  envf=$(dxb_screen_envfile "$s"); dir=$(dxb_screen_dir "$s")
-  [[ -r $envf && -d $dir ]] || { echo "$envf or $dir is missing: the session's prepare step did not run" >&2; return 6; }
+  envf=$(dxb_screen_envfile "$s"); dir=$(dxb_screen_dir "$s"); sock=$(dxb_screen_sock "$s")
+  [[ -f $envf && -r $envf && -d $dir ]] || { echo "$envf or $dir is missing: the session's prepare step did not run" >&2; return 6; }
   dxb_screen_parse "$(< "$envf")"
   a=${DXB_SCREEN_ENV[APP]:-}; r=${DXB_SCREEN_ENV[RADIO]:-}
   [[ "$a-$r" == "$s" ]] || { echo "$envf is not $s's" >&2; return 6; }
@@ -286,36 +383,38 @@ dxb_screen_session_run() {
   declare -F "app_${a}_command" > /dev/null || { echo "$a has no command to run" >&2; return 6; }
   mapfile -t argv < <("app_${a}_command" "$r" "${DXB_SCREEN_ENV[INDEX]:-0}")
   [[ ${#argv[@]} -gt 0 && -n ${argv[0]} ]] || { echo "$a gave no command to run" >&2; return 6; }
+  printf 'autospawn = no\n' > "$dir/client.conf" || { echo "could not write $dir/client.conf" >&2; return 6; }
   export HOME=$DXB_APPS_HOME XDG_RUNTIME_DIR=$dir PULSE_SERVER="unix:$dir/pulse.sock" PULSE_CLIENTCONFIG="$dir/client.conf" \
     APP=$a RADIO=$r INDEX=${DXB_SCREEN_ENV[INDEX]:-} DEVICE=${DXB_SCREEN_ENV[DEVICE]:-} CARD=${DXB_SCREEN_ENV[CARD]:-} \
     RIGCTLD=${DXB_SCREEN_ENV[RIGCTLD]:-} DXB_APPS_OPT
-  unset DISPLAY
+  unset DISPLAY XAUTHORITY
   _DXB_SCREEN_TERM=0
   trap '_DXB_SCREEN_TERM=1' TERM INT HUP
   if [[ ${DXB_SCREEN_ENV[SCREEN]:-yes} == yes ]]; then
+    n=${DXB_SCREEN_ENV[DISPLAY_NUM]:-}
+    [[ $n =~ ^[0-9]+$ ]] || { echo "$envf names no display" >&2; return 6; }
+    _dxb_screen_free_display "$n" || return 6
+    _dxb_screen_cookie "$dir/Xauthority" "$n" || { echo "could not write the X cookie $dir/Xauthority" >&2; return 6; }
     mapfile -t xv < <(dxb_screen_session_argv "$s" xvnc "$envf")
     mapfile -t ob < <(dxb_screen_session_argv "$s" openbox "$envf")
-    fifo=$dir/display
-    rm -f "$fifo"
-    mkfifo -m 600 "$fifo" || { echo "could not create $fifo" >&2; return 6; }
-    # read-write, so this open never blocks; the display number arrives once Xvnc listens
-    exec {rfd}<> "$fifo"
-    "${xv[@]}" 3> "$fifo" {rfd}<&- &
+    # the session's own socket from an earlier run (the directory is sticky: only it may remove it)
+    rm -f "$sock"
+    xs=$DXB_X11_UNIX_DIR/X$n
+    "${xv[@]}" &
     xpid=$!
-    for (( i = 0; i < 30; i++ )); do
-      read -r -t 1 -u "$rfd" n && break
+    for (( i = 0; i < 300; i++ )); do
+      [[ -e $xs ]] && break
       kill -0 "$xpid" 2> /dev/null || break
       (( _DXB_SCREEN_TERM )) && break
+      command sleep 0.1
     done
-    exec {rfd}<&-
-    rm -f "$fifo"
-    if [[ ! $n =~ ^[0-9]+$ ]]; then
-      (( _DXB_SCREEN_TERM )) || echo "Xvnc did not start for $s" >&2
+    if [[ ! -e $xs ]]; then
+      (( _DXB_SCREEN_TERM )) || echo "Xvnc did not start for $s (display :$n)" >&2
       _dxb_screen_end "$xpid"
       (( _DXB_SCREEN_TERM )) && return 0
       return 6
     fi
-    export DISPLAY=":$n"
+    export DISPLAY=":$n" XAUTHORITY="$dir/Xauthority"
     "${ob[@]}" &
     opid=$!
   fi
@@ -341,6 +440,8 @@ dxb_screen_session_run() {
   live=("$prog")
   for i in "$xpid" "$ppid" "$opid"; do [[ -z $i ]] || live+=("$i"); done
   while :; do
+    # checked before every wait: a TERM that came while the last round was being handled is not lost
+    (( _DXB_SCREEN_TERM )) && { why=term; break; }
     done_pid=''
     wait -n -p done_pid "${live[@]}"; rc=$?
     (( _DXB_SCREEN_TERM )) && { why=term; break; }
@@ -375,6 +476,7 @@ dxb_screen_session_run() {
     wait "$prog" 2> /dev/null
   fi
   _dxb_screen_end "$opid" "$ppid" "$xpid"
+  rm -f "$sock"
   trap - TERM INT HUP
   case $why in
     term) return 0 ;;

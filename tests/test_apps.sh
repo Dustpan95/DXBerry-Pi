@@ -130,14 +130,14 @@ test_apps_install_download_or_apt_failure_changes_nothing() {
 test_apps_install_debian_program_and_update_mode() {
   fx_apps_env
   assert_ok dxb_apps_install fldigi > "$TEST_TMP/out"
-  assert_contains "$(cat "$TEST_TMP/calls")" "apt-get install -y --no-install-recommends --no-upgrade tigervnc-standalone-server openbox socat pulseaudio fldigi"
+  assert_contains "$(cat "$TEST_TMP/calls")" "apt-get install -y --no-install-recommends --no-upgrade tigervnc-standalone-server openbox socat xauth pulseaudio fldigi"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "only-upgrade"
   assert_eq "$(cat "$TEST_TMP/curl-calls")" ""
   # update mode (Ruling A): the program's own package is upgraded, the shared ones only kept
   : > "$TEST_TMP/calls"; AP_INSTALLED=fldigi
   assert_ok dxb_apps_install fldigi update > "$TEST_TMP/out"
   assert_contains "$(cat "$TEST_TMP/calls")" "apt-get install -y --no-install-recommends --only-upgrade fldigi"
-  assert_not_contains "$(cat "$TEST_TMP/calls")" "socat pulseaudio fldigi"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "xauth pulseaudio fldigi"
   # nothing to upgrade when it is not installed
   : > "$TEST_TMP/calls"; AP_INSTALLED=''
   dxb_apps_install fldigi update > "$TEST_TMP/out" 2>&1; assert_eq "$?" "6"
@@ -297,13 +297,13 @@ test_apps_install_exit_8_when_packages_went_in_but_the_program_did_not() {
   echo "$DXB_APPS_WORK/wsjtx-3.0.2-linux-aarch64.deb" > "$TEST_TMP/apt-fail-on"
   dxb_apps_install wsjtx > "$TEST_TMP/out" 2>&1; assert_eq "$?" "8"
   # with every shared package already there, nothing changed: 6
-  : > "$TEST_TMP/calls"; AP_INSTALLED='tigervnc-standalone-server openbox socat'
+  : > "$TEST_TMP/calls"; AP_INSTALLED='tigervnc-standalone-server openbox socat xauth'
   dxb_apps_install wsjtx > "$TEST_TMP/out" 2>&1; assert_eq "$?" "6"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "--no-upgrade"
   # only the missing ones are asked for
   : > "$TEST_TMP/calls"; AP_INSTALLED='openbox'
   dxb_apps_install wsjtx > /dev/null 2>&1
-  assert_contains "$(cat "$TEST_TMP/calls")" "--no-upgrade tigervnc-standalone-server socat -o"
+  assert_contains "$(cat "$TEST_TMP/calls")" "--no-upgrade tigervnc-standalone-server socat xauth -o"
 }
 
 test_apps_remove_exit_8_after_stopping_sessions() {

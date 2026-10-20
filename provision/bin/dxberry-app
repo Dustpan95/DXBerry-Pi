@@ -6,12 +6,12 @@
 #   start RADIO                start the program that owns RADIO
 #   stop RADIO                 stop it; the radio stays its own
 #   screen SESSION             a session's state and screen socket (needs no root)
-#   prepare SESSION            the session unit's root step: first fill, wiring, environment
-#   present SESSION            the session unit's condition: 0 when its radio is plugged in
-#   stopped SESSION            after a session ended: wait for a radio that was unplugged
+#   prepare|present|stopped SESSION   the session unit's root steps: before it, its condition, after it
+#   settings SESSION           write the program's settings (as dxbapps; prepare sends JSON on stdin)
 #   session SESSION            the session itself (its unit runs it as dxbapps)
 # SESSION is PROGRAM-RADIO, e.g. wsjtx-radio2. --json on any subcommand.
-# Exit: 0 ok, 1 not root, 2 usage, 3 no such program/radio/session, 4 radio unplugged, 5 busy, 6 failed (nothing changed), 7 first fill or wiring failed, 8 changed with a failed later step.
+# Exit: 0 ok, 1 not root (or root where dxbapps is meant), 2 usage, 3 no such program/radio/session,
+#  4 radio unplugged, 5 busy, 6 failed (nothing changed), 7 first fill or wiring failed, 8 changed with a failed later step.
 set -uo pipefail
 
 DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
@@ -19,6 +19,9 @@ for _m in common config graywolf settings update gps radio rigctld apps screen; 
   # shellcheck disable=SC1090
   source "$DXB_LIB/$_m.sh"
 done
+# the logbook (a later part of the applications work): what prepare tells a program about it
+# shellcheck disable=SC1091
+[[ -f $DXB_LIB/logbook.sh ]] && source "$DXB_LIB/logbook.sh"
 # the libraries call systemctl by name; DXB_SYSTEMCTL stands in for it everywhere in this command
 if [[ $DXB_SYSTEMCTL != systemctl ]]; then systemctl() { "$DXB_SYSTEMCTL" "$@"; }; fi
 
@@ -127,6 +130,12 @@ cmd_screen() {
   local s=$1 ar a r envf state label rlabel scr=yes open='{"kind":"screen"}' sock j
   ar=$(dxb_screen_split "$s") || return 2
   a=${ar% *}; r=${ar#* }
+  if ! dxb_screen_access; then
+    # the tab says "log out and back in": the user joined dxbscreen after this login began
+    if (( JSON )); then jq -cn --arg s "$s" '{session: $s, access: false}'
+    else echo "$(id -un 2> /dev/null || echo this user) cannot open program screens: log out and back in (or join the $DXB_APPS_SCREEN_GROUP group)"; fi
+    return 0
+  fi
   envf=$(dxb_screen_envfile "$s"); state=$(dxb_screen_state "$s")
   if dxb_app_load "$a" 2> /dev/null; then
     open=$(dxb_screen_open "$a"); label=$(dxb_screen_label "$a"); scr=$(dxb_screen_wants_screen "$a")
@@ -134,7 +143,7 @@ cmd_screen() {
     label=$a
   fi
   rlabel=$r
-  if [[ -r $envf ]]; then
+  if [[ -f $envf && -r $envf ]]; then
     dxb_screen_parse "$(< "$envf")"
     label=${DXB_SCREEN_ENV[LABEL]:-$label}; rlabel=${DXB_SCREEN_ENV[RADIO_LABEL]:-$rlabel}; scr=${DXB_SCREEN_ENV[SCREEN]:-$scr}
   elif [[ $state == stopped ]]; then
@@ -143,7 +152,7 @@ cmd_screen() {
   sock=$(dxb_screen_sock "$s")
   [[ $state == running && $scr == yes ]] || sock=''
   j=$(jq -cn --arg s "$s" --arg a "$a" --arg r "$r" --arg l "$label" --arg rl "$rlabel" --arg st "$state" --arg k "$sock" --argjson o "$open" \
-    '{session: $s, app: $a, radio: $r, label: $l, radio_label: $rl, state: $st, socket: (if $k == "" then null else $k end), open: $o}')
+    '{session: $s, app: $a, radio: $r, label: $l, radio_label: $rl, state: $st, socket: (if $k == "" then null else $k end), open: $o, access: true}')
   if (( JSON )); then printf '%s\n' "$j"; return 0; fi
   jq -r '"\(.label) on \(.radio_label): \(.state)\(if .socket then " (screen \(.socket))" else "" end)"' <<< "$j"
 }
@@ -181,6 +190,14 @@ cmd_stopped() {
   json_ok
 }
 
+# cmd_settings SESSION: the settings step, as dxbapps (dxb_screen_settings): JSON on stdin.
+cmd_settings() {
+  if (( ${DXB_FAKE_EUID:-$EUID} == 0 )); then
+    echo "the settings step runs as $DXB_APPS_USER (prepare starts it), never as root" >&2; return 1
+  fi
+  dxb_screen_settings "$1"
+}
+
 cmd_session() {
   if (( ${DXB_FAKE_EUID:-$EUID} == 0 )); then
     echo "a session runs as $DXB_APPS_USER (dxberry-screen@$1.service starts it), never as root" >&2; return 1
@@ -199,13 +216,14 @@ main() {
     list) [[ ${#args[@]} -eq 0 ]] || { echo "usage: dxberry-app list" >&2; return 2; } ;;
     install|remove) [[ ${#args[@]} -eq 1 ]] || { echo "usage: dxberry-app $cmd NAME" >&2; return 2; } ;;
     start|stop) [[ ${#args[@]} -eq 1 ]] || { echo "usage: dxberry-app $cmd RADIO" >&2; return 2; } ;;
-    screen|prepare|present|stopped|session) [[ ${#args[@]} -eq 1 ]] || { echo "usage: dxberry-app $cmd SESSION" >&2; return 2; } ;;
+    screen|prepare|present|stopped|settings|session) [[ ${#args[@]} -eq 1 ]] || { echo "usage: dxberry-app $cmd SESSION" >&2; return 2; } ;;
     '') usage >&2; return 2 ;;
     *) echo "unknown subcommand: $cmd" >&2; usage >&2; return 2 ;;
   esac
   case $cmd in
     screen) export DXB_LOG_FILE=/dev/null; cmd_screen "${args[0]}"; return $? ;;
     session) export DXB_LOG_FILE=/dev/null; cmd_session "${args[0]}"; return $? ;;
+    settings) export DXB_LOG_FILE=/dev/null; cmd_settings "${args[0]}"; return $? ;;
   esac
   dxb_require_root
   mkdir -p "$DXB_STATE_DIR" 2> /dev/null; chmod 700 "$DXB_STATE_DIR" 2> /dev/null
