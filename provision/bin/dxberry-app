@@ -100,13 +100,13 @@ cmd_list() {
 
 # cmd_job install|remove NAME: start the program's install or removal as an update job (ruling 12).
 cmd_job() {
-  local what=$1 name=$2 row radios
+  local what=$1 name=$2 row why
   row=$(dxb_apps_row "$name" 2> /dev/null) || { echo "no such program: $name" >&2; return 3; }
   if [[ $(jq -r .source <<< "$row") == builtin ]]; then _dxb_apps_builtin_refusal "$(jq -r .label <<< "$row")"; return 6; fi
   if [[ $what == remove ]]; then
     dxb_radio_load || return 6
-    radios=$(jq -r --arg a "$name" '[.radios | to_entries[] | select(.value.owner == $a) | .key] | join(", ")' <<< "$DXB_RADIOS")
-    [[ -z $radios ]] || { echo "$name runs on $radios; switch $radios to another program first" >&2; return 5; }
+    why=$(dxb_apps_in_use "$name")
+    [[ -z $why ]] || { echo "$why" >&2; return 5; }
   fi
   dxb_update_lock || return 5
   dxb_update_job_start "app-$what" "$name" || return $?

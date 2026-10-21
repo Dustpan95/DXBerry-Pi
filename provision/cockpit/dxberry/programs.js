@@ -54,10 +54,17 @@ function progRemove(p) {
     () => progStart("remove", p));
 }
 
+// progRigControlUsers NAME: the radios whose rig control is program NAME (flrig).
+function progRigControlUsers(name) {
+  const all = last && last.radios && last.radios.ok && last.radios.radios ? last.radios.radios : {};
+  return Object.keys(all).filter(n => all[n] && all[n].rig && all[n].rig.control === name);
+}
+
 function progRow(p, busy) {
   const job = updates.job && updates.job.job;
   const doing = job && job.state === "running" && job.name === p.name ? PROG_DOING[job.kind] : null;
   const radios = (p.sessions || []).map(q => q.radio);
+  const rigUsers = progRigControlUsers(p.name);
   const why = busy ? "Wait for the install, update or removal under Updates to finish" : null;
   const check = updates.check && updates.check.apps ? updates.check.apps[p.name] : null;
   const notes = [];
@@ -71,10 +78,13 @@ function progRow(p, busy) {
       if (check && check.update) {
         acts.push(btn(`Update to ${check.latest}`, () => progStart("update", p), { cls: "primary", key: `prog:${p.name}:update`, aria: `Update ${p.label}`, disabled: busy, title: why }));
       }
-      // a radio that has the program keeps it, running or stopped, so removal waits for a switch
+      // a radio that has the program keeps it, running or stopped, so removal waits for a switch;
+      // one whose rig control is the program (flrig) waits for its rig control to go back to Hamlib
       const running = radios.length ? `${radios.join(", ")} ${radios.length === 1 ? "uses" : "use"} it` : null;
+      const rigWhy = rigUsers.length ? (rigUsers.length === 1 ? `${rigUsers[0]} uses ${p.label} for rig control; set its rig control to Hamlib first`
+        : `${rigUsers.join(", ")} use ${p.label} for rig control; set their rig control to Hamlib first`) : null;
       acts.push(btn("Remove", () => progRemove(p), { cls: "danger", key: `prog:${p.name}:remove`, aria: `Remove ${p.label}`,
-        disabled: busy || !!running, title: why || (running ? `${running}; switch ${radios.join(", ")} to another program first` : null) }));
+        disabled: busy || !!running || !!rigWhy, title: why || (running ? `${running}; switch ${radios.join(", ")} to another program first` : rigWhy) }));
     }
   }
   return el("div", { class: "prog-row", "data-program": p.name },
@@ -85,6 +95,7 @@ function progRow(p, busy) {
     el("p", { class: "muted hint" }, [PROG_KINDS[p.kind] || p.kind, PROG_SOURCES[p.source] || p.source].join(" · ")),
     notes.length ? el("p", { class: "hint" }, notes.join(" ")) : null,
     p.installed && radios.length && p.source !== "builtin" ? el("p", { class: "muted hint" }, `${radios.join(", ")} ${radios.length === 1 ? "uses" : "use"} it.`) : null,
+    p.installed && rigUsers.length ? el("p", { class: "muted hint" }, `${rigUsers.join(", ")} ${rigUsers.length === 1 ? "uses" : "use"} it for rig control.`) : null,
     p.installed && p.setup_note ? el("p", { class: "hint prog-note" }, p.setup_note) : null,
     // the logbook keys the operator changed in the program, which the logbook no longer sets there
     (Array.isArray(p.kept) ? p.kept : []).map(k => el("p", { class: "hint" }, progKept(k))),

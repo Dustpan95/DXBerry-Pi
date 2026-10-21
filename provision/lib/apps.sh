@@ -527,6 +527,19 @@ _dxb_apps_delete_unpacked() {
   if (( any )); then mv -T "$kept" "$dir" || return 1; else rm -rf "$kept"; fi
 }
 
+# dxb_apps_in_use NAME: why NAME cannot be removed now, one line, or nothing (DXB_RADIOS loaded): a
+# radio runs it (its owner), or a radio's rig control is NAME (flrig: that radio's rigctld runs
+# Hamlib's flrig model and would be left talking to nothing).
+dxb_apps_in_use() {
+  local owners rc
+  owners=$(jq -r --arg a "$1" '[.radios | to_entries[] | select(.value.owner == $a) | .key] | join(", ")' <<< "$DXB_RADIOS")
+  if [[ -n $owners ]]; then echo "$1 runs on $owners; switch $owners to another program first"; return 0; fi
+  rc=$(jq -r --arg a "$1" '[.radios | to_entries[] | select((.value.rig.control // "hamlib") == $a) | .key] | join(", ")' <<< "$DXB_RADIOS")
+  [[ -n $rc ]] || return 0
+  if [[ $rc == *,* ]]; then echo "$rc use $1 for rig control; set their rig control to Hamlib first"
+  else echo "$rc uses $1 for rig control; set its rig control to Hamlib first"; fi
+}
+
 # _dxb_apps_lock_record: dxberry-radio's record lock (record.lock, fd 8), so no radio is handed to
 # a program while it is being removed. 0 ok (also without flock), 5 busy.
 _dxb_apps_lock_record() {
@@ -546,8 +559,9 @@ dxb_apps_remove() {
   return $rc
 }
 
-# _dxb_apps_remove NAME: refused (5) while a radio is NAME's - the record is read again here,
-# under the lock, whatever the command that started the job saw. Then: stop and disable every
+# _dxb_apps_remove NAME: refused (5) while a radio is NAME's or uses it for rig control
+# (dxb_apps_in_use) - the record is read again here, under the lock, whatever the command that
+# started the job saw. Then: stop and disable every
 # session of NAME, apt-get remove (never purge) the program's own package - not the shared
 # packages - delete $DXB_APPS_OPT/NAME (all but what the module's app_NAME_keep names), then the
 # module's optional app_NAME_remove_extra. Settings under $DXB_APPS_HOME and the first-fill marks
@@ -555,7 +569,7 @@ dxb_apps_remove() {
 # 6 nothing changed (also: the radio record could not be read), 8 something changed (a running or enabled session was stopped, the package
 # went) but a later step failed.
 _dxb_apps_remove() {
-  local name=$1 row src label pkg u rc=0 fail=6 owners
+  local name=$1 row src label pkg u rc=0 fail=6 why
   row=$(dxb_apps_row "$name") || return 3
   src=$(_dxb_apps_source "$name") || return 6
   label=$(jq -r .label <<< "$row")
@@ -565,8 +579,8 @@ _dxb_apps_remove() {
     echo "the radio record could not be read; nothing removed" >&2; return 6
   fi
   [[ -n ${DXB_RADIOS:-} ]] || DXB_RADIOS=$(dxb_radio_empty_record)
-  owners=$(jq -r --arg a "$name" '[.radios | to_entries[] | select(.value.owner == $a) | .key] | join(", ")' <<< "$DXB_RADIOS")
-  [[ -z $owners ]] || { echo "$name runs on $owners; switch $owners to another program first" >&2; return 5; }
+  why=$(dxb_apps_in_use "$name")
+  [[ -z $why ]] || { echo "$why" >&2; return 5; }
   while IFS= read -r u; do
     [[ -n $u ]] || continue
     if "$DXB_SYSTEMCTL" is-active --quiet "$u" 2> /dev/null || [[ $("$DXB_SYSTEMCTL" is-enabled "$u" 2> /dev/null) == enabled ]]; then

@@ -1054,6 +1054,12 @@ const programsPath = path.replace(/dxberry\.js$/, "programs.js");
   ok(progText().includes("Runs on one radio at a time.") && progText().includes("Log SSTV contacts by hand in the logbook."), "the single-copy and QSSTV notes show");
   ok(!progText().includes("Finish setting up Wavelog"), "Wavelog's setup note waits until it is installed");
   ok(!dkey("prog:graywolf:remove") && !dkey("prog:graywolf:install"), "Graywolf, part of DXBerry, has no Install or Remove");
+  // flrig is in use while a radio's rig control is flrig (radio1's is)
+  const flrigRow = progSec.querySelectorAll("div").find(e => e.dataset.program === "flrig");
+  ok(dkey("prog:flrig:remove") && dkey("prog:flrig:remove").disabled && flrigRow.textContent.includes("radio1 uses it for rig control."),
+    "Remove flrig is disabled while radio1 uses it for rig control, and says so: " + (flrigRow && flrigRow.textContent));
+  ok((dkey("prog:flrig:remove").getAttribute("title") || "").includes("radio1 uses flrig for rig control; set its rig control to Hamlib first"),
+    "and says what to do: " + dkey("prog:flrig:remove").getAttribute("title"));
   const callsBeforeInstall = calls.length;
   dkey("prog:fldigi:install").click();
   await flush(); await flush(); await flush();

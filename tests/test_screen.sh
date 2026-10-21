@@ -132,6 +132,27 @@ test_app_remove_refused_while_a_radio_runs_it() {
   "$DXB_ROOT/provision/bin/dxberry-app" remove gamma 2> "$TEST_TMP/err"; assert_eq "$?" "5"
   assert_contains "$(cat "$TEST_TMP/err")" "gamma runs on radio2; switch radio2 to another program first"
 }
+# a rig-control program (flrig) is in use while a radio's rig control names it: rigctld runs
+# Hamlib's flrig model there and would be left pointing at nothing, so it is not removed - neither
+# by the command nor by the removal job, which reads the record again under the lock
+test_app_remove_refused_while_a_radio_uses_it_for_rig_control() {
+  sc_env
+  DXB_RADIOS=$(jq -c '.radios.radio2.rig.control = "flrig"' <<< "$DXB_RADIOS"); printf '%s\n' "$DXB_RADIOS" > "$DXB_RADIOS_FILE"
+  "$DXB_ROOT/provision/bin/dxberry-app" remove flrig 2> "$TEST_TMP/err"; assert_eq "$?" "5"
+  assert_contains "$(cat "$TEST_TMP/err")" "radio2 uses flrig for rig control; set its rig control to Hamlib first"
+  [[ -e $DXB_UPDATE_JOB_FILE ]] && _fail "no removal job may start"
+  DXB_RADIOS=$(dxb_radio_empty_record)
+  dxb_apps_remove flrig > /dev/null 2> "$TEST_TMP/err"; assert_eq "$?" "5"
+  assert_contains "$(cat "$TEST_TMP/err")" "radio2 uses flrig for rig control; set its rig control to Hamlib first"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "apt-get"
+  # two radios: both named
+  DXB_RADIOS=$(jq -c '.radios.radio1.rig.control = "flrig"' "$DXB_RADIOS_FILE"); printf '%s\n' "$DXB_RADIOS" > "$DXB_RADIOS_FILE"
+  "$DXB_ROOT/provision/bin/dxberry-app" remove flrig 2> "$TEST_TMP/err"; assert_eq "$?" "5"
+  assert_contains "$(cat "$TEST_TMP/err")" "radio1, radio2 use flrig for rig control; set their rig control to Hamlib first"
+  # back to Hamlib: the removal goes ahead
+  DXB_RADIOS=$(jq -c '.radios[].rig.control = "hamlib"' "$DXB_RADIOS_FILE"); printf '%s\n' "$DXB_RADIOS" > "$DXB_RADIOS_FILE"
+  assert_ok "$DXB_ROOT/provision/bin/dxberry-app" remove flrig
+}
 test_app_install_is_refused_while_an_update_runs() {
   sc_env; sc_job_running dxberry-job-update-system-1
   "$DXB_ROOT/provision/bin/dxberry-app" install wsjtx 2> /dev/null; assert_eq "$?" "5"
