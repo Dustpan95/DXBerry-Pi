@@ -146,3 +146,85 @@ test_fldigi_logbook_key_is_never_in_an_argument() {
   assert_eq "$(dxb_xml_get "$(app_fldigi_settings_file radio2)" CLOUDLOG_API_KEY)" "SECRETKEY99"
   fd_unlogbook
 }
+test_fldigi_cleared_logbook_stops_posting_and_drops_the_key() {
+  fd_env; fd_logbook; FD_LOGBOOK='{"url":"https://a.example/","key":"k1","station_id":"4"}'
+  app_fldigi_firstfill radio2
+  local f rec; f=$(app_fldigi_settings_file radio2); rec=${f%/*}/dxberry-logbook.json
+  FD_LOGBOOK='{}'
+  assert_eq "$(app_fldigi_logbook_follow radio2)" ""
+  assert_eq "$(dxb_xml_get "$f" ENCLOUDLOG)" "0"
+  assert_eq "$(dxb_xml_get "$f" CLOUDLOG_API_URL)" ""
+  assert_eq "$(dxb_xml_get "$f" CLOUDLOG_API_KEY)" ""
+  assert_eq "$(dxb_xml_get "$f" CLOUDLOG_STATION_ID)" "4"
+  assert_file_not_contains "$f" "k1"
+  assert_file_not_contains "$rec" "k1"
+  assert_eq "$(jq -r .ENCLOUDLOG "$rec")" "$(printf %s 0 | sha256sum | cut -d' ' -f1)"
+  assert_eq "$(app_fldigi_logbook_follow radio2)" ""             # and it stays quiet
+  fd_unlogbook
+}
+test_fldigi_cleared_logbook_keeps_an_operators_own_url() {
+  fd_env; fd_logbook; FD_LOGBOOK='{"url":"https://a.example/","key":"k1","station_id":"1"}'
+  app_fldigi_firstfill radio2
+  local f; f=$(app_fldigi_settings_file radio2)
+  dxb_xml_set "$f" CLOUDLOG_API_URL "https://mine.example/"
+  FD_LOGBOOK='{}'
+  assert_eq "$(app_fldigi_logbook_follow radio2)" "kept CLOUDLOG_API_URL (changed in fldigi)"
+  assert_eq "$(dxb_xml_get "$f" CLOUDLOG_API_URL)" "https://mine.example/"
+  assert_eq "$(dxb_xml_get "$f" ENCLOUDLOG)" "0"
+  assert_eq "$(dxb_xml_get "$f" CLOUDLOG_API_KEY)" ""
+  fd_unlogbook
+}
+test_fldigi_failed_write_partway_keeps_the_record_true() {
+  fd_env; fd_logbook; FD_LOGBOOK='{"url":"https://a.example/","key":"k1","station_id":"1"}'
+  app_fldigi_firstfill radio2
+  local f rec; f=$(app_fldigi_settings_file radio2); rec=${f%/*}/dxberry-logbook.json
+  FD_LOGBOOK='{}'
+  local saved; saved=$(declare -f dxb_xml_set)
+  dxb_xml_set() { [[ $2 == CLOUDLOG_API_URL ]] && return 6; _dxb_xml_set_real "$@"; }
+  eval "${saved/dxb_xml_set/_dxb_xml_set_real}"
+  app_fldigi_logbook_follow radio2 2> /dev/null; assert_eq "$?" "6"
+  eval "$saved"; unset -f _dxb_xml_set_real
+  assert_eq "$(dxb_xml_get "$f" ENCLOUDLOG)" "0"
+  assert_eq "$(jq -r .ENCLOUDLOG "$rec")" "$(printf %s 0 | sha256sum | cut -d' ' -f1)"
+  assert_eq "$(app_fldigi_logbook_follow radio2)" ""             # nothing reported as the operator's
+  assert_eq "$(dxb_xml_get "$f" CLOUDLOG_API_URL)" ""
+  fd_unlogbook
+}
+test_fldigi_corrupt_record_is_warned_about_and_rewritten() {
+  fd_env; fd_logbook; FD_LOGBOOK='{"url":"https://a.example/","key":"k1","station_id":"1"}'
+  local f rec; f=$(app_fldigi_settings_file radio2); rec=${f%/*}/dxberry-logbook.json
+  echo 'not json {' > "$rec"
+  local out err; out=$(app_fldigi_logbook_follow radio2 2> "$TEST_TMP/err")
+  assert_eq "$out" ""
+  assert_contains "$(cat "$TEST_TMP/err")" "not a valid record"
+  assert_eq "$(grep -c . "$TEST_TMP/err")" "1"
+  assert_eq "$(dxb_xml_get "$f" CLOUDLOG_API_URL)" "https://a.example/"
+  assert_ok jq -e 'keys | length == 4' "$rec" > /dev/null
+  fd_unlogbook
+}
+test_fldigi_follow_records_a_value_the_operator_already_set_to_the_new_one() {
+  fd_env; fd_logbook; FD_LOGBOOK='{"url":"https://a.example/","key":"k1","station_id":"1"}'
+  app_fldigi_firstfill radio2
+  local f; f=$(app_fldigi_settings_file radio2)
+  dxb_xml_set "$f" CLOUDLOG_API_URL "https://b.example/"          # the operator typed the new address
+  FD_LOGBOOK='{"url":"https://b.example/","key":"k1","station_id":"1"}'
+  assert_eq "$(app_fldigi_logbook_follow radio2)" ""
+  FD_LOGBOOK='{"url":"https://c.example/","key":"k1","station_id":"1"}'
+  assert_eq "$(app_fldigi_logbook_follow radio2)" ""             # now DXBerry's again, so it follows
+  assert_eq "$(dxb_xml_get "$f" CLOUDLOG_API_URL)" "https://c.example/"
+  fd_unlogbook
+}
+test_fldigi_logbook_values_with_markup_characters_round_trip() {
+  fd_env; fd_logbook
+  local u1='https://a.example/?x=1&y=<2>' k1='a "b" & <c> d' u2='https://b.example/?q=&r=<"x y">' k2='k & "2" <z> w'
+  FD_LOGBOOK=$(jq -cn --arg u "$u1" --arg k "$k1" '{url: $u, key: $k, station_id: "1"}')
+  app_fldigi_firstfill radio2
+  local f; f=$(app_fldigi_settings_file radio2)
+  assert_eq "$(dxb_xml_get "$f" CLOUDLOG_API_URL)" "$u1"
+  assert_eq "$(dxb_xml_get "$f" CLOUDLOG_API_KEY)" "$k1"
+  FD_LOGBOOK=$(jq -cn --arg u "$u2" --arg k "$k2" '{url: $u, key: $k, station_id: "1"}')
+  assert_eq "$(app_fldigi_logbook_follow radio2)" ""
+  assert_eq "$(dxb_xml_get "$f" CLOUDLOG_API_URL)" "$u2"
+  assert_eq "$(dxb_xml_get "$f" CLOUDLOG_API_KEY)" "$k2"
+  fd_unlogbook
+}

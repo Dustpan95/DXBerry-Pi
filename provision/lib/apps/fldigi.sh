@@ -34,44 +34,77 @@ _dxb_fldigi_set() {
 # _dxb_fldigi_hash VALUE: its sha256 (the value goes in through stdin, never an argument).
 _dxb_fldigi_hash() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
 
-# _dxb_fldigi_logbook_apply RADIO: write the current logbook's values (dxb_logbook_fldigi_values
-# answers {"url","key","station_id"} or {}) into every logbook key whose value still hashes to
-# what DXBerry last wrote there (a key never written counts as fldigi's own default). A key the
-# operator changed is left alone and reported on stdout as "kept KEY (changed in fldigi)". The
-# record keeps only hashes. 0 ok (also with no logbook), 6 could not write.
+# _dxb_fldigi_record_write REC HASHES...: the record (KEY=HASH words), mode 0600; 0 ok, 6 failed.
+_dxb_fldigi_record_write() {
+  local rec=$1 tmp w
+  local -a args=()
+  shift
+  for w in "$@"; do args+=(--arg "${w%%=*}" "${w#*=}"); done
+  tmp=$(umask 077; mktemp "$rec.XXXXXX") || { echo "fldigi: could not write $rec" >&2; return 6; }
+  if ! { jq -n '$ARGS.named' "${args[@]}" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$rec"; }; then
+    rm -f "$tmp"; echo "fldigi: could not write $rec" >&2; return 6
+  fi
+}
+
+# _dxb_fldigi_logbook_apply RADIO: bring the logbook keys of RADIO's fldigi to the current
+# logbook (dxb_logbook_fldigi_values answers {"url","key","station_id"} or {}). With a logbook:
+# ENCLOUDLOG 1, the URL, key and station. Cleared (no logbook, or an empty URL) and a record
+# exists: ENCLOUDLOG 0 and the URL and key emptied (the station is left). Either way only a key
+# whose value still hashes to what DXBerry last wrote there is written (a key never written
+# counts as fldigi's own default); a key the operator changed is left alone and reported on
+# stdout as "kept KEY (changed in fldigi)". The record keeps only hashes and follows every key
+# as it is written, so a failure partway leaves it true. A record that is not valid is warned
+# about on stderr and treated as missing. 0 ok, 6 could not write.
 _dxb_fldigi_logbook_apply() {
-  local f rec lb url key sid pair k v cur old
+  local f rec lb url key sid k v cur old h w
   declare -F dxb_logbook_fldigi_values > /dev/null || return 0
   f=$(app_fldigi_settings_file "$1"); rec=$(_dxb_fldigi_logbook_record "$1")
   [[ -f $f ]] || return 0
   lb=$(dxb_logbook_fldigi_values 2> /dev/null) || return 0
   url=$(jq -r '.url // ""' <<< "$lb" 2> /dev/null); key=$(jq -r '.key // ""' <<< "$lb" 2> /dev/null)
   sid=$(jq -r '.station_id // ""' <<< "$lb" 2> /dev/null)
-  [[ -n $url ]] || return 0
   local -A defaults=([ENCLOUDLOG]=0 [CLOUDLOG_API_URL]='' [CLOUDLOG_API_KEY]='' [CLOUDLOG_STATION_ID]=1)
   local -A hashes=()
-  for pair in "ENCLOUDLOG=1" "CLOUDLOG_API_URL=$url" "CLOUDLOG_API_KEY=$key" "CLOUDLOG_STATION_ID=${sid:-1}"; do
-    k=${pair%%=*}; v=${pair#*=}
+  local -a order=() targets=()
+  local have_rec=0
+  if [[ -e $rec ]]; then
+    if jq -e 'type == "object" and all(.[]; type == "string")' "$rec" > /dev/null 2>&1; then
+      have_rec=1
+      while IFS=$'\t' read -r k h; do hashes[$k]=$h; done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' "$rec")
+    else
+      echo "fldigi: $rec is not a valid record; treating it as missing" >&2
+    fi
+  fi
+  if [[ -n $url ]]; then
+    order=(ENCLOUDLOG CLOUDLOG_API_URL CLOUDLOG_API_KEY CLOUDLOG_STATION_ID)
+    targets=(1 "$url" "$key" "${sid:-1}")
+  else
+    (( have_rec )) || return 0
+    order=(ENCLOUDLOG CLOUDLOG_API_URL CLOUDLOG_API_KEY)
+    targets=(0 '' '')
+  fi
+  local i
+  for i in "${!order[@]}"; do
+    k=${order[$i]}; v=${targets[$i]}
     cur=$(dxb_xml_get "$f" "$k") || cur=${defaults[$k]}
-    old=$(jq -r --arg k "$k" '.[$k] // ""' "$rec" 2> /dev/null)
+    old=${hashes[$k]:-}
     [[ -n $old ]] || old=$(_dxb_fldigi_hash "${defaults[$k]}")
-    if [[ $(_dxb_fldigi_hash "$cur") == "$old" ]]; then
+    h=$(_dxb_fldigi_hash "$v")
+    if [[ $cur == "$v" ]]; then
+      :                                   # already what the logbook says: nothing to write
+    elif [[ $(_dxb_fldigi_hash "$cur") == "$old" ]]; then
       _dxb_fldigi_set "$f" "$k" "$v" || return 6
-      hashes[$k]=$(_dxb_fldigi_hash "$v")
     else
       echo "kept $k (changed in fldigi)"
-      hashes[$k]=$old
+      continue
+    fi
+    if [[ ${hashes[$k]:-} != "$h" ]]; then
+      hashes[$k]=$h
+      local -a words=()
+      for w in "${!hashes[@]}"; do words+=("$w=${hashes[$w]}"); done
+      _dxb_fldigi_record_write "$rec" "${words[@]}" || return 6
     fi
   done
-  local tmp
-  tmp=$(umask 077; mktemp "$rec.XXXXXX") || return 6
-  jq -n --arg a "${hashes[ENCLOUDLOG]}" --arg b "${hashes[CLOUDLOG_API_URL]}" --arg c "${hashes[CLOUDLOG_API_KEY]}" \
-    --arg d "${hashes[CLOUDLOG_STATION_ID]}" \
-    '{ENCLOUDLOG: $a, CLOUDLOG_API_URL: $b, CLOUDLOG_API_KEY: $c, CLOUDLOG_STATION_ID: $d}' > "$tmp" \
-    || { rm -f "$tmp"; echo "fldigi: could not write $rec" >&2; return 6; }
-  if ! { chmod 600 "$tmp" && mv -f "$tmp" "$rec"; }; then
-    rm -f "$tmp"; echo "fldigi: could not write $rec" >&2; return 6
-  fi
 }
 
 # app_fldigi_logbook_follow RADIO: the logbook settings step; the "kept ..." lines go to stdout.
