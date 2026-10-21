@@ -105,19 +105,23 @@ dxb_update_system_info() {
 # newest version is the apt candidate (the system part has already run apt-get update, so this
 # does not); an upstream one's is GitHub's newest release (dxb_apps_latest). "update" is true when
 # the newest is known and written differently from the installed one - compared as plain strings,
-# not with dpkg --compare-versions, because the two come from different places (a Debian version
-# carries an epoch or revision that an upstream tag does not) and "different" is what is wanted.
+# not with dpkg --compare-versions. An upstream program may be a .deb, whose installed version dpkg
+# writes with an epoch and a Debian revision ("1:3.0.3-1") that the release tag ("3.0.3") never
+# has, so for upstream programs those two are stripped from the installed side before comparing.
+# A Debian program is compared as dpkg reports both sides, unchanged.
 dxb_update_apps_info() {
-  local rows name label src installed latest out='{}' e
+  local rows name label src installed cmp latest out='{}' e
   declare -F dxb_apps_rows > /dev/null || { echo '{}'; return 0; }
   rows=$(dxb_apps_rows 2> /dev/null) || { echo '{}'; return 0; }
   while IFS=$'\t' read -r name label src; do
     [[ -n $name ]] || continue
     installed=$(dxb_apps_version "$name" 2> /dev/null)
     [[ -n $installed ]] || continue
+    cmp=$installed
+    if [[ $src != apt:* ]]; then cmp=${cmp#*:}; [[ $installed == [0-9]*:* ]] || cmp=$installed; cmp=${cmp%-*}; fi
     if latest=$(dxb_apps_latest "$name" 2> /dev/null) && latest=$(jq -r '.version // empty' <<< "$latest" 2> /dev/null) && [[ -n $latest ]]; then
-      e=$(jq -cn --arg i "$installed" --arg l "$latest" --arg s "$([[ $src == apt:* ]] && echo debian || echo upstream)" \
-        '{installed: $i, latest: $l, source: $s, update: ($l != "" and $l != $i)}')
+      e=$(jq -cn --arg i "$installed" --arg l "$latest" --arg c "$cmp" --arg s "$([[ $src == apt:* ]] && echo debian || echo upstream)" \
+        '{installed: $i, latest: $l, source: $s, update: ($l != "" and $l != $c)}')
     else
       e=$(jq -cn --arg m "$label's newest version could not be found" '{error: $m}')
     fi
@@ -473,6 +477,18 @@ _dxb_update_restart_upgraded_programs() {
   return $rc
 }
 
+# _dxb_update_app_rescue: start every remembered session (DXB_UPDATE_APP_UNITS) that is not running.
+# The trap of a killed update job: no waiting, a plain start.
+DXB_UPDATE_APP_UNITS=''
+_dxb_update_app_rescue() {
+  local sc=${DXB_SYSTEMCTL:-systemctl} u st
+  for u in $DXB_UPDATE_APP_UNITS; do
+    st=$("$sc" is-active "$u" 2> /dev/null)
+    [[ $st == active || $st == activating ]] || "$sc" start "$u" > /dev/null 2>&1
+  done
+  return 0
+}
+
 # dxb_update_apply_app NAME: update one program. Its running sessions are stopped, the install
 # path of Task 3 puts the newer version in (dxb_apps_install NAME update: apt --only-upgrade for a
 # Debian program, download / checksum / place for an upstream one), and the sessions are started
@@ -488,10 +504,17 @@ dxb_update_apply_app() {
   mapfile -t units < <(_dxb_update_app_sessions "$name")
   if (( ${#units[@]} )); then
     echo "stopping $label"
+    # a job that is killed from here on must not leave the program stopped
+    DXB_UPDATE_APP_UNITS="${units[*]}"
+    trap '_dxb_update_app_rescue' EXIT
+    trap '_dxb_update_app_rescue; exit 143' TERM
+    trap '_dxb_update_app_rescue; exit 130' INT
     for u in "${units[@]}"; do "$sc" stop "$u" > /dev/null 2>&1; done
   fi
   dxb_apps_install "$name" update; rc=$?
   (( rc == 0 || rc == 8 )) || rc=6
+  trap - EXIT TERM INT
+  DXB_UPDATE_APP_UNITS=''
   if (( ${#units[@]} )); then
     echo "starting $label again"
     # nothing replaced stays 6 (the output names the program that is down); a replaced one is 8

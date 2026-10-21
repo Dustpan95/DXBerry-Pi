@@ -1108,3 +1108,28 @@ test_update_cli_updates_one_program() {
   up_cli apply app; assert_eq "$?" "2"
   up_cli apply app 'x;y'; assert_eq "$?" "2"
 }
+
+test_update_check_compares_an_upstream_deb_without_epoch_and_revision() {
+  up_env; up_apps_env
+  AP_INSTALLED="wsjtx=3.0.3-1"
+  assert_eq "$(dxb_update_check refresh | jq -c '.apps.wsjtx | [.installed, .update]')" '["3.0.3-1",false]'
+  AP_INSTALLED="wsjtx=1:3.0.3-1"
+  assert_eq "$(dxb_update_check refresh | jq -c '.apps.wsjtx.update')" 'false'
+  AP_INSTALLED="wsjtx=1:3.0.2"
+  assert_eq "$(dxb_update_check refresh | jq -c '.apps.wsjtx.update')" 'true'
+  # a Debian program is compared as dpkg reports both sides
+  AP_INSTALLED="wsjtx=3.0.3 fldigi=4.2.06-1+deb13u1"; AP_CANDIDATE=4.2.06-1+deb13u1
+  assert_eq "$(dxb_update_check refresh | jq -c '.apps.fldigi.update')" 'false'
+}
+test_update_app_killed_job_starts_the_stopped_sessions_again() {
+  up_env; up_apps_env
+  ( dxb_apps_install() { kill -TERM "$BASHPID"; sleep 1; }
+    dxb_update_apply_app wsjtx > /dev/null 2>&1 )
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-screen@wsjtx-radio1.service"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start dxberry-screen@wsjtx-radio1.service"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "start dxberry-screen@wsjtx-radio2.service"
+}
+test_update_app_normal_path_leaves_no_trap_behind() {
+  up_env; up_apps_env
+  ( dxb_update_apply_app wsjtx > /dev/null 2>&1; assert_eq "$(trap -p EXIT TERM INT)" "" )
+}
