@@ -132,6 +132,10 @@ test_pat_ardop_unit_is_loopback_only_and_logs_to_the_journal() {
   assert_file_contains "$u" "User=dxbapps"
   assert_file_contains "$u" "SupplementaryGroups=audio"
   assert_file_contains "$u" "Restart=on-failure"
+  assert_file_contains "$u" "StartLimitIntervalSec=60"
+  assert_file_contains "$u" "StartLimitBurst=3"
+  assert_file_contains "$u" "StopPropagatedFrom=dxberry-screen@%i.service"
+  assert_file_not_contains "$u" "PartOf="
 }
 test_pat_failing_jq_leaves_the_config_byte_identical() {
   pt_env

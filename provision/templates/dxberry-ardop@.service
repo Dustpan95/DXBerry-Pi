@@ -1,7 +1,9 @@
 [Unit]
 Description=DXBerry-Pi ARDOP modem for program session %i
-PartOf=dxberry-screen@%i.service
+StopPropagatedFrom=dxberry-screen@%i.service
 After=dxberry-radio-hotplug.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
