@@ -151,7 +151,7 @@ test_app_remove_refused_while_a_radio_uses_it_for_rig_control() {
   assert_contains "$(cat "$TEST_TMP/err")" "radio1, radio2 use flrig for rig control; set their rig control to Hamlib first"
   # back to Hamlib: the removal goes ahead
   DXB_RADIOS=$(jq -c '.radios[].rig.control = "hamlib"' "$DXB_RADIOS_FILE"); printf '%s\n' "$DXB_RADIOS" > "$DXB_RADIOS_FILE"
-  assert_ok "$DXB_ROOT/provision/bin/dxberry-app" remove flrig
+  assert_ok "$DXB_ROOT/provision/bin/dxberry-app" remove flrig > /dev/null
 }
 test_app_install_is_refused_while_an_update_runs() {
   sc_env; sc_job_running dxberry-job-update-system-1
@@ -356,6 +356,20 @@ test_screen_answer_states_and_never_runs_the_env_file() {
   sc_app screen ../etc --json > /dev/null 2>&1; assert_eq "$?" "2"
 }
 
+# a Start that does not get the program running has its own exit (9) and words, and clears the
+# unit's earlier failures first, so three quick ones never block Start for a minute
+test_screen_a_start_that_fails_says_so_and_clears_old_failures() {
+  sc_env; sc_owned radio2 gamma
+  FX_SYSTEMCTL_FAIL_START=dxberry-screen@gamma-radio2.service sc_app start radio2 2> "$TEST_TMP/err"; assert_eq "$?" "9"
+  assert_contains "$(cat "$TEST_TMP/err")" "Gamma did not start on radio2; see Services"
+  assert_eq "$(grep -e '^systemctl reset-failed dxberry-screen@gamma-radio2.service$' -e '^systemctl start dxberry-screen@gamma-radio2.service$' "$TEST_TMP/calls" | cut -d' ' -f2)" \
+    "$(printf 'reset-failed\nstart')"
+  # a session that does not become active in time is the same failure
+  : > "$TEST_TMP/calls"
+  printf '#!/bin/bash\nif [[ $1 == is-active && ${*: -1} == dxberry-screen@gamma-radio2.service ]]; then exit 3; fi\nsource "$DXB_ROOT/tests/fixtures/sysfs.sh"\nfx_systemctl "$@"\n' > "$TEST_TMP/bin/systemctl"
+  sc_app start radio2 2> "$TEST_TMP/err"; assert_eq "$?" "9"
+  assert_contains "$(cat "$TEST_TMP/err")" "Gamma did not start on radio2; see Services"
+}
 test_screen_start_and_stop_a_session() {
   sc_env; sc_owned radio2 gamma
   assert_ok sc_app start radio2 --json > "$TEST_TMP/out"
@@ -378,10 +392,25 @@ test_screen_list_json() {
   sc_env; sc_owned radio2 gamma; sc_active dxberry-screen@gamma-radio2.service
   assert_ok sc_app list --json > "$TEST_TMP/out"
   assert_eq "$(jq -c '.[] | select(.name == "gamma")' "$TEST_TMP/out")" \
-    '{"name":"gamma","label":"Gamma","kind":"radio","description":"A program for the tests","source":"debian","installed":true,"version":"1.0","sessions":[{"radio":"radio2","state":"running"}],"single_copy":false,"open":{"kind":"screen"},"setup_note":null,"kept":[]}'
+    '{"name":"gamma","label":"Gamma","kind":"radio","description":"A program for the tests","source":"debian","installed":true,"version":"1.0","sessions":[{"radio":"radio2","state":"running","rewire_pending":true}],"single_copy":false,"open":{"kind":"screen"},"setup_note":null,"kept":[]}'
   assert_eq "$(jq -c '.[] | select(.name == "wsjtx") | [.source, .installed, .version, .sessions]' "$TEST_TMP/out")" '["upstream",false,null,[]]'
   assert_eq "$(jq -r '.[] | select(.name == "graywolf") | .source' "$TEST_TMP/out")" "builtin"
   assert_eq "$(jq -r 'map(.name) | join(" ")' "$TEST_TMP/out")" "graywolf wsjtx js8call fldigi qsstv pat flrig wavelog gamma"
+}
+
+# a session wires itself at its start (ruling 7): one whose radio's wiring changed since then says
+# so (rewire_pending), so the card can ask for a restart; a radio set to "names" is never wired
+test_screen_list_says_when_a_session_waits_for_a_rewire() {
+  sc_env; sc_owned radio2 gamma; sc_active dxberry-screen@gamma-radio2.service
+  assert_ok sc_app prepare gamma-radio2
+  assert_ok sc_app list --json > "$TEST_TMP/out"
+  assert_eq "$(jq -c '.[] | select(.name == "gamma") | .sessions' "$TEST_TMP/out")" '[{"radio":"radio2","state":"running","rewire_pending":false}]'
+  sc_set_ptt radio2 vox
+  assert_ok sc_app list --json > "$TEST_TMP/out"
+  assert_eq "$(jq -c '.[] | select(.name == "gamma") | .sessions[0].rewire_pending' "$TEST_TMP/out")" "true"
+  DXB_RADIOS=$(jq -c '.radios.radio2.wiring = "names"' <<< "$DXB_RADIOS"); printf '%s\n' "$DXB_RADIOS" > "$DXB_RADIOS_FILE"
+  assert_ok sc_app list --json > "$TEST_TMP/out"
+  assert_eq "$(jq -c '.[] | select(.name == "gamma") | .sessions[0].rewire_pending' "$TEST_TMP/out")" "false"
 }
 
 # the logbook keys the operator changed in the program (the kept files root wrote at its last

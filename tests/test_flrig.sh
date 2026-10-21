@@ -127,7 +127,8 @@ test_flrig_rigctld_env_for_flrig_control() {
 }
 test_flrig_rigctld_env_keeps_cm108_and_gpio_ptt() {
   local r
-  r=$(jq -c '.rig.control = "flrig" | .ptt.method = "cm108"' <<< "$FR_IC7300")
+  # (a CM108 pin is keyed only with its HID pinned: test_rigctld_env_never_keys_a_ptt_pin_it_was_not_given)
+  r=$(jq -c '.rig.control = "flrig" | .ptt.method = "cm108" | .hid = {path: "usb-0:1.1:1.3", vidpid: "0d8c:013c", serial: ""}' <<< "$FR_IC7300")
   assert_eq "$(dxb_rigctld_env radio2 "$r" session)" $'MODEL=4\nPORT=4534\nRIG_ARGS=-r 127.0.0.1:12346\nPTT_ARGS=-P CM108 -p /dev/dxberry/radio2-hid'
   r=$(jq -c '.rig.control = "flrig" | .ptt.method = "gpio" | .ptt.gpio_line = 17' <<< "$FR_IC7300")
   assert_eq "$(dxb_rigctld_env radio2 "$r" session)" $'MODEL=4\nPORT=4534\nRIG_ARGS=-r 127.0.0.1:12346\nPTT_ARGS=-P GPIO -p 17'

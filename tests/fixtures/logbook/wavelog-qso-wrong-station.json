@@ -1,0 +1,5 @@
+# Wavelog 3.2.4 (tag 3.2.4, commit 7f8eef4de94c674f73c6859ed4e0b0247f68dcd9), the answer of
+# POST index.php/api/qso (and qso/dryrun) for a station_profile_id that is not the key owner's:
+#   application/controllers/Api.php qso(), lines 411-416: HTTP 401 and json_encode(['status' =>
+#   'failed', 'reason' => "station id does not belong to the API key owner."]) (line 414).
+{"status":"failed","reason":"station id does not belong to the API key owner."}

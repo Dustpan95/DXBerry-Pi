@@ -5,7 +5,8 @@
 # contacts WSJT-X and JS8Call broadcast reach "dxberry-logbook submit" through the logging bridge
 # (dxberry-logbridge.service: socat on 127.0.0.1:2333, one process per datagram) and are posted,
 # or queued while the server cannot be reached and posted by "flush" (dxberry-logbook-flush.timer).
-# "recent" reads the newest contacts back for the dashboard.
+# "recent" reads the newest contacts back for the dashboard: Cloudlog's itself, Wavelog's from what
+# the flush fetched (the first fetch of a big log takes longer than the status page waits).
 #
 # The API key is a secret: it is read from stdin, kept only in logbook.json, handed to curl only
 # inside a -K config on a pipe and to jq only on stdin or through a file, and never printed or
@@ -17,7 +18,10 @@
 #   GET  index.php/api/auth/<key>                            both: <status>Valid</status>
 #   POST index.php/api/qso {"key","station_profile_id","type":"adif","string"}
 #        both: HTTP 201 {"status":"created"}; Wavelog: HTTP 400 {"status":"abort"} for a record it
-#        read and will not import (a duplicate among them)
+#        read and will not import (a duplicate among them), HTTP 403 for a read-only key, HTTP 401
+#        for a station that is not the key owner's
+#   POST index.php/api/qso/dryrun (the same body)               Wavelog: the same checks, nothing
+#        imported: HTTP 201 {"status":"created","messages":["Dryrun works"]}
 #   POST index.php/api/get_contacts_adif {"key","station_id","fetchfromid"}
 #        Wavelog: {"status":"successful","lastfetchedid","adif"} (oldest first, ids > fetchfromid)
 #   GET  index.php/api/recent_qsos/<public slug>/<limit>     Cloudlog: {"qsos":[...]} newest first
@@ -36,6 +40,7 @@
 : "${DXB_STATE_DIR:=/var/lib/dxberry}"
 : "${DXB_RUN_DIR:=/run/dxberry}"
 : "${DXB_LOGBOOK_CURL:=curl}"
+: "${DXB_SYSTEMCTL:=systemctl}"
 : "${DXB_ICONV:=iconv}"
 : "${DXB_SOCAT:=/usr/bin/socat}"
 : "${DXB_SYSTEMD_DIR:=/etc/systemd/system}"
@@ -49,6 +54,8 @@
 # a submit's temp file this many minutes old belongs to a submit that was killed: flush adopts it
 : "${DXB_LOGBOOK_STALE_MIN:=2}"
 : "${DXB_LOGBOOK_CACHE_S:=60}"
+# seconds the flush gives one fetch of a Wavelog's contacts (the first one of a big log is long)
+: "${DXB_LOGBOOK_FETCH_MAX_S:=300}"
 # this Pi's own Wavelog, as the bridge reaches it (plain http, loopback only) and as a browser does
 : "${DXB_LOGBOOK_LOCAL_URL:=http://127.0.0.1:8083/}"
 
@@ -57,6 +64,8 @@ _dxb_lb_file() { printf '%s\n' "${DXB_LOGBOOK_FILE:-$DXB_STATE_DIR/logbook.json}
 _dxb_lb_queue() { printf '%s\n' "${DXB_LOGBOOK_QUEUE:-$DXB_STATE_DIR/logbook-queue}"; }
 _dxb_lb_wavelog_state() { printf '%s\n' "${DXB_LOGBOOK_WAVELOG:-$DXB_STATE_DIR/logbook-wavelog.json}"; }
 _dxb_lb_recent_cache() { printf '%s\n' "${DXB_LOGBOOK_RECENT:-$DXB_RUN_DIR/logbook-recent.json}"; }
+# why the flush's last Wavelog fetch failed ({"for","error"}; gone once one works)
+_dxb_lb_fetch_error() { printf '%s\n' "${DXB_LOGBOOK_FETCH_ERROR:-$DXB_RUN_DIR/logbook-fetch-error.json}"; }
 
 # ---- the setting ---------------------------------------------------------------------------
 # dxb_logbook_url URL: URL as it is stored - a trailing slash added, a trailing index.php dropped.
@@ -183,17 +192,47 @@ _dxb_lb_reason() {
     | sed 's/<[^>]*>/ /g; s/  */ /g; s/^ //; s/ $//' | head -c 300
 }
 
+# _dxb_lb_wavelog_can_log JSON: whether Wavelog lets the setting's key log to its station, asked
+# with a dry-run post (api/qso/dryrun: Wavelog checks the key's write rights and the station, and
+# imports nothing). The record sent has no call: an older Wavelog that ignores "dryrun" skips it.
+# 0 it may (or the answer says nothing either way), 6 refused (the reason on stdout).
+# shellcheck disable=SC2016  # jq filters, not shell text
+_dxb_lb_wavelog_can_log() {
+  local c=$1 url
+  url=$(jq -r .url <<< "$c")
+  _dxb_lb_call "${url}index.php/api/qso/dryrun" 15 post < <(jq -c '{key, station_profile_id: (.station_id // "1"), type: "adif", string: "<comment:13>DXBerry check<eor>"}' <<< "$c") \
+    || return 0
+  case $_LB_CODE in
+    403) echo "Wavelog refused the API key for logging: it can only read. Make a key with read and write rights in Wavelog and enter it here"; return 6 ;;
+    401)
+      if [[ $(_dxb_lb_reason) == *station* ]]; then
+        echo "station $(jq -r '.station_id // "1"' <<< "$c") is not one of the API key owner's station locations in Wavelog (see Station Locations there for its number)"
+      else
+        echo "Wavelog answered but refused the API key"
+      fi
+      return 6 ;;
+  esac
+  return 0
+}
+
 # _dxb_lb_detect JSON: what answers at the setting's URL with its key, as
 # {"ok","type","version","error"}: Wavelog answers api/version, Cloudlog (which has no
-# api/version) api/auth/<key>. 0 a logbook answered, 6 none did.
+# api/version) api/auth/<key>. A Wavelog key must also be allowed to log to the station
+# (_dxb_lb_wavelog_can_log); Cloudlog lets any valid key log. 0 a logbook answered, 6 none did
+# (or it refused the key).
 # shellcheck disable=SC2016  # jq filters, not shell text
 _dxb_lb_detect() {
-  local c=$1 url key answered=0 err
+  local c=$1 url key answered=0 err ver
   url=$(jq -r .url <<< "$c"); key=$(jq -r .key <<< "$c")
   if _dxb_lb_call "${url}index.php/api/version" 15 post < <(jq -c '{key}' <<< "$c"); then
     answered=1
     if [[ $_LB_CODE == 200 ]] && jq -e '.status == "ok"' <<< "$_LB_BODY" > /dev/null 2>&1; then
-      jq -c '{ok: true, type: "wavelog", version: (.version // null | if . == null then null else tostring end), error: null}' <<< "$_LB_BODY"
+      ver=$(jq -c '.version // null | if . == null then null else tostring end' <<< "$_LB_BODY")
+      if ! err=$(_dxb_lb_wavelog_can_log "$c"); then
+        jq -cn --argjson v "$ver" --arg e "$err" '{ok: false, type: null, version: $v, error: $e}'
+        return 6
+      fi
+      jq -cn --argjson v "$ver" '{ok: true, type: "wavelog", version: $v, error: null}'
       return 0
     fi
     if [[ $_LB_CODE == 401 ]] && jq -e '.status == "failed"' <<< "$_LB_BODY" > /dev/null 2>&1; then
@@ -378,21 +417,14 @@ dxb_logbook_submit() {
   _dxb_lb_enqueue "$tmp"
 }
 
-# dxb_logbook_flush: post the queued contacts, oldest first, stopping at the first that is not
-# posted; a contact the server refuses for good is set aside and the flush goes on (when it cannot
-# be set aside - refused/ full - it stays queued and the flush stops). A killed submit's temp file
-# is adopted first. Nothing to do without a logbook, or while another flush runs. 0 the queue is
-# empty (or nothing to do), 6 contacts still wait.
-dxb_logbook_flush() {
-  local c q name n=0 left rc
-  c=$(dxb_logbook_stored) || return 0
+# _dxb_lb_flush_queue JSON: post the queued contacts, oldest first, stopping at the first that is
+# not posted; a contact the server refuses for good is set aside and the flush goes on (when it
+# cannot be set aside - refused/ full - it stays queued and the flush stops). A killed submit's
+# temp file is adopted first. Under the flush lock. 0 the queue is empty, 6 contacts still wait.
+_dxb_lb_flush_queue() {
+  local c=$1 q name n=0 left rc
   q=$(_dxb_lb_queue)
   [[ -d $q ]] || return 0
-  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
-  exec 5> "$DXB_RUN_DIR/logbook-flush.lock" || { echo "could not open $DXB_RUN_DIR/logbook-flush.lock" >&2; return 6; }
-  if command -v flock > /dev/null 2>&1 && ! flock -n 5; then
-    dxb_info "logbook: another flush is running"; exec 5>&-; return 0
-  fi
   _dxb_lb_adopt
   while IFS= read -r name; do
     [[ -f $q/$name ]] || continue
@@ -402,15 +434,32 @@ dxb_logbook_flush() {
       1) _dxb_lb_set_aside "$q/$name" "$_LB_WHY" && continue
          left=$(_dxb_lb_queue_count "$q")
          echo "$left queued contacts wait for the logbook" >&2
-         exec 5>&-; return 6 ;;
+         return 6 ;;
       *) left=$(_dxb_lb_queue_count "$q")
          echo "$left queued contacts wait for the logbook; they are posted again within five minutes" >&2
-         exec 5>&-; return 6 ;;
+         return 6 ;;
     esac
   done < <(_dxb_lb_queue_files "$q")
   (( n == 0 )) || dxb_info "logbook: $n queued contacts posted"
-  exec 5>&-
   return 0
+}
+
+# dxb_logbook_flush: the queued contacts posted (_dxb_lb_flush_queue), then, for a Wavelog, its
+# newest contacts fetched for the dashboard (_dxb_lb_fetch_wavelog: the first fetch of a big log
+# can take minutes, which only this service may spend). Nothing to do without a logbook, or while
+# another flush runs. 0 the queue is empty (or nothing to do), 6 contacts still wait.
+dxb_logbook_flush() {
+  local c rc
+  c=$(dxb_logbook_stored) || return 0
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  exec 5> "$DXB_RUN_DIR/logbook-flush.lock" || { echo "could not open $DXB_RUN_DIR/logbook-flush.lock" >&2; return 6; }
+  if command -v flock > /dev/null 2>&1 && ! flock -n 5; then
+    dxb_info "logbook: another flush is running"; exec 5>&-; return 0
+  fi
+  _dxb_lb_flush_queue "$c"; rc=$?
+  [[ $(jq -r '.type // ""' <<< "$c") == cloudlog ]] || _dxb_lb_fetch_wavelog "$c" "$(_dxb_lb_fingerprint "$c")"
+  exec 5>&-
+  return $rc
 }
 
 # ---- recent contacts -----------------------------------------------------------------------
@@ -471,36 +520,69 @@ _dxb_lb_recent_cloudlog() {
     | {ok, type, contacts, error}' <<< "$_LB_BODY" 2> /dev/null || _dxb_lb_answer cloudlog "Cloudlog's answer could not be read"
 }
 
-# _dxb_lb_recent_wavelog JSON FINGERPRINT: Wavelog's contacts newer than the last id fetched,
-# merged into logbook-wavelog.json (the last id and the newest 25), as a recent answer. A failed
-# fetch changes nothing.
+# _dxb_lb_wavelog_stored FINGERPRINT: the fetched contacts' file (logbook-wavelog.json: the last
+# id fetched and the newest 25) when it holds them for FINGERPRINT. 1 when it does not.
+# shellcheck disable=SC2016  # jq filters, not shell text
+_dxb_lb_wavelog_stored() {
+  local st; st=$(_dxb_lb_wavelog_state)
+  [[ -f $st ]] && jq -ce --arg fp "$1" 'select(.for == $fp and (.lastfetchedid | tostring | test("^[0-9]+$")) and (.contacts | type) == "array")' "$st" 2> /dev/null
+}
+
+# _dxb_lb_fetch_wavelog JSON FINGERPRINT: Wavelog's contacts newer than the last id fetched (all of
+# them the first time, which for a big log can take minutes: DXB_LOGBOOK_FETCH_MAX_S), merged into
+# logbook-wavelog.json, which is rewritten only when it changed (then recent's cached answer goes,
+# so the dashboard shows the news at once). A failed fetch changes nothing there; its reason is kept
+# in the run directory for recent to show. Always 0 (a failure is a warning).
+# shellcheck disable=SC2016  # jq filters, not shell text
+_dxb_lb_fetch_wavelog() {
+  local c=$1 fp=$2 st url last=0 old='[]' merged next why stored content err tmp
+  st=$(_dxb_lb_wavelog_state); url=$(jq -r .url <<< "$c"); err=$(_dxb_lb_fetch_error)
+  if stored=$(_dxb_lb_wavelog_stored "$fp"); then
+    last=$(jq -r '.lastfetchedid | tostring | tonumber' <<< "$stored"); old=$(jq -c '.contacts[:25]' <<< "$stored")
+  fi
+  why=''
+  if ! _dxb_lb_call "${url}index.php/api/get_contacts_adif" "$DXB_LOGBOOK_FETCH_MAX_S" post < <(jq -c --argjson f "$last" '{key, station_id, fetchfromid: $f}' <<< "$c"); then
+    why=$(_dxb_lb_noanswer "$url")
+  elif [[ $_LB_CODE != 200 ]] || ! jq -e '.status == "successful" and (.lastfetchedid | tostring | test("^[0-9]+$"))' <<< "$_LB_BODY" > /dev/null 2>&1; then
+    why=$(_dxb_lb_reason); why="the logbook answered HTTP $_LB_CODE${why:+: $why}"
+  else
+    # Wavelog's export answer carries the id as a string (max() of the database row's value), its
+    # "no new QSOs" answer as the number that was sent: both are read
+    next=$(jq -r '.lastfetchedid | tostring | tonumber' <<< "$_LB_BODY")
+    merged=$(jq -r '.adif // ""' <<< "$_LB_BODY" | _dxb_lb_adif_tsv | jq -Rnc --argjson old "$old" '
+      [inputs | split("\t") | select(length == 7)
+        | {time_utc: .[0], call: .[1], band: .[2], mode: .[3], rst_sent: .[4], rst_rcvd: .[5], grid: .[6]}] as $new
+      | (($old | reverse) + $new) | to_entries | sort_by(.value.time_utc, .key) | reverse | map(.value) | .[:25]') \
+      || why="Wavelog's answer could not be read"
+  fi
+  if [[ -n $why ]]; then
+    dxb_warn "logbook: the recent contacts could not be fetched: $why"
+    if ! { tmp=$(umask 077; mktemp "${err%/*}/.logbook-fetch.XXXXXX") \
+        && jq -cn --arg fp "$fp" --arg e "$why" '{for: $fp, error: $e}' > "$tmp" && mv -f "$tmp" "$err"; } 2> /dev/null; then
+      rm -f "${tmp:-}"
+    fi
+    return 0
+  fi
+  rm -f "$err"
+  content=$(jq -cn --arg fp "$fp" --argjson l "$next" --argjson c "$merged" '{for: $fp, lastfetchedid: $l, contacts: $c}')
+  if dxb_write_if_changed "$st" "$content" 600; then
+    if [[ -f $st && $(< "$st") == "$content" ]]; then rm -f "$(_dxb_lb_recent_cache)"
+    else dxb_warn "logbook: could not write $st; the contacts are fetched again next time"; fi
+  fi
+  return 0
+}
+
+# _dxb_lb_recent_wavelog JSON FINGERPRINT: what the flush fetched from Wavelog, as a recent answer
+# - never a fetch of its own. Before the first fetch: why it failed, or that it comes.
 # shellcheck disable=SC2016  # jq filters, not shell text
 _dxb_lb_recent_wavelog() {
-  local c=$1 fp=$2 st url last=0 old='[]' merged next why tmp
-  st=$(_dxb_lb_wavelog_state); url=$(jq -r .url <<< "$c")
-  if [[ -f $st ]] && jq -e --arg fp "$fp" '.for == $fp and (.lastfetchedid | tostring | test("^[0-9]+$")) and (.contacts | type) == "array"' "$st" > /dev/null 2>&1; then
-    last=$(jq -r '.lastfetchedid | tostring | tonumber' "$st"); old=$(jq -c '.contacts[:25]' "$st")
+  local fp=$2 stored err e=''
+  if stored=$(_dxb_lb_wavelog_stored "$fp"); then
+    jq -c '{ok: true, type: "wavelog", contacts: .contacts[:25], error: null}' <<< "$stored"; return 0
   fi
-  _dxb_lb_call "${url}index.php/api/get_contacts_adif" 60 post < <(jq -c --argjson f "$last" '{key, station_id, fetchfromid: $f}' <<< "$c") \
-    || { _dxb_lb_answer wavelog "$(_dxb_lb_noanswer "$url")"; return 0; }
-  why=$(_dxb_lb_reason)
-  if [[ $_LB_CODE != 200 ]] || ! jq -e '.status == "successful" and (.lastfetchedid | tostring | test("^[0-9]+$"))' <<< "$_LB_BODY" > /dev/null 2>&1; then
-    _dxb_lb_answer wavelog "the logbook answered HTTP $_LB_CODE${why:+: $why}"; return 0
-  fi
-  # Wavelog's export answer carries the id as a string (max() of the database row's value), its
-  # "no new QSOs" answer as the number that was sent: both are read
-  next=$(jq -r '.lastfetchedid | tostring | tonumber' <<< "$_LB_BODY")
-  merged=$(jq -r '.adif // ""' <<< "$_LB_BODY" | _dxb_lb_adif_tsv | jq -Rnc --argjson old "$old" '
-    [inputs | split("\t") | select(length == 7)
-      | {time_utc: .[0], call: .[1], band: .[2], mode: .[3], rst_sent: .[4], rst_rcvd: .[5], grid: .[6]}] as $new
-    | (($old | reverse) + $new) | to_entries | sort_by(.value.time_utc, .key) | reverse | map(.value) | .[:25]') \
-    || { _dxb_lb_answer wavelog "Wavelog's answer could not be read"; return 0; }
-  if ! { tmp=$(umask 077; mktemp "${st%/*}/.logbook-wavelog.XXXXXX") \
-      && jq -cn --arg fp "$fp" --argjson l "$next" --argjson c "$merged" '{for: $fp, lastfetchedid: $l, contacts: $c}' > "$tmp" \
-      && mv -f "$tmp" "$st"; }; then
-    rm -f "${tmp:-}"; dxb_warn "logbook: could not write $st; the contacts are fetched again next time"
-  fi
-  jq -cn --argjson c "$merged" '{ok: true, type: "wavelog", contacts: $c, error: null}'
+  err=$(_dxb_lb_fetch_error)
+  [[ -f $err ]] && e=$(jq -r --arg fp "$fp" 'select(.for == $fp) | .error // empty' "$err" 2> /dev/null)
+  _dxb_lb_answer wavelog "${e:-the contacts are read from the logbook in the background; they show here within five minutes}"
 }
 
 # _dxb_lb_cached CACHE FINGERPRINT: the cached answer when CACHE holds one for FINGERPRINT that is
@@ -513,9 +595,10 @@ _dxb_lb_cached() {
 }
 
 # dxb_logbook_recent N: the newest N (1-25) contacts, {"ok","type","contacts":[{time_utc, call,
-# band, mode, rst_sent, rst_rcvd, grid}],"error"}, newest first. The answer (also a failed one,
-# so a dead server is not asked again and again) is cached DXB_LOGBOOK_CACHE_S seconds in the run
-# directory for the setting it was made for; one fetch at a time.
+# band, mode, rst_sent, rst_rcvd, grid}],"error"}, newest first: Cloudlog asked now, Wavelog as the
+# flush last fetched it. The answer (also a failed one, so a dead server is not asked again and
+# again) is cached DXB_LOGBOOK_CACHE_S seconds in the run directory for the setting it was made
+# for; one reader at a time.
 # shellcheck disable=SC2016  # jq filters, not shell text
 dxb_logbook_recent() {
   local n=$1 c fp cache ans tmp
@@ -593,13 +676,13 @@ provision_logbook() {
   local c
   if [[ ${1:-} != --installed ]]; then
     _dxb_logbook_install_units || return 1
-    if (( DXB_LB_UNITS_CHANGED )); then systemctl daemon-reload || { dxb_step_failed apps "systemctl daemon-reload failed"; return 1; }; fi
+    if (( DXB_LB_UNITS_CHANGED )); then "$DXB_SYSTEMCTL" daemon-reload || { dxb_step_failed apps "systemctl daemon-reload failed"; return 1; }; fi
   fi
-  systemctl enable --now dxberry-logbook-flush.timer > /dev/null 2>&1 || dxb_step_failed apps "could not enable dxberry-logbook-flush.timer"
+  "$DXB_SYSTEMCTL" enable --now dxberry-logbook-flush.timer > /dev/null 2>&1 || dxb_step_failed apps "could not enable dxberry-logbook-flush.timer"
   if [[ -x $DXB_SOCAT ]]; then
-    systemctl enable --now dxberry-logbridge.service > /dev/null 2>&1 || dxb_step_failed apps "could not start dxberry-logbridge.service"
+    "$DXB_SYSTEMCTL" enable --now dxberry-logbridge.service > /dev/null 2>&1 || dxb_step_failed apps "could not start dxberry-logbridge.service"
   else
-    systemctl enable dxberry-logbridge.service > /dev/null 2>&1 || dxb_step_failed apps "could not enable dxberry-logbridge.service"
+    "$DXB_SYSTEMCTL" enable dxberry-logbridge.service > /dev/null 2>&1 || dxb_step_failed apps "could not enable dxberry-logbridge.service"
   fi
   if c=$(dxb_logbook_stored); then
     dxb_status_add "logbook: $(jq -r '.url + " (" + (.type // "?") + ")"' <<< "$c"), $(_dxb_lb_queue_count "$(_dxb_lb_queue)") contacts queued"

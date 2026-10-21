@@ -7,6 +7,7 @@ const SCR_APP = "/opt/dxberry/bin/dxberry-app";
 const SCR_SESSION = /^[a-z][a-z0-9_]{0,15}-[a-z][a-z0-9]{0,11}$/;
 const SCR_STATION = "/cockpit/@localhost/dxberry/index.html";
 const SCR_NO_ACCESS = "This login cannot open the program's screen yet. Log out of the console and back in once, then reload this tab.";
+const SCR_CLOSED = "The program window closed. Reconnect?";
 
 const scrEl = id => document.getElementById(id);
 const scr = { session: "", rfb: null, run: 0 };
@@ -54,8 +55,23 @@ function scrConnect(socket, run) {
     rfb.addEventListener("disconnect", () => {
       if (run !== scr.run) return;
       scrEl("state").textContent = "Disconnected";
-      if (!connected) scrSay(SCR_NO_ACCESS);
+      if (!connected) scrRecheck(run);
     });
+  });
+}
+
+// scrRecheck RUN: the window closed before it ever showed. Only a login without access to program
+// screens is told to log out and in; otherwise the window simply closed (the program ended, or the
+// screen was not ready yet).
+function scrRecheck(run) {
+  cockpit.spawn([SCR_APP, "screen", scr.session, "--json"], { err: "message" }).then(text => {
+    if (run !== scr.run) return;
+    let info = null;
+    try { info = JSON.parse(text); } catch (e) { info = null; }
+    scrSay(info && info.access === false ? SCR_NO_ACCESS : SCR_CLOSED);
+  }, () => {
+    if (run !== scr.run) return;
+    scrSay(SCR_CLOSED);
   });
 }
 
@@ -78,9 +94,10 @@ function scrShow(info, run) {
 }
 
 function scrStart() {
-  scrDrop();
+  // a new try first, so whatever the old screen says as it closes belongs to the old one
   scr.run += 1;
   const run = scr.run;
+  scrDrop();
   scrEl("state").textContent = "Reading";
   cockpit.spawn([SCR_APP, "screen", scr.session, "--json"], { err: "message" }).then(text => {
     if (run !== scr.run) return;
@@ -96,7 +113,8 @@ function scrStart() {
   });
 }
 
-scr.session = decodeURIComponent(location.hash.replace(/^#/, ""));
+let scrLinkOk = true;
+try { scr.session = decodeURIComponent(location.hash.replace(/^#/, "")); } catch (e) { scr.session = ""; scrLinkOk = false; }
 scrEl("reconnect").addEventListener("click", () => { if (SCR_SESSION.test(scr.session)) scrStart(); });
 if (SCR_SESSION.test(scr.session)) scrStart();
-else { scrEl("state").textContent = "Error"; scrSay("No program is named here."); }
+else { scrEl("state").textContent = "Error"; scrSay(scrLinkOk ? "No program is named here." : "This link is not a program window.", !scrLinkOk); }

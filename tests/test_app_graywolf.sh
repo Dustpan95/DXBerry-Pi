@@ -167,3 +167,15 @@ test_gwapp_kind_installed_and_version() {
     assert_fails app_graywolf_installed
     assert_eq "$(app_graywolf_version)" "" )
 }
+
+# Graywolf is part of DXBerry, not one of the Programs: a missing Graywolf says how it comes back
+test_app_graywolf_missing_is_not_sent_to_programs() {
+  gwapp_env
+  (
+    export DXB_APPS_DIR=$DXB_LIB/apps
+    dxb_gw_installed_version() { :; }
+    dxb_app_load_owner graywolf 2> "$TEST_TMP/err"; assert_eq "$?" "3"
+    assert_not_contains "$(cat "$TEST_TMP/err")" "install it from Programs"
+    assert_contains "$(cat "$TEST_TMP/err")" "Graywolf is not installed; it is part of DXBerry: run sudo dxberry-provision to put it back"
+  )
+}

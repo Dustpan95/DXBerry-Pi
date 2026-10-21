@@ -103,3 +103,17 @@ test_rigctld_env_keys_cm108_and_gpio_for_session_owners_only() {
   r=$(jq -c '.ptt = {method: "gpio", gpio_line: 17}' <<< "$r")
   assert_contains "$(dxb_rigctld_env r2 "$r" session)" 'PTT_ARGS=-P GPIO -p 17'
 }
+
+# rigctld keys only a pin it was told: a GPIO radio with no line set never keys GPIO 0, a CM108
+# radio with no HID pinned (no /dev/dxberry/NAME-hid) is never keyed through it; both warn
+test_rigctld_env_never_keys_a_ptt_pin_it_was_not_given() {
+  rig_env
+  local r='{"cat":null,"ptt_serial":null,"hid":null,"ptt":{"method":"cm108","gpio_line":null},"rig":{"model":1,"baud":0,"ptt_type":"NONE"},"rigctld_port":4534}'
+  assert_eq "$(dxb_rigctld_env r2 "$r" session 2> "$TEST_TMP/err" | grep '^PTT_ARGS=')" "PTT_ARGS="
+  assert_contains "$(cat "$TEST_TMP/err")" "radio r2: its PTT is the sound card's CM108 pin, but no HID is pinned for it; PTT is left off"
+  r=$(jq -c '.ptt = {method: "gpio", gpio_line: null}' <<< "$r")
+  assert_eq "$(dxb_rigctld_env r2 "$r" session 2> "$TEST_TMP/err" | grep '^PTT_ARGS=')" "PTT_ARGS="
+  assert_contains "$(cat "$TEST_TMP/err")" "radio r2: its PTT is a Pi GPIO pin, but no GPIO line is set; PTT is left off"
+  r=$(jq -c '.ptt.gpio_line = 0' <<< "$r")
+  assert_eq "$(dxb_rigctld_env r2 "$r" session 2> /dev/null | grep '^PTT_ARGS=')" "PTT_ARGS=-P GPIO -p 0"
+}

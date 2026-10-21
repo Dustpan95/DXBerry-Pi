@@ -192,6 +192,7 @@ test_page_reads_only_fields_that_dxberry_status_produces() {
   "$DXB_ROOT/provision/bin/dxberry-app" list --json > "$TEST_TMP/pg-list.json" || _fail "dxberry-app list --json failed"
   lb_env; lb_configured wavelog
   "$LB_CMD" get --json > "$TEST_TMP/pg-get.json" || _fail "dxberry-logbook get --json failed"
+  "$LB_CMD" flush || _fail "dxberry-logbook flush failed"
   "$LB_CMD" recent --json 10 > "$TEST_TMP/pg-recent.json" || _fail "dxberry-logbook recent --json failed"
   st_env
   cp "$TEST_TMP/pg-list.json" "$TEST_TMP/st-list.json"; cp "$TEST_TMP/pg-get.json" "$TEST_TMP/st-get.json"

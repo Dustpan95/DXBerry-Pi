@@ -452,6 +452,16 @@ test_apps_user_ensure_masks_desktop_sound_servers() {
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl --global mask pulseaudio.socket pulseaudio.service"
 }
 
+# masking the desktop sound server is a safeguard, not what the programs need to install: when
+# it fails the user step says so and goes on (a warning in provisioning, never a failed apps step)
+test_apps_user_ensure_a_failed_sound_server_mask_is_a_warning() (
+  fx_apps_env
+  ap_mask_fails() { echo "systemctl $*" >> "$TEST_TMP/calls"; [[ $1 != --global ]]; }
+  DXB_SYSTEMCTL=ap_mask_fails
+  dxb_apps_user_ensure 2> "$TEST_TMP/err"; assert_eq "$?" "0"
+  assert_contains "$(cat "$TEST_TMP/err")" "could not mask the desktop sound server"
+)
+
 test_apps_user_ensure_is_idempotent() {
   fx_apps_env
   assert_ok dxb_apps_user_ensure

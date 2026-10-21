@@ -136,3 +136,19 @@ test_webproxy_site_remove_unlinks_and_reloads() {
   assert_file_contains "$TEST_TMP/calls" "systemctl reload nginx"
   assert_ok dxb_webproxy_site_remove pat
 }
+# a refresh whose reload fails leaves the site looking stale, so the next run tries again (a
+# renewed certificate is never taken as picked up before nginx has loaded it)
+test_webproxy_refresh_marks_the_site_current_only_after_a_reload() (
+  wp_env
+  wp_reload_fails() { echo "systemctl $*" >> "$TEST_TMP/calls"; [[ $1 != reload ]]; }
+  local avail=$DXB_NGINX_DIR/sites-available/dxberry-pat.conf
+  assert_ok dxb_webproxy_site pat
+  touch -d '-2 hours' "$avail"; touch -d '-1 hour' "$DXB_COCKPIT_CERTS/0-self-signed.cert"
+  assert_ok dxb_webproxy_site_stale pat
+  DXB_SYSTEMCTL=wp_reload_fails
+  dxb_webproxy_site_refresh pat 2> /dev/null; assert_eq "$?" "6"
+  assert_ok dxb_webproxy_site_stale pat
+  DXB_SYSTEMCTL=fx_systemctl
+  assert_ok dxb_webproxy_site_refresh pat
+  dxb_webproxy_site_stale pat; assert_eq "$?" "1"
+)

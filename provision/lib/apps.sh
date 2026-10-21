@@ -225,7 +225,8 @@ dxb_apps_installed() {
 # dxb_apps_user_ensure: the system user dxbapps (spec 7.3) in audio, dialout and dxbscreen, its
 # home 0750 (the console user, in the dxbapps group, can read saved pictures and logs), the
 # console user in dxbscreen (the screen sockets) and dxbapps, and the desktop PulseAudio user
-# units masked for every login (ruling 2: one would take Graywolf's card). Idempotent. 0 ok, 6 failed.
+# units masked for every login (ruling 2: one would take Graywolf's card; a mask that fails is said
+# on stderr but does not fail the step). Idempotent. 0 ok, 6 failed.
 dxb_apps_user_ensure() {
   local u=$DXB_APPS_USER g=$DXB_APPS_SCREEN_GROUP home=$DXB_APPS_HOME console rc=0
   if ! "$DXB_GETENT" group "$g" > /dev/null 2>&1; then
@@ -248,7 +249,7 @@ dxb_apps_user_ensure() {
     echo "the console user $console does not exist; it was not added to $g and $u" >&2
   fi
   "$DXB_SYSTEMCTL" --global mask pulseaudio.socket pulseaudio.service > /dev/null 2>&1 \
-    || { echo "could not mask the desktop sound server (pulseaudio.socket, pulseaudio.service)" >&2; rc=6; }
+    || echo "could not mask the desktop sound server (pulseaudio.socket, pulseaudio.service); a desktop login could take a radio's sound card" >&2
   return $rc
 }
 

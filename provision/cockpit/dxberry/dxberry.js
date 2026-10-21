@@ -30,6 +30,7 @@ const APP_EXITS = {
   6: "it failed, so nothing was changed",
   7: "the program could not be set up for the radio",
   8: "it was changed, but a later step failed",
+  9: "the program did not start; see Services",
 };
 const PTT_METHODS = { rigctld: "rigctld", cm108: "CM108 HID", gpio: "Pi GPIO", vox: "VOX", digirig_tone: "DigiRig Lite tone", none: "none" };
 const PTT_TYPES = { RIG: "a CAT command", RTS: "the RTS line", DTR: "the DTR line", NONE: "nothing" };
@@ -89,7 +90,7 @@ const FIELDS = [
   "station.ok", "station.callsign", "station.grid",
   "apps.ok", "apps.programs.*.name", "apps.programs.*.label", "apps.programs.*.kind", "apps.programs.*.description",
   "apps.programs.*.source", "apps.programs.*.installed", "apps.programs.*.version", "apps.programs.?.sessions.*.radio",
-  "apps.programs.?.sessions.*.state", "apps.programs.*.single_copy", "apps.programs.?.open.kind", "apps.programs.?.open.port",
+  "apps.programs.?.sessions.*.state", "apps.programs.?.sessions.*.rewire_pending", "apps.programs.*.single_copy", "apps.programs.?.open.kind", "apps.programs.?.open.port",
   "apps.programs.?.open.path", "apps.programs.?.setup_note", "apps.programs.*.kept",
   "apps.logbook.configured", "apps.logbook.type", "apps.logbook.url", "apps.logbook.key", "apps.logbook.station_id",
   "apps.logbook.slug", "apps.logbook.queue", "apps.logbook.refused", "apps.logbook.refused_reason",

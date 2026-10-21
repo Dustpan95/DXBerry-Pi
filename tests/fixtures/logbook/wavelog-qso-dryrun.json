@@ -1,0 +1,8 @@
+# Wavelog 3.2.4 (tag 3.2.4, commit 7f8eef4de94c674f73c6859ed4e0b0247f68dcd9), the answer of
+# POST index.php/api/qso/dryrun {"key","station_profile_id","type":"adif","string"} for a key with
+# read and write rights and a station of its own:
+#   application/controllers/Api.php qso($dryrun = false), lines 339-503: the URL's extra segment is
+#   $dryrun, so nothing is imported (line 435) and $return_msg is ['Dryrun works'] (line 486); then
+#   HTTP 201 and json_encode(['status' => 'created', ..., 'adif_count' => 0, 'adif_errors' => 0,
+#   'messages' => $return_msg]) (lines 490-492). 'string' is '' (emptied at line 431).
+{"status":"created","type":"adif","string":"","adif_count":0,"adif_errors":0,"messages":["Dryrun works"]}

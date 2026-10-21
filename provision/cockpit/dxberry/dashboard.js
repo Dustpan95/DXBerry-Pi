@@ -143,7 +143,9 @@ function dashAppAction(n, verb, label) {
     refresh(true);
   }, ex => {
     delete pending[n];
-    failure(verb === "stop" ? `Stopping ${label} on ${n}` : `Starting ${label} on ${n}`, ex, APP_EXITS);
+    // 9: the program did not start (its own reason is under Services)
+    if (verb === "start" && ex && ex.exit_status === 9) notice(`${label} did not start on ${n}; see Services.`, "bad");
+    else failure(verb === "stop" ? `Stopping ${label} on ${n}` : `Starting ${label} on ${n}`, ex, APP_EXITS);
     show();
     refresh(true);
   });
@@ -182,9 +184,14 @@ function dashRadioCard(s, n, x) {
     acts.push(btn("Choose a program", () => dashSwitchOpen(n), { cls: "primary", key: `dash:${n}:choose`, aria: `Choose a program for ${n}`, disabled: !!busyText, title: why }));
   }
   acts.push(btn("Radio settings", () => openRadioForm(n), { key: `dash:${n}:settings`, aria: `Settings of ${n}`, disabled: !!busyText, title: why }));
+  // the radio's settings changed while the program ran: it takes them at its next start (ruling 7)
+  const prog = x.owner ? dashProgram(s, x.owner) : null;
+  const here = prog ? (prog.sessions || []).find(q => q.radio === n) : null;
+  const rewire = state === "running" && here && here.rewire_pending === true;
   return el("section", { class: "card dash-radio", "data-radio": n, "aria-label": `Radio ${n}` },
     el("h3", {}, x.label || n, x.label ? el("span", { class: "muted" }, ` ${n}`) : null),
     busyText ? el("p", {}, badge(busyText + "…", "warn")) : null,
+    rewire ? el("p", { class: "hint" }, badge(`Restart ${label} to use the new radio settings`, "warn")) : null,
     kv(rows),
     el("div", { class: "actions" }, acts));
 }
@@ -217,11 +224,16 @@ function dashSwitchOpen(n) {
   document.getElementById("switch-dialog").showModal();
 }
 
+// dashToPrograms: the page scrolls to the Programs section (Install more…, Set up the logbook).
+function dashToPrograms() {
+  const p = document.getElementById("programs");
+  if (p && p.scrollIntoView) p.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function dashInstallMore() {
   dashboard.switching = null;
   document.getElementById("switch-dialog").close();
-  const p = document.getElementById("programs");
-  if (p && p.scrollIntoView) p.scrollIntoView({ behavior: "smooth", block: "start" });
+  dashToPrograms();
 }
 
 function dashSwitchSave(e) {
@@ -252,7 +264,10 @@ function dashRecent(s) {
   const rec = a && a.ok ? a.recent || {} : null;
   if (!a || !a.ok) kids.push(el("p", { class: "error" }, (a && a.error) || "The logbook could not be read."));
   else if (lb.error) kids.push(el("p", { class: "error" }, lb.error));
-  else if (!lb.configured) kids.push(el("p", { class: "muted" }, "No logbook yet. Set one up under Programs → Logbook."));
+  else if (!lb.configured) {
+    kids.push(el("p", { class: "muted" }, "No logbook yet. Set one up under Programs → Logbook."),
+      el("div", { class: "actions" }, btn("Set up the logbook", dashToPrograms, { cls: "primary", key: "dash:logbook:setup" })));
+  }
   else if (rec.ok !== true) kids.push(el("p", { class: "error" }, rec.error || "The recent contacts could not be read."));
   else if (!(rec.contacts || []).length) kids.push(el("p", { class: "muted" }, "No contacts in the logbook yet."));
   else {

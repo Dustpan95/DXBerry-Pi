@@ -22,7 +22,9 @@ source "$DXB_LIB/logbook.sh"
 # LB_SERVER says: wavelog, cloudlog, none (a web server that is no logbook: 404 everywhere),
 # down (nothing answers; curl prints the URL on stderr), dupe (Wavelog refusing every contact as a
 # duplicate), cloudlog-dupe (Cloudlog's 201 that imported nothing: a duplicate) and
-# cloudlog-noimport (the same for another reason).
+# cloudlog-noimport (the same for another reason). Wavelog's dry-run post (api/qso/dryrun) answers
+# as its key's rights and station say: LB_RIGHTS=r is a read-only key (403), LB_BAD_STATION=N a
+# station id that is not the key owner's (401).
 lb_env() {
   rm -rf "$TEST_TMP/lb"
   mkdir -p "$TEST_TMP/lb/bin" "$TEST_TMP/lb/state" "$TEST_TMP/lb/run"
@@ -31,7 +33,7 @@ lb_env() {
   export DXB_LOGBOOK_CURL=$TEST_TMP/lb/bin/curl DXB_SYSTEMCTL=$TEST_TMP/lb/bin/systemctl DXB_FAKE_EUID=0
   export DXB_RADIOS_FILE=$DXB_STATE_DIR/radios.json DXB_APPS_OPT=$TEST_TMP/lb/opt DXB_APPS_STATE=$DXB_STATE_DIR/apps
   export DXB_APPS_TSV=$DXB_ROOT/provision/share/apps.tsv DXB_APPS_DIR=$DXB_LIB/apps DXB_PI_ADDRESS=192.0.2.10
-  export LB_SERVER=wavelog LB_FIX=$DXB_ROOT/tests/fixtures/logbook
+  export LB_SERVER=wavelog LB_FIX=$DXB_ROOT/tests/fixtures/logbook LB_RIGHTS=rw LB_BAD_STATION=''
   LB_CMD=$DXB_ROOT/provision/bin/dxberry-logbook
   : > "$TEST_TMP/argv"; : > "$TEST_TMP/posted"; : > "$TEST_TMP/urls"; : > "$TEST_TMP/bodies"; : > "$TEST_TMP/calls"
   : > "$DXB_LOG_FILE"
@@ -61,6 +63,10 @@ case $LB_SERVER in
 esac
 case "$LB_SERVER:$url" in
   wavelog:*/index.php/api/version|dupe:*/index.php/api/version) answer 200 wavelog-version.json ;;
+  wavelog:*/index.php/api/qso/dryrun|dupe:*/index.php/api/qso/dryrun)
+    if [[ ${LB_RIGHTS:-rw} == r ]]; then answer 403 wavelog-qso-readonly.json
+    elif [[ -n ${LB_BAD_STATION:-} && $(jq -r .station_profile_id <<< "$body") == "$LB_BAD_STATION" ]]; then answer 401 wavelog-qso-wrong-station.json
+    else answer 201 wavelog-qso-dryrun.json; fi ;;
   wavelog:*/index.php/api/qso)
     jq -r .string <<< "$body" >> "$TEST_TMP/posted"; answer 201 wavelog-qso.json ;;
   dupe:*/index.php/api/qso) answer 400 wavelog-qso-duplicate.json ;;
@@ -127,8 +133,9 @@ test_logbook_key_never_in_argv_or_output() {
   } > "$TEST_TMP/out2" 2> "$TEST_TMP/err2"
   grep -q '^jq ' "$TEST_TMP/argv" || _fail "the jq shim was never called"
   grep -q '^awk ' "$TEST_TMP/argv" || _fail "the awk shim was never called"
-  # the post, the one the down server never answered, and the flush's
-  assert_eq "$(grep -c 'index.php/api/qso' "$TEST_TMP/urls")" "3"
+  # the post, the one the down server never answered, and the flush's (set's and test's dry runs
+  # aside)
+  assert_eq "$(grep -c 'index.php/api/qso$' "$TEST_TMP/urls")" "3"
   assert_eq "$(lb_queue_count)" "0"
   assert_file_not_contains "$TEST_TMP/argv" "SECRETKEY123"
   assert_file_not_contains "$TEST_TMP/out2" "SECRETKEY123"
@@ -146,6 +153,37 @@ test_logbook_detects_wavelog_and_cloudlog() {
   printf '{"url":"https://x/","key":"k","station_id":"1"}' | "$LB_CMD" set --json > /dev/null; assert_eq "$?" "6"
   [[ -f $DXB_LOGBOOK_FILE ]] && _fail "a logbook that did not answer was saved"
 }
+# Wavelog keys can be read-only: test and set make Wavelog check the key's write rights and the
+# station with a dry-run post, which imports nothing (an older Wavelog that ignores "dryrun" gets
+# a record with no call, which it skips), so a key that can only read is refused at once instead
+# of contacts piling up in the queue
+test_logbook_wavelog_test_and_set_check_write_rights_with_a_dry_run() {
+  local probe
+  lb_env
+  assert_eq "$(printf '{"url":"https://w/","key":"k","station_id":"1"}' | "$LB_CMD" test --json | jq -r .ok)" "true"
+  assert_file_contains "$TEST_TMP/urls" "https://w/index.php/api/qso/dryrun"
+  probe=$(grep '"string"' "$TEST_TMP/bodies" | tail -1)
+  assert_eq "$(jq -c '{station_profile_id, type}' <<< "$probe")" '{"station_profile_id":"1","type":"adif"}'
+  assert_not_contains "$(jq -r .string <<< "$probe" | tr '[:upper:]' '[:lower:]')" "<call:"
+  assert_eq "$(wc -c < "$TEST_TMP/posted")" "0"
+  # a read-only key: refused, nothing saved
+  LB_RIGHTS=r
+  printf '{"url":"https://w/","key":"k","station_id":"1"}' | "$LB_CMD" test --json > "$TEST_TMP/out" 2> "$TEST_TMP/err"; assert_eq "$?" "6"
+  assert_eq "$(jq -r .ok "$TEST_TMP/out")" "false"
+  assert_contains "$(jq -r .error "$TEST_TMP/out")" "Wavelog refused the API key for logging: it can only read. Make a key with read and write rights in Wavelog"
+  assert_contains "$(cat "$TEST_TMP/err")" "it can only read"
+  printf '{"url":"https://w/","key":"k","station_id":"1"}' | "$LB_CMD" set --json > "$TEST_TMP/out" 2> /dev/null; assert_eq "$?" "6"
+  [[ -f $DXB_LOGBOOK_FILE ]] && _fail "a read-only key was saved"
+  # a station that is not the key owner's
+  LB_RIGHTS=rw LB_BAD_STATION=7
+  printf '{"url":"https://w/","key":"k","station_id":"7"}' | "$LB_CMD" set --json > "$TEST_TMP/out" 2> /dev/null; assert_eq "$?" "6"
+  assert_contains "$(jq -r .error "$TEST_TMP/out")" "station 7 is not one of the API key owner's station locations in Wavelog"
+  [[ -f $DXB_LOGBOOK_FILE ]] && _fail "a wrong station was saved"
+  # Cloudlog takes any valid key for logging: no dry run there
+  lb_env; LB_SERVER=cloudlog
+  assert_eq "$(printf '{"url":"https://c/","key":"k","station_id":"1"}' | "$LB_CMD" test --json | jq -r .ok)" "true"
+  assert_file_not_contains "$TEST_TMP/urls" "dryrun"
+}
 test_logbook_queues_when_unreachable_and_flushes_later() {
   lb_env; lb_configured wavelog; LB_SERVER=down
   "$LB_CMD" submit < "$DXB_ROOT/tests/fixtures/logbook/wsjtx-contact.adi"; assert_eq "$?" "0"
@@ -160,7 +198,7 @@ test_logbook_queues_when_no_logbook_is_set() {
 }
 test_logbook_recent_is_one_shape_for_both_servers() {
   local w c
-  lb_env; lb_configured wavelog; w=$("$LB_CMD" recent --json 3)
+  lb_env; lb_configured wavelog; "$LB_CMD" flush; w=$("$LB_CMD" recent --json 3)
   lb_env; lb_configured cloudlog; c=$("$LB_CMD" recent --json 3)
   assert_eq "$(jq -c '.contacts[0] | keys' <<< "$w")" '["band","call","grid","mode","rst_rcvd","rst_sent","time_utc"]'
   assert_eq "$(jq -c '.contacts[0] | keys' <<< "$c")" "$(jq -c '.contacts[0] | keys' <<< "$w")"
@@ -297,7 +335,7 @@ test_logbook_flush_posts_oldest_first_and_stops_at_the_first_failure() {
   printf '<call:4>MID3 <eor>' > "$DXB_LOGBOOK_QUEUE/1700000000-2.adi"
   LB_SERVER=down; "$LB_CMD" flush 2> /dev/null; assert_eq "$?" "6"
   assert_eq "$(lb_queue_count)" "3"
-  assert_eq "$(grep -c . "$TEST_TMP/argv")" "1"                                      # stopped at the first
+  assert_eq "$(grep -c 'index.php/api/qso$' "$TEST_TMP/urls")" "1"                   # stopped at the first (the contacts fetch aside)
   LB_SERVER=wavelog; "$LB_CMD" flush; assert_eq "$?" "0"
   assert_eq "$(tr '\n' ' ' < "$TEST_TMP/posted")" "<call:4>OLD1 <eor> <call:4>MID3 <eor> <call:4>NEW2 <eor> "
   "$LB_CMD" flush; assert_eq "$?" "0"                                                # nothing left: nothing to do
@@ -363,6 +401,8 @@ test_logbook_submit_reads_a_latin1_record_as_utf8() {
 
 test_logbook_recent_wavelog_is_newest_first_and_fetches_only_new_contacts() {
   lb_env; lb_configured wavelog
+  # the flush (no time limit of the status page's) fetches; recent reads what it fetched
+  "$LB_CMD" flush
   local w; w=$("$LB_CMD" recent --json 3)
   assert_eq "$(jq -c '.contacts[0]' <<< "$w")" \
     '{"time_utc":"2026-10-20T18:01:30Z","call":"JA1AAA","band":"15m","mode":"SSB","rst_sent":"59","rst_rcvd":"57","grid":"PM95"}'
@@ -375,13 +415,41 @@ test_logbook_recent_wavelog_is_newest_first_and_fetches_only_new_contacts() {
   assert_eq "$(sed '/^#/d' "$LB_FIX/wavelog-contacts-none.json" | jq -r '.lastfetchedid | type')" "number"
   assert_eq "$(jq -c .lastfetchedid "$DXB_STATE_DIR/logbook-wavelog.json")" "1287"
   assert_eq "$(jq '.contacts | length' "$DXB_STATE_DIR/logbook-wavelog.json")" "4"
-  # a minute later: only what is newer than the last id
+  # the next flush: only what is newer than the last id
   rm -f "$DXB_RUN_DIR/logbook-recent.json"; : > "$TEST_TMP/bodies"
+  "$LB_CMD" flush
   w=$("$LB_CMD" recent --json)
   assert_eq "$(jq -c 'del(.key)' "$TEST_TMP/bodies")" '{"station_id":"1","fetchfromid":1287}'
   assert_eq "$(jq '.contacts | length' <<< "$w")" "4"
   assert_eq "$(jq -r '.contacts[3].call' <<< "$w")" "W1AW"
   assert_eq "$(jq -c .lastfetchedid "$DXB_STATE_DIR/logbook-wavelog.json")" "1287"
+}
+# A big Wavelog log takes longer to fetch the first time than the status page waits (20 s), so
+# recent never fetches from Wavelog: it reads what the flush fetched (5 minutes at most), and says
+# so until then. The flush fetches with a long time limit, and rewrites its file only when
+# something is new (the SD card is not written every five minutes for nothing).
+test_logbook_recent_never_fetches_from_wavelog_itself() {
+  local w ino
+  lb_env; lb_configured wavelog
+  w=$("$LB_CMD" recent --json)
+  assert_eq "$(wc -c < "$TEST_TMP/urls")" "0"
+  assert_eq "$(jq -c '{ok, type, contacts}' <<< "$w")" '{"ok":false,"type":"wavelog","contacts":[]}'
+  assert_contains "$(jq -r .error <<< "$w")" "they show here within five minutes"
+  # the flush fetches, with no queue at all, and with a time limit long enough for a big log;
+  # what it fetched empties recent's cache (the answer above), so the page shows it at once
+  [[ -d $DXB_LOGBOOK_QUEUE ]] && _fail "the test needs no queue directory"
+  "$LB_CMD" flush; assert_eq "$?" "0"
+  assert_eq "$(grep -c 'index.php/api/get_contacts_adif' "$TEST_TMP/urls")" "1"
+  assert_contains "$(grep -- '--max-time' "$TEST_TMP/argv" | tail -1)" "--max-time 300"
+  assert_eq "$("$LB_CMD" recent --json | jq -c '[.ok, (.contacts | length)]')" "[true,4]"
+  # nothing new: the file is left as it is
+  ino=$(stat -c %i "$DXB_STATE_DIR/logbook-wavelog.json")
+  "$LB_CMD" flush
+  assert_eq "$(stat -c %i "$DXB_STATE_DIR/logbook-wavelog.json")" "$ino"
+  # Cloudlog's recent contacts are a small answer of their own: the flush fetches nothing for them
+  lb_env; lb_configured cloudlog
+  "$LB_CMD" flush
+  assert_eq "$(wc -c < "$TEST_TMP/urls")" "0"
 }
 test_logbook_recent_cloudlog_reads_the_public_slug() {
   lb_env; lb_configured cloudlog
@@ -396,16 +464,19 @@ test_logbook_recent_failures_are_cached_as_failures_and_shapes_hold() {
   lb_env
   assert_eq "$("$LB_CMD" recent --json | jq -c .)" '{"ok":false,"type":null,"contacts":[],"error":"no logbook is set"}'
   lb_configured wavelog; LB_SERVER=down
+  "$LB_CMD" flush 2> /dev/null
   local r; r=$("$LB_CMD" recent --json 2> /dev/null)
   assert_eq "$(jq -c '{ok, type, contacts}' <<< "$r")" '{"ok":false,"type":"wavelog","contacts":[]}'
+  assert_contains "$(jq -r .error <<< "$r")" "did not answer"                         # the flush's failed fetch says why
   : > "$TEST_TMP/argv"; LB_SERVER=wavelog
   assert_eq "$("$LB_CMD" recent --json | jq -r .ok)" "false"                         # a dead server is not asked again within the minute
   assert_eq "$(wc -c < "$TEST_TMP/argv")" "0"
   [[ -f $DXB_STATE_DIR/logbook-wavelog.json ]] && _fail "a failed fetch must not be stored as contacts"
   "$LB_CMD" recent --json 26 > /dev/null 2>&1; assert_eq "$?" "2"
   "$LB_CMD" recent --json 0 > /dev/null 2>&1; assert_eq "$?" "2"
-  # a new setting is a new answer
+  # a new setting is a new answer (set starts the flush, which fetches)
   printf '{"url":"https://w/","key":"k","station_id":"1"}' | "$LB_CMD" set --json > /dev/null
+  "$LB_CMD" flush
   assert_eq "$("$LB_CMD" recent --json | jq -r .ok)" "true"
 }
 test_logbook_recent_cache_is_written_atomically() {
@@ -494,7 +565,8 @@ test_logbook_provision_installs_the_units_once_and_enables_them() (
   export DXB_SYSTEMD_DIR=$TEST_TMP/lb/systemd DXB_SOCAT=$TEST_TMP/lb/bin/socat DXB_TEMPLATES=$DXB_ROOT/provision/templates
   printf '#!/bin/sh\n' > "$DXB_SOCAT"; chmod 755 "$DXB_SOCAT"
   DXB_STATUS_LINES=(); DXB_FAILED_STEPS=()
-  ( systemctl() { "$DXB_SYSTEMCTL" "$@"; }; provision_logbook )
+  # systemctl only ever through DXB_SYSTEMCTL (no shim for the name here)
+  provision_logbook
   local t
   for t in dxberry-logbridge.service dxberry-logbook-flush.service dxberry-logbook-flush.timer; do
     assert_eq "$(cat "$DXB_SYSTEMD_DIR/$t")" "$(cat "$DXB_ROOT/provision/templates/$t")"
@@ -503,11 +575,11 @@ test_logbook_provision_installs_the_units_once_and_enables_them() (
   assert_file_contains "$TEST_TMP/calls" "systemctl enable --now dxberry-logbook-flush.timer"
   assert_file_contains "$TEST_TMP/calls" "systemctl enable --now dxberry-logbridge.service"
   : > "$TEST_TMP/calls"
-  ( systemctl() { "$DXB_SYSTEMCTL" "$@"; }; provision_logbook )
+  provision_logbook
   assert_file_not_contains "$TEST_TMP/calls" "daemon-reload"                         # nothing changed
   # without socat the bridge is enabled for later (its unit waits for socat) but not started now
   rm -f "$DXB_SOCAT"; : > "$TEST_TMP/calls"
-  ( systemctl() { "$DXB_SYSTEMCTL" "$@"; }; provision_logbook )
+  provision_logbook
   assert_file_contains "$TEST_TMP/calls" "systemctl enable dxberry-logbridge.service"
   assert_file_not_contains "$TEST_TMP/calls" "enable --now dxberry-logbridge.service"
   assert_file_contains "$DXB_ROOT/provision/templates/dxberry-logbridge.service" "ConditionPathExists=/usr/bin/socat"

@@ -121,8 +121,9 @@ dxb_webproxy_site_stale() {
 
 # dxb_webproxy_site_refresh NAME [PLACEHOLDER=VALUE...]: render the site again over an enabled one.
 # Unlike dxb_webproxy_site, a failing nginx check puts the previous file back and keeps the
-# link: a working site is never turned off. The site file's time is set to now, so a certificate
-# that was renewed in place counts as picked up. 0 ok, 6 failed (the old site stays).
+# link: a working site is never turned off. Once nginx has reloaded, the site file's time is set
+# to now, so a certificate that was renewed in place counts as picked up (a failed reload leaves it
+# stale: the next run tries again). 0 ok, 6 failed (the old site stays).
 dxb_webproxy_site_refresh() {
   local name=$1 avail old
   shift
@@ -138,8 +139,8 @@ dxb_webproxy_site_refresh() {
     echo "nginx rejected the new $name site; the previous one stays" >&2
     return 6
   fi
-  touch "$avail"
   "$DXB_SYSTEMCTL" reload nginx || { echo "nginx could not reload with the $name site" >&2; return 6; }
+  touch "$avail"
   return 0
 }
 

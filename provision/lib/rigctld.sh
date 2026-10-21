@@ -32,10 +32,16 @@ dxb_rigctld_env() {
     RIG) ptt_args='-P RIG' ;;
     RTS|DTR) [[ -n ${pttdev:-$cat} ]] && ptt_args="-P $ptt -p ${pttdev:-$cat}" ;;
   esac
+  # rigctld keys only a pin it was given: a HID that is pinned (/dev/dxberry/NAME-hid exists only
+  # then), a GPIO line that is set; otherwise PTT stays off and says why
   if [[ $kind == session ]]; then
     case $(jq -r '.ptt.method // empty' <<< "$r") in
-      cm108) ptt_args="-P CM108 -p /dev/dxberry/$name-hid" ;;
-      gpio) ptt_args="-P GPIO -p $(jq -r '.ptt.gpio_line // 0' <<< "$r")" ;;
+      cm108)
+        if [[ $(jq -r '.hid // null | type' <<< "$r") == object ]]; then ptt_args="-P CM108 -p /dev/dxberry/$name-hid"
+        else ptt_args=''; dxb_warn "radio $name: its PTT is the sound card's CM108 pin, but no HID is pinned for it; PTT is left off"; fi ;;
+      gpio)
+        if [[ $(jq -r '.ptt.gpio_line // null | type' <<< "$r") == number ]]; then ptt_args="-P GPIO -p $(jq -r '.ptt.gpio_line' <<< "$r")"
+        else ptt_args=''; dxb_warn "radio $name: its PTT is a Pi GPIO pin, but no GPIO line is set; PTT is left off"; fi ;;
     esac
   fi
   printf 'MODEL=%s\nPORT=%s\nRIG_ARGS=%s\nPTT_ARGS=%s\n' "$model" "$port" "$rig_args" "$ptt_args"

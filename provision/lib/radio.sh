@@ -580,7 +580,12 @@ dxb_app_is_multi() { declare -F "app_$1_multi" > /dev/null || return 0; [[ $("ap
 dxb_app_load_owner() {
   dxb_app_load "$1" || return 3
   [[ $(dxb_app_kind "$1") == radio ]] || { dxb_error "$1 cannot own a radio"; return 3; }
-  dxb_app_is_installed "$1" || { dxb_error "$1 is not installed; install it from Programs"; return 3; }
+  if ! dxb_app_is_installed "$1"; then
+    # Graywolf is part of DXBerry, not one of the Programs: provisioning installs it
+    if [[ $1 == graywolf ]]; then dxb_error "Graywolf is not installed; it is part of DXBerry: run sudo dxberry-provision to put it back"
+    else dxb_error "$1 is not installed; install it from Programs"; fi
+    return 3
+  fi
 }
 
 # dxb_app_catalog: [{name, label, kind, session, installed}] for every radio-kind module, the label
@@ -640,12 +645,15 @@ _dxb_sessions_ensure() {
 _dxb_session_marker() { printf '%s/%s-%s.waiting\n' "$(_dxb_sessions_dir)" "$1" "$2"; }
 
 # dxb_app_session_start APP RADIO: enable and start the session, then wait up to
-# DXB_SESSION_WAIT_S seconds (30) for it to be active. 0 ok, 5 failed.
+# DXB_SESSION_WAIT_S seconds (30) for it to be active. The unit's earlier failures are cleared
+# first: three quick ones would otherwise refuse every start for a minute (its start limit).
+# 0 ok, 5 failed.
 dxb_app_session_start() {
   local u i wait=${DXB_SESSION_WAIT_S:-30}
   u=$(dxb_app_session_unit "$1" "$2")
   rm -f "$(_dxb_session_marker "$1" "$2")"   # started by hand now: no longer waiting for the radio
   systemctl enable "$u" > /dev/null 2>&1 || { dxb_error "could not enable $u"; return 5; }
+  systemctl reset-failed "$u" > /dev/null 2>&1
   systemctl start "$u" || { dxb_error "could not start $u"; return 5; }
   for (( i = 0; ; i++ )); do
     systemctl is-active --quiet "$u" && return 0

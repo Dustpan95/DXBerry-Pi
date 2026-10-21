@@ -11,7 +11,7 @@
 #   session SESSION            the session itself (its unit runs it as dxbapps)
 # SESSION is PROGRAM-RADIO, e.g. wsjtx-radio2. --json on any subcommand.
 # Exit: 0 ok, 1 not root (or root where dxbapps is meant), 2 usage, 3 no such program/radio/session,
-#  4 radio unplugged, 5 busy, 6 failed (nothing changed), 7 first fill or wiring failed, 8 changed with a failed later step.
+#  4 radio unplugged, 5 busy, 6 failed (nothing changed), 7 first fill or wiring failed, 8 changed with a failed later step, 9 did not start.
 set -uo pipefail
 
 DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
@@ -52,13 +52,16 @@ load_config() {
 _source_kind() { case $1 in builtin) echo builtin ;; apt:*) echo debian ;; *) echo upstream ;; esac; }
 
 # _program_facts NAME: {sessions, single_copy, open, setup_note, kept} from NAME's module (none: no
-# sessions, not single-copy, nothing to open, no note). setup_note is what the page says under the
+# sessions, not single-copy, nothing to open, no note). Each session is {radio, state,
+# rewire_pending}: rewire_pending is true when the radio's wiring changed since the session last
+# wired itself (its wired file differs from the wiring hash; ruling 7: it is wired again at its
+# next start), never for a radio set to "names" wiring. setup_note is what the page says under the
 # program once it is installed (app_<a>_setup_note). kept: the logbook keys the operator changed in
 # the program on each radio it has, which the logbook no longer sets there, as
 # "<radio>: <KEY> (changed in <program>)" (root's kept files, dxb_screen_kept_file). The module is
 # loaded in a subshell, so it defines nothing here.
 _program_facts() (
-  local name=$1 single=false open=null session=0 loaded=0 r st sess='[]' note='' kf l
+  local name=$1 single=false open=null session=0 loaded=0 r st sess='[]' note='' kf l pend h
   local -a kept=()
   if dxb_app_load "$name" 2> /dev/null; then
     loaded=1
@@ -70,7 +73,12 @@ _program_facts() (
     if (( session )); then st=$(dxb_screen_state "$name-$r")
     elif (( loaded )) && declare -F "app_${name}_unit" > /dev/null; then st=$(dxb_screen_unit_state "$(dxb_app_unit "$name" "$r")")
     else st=stopped; fi
-    sess=$(jq -c --arg r "$r" --arg s "$st" '. + [{radio: $r, state: $s}]' <<< "$sess")
+    pend=false
+    if (( session )) && [[ $(jq -r --arg n "$r" '.radios[$n].wiring' <<< "$DXB_RADIOS") != names ]]; then
+      h=$(dxb_apps_wiring "$r" 2> /dev/null | jq -r '.hash // empty')
+      [[ -n $h && $(cat "$DXB_APPS_STATE/wired/$name-$r" 2> /dev/null) != "$h" ]] && pend=true
+    fi
+    sess=$(jq -c --arg r "$r" --arg s "$st" --argjson p "$pend" '. + [{radio: $r, state: $s, rewire_pending: $p}]' <<< "$sess")
     kf=$(dxb_screen_kept_file "$name-$r")
     if [[ -f $kf ]]; then
       while IFS= read -r l; do [[ $l == "kept "?* ]] && kept+=("$r: ${l#kept }"); done < "$kf"
@@ -129,7 +137,10 @@ cmd_session_ctl() {
   if [[ $what == start ]]; then
     dxb_radio_scan_cache
     dxb_radio_present "$r" || { dxb_error "radio $r is not plugged in"; return 4; }
-    dxb_app_session_start "$owner" "$r" || return 5
+    if ! dxb_app_session_start "$owner" "$r"; then
+      dxb_error "$(dxb_screen_label "$owner") did not start on $r; see Services ($(dxb_app_session_unit "$owner" "$r"))"
+      return 9
+    fi
   else
     dxb_app_session_stop "$owner" "$r"
   fi

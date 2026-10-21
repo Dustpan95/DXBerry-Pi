@@ -1,0 +1,6 @@
+# Wavelog 3.2.4 (tag 3.2.4, commit 7f8eef4de94c674f73c6859ed4e0b0247f68dcd9), the answer of
+# POST index.php/api/qso (and qso/dryrun) for a key with read rights only:
+#   application/controllers/Api.php qso(), lines 381-386: authorize() answers 1 (read only), so
+#   HTTP 403 and json_encode(['status' => 'failed', 'reason' => "API key does not have write
+#   permissions"]) (line 385), before the station or the record is looked at.
+{"status":"failed","reason":"API key does not have write permissions"}

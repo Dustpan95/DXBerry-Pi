@@ -5,8 +5,10 @@
 #                      {"clear":true} forgets the logbook); the server is tested first, saved only when it answers
 #   test               the same JSON on stdin, or the stored setting when there is none: what answers there
 #   submit             one ADIF contact on stdin (the logging bridge): posted, or queued for later
-#   flush              post the queued contacts, oldest first (dxberry-logbook-flush.timer)
-#   recent [N]         the newest N contacts (1-25, default 10), cached a minute
+#   flush              post the queued contacts, oldest first, and fetch a Wavelog's newest contacts
+#                      (dxberry-logbook-flush.timer)
+#   recent [N]         the newest N contacts (1-25, default 10), cached a minute; a Wavelog's as the
+#                      last flush fetched them
 # The url is https://, or this Pi's own Wavelog: http://127.0.0.1:8083/. --json on any subcommand.
 # Exit: 0 ok, 1 not root, 2 usage or bad input, 6 the server refused or did not answer (nothing saved),
 #  could not queue, or contacts still wait.
@@ -21,7 +23,7 @@ done
 # the libraries call systemctl by name; DXB_SYSTEMCTL stands in for it everywhere in this command
 if [[ $DXB_SYSTEMCTL != systemctl ]]; then systemctl() { "$DXB_SYSTEMCTL" "$@"; }; fi
 
-usage() { sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 JSON=0
 
 # read_input: what is on stdin (at most 64 KiB), or nothing when stdin is a terminal.
@@ -88,7 +90,7 @@ cmd_test() {
 }
 
 # forget: the setting and every answer cached for it go.
-forget() { rm -f "$(_dxb_lb_file)" "$(_dxb_lb_recent_cache)" "$(_dxb_lb_wavelog_state)"; }
+forget() { rm -f "$(_dxb_lb_file)" "$(_dxb_lb_recent_cache)" "$(_dxb_lb_wavelog_state)" "$(_dxb_lb_fetch_error)"; }
 
 cmd_set() {
   local in c ans type follow j

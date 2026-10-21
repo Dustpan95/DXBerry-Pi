@@ -105,7 +105,8 @@ if (process.argv[2] === "--screen") {
         constructor(target, url, opts) { this.target = target; this.url = url; this.opts = opts; this.listeners = {}; rfbs.push(this); }
         addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); }
         emit(t) { (this.listeners[t] || []).forEach(f => f({ detail: {} })); }
-        disconnect() { this.gone = true; }
+        // like noVNC's own, a disconnect asked for tells its listeners at once
+        disconnect() { this.gone = true; this.emit("disconnect"); }
       }
       const sctx = {
         document: doc, console, FakeRFB, btoa: s => Buffer.from(s, "binary").toString("base64"), decodeURIComponent,
@@ -130,7 +131,8 @@ if (process.argv[2] === "--screen") {
     ok(!JSON.stringify(r.spawns[0].opts || {}).includes("superuser"), "the screen question is asked without superuser");
     ok(r.text().includes("Go to the station page"), "stopped: links to the station page");
 
-    r = await run("#wsjtx-radio2", { ...base, state: "running", socket: "/run/dxberry/screens/wsjtx-radio2.sock" });
+    const runningInfo = { ...base, state: "running", socket: "/run/dxberry/screens/wsjtx-radio2.sock" };
+    r = await run("#wsjtx-radio2", runningInfo);
     ok(r.rfbs.length === 1, "running: one RFB is created");
     const u = r.rfbs[0] ? r.rfbs[0].url : "";
     ok(u.startsWith("wss://pi/cockpit/channel/TOKEN?"), "running: channel URL: " + u);
@@ -148,12 +150,31 @@ if (process.argv[2] === "--screen") {
     r.el("reconnect").click();
     await flush2(); await flush2(); await flush2();
     ok(r.spawns.length === 2 && r.rfbs.length === 2 && r.rfbs[1].url === u, "Reconnect re-runs the whole sequence (spawn + new RFB)");
-    // refused before ever connecting
+    // closed before ever connecting: the program tab asks again, and says "log out and in" only
+    // when this login has no access to program screens
     r.rfbs[1].emit("disconnect");
+    await flush2(); await flush2();
+    ok(r.spawns.length === 3 && r.text().includes("The program window closed. Reconnect?") && !r.text().includes("Log out of the console"),
+      "an early close with access: the window closed, reconnect: " + r.text());
+    r.el("reconnect").click();
+    await flush2(); await flush2(); await flush2();
+    runningInfo.access = false;
+    r.rfbs[2].emit("disconnect");
+    await flush2(); await flush2();
     ok(r.text().includes("This login cannot open the program's screen yet. Log out of the console and back in once, then reload this tab."), "refused channel: log out and in: " + r.text());
+    runningInfo.access = true;
+    // Reconnect while the old screen is still connecting: the old one's close belongs to the old try
+    r = await run("#wsjtx-radio2", runningInfo);
+    r.el("reconnect").click();
+    await flush2(); await flush2(); await flush2();
+    ok(r.spawns.length === 2 && r.rfbs.length === 2 && r.rfbs[0].gone && r.el("state").textContent === "Connecting",
+      "Reconnect drops the old screen without asking again for it: " + r.spawns.length + " questions, " + r.el("state").textContent);
 
     r = await run("#wsjtx-radio2", { session: "wsjtx-radio2", access: false });
     ok(r.rfbs.length === 0 && r.text().includes("Log out of the console and back in once, then reload this tab."), "no dxbscreen access: the log out/in message, no RFB");
+
+    r = await run("#%E0%A4%A", null);
+    ok(r.text().includes("This link is not a program window") && r.spawns.length === 0, "a malformed link: not a program window: " + r.text());
 
     r = await run("#../etc", null);
     ok(r.text().includes("No program is named here.") && r.spawns.length === 0 && r.rfbs.length === 0, "bad hash: named nowhere, nothing spawned: " + r.text());
@@ -965,6 +986,15 @@ const programsPath = path.replace(/dxberry\.js$/, "programs.js");
   ok(!!r2 && r2.textContent.includes("IC-7300") && r2.textContent.includes("radio2"), "radio2's card has its label and name");
   ok(r2 && r2.textContent.includes("WSJT-X") && r2.textContent.includes("Running"), "radio2's card names its program and its state: " + (r2 && r2.textContent));
   ok(r2 && r2.textContent.includes("14.074 MHz USB"), "radio2's card has its frequency and mode");
+  ok(r2 && !r2.textContent.includes("Restart WSJT-X"), "no restart asked for while the wiring is current");
+  programsList[1].sessions[0].rewire_pending = true;
+  await redraw();
+  ok(radioCard("radio2").textContent.includes("Restart WSJT-X to use the new radio settings"), "a running program whose radio changed asks for a restart: " + radioCard("radio2").textContent);
+  programsList[1].sessions[0].state = "stopped";
+  await redraw();
+  ok(!radioCard("radio2").textContent.includes("Restart WSJT-X"), "a stopped one does not (it is wired at its next start)");
+  programsList[1].sessions[0].state = "running"; programsList[1].sessions[0].rewire_pending = false;
+  await redraw();
   ok(r2 && r2.textContent.includes("sound card3 (RADIO2) · CAT ttyUSB2"), "radio2's card says what it is connected through");
   const openW = linkIn(r2, "Open WSJT-X");
   ok(openW && openW.getAttribute("href") === "/cockpit/@localhost/dxberry/screen.html#wsjtx-radio2" && openW.getAttribute("target") === "_blank"
@@ -1021,6 +1051,17 @@ const programsPath = path.replace(/dxberry\.js$/, "programs.js");
   await redraw();
   ok(radioCard("radio2").textContent.includes("Stopped") && buttonsIn(radioCard("radio2")).some(b => b.textContent === "Start") && !linkIn(radioCard("radio2"), "Open WSJT-X"),
     "a stopped program shows Stopped and Start, and no Open link: " + radioCard("radio2").textContent);
+  // a Start that fails says the program did not start, never that another change is running
+  const answerBeforeStart = answer;
+  answer = args => (args[0].endsWith("dxberry-app") && args[1] === "start"
+    ? Promise.reject({ exit_status: 9, message: "2026-10-21 00:00:00 [ERROR] WSJT-X did not start on radio2; see Services (dxberry-screen@wsjtx-radio2.service)" })
+    : answerBeforeStart(args));
+  dkey("dash:radio2:start").click();
+  await flush(); await flush(); await flush();
+  const startNotice = doc.getElementById("notices").children.slice(-1)[0];
+  ok(startNotice && startNotice.textContent.startsWith("WSJT-X did not start on radio2; see Services.") && !startNotice.textContent.includes("another change"),
+    "a failed Start says the program did not start: " + (startNotice && startNotice.textContent));
+  answer = answerBeforeStart;
   programsList[1].sessions[0].state = "running";
   // a program with a web page opens it on this Pi's address
   programsList[4].installed = true; programsList[4].sessions = [{ radio: "radio2", state: "running" }];
@@ -1179,6 +1220,13 @@ const programsPath = path.replace(/dxberry\.js$/, "programs.js");
   st.time.ok = false; st.time.error = "chrony is not answering";
   await redraw();
   ok(dashText().includes("No logbook yet. Set one up under Programs → Logbook."), "no logbook: says where to set one up");
+  let scrolledTo = null;
+  progSec.scrollIntoView = () => { scrolledTo = "programs"; };
+  const setUp = dkey("dash:logbook:setup");
+  ok(setUp && setUp.textContent === "Set up the logbook", "no logbook: a button to set one up: " + (setUp && setUp.textContent));
+  if (setUp) setUp.click();
+  ok(scrolledTo === "programs", "and it goes to Programs");
+  delete progSec.scrollIntoView;
   ok(!linkIn(dashSec, "Open the logbook"), "and no Open the logbook");
   ok(dashText().includes("2 contacts waiting to be sent"), "contacts waiting are counted: " + dashText());
   ok(dashText().includes("Welcome") && dashText().includes("Set CALLSIGN in dxberry.txt to see it here."), "no callsign: Welcome and where to set it");
