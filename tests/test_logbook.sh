@@ -532,7 +532,7 @@ test_logbook_ships_in_the_image() {
   done
   assert_contains "$executable" "provision/bin/dxberry-logbook"
   grep -qF "ln -sf /opt/dxberry/bin/dxberry-logbook " "$DXB_ROOT/build/build-image.sh" || _fail "no /usr/local/sbin link for dxberry-logbook"
-  grep -q 'provision_logbook' "$DXB_ROOT/provision/bin/dxberry-provision" || _fail "dxberry-provision does not run provision_logbook"
+  grep -q '^ *provision_apps' "$DXB_ROOT/provision/bin/dxberry-provision" || _fail "dxberry-provision does not run provision_apps (which runs the logbook step)"
 }
 
 # ---- never lose a contact (fix round 1) --------------------------------------------------

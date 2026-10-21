@@ -78,10 +78,15 @@ REQUIRED_FILES=(
   provision/templates/nginx-pat.conf provision/templates/dxberry-ardop@.service
   provision/bin/dxberry-logbook provision/lib/logbook.sh provision/lib/apps/wavelog.sh provision/templates/nginx-wavelog.conf
   provision/templates/dxberry-logbridge.service provision/templates/dxberry-logbook-flush.service provision/templates/dxberry-logbook-flush.timer
+  provision/bin/dxberry-app provision/lib/screen.sh provision/lib/apps.sh provision/share/apps.tsv
+  provision/lib/apps/fldigi.sh provision/lib/apps/flrig.sh provision/lib/apps/js8call.sh provision/lib/apps/qsstv.sh provision/lib/apps/wsjtx.sh
+  provision/templates/dxberry-screen@.service provision/templates/dxberry-apps.tmpfiles
+  provision/cockpit/dxberry/dashboard.js provision/cockpit/dxberry/programs.js provision/cockpit/dxberry/screen.html provision/cockpit/dxberry/screen.js
+  provision/cockpit/dxberry/novnc/core/rfb.js
 )
 EXECUTABLE_FILES=(
   provision/bin/dxberry-preboot provision/bin/dxberry-provision provision/bin/dxberry-netwatch provision/bin/dxberry-radio
-  provision/bin/dxberry-status provision/bin/dxberry-config provision/bin/dxberry-update provision/bin/dxberry-logbook
+  provision/bin/dxberry-status provision/bin/dxberry-config provision/bin/dxberry-update provision/bin/dxberry-logbook provision/bin/dxberry-app
   boot/Automation_Custom_PreScript.sh boot/Automation_Custom_Script.sh
 )
 
@@ -326,6 +331,9 @@ if ! ln -sf /opt/dxberry/bin/dxberry-update "$MNT/root/usr/local/sbin/dxberry-up
 fi
 if ! ln -sf /opt/dxberry/bin/dxberry-logbook "$MNT/root/usr/local/sbin/dxberry-logbook"; then
   die "failed to symlink dxberry-logbook"
+fi
+if ! ln -sf /opt/dxberry/bin/dxberry-app "$MNT/root/usr/local/sbin/dxberry-app"; then
+  die "failed to symlink dxberry-app"
 fi
 if ! cat > "$MNT/root/etc/dxberry-release" << EOF
 DXBERRY_VERSION=$VERSION

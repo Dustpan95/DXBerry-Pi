@@ -569,24 +569,24 @@ dxb_logbook_fldigi_follow_stopped() {
 # provision_logbook: the logging bridge, the flush service and its timer installed (daemon-reload
 # only when one changed); the timer enabled and started; the bridge enabled, and started now when
 # socat is installed (it comes with the first program that has a screen session; the unit waits
-# for it: ConditionPathExists). A failure is a failed step named logbook.
+# for it: ConditionPathExists). A failure is a failed step named apps (provision_apps runs this).
 provision_logbook() {
   local t content dest changed=0 c
   mkdir -p "$DXB_SYSTEMD_DIR" 2> /dev/null
   for t in dxberry-logbridge.service dxberry-logbook-flush.service dxberry-logbook-flush.timer; do
-    content=$(< "$DXB_TEMPLATES/$t") || { dxb_step_failed logbook "the $t template is missing"; return 1; }
+    content=$(< "$DXB_TEMPLATES/$t") || { dxb_step_failed apps "the $t template is missing"; return 1; }
     dest=$DXB_SYSTEMD_DIR/$t
     if dxb_write_if_changed "$dest" "$content" 644; then
-      [[ $(< "$dest") == "$content" ]] || { dxb_step_failed logbook "could not write $dest"; return 1; }
+      [[ $(< "$dest") == "$content" ]] || { dxb_step_failed apps "could not write $dest"; return 1; }
       changed=1
     fi
   done
-  if (( changed )); then systemctl daemon-reload || { dxb_step_failed logbook "systemctl daemon-reload failed"; return 1; }; fi
-  systemctl enable --now dxberry-logbook-flush.timer > /dev/null 2>&1 || dxb_step_failed logbook "could not enable dxberry-logbook-flush.timer"
+  if (( changed )); then systemctl daemon-reload || { dxb_step_failed apps "systemctl daemon-reload failed"; return 1; }; fi
+  systemctl enable --now dxberry-logbook-flush.timer > /dev/null 2>&1 || dxb_step_failed apps "could not enable dxberry-logbook-flush.timer"
   if [[ -x $DXB_SOCAT ]]; then
-    systemctl enable --now dxberry-logbridge.service > /dev/null 2>&1 || dxb_step_failed logbook "could not start dxberry-logbridge.service"
+    systemctl enable --now dxberry-logbridge.service > /dev/null 2>&1 || dxb_step_failed apps "could not start dxberry-logbridge.service"
   else
-    systemctl enable dxberry-logbridge.service > /dev/null 2>&1 || dxb_step_failed logbook "could not enable dxberry-logbridge.service"
+    systemctl enable dxberry-logbridge.service > /dev/null 2>&1 || dxb_step_failed apps "could not enable dxberry-logbridge.service"
   fi
   if c=$(dxb_logbook_stored); then
     dxb_status_add "logbook: $(jq -r '.url + " (" + (.type // "?") + ")"' <<< "$c"), $(_dxb_lb_queue_count "$(_dxb_lb_queue)") contacts queued"

@@ -642,6 +642,55 @@ a reboot or replug (§7.2); rigctld keys `cm108`/`gpio` PTT for every program
 but Graywolf (§9.1); programs' own files stay on the SD card (§7.3); the
 version is 0.4.0.
 
+Decisions made while planning the build, in plain words:
+
+1. "Newest" always means the release the project itself marks as latest on
+   GitHub, never the highest version number: ardopcf's highest-numbered
+   release is a mis-numbered old build its author asks people not to use.
+2. Each radio's sound goes through its own small sound server that sees only
+   that radio's card. The spec named PipeWire; this meets the same need
+   (one card per program, never another) with nothing to configure, and the
+   desktop sound server is switched off for every login so it can never take
+   Graywolf's card.
+3. JS8Call, fldigi and QSSTV use that private sound server (JS8Call can only
+   use it; the other two cannot tell two identical interfaces apart by name).
+   WSJT-X and ARDOP open the radio's card directly.
+4. WSJT-X and JS8Call both report contacts to the same local logging port,
+   and one bridge listens there for every radio.
+5. Pat and QSSTV run as a single copy in this release, because each has one
+   web page, one modem port or one fixed settings path. Giving either a second
+   radio is refused with a clear message.
+6. Each radio's program ports follow from the radio's own rig-control port,
+   so a second radio never collides with the first. A few ports (ARDOP, Pat,
+   Wavelog) are fixed.
+7. A program is set up by its own start: first fill happens once and a
+   changed radio is re-wired at the next start. Applying settings never
+   rewires a running program; it only starts or stops sessions.
+8. Rig control sends the cm108 and gpio push-to-talk for every program except
+   Graywolf, so Graywolf's radios see no change after the update.
+9. Stopping a program asks it to quit, waits ten seconds, then ends it. The
+   programs save their settings when you press OK in them, so a stop loses
+   only window positions. A program quit from its own menu stays enabled and
+   returns at the next boot or Start.
+10. Wavelog on the Pi gets its web server, PHP and database installed and a
+    database account that needs no password; the first user is created in
+    Wavelog's own installer, which only a logged-in console user can reach.
+    PHP is installed by Debian's current-version package names.
+11. Installing the web server never takes port 80 from Cockpit: it is kept
+    from starting during install, Debian's default site is removed, and it
+    serves only DXBerry's own sites.
+12. Installing, removing and updating programs use the same single job system
+    as the Updates card, with the same lock and busy rules, and the Programs
+    card follows the same job.
+13. The program tab needs no administrative access; the login user joins a
+    group that may open the screen. A console session started before that
+    needs one log out and in, and the tab says so.
+14. The page's new code lives in two new files, one for the dashboard and one
+    for the Programs card, beside the settings and updates code.
+15. The in-browser screen viewer (noVNC) is copied into the project from its
+    newest release by a script, with its licence kept; running the script
+    again is how it is updated.
+
 ## 19. Testing
 
 - Every module: first fill writes exactly the first-start and wiring keys

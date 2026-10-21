@@ -231,10 +231,33 @@ test_status_services_lists_the_station_units_and_each_rigctld() {
   : > "$DXB_RIGCTLD_RUN_DIR/radio1.env"
   local j; j=$(st_run dxb_status_services)
   assert_eq "$(jq -r '[.units[].unit] | join(" ")' <<< "$j")" \
-    "graywolf.service rigctld@radio1.service gpsd.service chrony.service dxberry-netwatch.service dxberry-radio-hotplug.service dxberry-radio-wire.service cockpit.socket"
+    "graywolf.service rigctld@radio1.service gpsd.service chrony.service dxberry-netwatch.service dxberry-radio-hotplug.service dxberry-radio-wire.service cockpit.socket dxberry-logbridge.service dxberry-logbook-flush.timer"
   assert_eq "$(jq -c '.units[0] | [.load, .active, .sub, .result, .type, .enabled]' <<< "$j")" '["loaded","active","running","success","simple","enabled"]'
   assert_eq "$(jq -c '.units[] | select(.unit == "dxberry-radio-wire.service") | [.load, .active]' <<< "$j")" '["not-found","inactive"]'
   assert_eq "$(jq -c '.units[] | select(.unit == "dxberry-radio-hotplug.service") | [.type, .result]' <<< "$j")" '["oneshot","success"]'
+}
+
+test_status_services_adds_screen_sessions_and_the_web_units_that_exist() {
+  st_env
+  local l
+  l=$( st_stubs
+    systemctl() {
+      case $1 in
+        list-units) printf '%s\n' 'dxberry-screen@wsjtx-radio2.service loaded active running WSJT-X on radio2' \
+          'dxberry-screen@fldigi-radio1.service loaded inactive dead fldigi on radio1' ;;
+        list-unit-files) case ${*: -1} in nginx.service) echo 'nginx.service enabled enabled' ;; php*-fpm.service) echo 'php8.4-fpm.service enabled enabled' ;; esac ;;
+      esac
+      return 0
+    }
+    dxb_status_unit_list | paste -sd' ' )
+  assert_contains "$l" "dxberry-screen@wsjtx-radio2.service"
+  assert_contains "$l" "dxberry-screen@fldigi-radio1.service"
+  assert_contains "$l" "nginx.service"
+  assert_contains "$l" "php8.4-fpm.service"
+  assert_not_contains "$l" "mariadb.service"          # its unit file is absent
+  l=$(st_run dxb_status_unit_list | paste -sd' ')
+  assert_not_contains "$l" "nginx.service"
+  assert_not_contains "$l" "dxberry-screen@"
 }
 
 test_status_json_keeps_the_other_parts_when_one_fails() {

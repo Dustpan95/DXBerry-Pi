@@ -143,6 +143,19 @@ dxb_status_unit_list() {
     echo "rigctld@${n%.env}.service"
   done
   printf '%s\n' gpsd.service chrony.service dxberry-netwatch.service dxberry-radio-hotplug.service dxberry-radio-wire.service cockpit.socket
+  # the programs: every screen session systemd knows (running or not), the logging bridge and its
+  # flush timer, and the web units only where their unit files exist (Wavelog and Pat's proxy)
+  systemctl list-units --all --plain --no-legend 'dxberry-screen@*' 2> /dev/null \
+    | awk '$1 ~ /^dxberry-screen@[A-Za-z0-9_.:-]+\.service$/ {print $1}'
+  printf '%s\n' dxberry-logbridge.service dxberry-logbook-flush.timer
+  _dxb_status_unit_files nginx.service
+  _dxb_status_unit_files 'php*-fpm.service'
+  _dxb_status_unit_files mariadb.service
+}
+
+# _dxb_status_unit_files PATTERN: the unit files systemd has for PATTERN, one per line.
+_dxb_status_unit_files() {
+  systemctl list-unit-files --no-legend "$1" 2> /dev/null | awk 'NF {print $1}'
 }
 
 dxb_status_services() {

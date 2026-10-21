@@ -6,6 +6,14 @@ source "$DXB_LIB/radio.sh"
 source "$DXB_LIB/radio_udev.sh"
 source "$DXB_LIB/rigctld.sh"
 source "$DXB_LIB/gps.sh"
+source "$DXB_LIB/graywolf.sh"
+source "$DXB_LIB/settings.sh"
+source "$DXB_LIB/update.sh"
+source "$DXB_LIB/inifile.sh"
+source "$DXB_LIB/apps.sh"
+source "$DXB_LIB/screen.sh"
+source "$DXB_LIB/webproxy.sh"
+source "$DXB_LIB/logbook.sh"
 source "$DXB_ROOT/tests/fixtures/sysfs.sh"
 
 test_example_config_validates_with_password_only() {
@@ -72,7 +80,10 @@ full_env() {
     DXB_GPSD_DEFAULT=$TEST_TMP/etc/default/gpsd DXB_CHRONY_DROPIN=$TEST_TMP/etc/chrony/conf.d/dxberry.conf \
     DXB_RPI_CONFIG_TXT=$TEST_TMP/bootfs/config.txt DXB_GPSPIPE=fake_gpspipe DXB_RUN_DIR=$TEST_TMP/run \
     DXB_COCKPIT_SRC=$TEST_TMP/cockpit-src DXB_COCKPIT_LINK=$TEST_TMP/usr-share-cockpit/dxberry \
-    DXB_COCKPIT_DROPIN=$TEST_TMP/cockpit.socket.d/dxberry-listen.conf DXB_REBOOT_FLAG=$TEST_TMP/run/reboot-required
+    DXB_COCKPIT_DROPIN=$TEST_TMP/cockpit.socket.d/dxberry-listen.conf DXB_REBOOT_FLAG=$TEST_TMP/run/reboot-required \
+    DXB_APPS_DIR=$DXB_ROOT/provision/lib/apps DXB_APPS_TSV=$DXB_ROOT/provision/share/apps.tsv \
+    DXB_APPS_OPT=$TEST_TMP/opt/dxberry-apps DXB_APPS_HOME=$TEST_TMP/home/dxbapps DXB_NGINX_DIR=$TEST_TMP/nginx \
+    DXB_SYSTEMCTL=systemctl DXB_DPKG_QUERY=dpkg-query DXB_APT_GET=apt-get DXB_APPS_STATE=$TEST_TMP/state/apps DXB_GETENT=pv_account DXB_USERADD=pv_account DXB_GROUPADD=pv_account DXB_USERMOD=pv_account DXB_CHOWN=pv_account
   mkdir -p "$DXB_BOOT_DIR" "$DXB_SYSTEMD_DIR" "$DXB_ZONEINFO_DIR" "$DXB_SYS_NET/eth0" "$DXB_SYS_NET/wlan0" \
     "$DXB_SYSFS_ROOT" "$TEST_TMP/etc" "$DXB_RIGCTLD_RUN_DIR" "$DXB_TMPFILES_DIR" "$TEST_TMP/cockpit-src"
   : > "$DXB_ZONEINFO_DIR/UTC"
@@ -112,6 +123,8 @@ full_env() {
     rigctl() { printf '145390000\nFM\n'; }
     fake_gpspipe() { :; }
     timeout() { shift; "$@"; }
+    # the accounts the programs run as already exist (dxb_apps_user_ensure only records its calls)
+    pv_account() { echo "account $*" >> "$TEST_TMP/calls"; }
   }
   : > "$TEST_TMP/calls"
   # DXB_MODE is a plain (non-local) global in other test files (e.g. test_network.sh); reset it
@@ -580,3 +593,75 @@ test_run_mode_flags_a_restart_when_the_network_files_change() {
   [[ -e $DXB_REBOOT_FLAG ]] && _fail "first boot writes no restart flag (it reboots)"
   return 0
 }
+
+# ---- the apps step (Task 15) ---------------------------------------------------------------
+
+# the driver's calls in order, comments and blank lines left out
+pv_driver_steps() { grep -v '^[[:space:]]*#' "$DXB_ROOT/provision/bin/dxberry-provision" | grep -o '^[[:space:]]*provision_[a-z_]*' | tr -d ' \t' | tr '\n' ' '; }
+
+test_provision_apps_runs_right_after_radio_and_absorbs_the_logbook_step() {
+  local steps; steps=$(pv_driver_steps)
+  assert_contains "$steps" "provision_radio provision_apps provision_console"
+  assert_not_contains "$steps" "provision_logbook"
+}
+
+test_provision_apps_installs_every_template_once_and_installs_no_program() {
+  full_env; provision_cfg 'PASSWORD=examplepass'
+  provision_apps
+  local t
+  for t in dxberry-screen@.service dxberry-ardop@.service dxberry-logbridge.service dxberry-logbook-flush.service dxberry-logbook-flush.timer; do
+    assert_eq "$(cat "$DXB_SYSTEMD_DIR/$t")" "$(cat "$DXB_ROOT/provision/templates/$t")"
+  done
+  assert_eq "$(cat "$DXB_TMPFILES_DIR/dxberry-apps.conf")" "$(cat "$DXB_ROOT/provision/templates/dxberry-apps.tmpfiles")"
+  assert_file_contains "$TEST_TMP/calls" "account -aG"                                # dxb_apps_user_ensure ran first
+  assert_file_contains "$TEST_TMP/calls" "systemctl daemon-reload"
+  assert_file_contains "$TEST_TMP/calls" "systemd-tmpfiles --create $DXB_TMPFILES_DIR/dxberry-apps.conf"
+  assert_file_contains "$TEST_TMP/calls" "systemctl enable --now dxberry-logbook-flush.timer"
+  assert_file_not_contains "$TEST_TMP/calls" "apt-get"                                 # no program is installed or upgraded
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
+  assert_contains "${DXB_STATUS_LINES[*]}" "apps: 0 programs installed (manage them on the DXBerry page)"
+  assert_contains "${DXB_STATUS_LINES[*]}" "logbook: not set"
+}
+
+test_provision_apps_second_run_changes_nothing() {
+  full_env; provision_cfg 'PASSWORD=examplepass'
+  provision_apps
+  : > "$TEST_TMP/calls"; DXB_STATUS_LINES=()
+  provision_apps
+  assert_file_not_contains "$TEST_TMP/calls" "daemon-reload"
+  assert_file_not_contains "$TEST_TMP/calls" "systemd-tmpfiles"
+  assert_file_not_contains "$TEST_TMP/calls" "apt-get"
+  assert_eq "$(find "$DXB_SYSTEMD_DIR" "$DXB_TMPFILES_DIR" -name '*.dxbtmp*' | wc -l)" "0"
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
+}
+
+test_provision_apps_a_failure_is_a_failed_step_named_apps() (
+  full_env; provision_cfg 'PASSWORD=examplepass'
+  DXB_TEMPLATES=$TEST_TMP/no-templates
+  provision_apps 2> /dev/null
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "1"
+  assert_contains "${DXB_FAILED_STEPS[0]}" "apps: "
+)
+
+# shellcheck disable=SC2317  # the stubs are called by provision_apps
+test_provision_apps_rerenders_the_nginx_site_of_an_installed_program() (
+  full_env; provision_cfg 'PASSWORD=examplepass'
+  mkdir -p "$DXB_NGINX_DIR/sites-enabled"
+  : > "$DXB_NGINX_DIR/sites-enabled/dxberry-pat.conf"
+  dxb_webproxy_site() { echo "site $*" >> "$TEST_TMP/calls"; }
+  dpkg-query() { case ${*: -1} in nginx|pat) printf 'installed 1.26' ;; cockpit*) printf installed ;; *) return 1 ;; esac; }
+  provision_apps
+  assert_file_contains "$TEST_TMP/calls" "site pat"
+  assert_file_not_contains "$TEST_TMP/calls" "apt-get"
+  # nginx not installed: nothing is rendered (and nothing installs it)
+  dpkg-query() { [[ $* == *cockpit* ]] || return 1; printf installed; }
+  : > "$TEST_TMP/calls"
+  provision_apps
+  assert_file_not_contains "$TEST_TMP/calls" "site pat"
+  # a render failure is a warning, not a failed step
+  dpkg-query() { case ${*: -1} in nginx|pat) printf 'installed 1.26' ;; cockpit*) printf installed ;; *) return 1 ;; esac; }
+  dxb_webproxy_site() { return 6; }
+  DXB_FAILED_STEPS=()
+  provision_apps 2> /dev/null
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
+)

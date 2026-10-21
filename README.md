@@ -112,6 +112,27 @@ The console is [Cockpit](https://cockpit-project.org) from Debian with one extra
 `dxberry.txt` turns it off. `sudo dxberry-status` prints the same report in a terminal, and
 `sudo dxberry-status --json` gives it to scripts.
 
+## Programs
+
+Besides Graywolf, the DXBerry page can install the ham programs you run on a radio: WSJT-X, JS8Call,
+fldigi, flrig, QSSTV, Pat (Winlink email), and Wavelog (a logbook that lives on this Pi). Nothing is
+installed until you ask: the Programs card lists them, and **Install** and **Remove** work like the
+Updates card, as a background job whose output the page shows. Programs always come from their newest
+release, and **Update** on the card brings them up to date.
+
+Give a program a radio from its card and it opens in its own browser tab through the console, so you
+use it as if it were a window on the Pi, signed in with the same login as the console. Each radio keeps
+its own copy of a program, set up with your callsign and grid square and wired to that radio's sound
+card and rig control, so two radios can run two copies side by side. Pat and QSSTV can only be given
+to one radio at a time. A program's own settings are kept when you remove it, so installing it again
+picks up where you left off.
+
+The logbook is one setting for all programs: this Pi's own Wavelog, or any Wavelog or Cloudlog you
+already use. Contacts that WSJT-X and JS8Call log are sent to it, and held and sent later if it cannot
+be reached; fldigi follows the same choice unless you changed it inside fldigi. The newest contacts show
+on the DXBerry page. On the command line: `sudo dxberry-app list`, `sudo dxberry-app install fldigi`,
+and `sudo dxberry-logbook get`.
+
 ## Radio plumbing
 
 `sudo dxberry-radio scan` lists the USB sound cards, serial ports and HID PTT interfaces currently

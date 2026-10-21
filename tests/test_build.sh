@@ -145,3 +145,32 @@ test_build_makes_the_update_file() {
   "$DXB_ROOT/build/make-update-tarball.sh" 'not a version' "$out" 2> /dev/null && _fail "a bad version must be refused"
   return 0
 }
+
+test_build_ships_every_program_file() {
+  local required f d
+  required=" $(sed -n '/^REQUIRED_FILES=(/,/^)/p' "$DXB_ROOT/build/build-image.sh" | tr -s ' \n' '  ') "
+  for f in "$DXB_ROOT"/provision/lib/apps/*.sh "$DXB_ROOT"/provision/cockpit/dxberry/*.* "$DXB_ROOT"/provision/templates/dxberry-*; do
+    [[ -f $f ]] || continue
+    f=${f#"$DXB_ROOT"/}
+    [[ $required == *" $f "* ]] || _fail "$f is not in REQUIRED_FILES"
+  done
+  d=provision/cockpit/dxberry/novnc
+  [[ -f $DXB_ROOT/$d/core/rfb.js ]] || _fail "$d/core/rfb.js is missing from the tree"
+  grep -qF "$d/core/rfb.js" "$DXB_ROOT/build/build-image.sh" || _fail "build-image.sh does not check $d/core/rfb.js"
+  assert_contains "$required" "provision/bin/dxberry-app"
+  grep -qF "ln -sf /opt/dxberry/bin/dxberry-app " "$DXB_ROOT/build/build-image.sh" || _fail "no /usr/local/sbin link for dxberry-app"
+}
+
+test_build_check_fails_on_a_missing_or_non_executable_dxberry_app() {
+  mkdir -p "$TEST_TMP/build"
+  cp -r "$DXB_ROOT/boot" "$DXB_ROOT/provision" "$TEST_TMP/"
+  cp "$DXB_ROOT/build/build-image.sh" "$TEST_TMP/build/"
+  chmod -x "$TEST_TMP/provision/bin/dxberry-app"
+  local out; out=$("$TEST_TMP/build/build-image.sh" --check 2>&1)
+  assert_eq "$?" "1"
+  assert_contains "$out" "not executable: provision/bin/dxberry-app"
+  rm "$TEST_TMP/provision/bin/dxberry-app"
+  out=$("$TEST_TMP/build/build-image.sh" --check 2>&1)
+  assert_eq "$?" "1"
+  assert_contains "$out" "missing provision/bin/dxberry-app"
+}
