@@ -1,17 +1,19 @@
 #!/bin/bash
-# dxberry-status: the station at a glance - Pi, network, Graywolf, radios, time, versions, services.
-#   dxberry-status [--json] [PART...]   PART: pi network graywolf radios time release services
+# dxberry-status: the station at a glance - Pi, network, Graywolf, radios, time, versions, services,
+# the callsign and grid, and the programs and logbook.
+#   dxberry-status [--json] [PART...]   PART: pi network graywolf radios time release services station apps
 # Each part is read on its own; one that cannot be read says why and the others still appear.
 # Exit 0 whenever the report was produced, 2 on a usage error. Spec: docs/design/2026-09-29-console.md section 7.
 set -uo pipefail
 
 DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
-for _m in common graywolf status; do
+# config, gps and apps: the station part reads the callsign and grid as the programs are told them
+for _m in common config graywolf gps apps status; do
   # shellcheck disable=SC1090
   source "$DXB_LIB/$_m.sh"
 done
 
-usage() { sed -n '2,5p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,6p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 main() {
   local json=0 parts=() a report

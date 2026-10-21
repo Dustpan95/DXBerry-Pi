@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC1091,SC2034,SC2317
 source "$DXB_LIB/common.sh"
+source "$DXB_LIB/config.sh"
 source "$DXB_LIB/graywolf.sh"
+source "$DXB_LIB/gps.sh"
+source "$DXB_LIB/apps.sh"
 source "$DXB_LIB/status.sh"
 
 # st_env: a Pi 4 on WiFi, chrony synced over NTP, Graywolf running with one channel, no radios.
@@ -12,8 +15,12 @@ st_env() {
     DXB_VCGENCMD=st_vcgencmd DXB_CHRONYC=st_chronyc DXB_IW=st_iw DXB_NETWATCH=st_netwatch DXB_RADIO_CMD=st_radio \
     DXB_RELEASE_FILE=$TEST_TMP/dxberry-release DXB_RUN_DIR=$TEST_TMP/run DXB_RIGCTLD_RUN_DIR=$TEST_TMP/run/rigctld \
     DXB_STATUS_GW_COOKIES=$TEST_TMP/run/status-graywolf.cookies DXB_STATUS_CURL=st_curl DXB_GW_API=http://gw/api \
-    DXB_GW_SECRET_FILE=$TEST_TMP/state/graywolf.secret
-  mkdir -p "$DXB_STATE_DIR" "$DXB_PROC/device-tree" "$DXB_SYSFS_ROOT/class/thermal/thermal_zone0" "$DXB_RIGCTLD_RUN_DIR" "$TEST_TMP/units"
+    DXB_GW_SECRET_FILE=$TEST_TMP/state/graywolf.secret DXB_BOOT_DIR=$TEST_TMP/boot \
+    DXB_APP_CMD=$TEST_TMP/st-bin/dxberry-app DXB_LOGBOOK_CMD=$TEST_TMP/st-bin/dxberry-logbook
+  unset DXB_STATUS_APPS_TIMEOUT
+  mkdir -p "$DXB_STATE_DIR" "$DXB_PROC/device-tree" "$DXB_SYSFS_ROOT/class/thermal/thermal_zone0" "$DXB_RIGCTLD_RUN_DIR" "$TEST_TMP/units" \
+    "$DXB_BOOT_DIR"
+  st_app_stubs
   printf 'Raspberry Pi 4 Model B Rev 1.4\0' > "$DXB_DT_MODEL"
   echo 36998 > "$DXB_SYSFS_ROOT/class/thermal/thermal_zone0/temp"
   echo '0.12 0.10 0.09 1/180 4242' > "$DXB_PROC/loadavg"
@@ -29,6 +36,29 @@ st_env() {
   : > "$TEST_TMP/calls"; : > "$TEST_TMP/argv"
 }
 
+# st_app_stubs: dxberry-app and dxberry-logbook as the apps part runs them - real files (the part
+# runs them under timeout, which needs a program, not a function). Each records its arguments in
+# $TEST_TMP/st-app-argv and answers from $TEST_TMP/st-<piece>.json (list, get, recent); a file
+# $TEST_TMP/st-<command>-fails makes that command fail as the real one does (an ERROR line on
+# stderr, exit 6), $TEST_TMP/st-<command>-slow makes it hang.
+st_app_stubs() {
+  mkdir -p "$TEST_TMP/st-bin"
+  echo '[]' > "$TEST_TMP/st-list.json"
+  echo '{"configured":false,"url":null,"type":null,"station_id":null,"slug":null,"key":null,"queue":0,"refused":0,"refused_reason":null,"local":{"installed":false,"url":null,"web":null}}' > "$TEST_TMP/st-get.json"
+  echo '{"ok":false,"type":null,"contacts":[],"error":"no logbook is set"}' > "$TEST_TMP/st-recent.json"
+  local c
+  for c in dxberry-app dxberry-logbook; do
+    cat > "$TEST_TMP/st-bin/$c" << STUB
+#!/bin/bash
+echo "$c \$*" >> "$TEST_TMP/st-app-argv"
+[[ -f $TEST_TMP/st-$c-slow ]] && exec sleep 30
+if [[ -f $TEST_TMP/st-$c-fails ]]; then echo "2026-10-20 12:00:00 [ERROR] $c: the state directory cannot be read" >&2; exit 6; fi
+case \$1 in list|get|recent) cat "$TEST_TMP/st-\$1.json" ;; *) exit 2 ;; esac
+STUB
+    chmod 755 "$TEST_TMP/st-bin/$c"
+  done
+  : > "$TEST_TMP/st-app-argv"
+}
 st_vcgencmd() { [[ -f $TEST_TMP/throttled ]] || return 1; echo "throttled=$(< "$TEST_TMP/throttled")"; }
 st_netwatch() { cat "$TEST_TMP/netwatch"; }
 st_iw() { printf 'Connected to 52:eb:f6:35:28:a1 (on wlan0)\n\tSSID: Shack Net\n\tfreq: 2432.0\n\tsignal: -47 dBm\n'; }
@@ -101,8 +131,10 @@ st_curl() {
   esac
 }
 # st_stubs: the external commands status.sh calls by their real names. Defined only inside a test's
-# subshell (st_run, st_cli) so they never leak into the other test files sharing this shell.
+# subshell (st_run, st_cli) so they never leak into the other test files sharing this shell. The
+# apps part's timeout is the real one: other files leave a timeout() stand-in in this shell.
 st_stubs() {
+  unset -f timeout
   systemctl() {
     echo "systemctl $*" >> "$TEST_TMP/calls"
     [[ $1 == show ]] || return 0
@@ -292,7 +324,7 @@ st_out() { cat "$TEST_TMP/out"; }
 test_status_cli_json_has_every_part() {
   st_env
   assert_ok st_cli --json
-  assert_eq "$(jq -r 'keys | join(" ")' "$TEST_TMP/out")" "generated graywolf network pi radios release services time"
+  assert_eq "$(jq -r 'keys | join(" ")' "$TEST_TMP/out")" "apps generated graywolf network pi radios release services station time"
   assert_eq "$(jq -r '[.[] | objects | .ok] | all' "$TEST_TMP/out")" "true"
 }
 
@@ -366,4 +398,66 @@ test_status_text_tolerates_null_arrays_in_otherwise_ok_parts() {
   assert_contains "$out" "time: synced to NTP 144.202.66.214, offset -0.412 ms"
   assert_contains "$out" "release: DXBerry 0.3.0-rc1, Graywolf 0.14.13, Cockpit 337-1+deb13u2"
   assert_contains "$out" "services:"
+}
+
+# ---- station and apps (the DXBerry page's dashboard and Programs) ----------------------------
+# station: the callsign without its SSID and the grid, as the programs are told (dxb_apps_station)
+test_status_station_reads_the_callsign_and_grid() {
+  st_env
+  printf 'CALLSIGN=W0BTE-10\nLATITUDE=38.9\nLONGITUDE=-94.6\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  assert_eq "$(st_run dxb_status_station | jq -c .)" '{"callsign":"W0BTE","grid":"EM28qv"}'
+  # no position in dxberry.txt: the grid of the GPS fix
+  printf 'CALLSIGN=W0BTE\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  cat > "$TEST_TMP/st-bin/gpspipe" << 'GPS'
+#!/bin/bash
+echo '{"class":"DEVICES","devices":[{"path":"/dev/ttyACM0"}]}'
+echo '{"class":"TPV","mode":3,"lat":38.9,"lon":-94.6}'
+GPS
+  chmod 755 "$TEST_TMP/st-bin/gpspipe"
+  local DXB_GPSPIPE=$TEST_TMP/st-bin/gpspipe
+  assert_eq "$(st_run dxb_status_station | jq -c .)" '{"callsign":"W0BTE","grid":"EM28qv"}'
+  # no dxberry.txt and no fix: both empty, and the part is still ok
+  rm -f "$DXB_BOOT_DIR/dxberry.txt"
+  DXB_GPSPIPE=false
+  assert_eq "$(st_run dxb_status_json station | jq -c .station)" '{"ok":true,"callsign":"","grid":""}'
+}
+
+test_status_apps_carries_the_programs_the_logbook_and_recent_contacts() {
+  st_env
+  echo '[{"name":"wsjtx","label":"WSJT-X","installed":true,"version":"3.0.2","sessions":[{"radio":"radio2","state":"running"}]}]' > "$TEST_TMP/st-list.json"
+  echo '{"configured":true,"url":"https://log.example/","type":"wavelog","key":"set","queue":2}' > "$TEST_TMP/st-get.json"
+  echo '{"ok":true,"type":"wavelog","contacts":[{"call":"K1ABC"}],"error":null}' > "$TEST_TMP/st-recent.json"
+  local j; j=$(st_run dxb_status_json apps)
+  assert_eq "$(jq -c '[.apps.ok, .apps.programs[0].version, .apps.programs[0].sessions[0].state, .apps.logbook.type, .apps.logbook.queue, .apps.recent.contacts[0].call]' <<< "$j")" \
+    '[true,"3.0.2","running","wavelog",2,"K1ABC"]'
+  assert_eq "$(sort "$TEST_TMP/st-app-argv" | tr '\n' ';')" "dxberry-app list --json;dxberry-logbook get --json;dxberry-logbook recent --json 10;"
+}
+
+# a piece that fails is that piece's error; the part itself stays ok, so the page still shows the rest
+test_status_apps_a_failing_piece_is_an_error_inside_the_part() {
+  st_env
+  echo '[{"name":"wsjtx"}]' > "$TEST_TMP/st-list.json"
+  : > "$TEST_TMP/st-dxberry-logbook-fails"
+  local j; j=$(st_run dxb_status_json apps)
+  assert_eq "$(jq -c '[.apps.ok, .apps.programs[0].name, .apps.logbook.error, .apps.recent.error]' <<< "$j")" \
+    '[true,"wsjtx","dxberry-logbook: the state directory cannot be read","dxberry-logbook: the state directory cannot be read"]'
+  # an answer that is not JSON is an error too
+  rm -f "$TEST_TMP/st-dxberry-logbook-fails"; echo 'not json' > "$TEST_TMP/st-list.json"
+  assert_eq "$(st_run dxb_status_json apps | jq -c '[.apps.ok, .apps.programs.error, .apps.logbook.configured]')" \
+    '[true,"dxberry-app list did not return a report",false]'
+  # one that hangs is given up after the timeout (20 s on the Pi)
+  : > "$TEST_TMP/st-dxberry-app-slow"
+  local DXB_STATUS_APPS_TIMEOUT=1
+  assert_eq "$(st_run dxb_status_json apps | jq -c '[.apps.ok, .apps.programs.error]')" \
+    '[true,"dxberry-app list did not answer within 1 seconds"]'
+}
+
+# dxberry-status, sourced in a clean process, defines what the station part calls (the shared
+# test shell has every library loaded, so it cannot see a missing one)
+# shellcheck disable=SC2016,SC2031  # the inner script expands in the clean bash; DXB_LIB is run.sh's export
+test_status_command_loads_what_the_station_part_calls() {
+  local out
+  out=$(env -i PATH=/usr/bin:/bin DXB_LIB="$DXB_LIB" BIN="$DXB_ROOT/provision/bin/dxberry-status" \
+    bash -c 'source "$BIN" || exit 99; for f in dxb_apps_station dxb_config_load dxb_config_validate dxb_maidenhead dxb_gps_fix dxb_boot_dir; do declare -F "$f" > /dev/null || echo "$f"; done' 2>&1)
+  assert_eq "$out" ""
 }

@@ -3,7 +3,8 @@
 # Status collectors behind dxberry-status (console spec section 7). Each dxb_status_<part> prints one
 # JSON object, or fails with its reason as the last line on stderr; dxb_status_json runs the parts in
 # parallel and wraps each as {"ok":true,...} or {"ok":false,"error":"..."}, so one source that cannot
-# be read never hides the others. Expects common.sh and graywolf.sh to be sourced.
+# be read never hides the others. Expects common.sh, config.sh, graywolf.sh, gps.sh and apps.sh to be
+# sourced (config, gps and apps for the station part).
 
 : "${DXB_PROC:=/proc}"
 : "${DXB_SYSFS_ROOT:=/sys}"
@@ -20,8 +21,10 @@
 : "${DXB_RIGCTLD_RUN_DIR:=$DXB_RUN_DIR/rigctld}"
 : "${DXB_STATUS_GW_COOKIES:=$DXB_RUN_DIR/status-graywolf.cookies}"
 : "${DXB_STATUS_CURL:=_dxb_status_curl}"
+: "${DXB_APP_CMD:=$DXB_BIN/dxberry-app}"
+: "${DXB_LOGBOOK_CMD:=$DXB_BIN/dxberry-logbook}"
 
-DXB_STATUS_PARTS='pi network graywolf radios time release services'
+DXB_STATUS_PARTS='pi network graywolf radios time release services station apps'
 
 # ---- pi ------------------------------------------------------------------------------------
 # _dxb_status_throttle HEX: vcgencmd get_throttled's bits by name (0-3 now, 16-19 since boot).
@@ -265,6 +268,53 @@ dxb_status_radios() {
   (( rc == 0 )) || { echo "dxberry-radio status failed (exit $rc)" >&2; return 1; }
   jq -ce 'select(type == "object" and has("radios"))' <<< "$out" 2> /dev/null \
     || { echo "dxberry-radio status returned something unexpected" >&2; return 1; }
+}
+
+# ---- station and programs (the DXBerry page's dashboard and Programs section) ---------------
+# The callsign (without its -SSID) and the grid, exactly as the programs are told them
+# (dxb_apps_station: LATITUDE and LONGITUDE from dxberry.txt, else the GPS fix, else "").
+dxb_status_station() {
+  local f st
+  f="$(dxb_boot_dir)/dxberry.txt"
+  if [[ -r $f ]]; then dxb_config_load "$f" > /dev/null 2>&1; dxb_config_validate > /dev/null 2>&1; fi
+  st=$(dxb_apps_station) || { echo "the station could not be read" >&2; return 1; }
+  jq -c '{callsign: .call, grid: .grid}' <<< "$st"
+}
+
+# _dxb_status_piece CMD ARGS...: CMD's JSON answer, run under a timeout
+# (DXB_STATUS_APPS_TIMEOUT seconds, 20 by default), or {"error": why} - its last line on stderr
+# without the log timestamp, or what went wrong in words.
+_dxb_status_piece() {
+  local t=${DXB_STATUS_APPS_TIMEOUT:-20} what="${1##*/} $2" out errf rc e
+  errf=$(mktemp)
+  out=$(timeout "$t" "$@" 2> "$errf"); rc=$?
+  if (( rc == 0 )) && jq -e 'type == "object" or type == "array"' <<< "$out" > /dev/null 2>&1; then
+    jq -c . <<< "$out"
+  else
+    if (( rc == 124 || rc == 137 )); then e="$what did not answer within $t seconds"
+    elif (( rc == 0 )); then e="$what did not return a report"
+    else
+      e=$(grep -v '^[[:space:]]*$' "$errf" | tail -1 | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} \[[A-Z]+\] //')
+      [[ -n $e ]] || e="$what failed (exit $rc)"
+    fi
+    jq -cn --arg e "$e" '{error: $e}'
+  fi
+  rm -f "$errf"
+}
+
+# The programs (dxberry-app list), the logbook setting (dxberry-logbook get) and its 10 newest
+# contacts (dxberry-logbook recent), read side by side. A piece that fails is {"error"} in its
+# place; the part itself never fails, so the page still shows the other two.
+dxb_status_apps() {
+  local dir
+  dir=$(mktemp -d) || { echo "could not create a temporary directory" >&2; return 1; }
+  _dxb_status_piece "$DXB_APP_CMD" list --json > "$dir/programs" &
+  _dxb_status_piece "$DXB_LOGBOOK_CMD" get --json > "$dir/logbook" &
+  _dxb_status_piece "$DXB_LOGBOOK_CMD" recent --json 10 > "$dir/recent" &
+  wait
+  jq -cn --slurpfile p "$dir/programs" --slurpfile l "$dir/logbook" --slurpfile r "$dir/recent" \
+    '{programs: $p[0], logbook: $l[0], recent: $r[0]}'
+  rm -rf "$dir"
 }
 
 # ---- the report ----------------------------------------------------------------------------

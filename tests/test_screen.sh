@@ -356,10 +356,19 @@ test_screen_list_json() {
   sc_env; sc_owned radio2 gamma; sc_active dxberry-screen@gamma-radio2.service
   assert_ok sc_app list --json > "$TEST_TMP/out"
   assert_eq "$(jq -c '.[] | select(.name == "gamma")' "$TEST_TMP/out")" \
-    '{"name":"gamma","label":"Gamma","kind":"radio","description":"A program for the tests","source":"debian","installed":true,"version":"1.0","sessions":[{"radio":"radio2","state":"running"}],"single_copy":false,"open":{"kind":"screen"}}'
+    '{"name":"gamma","label":"Gamma","kind":"radio","description":"A program for the tests","source":"debian","installed":true,"version":"1.0","sessions":[{"radio":"radio2","state":"running"}],"single_copy":false,"open":{"kind":"screen"},"setup_note":null}'
   assert_eq "$(jq -c '.[] | select(.name == "wsjtx") | [.source, .installed, .version, .sessions]' "$TEST_TMP/out")" '["upstream",false,null,[]]'
   assert_eq "$(jq -r '.[] | select(.name == "graywolf") | .source' "$TEST_TMP/out")" "builtin"
   assert_eq "$(jq -r 'map(.name) | join(" ")' "$TEST_TMP/out")" "graywolf wsjtx js8call fldigi qsstv pat flrig wavelog gamma"
+}
+
+# a module's finish-setup text (app_<a>_setup_note) is in the list, for the page's Programs row
+test_screen_list_carries_a_programs_setup_note() {
+  sc_env
+  cp "$DXB_ROOT/provision/lib/apps/wavelog.sh" "$DXB_APPS_DIR/"
+  assert_ok sc_app list --json > "$TEST_TMP/out"
+  assert_contains "$(jq -r '.[] | select(.name == "wavelog") | .setup_note' "$TEST_TMP/out")" "Finish setting up Wavelog: open it"
+  assert_eq "$(jq -c '[.[] | select(.name == "gamma" or .name == "wsjtx") | .setup_note]' "$TEST_TMP/out")" '[null,null]'
 }
 
 # install and remove are update jobs: the shared job file says which program

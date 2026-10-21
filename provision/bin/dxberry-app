@@ -51,14 +51,17 @@ load_config() {
 # _source_kind SOURCE: where a catalog source comes from, as the page says it.
 _source_kind() { case $1 in builtin) echo builtin ;; apt:*) echo debian ;; *) echo upstream ;; esac; }
 
-# _program_facts NAME: {sessions, single_copy, open} from NAME's module (none: no sessions, not
-# single-copy, nothing to open). The module is loaded in a subshell, so it defines nothing here.
+# _program_facts NAME: {sessions, single_copy, open, setup_note} from NAME's module (none: no
+# sessions, not single-copy, nothing to open, no note). setup_note is what the page says under the
+# program once it is installed (app_<a>_setup_note). The module is loaded in a subshell, so it
+# defines nothing here.
 _program_facts() (
-  local name=$1 single=false open=null session=0 loaded=0 r st sess='[]'
+  local name=$1 single=false open=null session=0 loaded=0 r st sess='[]' note=''
   if dxb_app_load "$name" 2> /dev/null; then
     loaded=1
     dxb_app_is_multi "$name" || single=true
     if dxb_app_is_session "$name"; then session=1; open=$(dxb_screen_open "$name"); fi
+    if declare -F "app_${name}_setup_note" > /dev/null; then note=$("app_${name}_setup_note" 2> /dev/null); fi
   fi
   for r in $(jq -r --arg a "$name" '.radios | to_entries[] | select(.value.owner == $a) | .key' <<< "$DXB_RADIOS"); do
     if (( session )); then st=$(dxb_screen_state "$name-$r")
@@ -66,7 +69,8 @@ _program_facts() (
     else st=stopped; fi
     sess=$(jq -c --arg r "$r" --arg s "$st" '. + [{radio: $r, state: $s}]' <<< "$sess")
   done
-  jq -cn --argjson s "$sess" --argjson c "$single" --argjson o "$open" '{sessions: $s, single_copy: $c, open: $o}'
+  jq -cn --argjson s "$sess" --argjson c "$single" --argjson o "$open" --arg n "$note" \
+    '{sessions: $s, single_copy: $c, open: $o, setup_note: (if $n == "" then null else $n end)}'
 )
 
 cmd_list() {
