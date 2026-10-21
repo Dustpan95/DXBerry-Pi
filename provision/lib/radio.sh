@@ -515,7 +515,9 @@ dxb_app_load() {
 # radio | rigcontrol | service (absent: radio); app_<a>_session prints yes when the program runs
 # one session unit per radio (absent: no); app_<a>_installed returns 0 when the program is
 # installed (absent: installed); app_<a>_multi prints no when it runs on one radio at a time
-# (absent: yes). Every one of these needs the module loaded first (dxb_app_load).
+# (absent: yes); app_<a>_companions RADIO prints the units that run beside the program's session,
+# one per line (absent: none): the session's prepare step starts them once its env file exists (a
+# failure is a warning), its stopped step stops them. Every one of these needs the module loaded first (dxb_app_load).
 dxb_app_kind() { if declare -F "app_$1_kind" > /dev/null; then "app_$1_kind"; else echo radio; fi; }
 dxb_app_is_session() { declare -F "app_$1_session" > /dev/null && [[ $("app_$1_session") == yes ]]; }
 dxb_app_is_installed() { declare -F "app_$1_installed" > /dev/null || return 0; "app_$1_installed"; }

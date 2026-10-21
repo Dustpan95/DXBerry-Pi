@@ -74,7 +74,7 @@ REQUIRED_FILES=(
   provision/cockpit/dxberry/settings.js provision/cockpit/dxberry/updates.js
   provision/bin/dxberry-config provision/lib/settings.sh provision/templates/dxberry-config-boot.service
   provision/bin/dxberry-update provision/lib/update.sh
-  provision/lib/webproxy.sh provision/lib/apps/pat.sh provision/templates/nginx-dxberry-auth.conf provision/templates/nginx-pat.conf
+  provision/lib/webproxy.sh provision/lib/apps/pat.sh provision/templates/nginx-dxberry-auth.conf provision/templates/nginx-pat.conf provision/templates/dxberry-ardop@.service
 )
 EXECUTABLE_FILES=(
   provision/bin/dxberry-preboot provision/bin/dxberry-provision provision/bin/dxberry-netwatch provision/bin/dxberry-radio

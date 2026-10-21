@@ -115,56 +115,30 @@ test_pat_open_passes_through_the_screen_step_intact() {
   pt_env
   assert_eq "$(dxb_screen_open pat)" '{"kind":"url","port":8081,"path":"/"}'
 }
-test_pat_command_is_a_fixed_script_with_the_device_from_the_environment() {
+test_pat_command_is_pat_alone_on_loopback() {
   pt_env
-  local out; out=$(app_pat_command radio2 1)
-  assert_eq "$(sed -n 1,2p <<< "$out" | tr '\n' ' ')" "bash -c "
-  assert_eq "$(wc -l <<< "$out")" "3"
-  # shellcheck disable=SC2016  # the script text is matched literally
-  assert_contains "$out" '"$DXB_APPS_OPT/ardop/ardopcf" 8515 "$DEVICE" "$DEVICE" --logdir'
-  assert_contains "$out" 'trap '
-  assert_contains "$out" 'pat http'
-  assert_not_contains "$out" 'plughw'
-  assert_not_contains "$out" 'radio2'
+  assert_eq "$(app_pat_command radio2 1 | tr '\n' ' ')" "pat http --addr 127.0.0.1:8180 "
 }
-test_pat_command_runs_ardop_beside_pat_and_stops_it_with_pat() {
+test_pat_companions_lists_the_ardop_unit() {
   pt_env
-  mkdir -p "$TEST_TMP/opt/dxberry-apps/ardop" "$TEST_TMP/stubs" "$TEST_TMP/home"
-  printf '#!/bin/bash\necho "$*" > "%s/ardop-args"\necho $$ > "%s/ardop-pid"\nexec sleep 30\n' "$TEST_TMP" "$TEST_TMP" > "$DXB_APPS_OPT/ardop/ardopcf"
-  printf '#!/bin/bash\necho "$*" > "%s/pat-args"\nsleep 0.5\nexit 0\n' "$TEST_TMP" > "$TEST_TMP/stubs/pat"
-  chmod 755 "$DXB_APPS_OPT/ardop/ardopcf" "$TEST_TMP/stubs/pat"
-  local -a argv
-  mapfile -t argv < <(app_pat_command radio2 1)
-  env PATH="$TEST_TMP/stubs:$PATH" HOME="$TEST_TMP/home" DEVICE='plughw:CARD=RADIO2,DEV=0' DXB_APPS_OPT="$DXB_APPS_OPT" "${argv[@]}"
-  assert_eq "$?" "0"
-  assert_eq "$(< "$TEST_TMP/ardop-args")" "8515 plughw:CARD=RADIO2,DEV=0 plughw:CARD=RADIO2,DEV=0 --logdir $TEST_TMP/home/.local/share/ardop"
-  assert_eq "$(< "$TEST_TMP/pat-args")" "http"
-  [[ -d $TEST_TMP/home/.local/share/ardop ]] || _fail "the ARDOP log directory was not created"
-  command sleep 0.3
-  if kill -0 "$(< "$TEST_TMP/ardop-pid")" 2> /dev/null; then _fail "ARDOP still running after Pat ended"; fi
-  return 0
+  assert_eq "$(app_pat_companions radio2)" "dxberry-ardop@pat-radio2.service"
 }
-test_pat_command_term_stops_both() {
+test_pat_ardop_unit_is_loopback_only_and_logs_to_the_journal() {
+  local u=$DXB_ROOT/provision/templates/dxberry-ardop@.service
+  assert_file_contains "$u" "IPAddressDeny=any"
+  assert_file_contains "$u" "IPAddressAllow=localhost"
+  assert_file_contains "$u" "ExecStart=/opt/dxberry-apps/ardop/ardopcf -m 8515 \${DEVICE} \${DEVICE}"
+  assert_file_contains "$u" "EnvironmentFile=/run/dxberry/sessions/%i.env"
+  assert_file_contains "$u" "User=dxbapps"
+  assert_file_contains "$u" "SupplementaryGroups=audio"
+  assert_file_contains "$u" "Restart=on-failure"
+}
+test_pat_failing_jq_leaves_the_config_byte_identical() {
   pt_env
-  mkdir -p "$TEST_TMP/opt/dxberry-apps/ardop" "$TEST_TMP/stubs" "$TEST_TMP/home"
-  printf '#!/bin/bash\necho $$ > "%s/ardop-pid"\nexec sleep 30\n' "$TEST_TMP" > "$DXB_APPS_OPT/ardop/ardopcf"
-  printf '#!/bin/bash\necho $$ > "%s/pat-pid"\nexec sleep 30\n' "$TEST_TMP" > "$TEST_TMP/stubs/pat"
-  chmod 755 "$DXB_APPS_OPT/ardop/ardopcf" "$TEST_TMP/stubs/pat"
-  local -a argv
-  mapfile -t argv < <(app_pat_command radio2 1)
-  env PATH="$TEST_TMP/stubs:$PATH" HOME="$TEST_TMP/home" DEVICE=x DXB_APPS_OPT="$DXB_APPS_OPT" "${argv[@]}" &
-  local runner=$! i
-  for i in {1..30}; do
-    [[ -s $TEST_TMP/ardop-pid && -s $TEST_TMP/pat-pid ]] && break
-    command sleep 0.1
-  done
-  command sleep 0.2
-  kill -TERM "$runner"
-  wait "$runner" 2> /dev/null
-  command sleep 0.3
-  if kill -0 "$(< "$TEST_TMP/ardop-pid")" 2> /dev/null; then _fail "ARDOP survived SIGTERM"; fi
-  if kill -0 "$(< "$TEST_TMP/pat-pid")" 2> /dev/null; then _fail "Pat survived SIGTERM"; fi
-  return 0
+  local f; f=$(app_pat_settings_file); mkdir -p "${f%/*}"; printf '{"a":1} x' > "$f"; cp "$f" "$TEST_TMP/before"
+  assert_eq "$(app_pat_wire radio2 > /dev/null 2>&1; echo $?)" "6"
+  assert_eq "$(cmp "$TEST_TMP/before" "$f" && echo same)" "same"
+  assert_eq "$(find "${f%/*}" -type f | wc -l)" "1"
 }
 test_pat_install_extra_places_ardop_and_sets_up_the_proxy() {
   pt_env
@@ -182,4 +156,31 @@ test_pat_install_extra_places_ardop_and_sets_up_the_proxy() {
   [[ -L $DXB_NGINX_DIR/sites-enabled/dxberry-pat.conf ]] || _fail "the Pat site is not enabled"
   assert_ok app_pat_remove_extra
   [[ ! -e $DXB_APPS_OPT/ardop && ! -L $DXB_NGINX_DIR/sites-enabled/dxberry-pat.conf ]] || _fail "remove left files"
+}
+
+# the optional companions hook in the session steps, shown with gamma (test_screen.sh's fake
+# program) given Pat's own hook
+pt_companion_env() {
+  sc_env; sc_owned radio2 gamma
+  # shellcheck disable=SC2016  # the hook text is written literally
+  printf 'app_gamma_companions() { printf "dxberry-ardop@gamma-%%s.service\\n" "$1"; }\n' >> "$DXB_APPS_DIR/gamma.sh"
+  unset FX_SYSTEMCTL_FAIL_START
+}
+test_pat_prepare_starts_the_companions_and_stopped_stops_them() {
+  pt_companion_env
+  assert_ok sc_app prepare gamma-radio2
+  assert_file_contains "$TEST_TMP/calls" "systemctl start dxberry-ardop@gamma-radio2.service"
+  [[ -s $DXB_SESSIONS_DIR/gamma-radio2.env ]] || _fail "the env file the companion reads was not written"
+  assert_ok sc_app stopped gamma-radio2
+  assert_file_contains "$TEST_TMP/calls" "systemctl stop dxberry-ardop@gamma-radio2.service"
+}
+test_pat_a_companion_that_fails_to_start_is_only_a_warning() {
+  pt_companion_env; export FX_SYSTEMCTL_FAIL_START=dxberry-ardop@gamma-radio2.service
+  assert_ok sc_app prepare gamma-radio2
+  unset FX_SYSTEMCTL_FAIL_START
+}
+test_pat_a_program_without_companions_starts_none() {
+  sc_env; sc_owned radio2 gamma
+  assert_ok sc_app prepare gamma-radio2
+  assert_file_not_contains "$TEST_TMP/calls" "systemctl start dxberry-ardop"
 }

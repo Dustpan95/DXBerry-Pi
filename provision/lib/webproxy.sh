@@ -12,19 +12,22 @@
 : "${DXB_NGINX_DIR:=/etc/nginx}"
 : "${DXB_NGINX:=nginx}"
 : "${DXB_POLICY_RC:=/usr/sbin/policy-rc.d}"
+: "${DXB_POLICY_MARK:=# DXBerry: temporary, removed after the nginx install}"
 : "${DXB_COCKPIT_CERTS:=/etc/cockpit/ws-certs.d}"
 
 # dxb_webproxy_install: nginx, installed without starting, DXBerry's auth snippet, nginx enabled.
 # Idempotent. 0 ok, 6 failed.
 dxb_webproxy_install() {
   local snip
+  # a policy-rc.d of ours left by an install that died (power loss) would block every service start
+  if [[ -f $DXB_POLICY_RC ]] && grep -qxF -- "$DXB_POLICY_MARK" "$DXB_POLICY_RC"; then rm -f "$DXB_POLICY_RC"; fi
   if [[ -z $(_dxb_apps_dpkg_version nginx) ]]; then
     # a policy-rc.d that already exists (an image build's own) is left exactly as it is
     (
       if [[ ! -e $DXB_POLICY_RC ]]; then
         trap 'rm -f "$DXB_POLICY_RC"' EXIT
         trap 'exit 143' TERM INT HUP
-        printf '#!/bin/sh\nexit 101\n' > "$DXB_POLICY_RC" && chmod 755 "$DXB_POLICY_RC" \
+        printf '#!/bin/sh\n%s\nexit 101\n' "$DXB_POLICY_MARK" > "$DXB_POLICY_RC" && chmod 755 "$DXB_POLICY_RC" \
           || { echo "could not write $DXB_POLICY_RC" >&2; exit 6; }
       fi
       echo "installing nginx"
@@ -68,7 +71,7 @@ dxb_webproxy_site() {
   dxb_write_if_changed "$avail" "$content" 644
   [[ $(< "$avail") == "$content" ]] || { echo "could not write $avail" >&2; return 6; }
   ln -sfn "$avail" "$enabled" || { echo "could not enable the $name site" >&2; return 6; }
-  if ! "$DXB_NGINX" -t > /dev/null 2>&1; then
+  if ! "$DXB_NGINX" -t >&2; then
     rm -f "$enabled"
     echo "nginx rejected the $name site; it is not enabled" >&2
     return 6
@@ -83,7 +86,7 @@ dxb_webproxy_site_remove() {
   [[ $name =~ ^[a-z][a-z0-9_]{0,15}$ ]] || { echo "not a site name: $name" >&2; return 6; }
   rm -f "$DXB_NGINX_DIR/sites-enabled/dxberry-$name.conf" "$DXB_NGINX_DIR/sites-available/dxberry-$name.conf"
   if [[ -n $(_dxb_apps_dpkg_version nginx) ]]; then
-    if ! { "$DXB_NGINX" -t > /dev/null 2>&1 && "$DXB_SYSTEMCTL" reload nginx; }; then
+    if ! { "$DXB_NGINX" -t >&2 && "$DXB_SYSTEMCTL" reload nginx; }; then
       dxb_warn "nginx was not reloaded after removing the $name site"
     fi
   fi

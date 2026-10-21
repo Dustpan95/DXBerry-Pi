@@ -20,6 +20,7 @@
 #   first fill: mycall, locator (when known), http_addr
 #   wiring:     ardop.addr, ardop.rig (RADIO, only with CAT PTT, else removed), ardop.ptt_ctrl,
 #               hamlib_rigs.RADIO.address / .network (the rigctld of the radio; the VFO stays)
+# The module's optional hook app_pat_companions is documented in screen.sh.
 # Expects common.sh, inifile.sh, apps.sh, webproxy.sh and radio.sh to be sourced.
 
 : "${DXB_PAT_CMD:=pat}"
@@ -59,7 +60,7 @@ _dxb_pat_edit() {
     jq "${args[@]}" "$filter" "$f" > "$tmp"
   else
     jq -n "${args[@]}" "$filter" > "$tmp"
-  fi
+  fi || { rm -f "$tmp"; echo "pat: could not update $f" >&2; return 6; }
   if [[ ! -s $tmp ]] || ! mv -f "$tmp" "$f"; then
     rm -f "$tmp"; echo "pat: could not update $f" >&2; return 6
   fi
@@ -89,14 +90,14 @@ app_pat_wire() {
     | .hamlib_rigs.RADIO = ((.hamlib_rigs.RADIO // {}) + {address: $addr, network: "tcp"})'
 }
 
-# app_pat_command RADIO INDEX: the command line, one argument per line (runs as dxbapps). Two
-# processes: ARDOP in the background, Pat beside it; a fixed script, DEVICE and DXB_APPS_OPT come
-# from the session's environment. ARDOP ends with Pat, and with SIGTERM from systemctl stop.
-# shellcheck disable=SC2016  # the session script is not expanded here
-app_pat_command() {
-  # one line: the session runner reads one argument per line
-  printf '%s\n' bash -c 'logdir=$HOME/.local/share/ardop; mkdir -p "$logdir" || exit 1; trap '\''kill $(jobs -p) 2> /dev/null; wait; exit 143'\'' TERM INT HUP; "$DXB_APPS_OPT/ardop/ardopcf" 8515 "$DEVICE" "$DEVICE" --logdir "$logdir" & pat http & patpid=$!; wait "$patpid"; rc=$?; kill $(jobs -p) 2> /dev/null; wait; exit "$rc"'
-}
+# app_pat_command RADIO INDEX: the command line, one argument per line (runs as dxbapps). Pat
+# alone, listening on loopback whatever the settings file says; ARDOP is a companion unit.
+app_pat_command() { printf '%s\n' pat http --addr 127.0.0.1:8180; }
+
+# app_pat_companions RADIO: ARDOP runs in its own unit (dxberry-ardop@.service). ardopcf has no
+# bind option (it listens on every address, 1.0.4.1.3), so the unit confines it to loopback with
+# systemd's IP filter; it reads the card from the session's env file.
+app_pat_companions() { printf 'dxberry-ardop@pat-%s.service\n' "$1"; }
 
 # ARDOP (ardopcf, the newest release for ARM) and the proxy; the .deb itself is Pat.
 app_pat_install_extra() {

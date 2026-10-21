@@ -237,6 +237,12 @@ dxb_screen_settings() {
   return 0
 }
 
+# _dxb_screen_companions APP RADIO: the units that run beside APP's session, one per line - the
+# module's optional app_APP_companions RADIO (a helper the program needs, e.g. Pat's ARDOP modem,
+# kept in its own unit so it can be confined). Started by prepare once S.env exists, stopped by
+# stopped. Nothing when the module has none.
+_dxb_screen_companions() { if declare -F "app_$1_companions" > /dev/null; then "app_$1_companions" "$2"; fi; }
+
 # dxb_screen_prepare S: the unit's ExecStartPre (root; DXB_RADIOS loaded, DXB_RADIO_SCAN fresh,
 # DXB_CFG loaded for the first fill). RADIO must exist, be owned by APP, APP an installed session
 # program, RADIO plugged in. Then the settings step as dxbapps (dxberry-app settings, input on
@@ -247,7 +253,7 @@ dxb_screen_settings() {
 # not installed / unknown, 4 radio absent, 6 the session's files could not be made, 7 first fill
 # or wiring failed.
 dxb_screen_prepare() {
-  local s=$1 ar a r w h hf env dir out rc=0
+  local s=$1 ar a r w h hf env dir out u rc=0
   local -a steps=()
   ar=$(dxb_screen_split "$s") || return 2
   a=${ar% *}; r=${ar#* }
@@ -283,6 +289,11 @@ dxb_screen_prepare() {
   if ! { mkdir -m 700 "$dir" && "$DXB_CHOWN" -h "$DXB_APPS_USER:$DXB_APPS_USER" "$dir"; }; then
     dxb_error "could not prepare $dir"; return 6
   fi
+  # the program's companion units (app_APP_companions RADIO, optional) start now that S.env exists;
+  # one that does not start is a warning, not a failed session
+  for u in $(_dxb_screen_companions "$a" "$r"); do
+    "$DXB_SYSTEMCTL" start "$u" || dxb_warn "$s: could not start $u"
+  done
   _dxb_screen_wait_rigctld "$r" "$w"
 }
 
@@ -291,9 +302,11 @@ dxb_screen_prepare() {
 # on replug; anything else (quit from its menu, Stop) leaves nothing. S.d goes; the screen socket
 # is the session's own (Xvnc removes it). Always 0.
 dxb_screen_stopped() {
-  local ar r
+  local ar r u
   ar=$(dxb_screen_split "$1" 2> /dev/null) || return 0
   r=${ar#* }
+  dxb_app_load "${ar% *}" > /dev/null 2>&1
+  for u in $(_dxb_screen_companions "${ar% *}" "$r"); do "$DXB_SYSTEMCTL" stop "$u" || dxb_warn "$1: could not stop $u"; done
   rm -rf "$(dxb_screen_dir "$1")"
   dxb_radio_get "$r" > /dev/null 2>&1 || return 0
   dxb_radio_present "$r" || dxb_screen_mark_waiting "$1"

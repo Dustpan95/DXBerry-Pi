@@ -1,0 +1,25 @@
+[Unit]
+Description=DXBerry-Pi ARDOP modem for program session %i
+PartOf=dxberry-screen@%i.service
+After=dxberry-radio-hotplug.service
+
+[Service]
+Type=simple
+User=dxbapps
+Group=dxbapps
+SupplementaryGroups=audio
+# the session's env file (written by its prepare step): DEVICE is the radio's own sound card
+EnvironmentFile=/run/dxberry/sessions/%i.env
+# -m: log to the journal only (nothing grows on the SD card). ardopcf has no bind option and
+# listens on every address, so the unit may talk to loopback only.
+ExecStart=/opt/dxberry-apps/ardop/ardopcf -m 8515 ${DEVICE} ${DEVICE}
+IPAddressDeny=any
+IPAddressAllow=localhost
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes

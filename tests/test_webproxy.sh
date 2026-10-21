@@ -60,6 +60,32 @@ test_webproxy_install_skips_apt_when_nginx_is_installed_and_is_idempotent() {
   [[ ! -e $DXB_POLICY_RC ]] || _fail "policy-rc.d created without an install"
   assert_file_contains "$DXB_NGINX_DIR/snippets/dxberry-auth.conf" "location @dxberry-login { return 302 https://\$host/; }"
 }
+test_webproxy_install_removes_a_stale_policy_file_of_its_own() {
+  wp_env; AP_INSTALLED=nginx
+  printf '#!/bin/sh\n%s\nexit 101\n' "$DXB_POLICY_MARK" > "$DXB_POLICY_RC"
+  assert_ok dxb_webproxy_install
+  [[ ! -e $DXB_POLICY_RC ]] || _fail "a stale policy-rc.d of ours was kept"
+}
+test_webproxy_policy_file_carries_the_marker() {
+  wp_env; export DXB_APT_GET=wp_apt
+  assert_ok dxb_webproxy_install
+  assert_file_contains "$TEST_TMP/policy-seen" "# DXBerry: temporary, removed after the nginx install"
+}
+test_webproxy_auth_snippet_sends_only_the_cookie() {
+  wp_env; AP_INSTALLED=nginx
+  dxb_webproxy_install
+  assert_file_contains "$DXB_NGINX_DIR/snippets/dxberry-auth.conf" 'proxy_set_header Authorization "";'
+  assert_file_contains "$DXB_NGINX_DIR/snippets/dxberry-auth.conf" 'proxy_set_header Upgrade "";'
+  # shellcheck disable=SC2016  # nginx variables, matched literally
+  assert_file_contains "$DXB_NGINX_DIR/snippets/dxberry-auth.conf" 'proxy_set_header Host $host;'
+}
+test_webproxy_nginx_test_output_goes_to_stderr() {
+  wp_env
+  wp_nginx() { echo "nginx $*" >> "$TEST_TMP/calls"; echo "emerg: bad directive"; [[ ! -e $TEST_TMP/wp-fail ]]; }
+  : > "$TEST_TMP/wp-fail"
+  dxb_webproxy_site pat 2> "$TEST_TMP/err" > /dev/null
+  assert_file_contains "$TEST_TMP/err" "emerg: bad directive"
+}
 test_webproxy_cert_picks_the_newest_complete_pair() {
   wp_env
   : > "$DXB_COCKPIT_CERTS/5-newer.cert"; : > "$DXB_COCKPIT_CERTS/5-newer.key"
@@ -81,8 +107,10 @@ test_webproxy_pat_site_is_rendered_enabled_and_reloaded() {
   local f=$DXB_NGINX_DIR/sites-available/dxberry-pat.conf
   assert_file_contains "$f" "listen 8081 ssl;"
   assert_file_contains "$f" "include snippets/dxberry-auth.conf;"
-  assert_file_contains "$f" "ssl_certificate $DXB_COCKPIT_CERTS/0-self-signed.cert;"
-  assert_file_contains "$f" "ssl_certificate_key $DXB_COCKPIT_CERTS/0-self-signed.key;"
+  assert_file_contains "$f" "ssl_certificate \"$DXB_COCKPIT_CERTS/0-self-signed.cert\";"
+  assert_file_contains "$f" "ssl_certificate_key \"$DXB_COCKPIT_CERTS/0-self-signed.key\";"
+  # shellcheck disable=SC2016  # nginx variables, matched literally
+  assert_file_contains "$f" 'proxy_set_header Host $http_host;'
   assert_file_contains "$f" "proxy_pass http://127.0.0.1:8180;"
   assert_file_not_contains "$f" "@CERT@"
   assert_eq "$(readlink "$DXB_NGINX_DIR/sites-enabled/dxberry-pat.conf")" "$f"
