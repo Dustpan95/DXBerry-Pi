@@ -18,8 +18,8 @@
 # then exits non-zero with "Missing mycall"; that exit is expected and ignored) and DXBerry's keys
 # are set into that with jq. Only the keys below change; every other key stays the operator's:
 #   first fill: mycall, locator (when known), http_addr
-#   wiring:     ardop.addr, ardop.rig (RADIO, only with CAT PTT, else removed), ardop.ptt_ctrl,
-#               hamlib_rigs.RADIO.address / .network (the rigctld of the radio; the VFO stays)
+#   wiring:     ardop.addr, ardop.rig (the radio name, only with CAT PTT, else removed), ardop.ptt_ctrl,
+#               hamlib_rigs.<radio>.address / .network (the rigctld of the radio; the VFO stays)
 # The module's optional hook app_pat_companions is documented in screen.sh.
 # Expects common.sh, inifile.sh, apps.sh, webproxy.sh and radio.sh to be sourced.
 
@@ -84,10 +84,10 @@ app_pat_wire() {
   local w cat=false
   w=$(dxb_apps_wiring "$1") || return 6
   [[ $(jq -r .ptt <<< "$w") != cat ]] || cat=true
-  _dxb_pat_edit --argjson cat "$cat" --arg addr "$(jq -r .rigctld <<< "$w")" '
+  _dxb_pat_edit --argjson cat "$cat" --arg addr "$(jq -r .rigctld <<< "$w")" --arg r "$1" '
     .ardop.addr = "localhost:8515"
-    | (if $cat then .ardop.rig = "RADIO" | .ardop.ptt_ctrl = true else del(.ardop.rig) | .ardop.ptt_ctrl = false end)
-    | .hamlib_rigs.RADIO = ((.hamlib_rigs.RADIO // {}) + {address: $addr, network: "tcp"})'
+    | (if $cat then .ardop.rig = $r | .ardop.ptt_ctrl = true else del(.ardop.rig) | .ardop.ptt_ctrl = false end)
+    | .hamlib_rigs[$r] = ((.hamlib_rigs[$r] // {}) + {address: $addr, network: "tcp"})'
 }
 
 # app_pat_command RADIO INDEX: the command line, one argument per line (runs as dxbapps). Pat

@@ -35,7 +35,7 @@ test_js8call_firstfill_then_wire_from_the_real_file() {
   assert_eq "$(dxb_ini_get "$f" Configuration N1MMServer)" "127.0.0.1"
   assert_eq "$(dxb_ini_get "$f" Configuration N1MMServerPort)" "2333"
   assert_eq "$(dxb_ini_get "$f" Configuration BroadcastToN1MM)" "true"
-  assert_eq "$(dxb_ini_get "$f" Configuration SoundInName)" 'RADIO2'
+  assert_eq "$(dxb_ini_get "$f" Configuration SoundInName)" 'RADIO2.in'
   assert_eq "$(dxb_ini_get "$f" Configuration Rig)" "Hamlib NET rigctl"
   assert_eq "$(dxb_ini_get "$f" Configuration CATNetworkPort)" "127.0.0.1:4534"
   assert_contains "$(dxb_ini_get "$f" Configuration PTTMethod)" "PTT_method_CAT"

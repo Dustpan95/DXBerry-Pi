@@ -197,7 +197,7 @@ test_apply_writes_rules_syncs_rigctld_and_state() {
   dxb_radio_add radio1 '{"audio":"1","cat":"2"}' > /dev/null
   assert_ok dxb_radio_apply
   assert_file_contains "$DXB_UDEV_RULES_FILE" 'ATTR{id}="RADIO1"'
-  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start rigctld@radio1"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl --no-block start rigctld@radio1"
   assert_eq "$(jq -r '.radios.radio1.present' "$DXB_RADIOS_STATE")" "true"
   assert_eq "$(jq -r '.radios.radio1.rigctld' "$DXB_RADIOS_STATE")" "active"
   assert_eq "$(jq -r '.radios.radio1.kernel.audio' "$DXB_RADIOS_STATE")" "card1"
@@ -595,7 +595,7 @@ test_claim_session_app_enables_and_starts_its_radio_unit() {
   radio_env; fake_apps; two_radios
   assert_ok dxb_radio_claim r1 gamma
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl enable dxberry-screen@gamma-r1.service"
-  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start dxberry-screen@gamma-r1.service"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl --no-block start dxberry-screen@gamma-r1.service"
   assert_not_contains "$(appcalls)" "gamma wire"   # a session is wired by its own prepare step
   assert_eq "$(jq -r '.owner' <<< "$(dxb_radio_get r1)")" "gamma"
 }
@@ -695,14 +695,14 @@ APP
   : > "$TEST_TMP/calls"
   assert_ok dxb_radio_claim r1 gamma
   assert_eq "$(grep -n '^alpha \|try-restart alpha.service\|restart rigctld@r1\|enable dxberry-screen@gamma-r1' "$TEST_TMP/calls" | cut -d: -f2 | tr '\n' ';')" \
-    'alpha unwire r1;systemctl try-restart alpha.service;alpha ready;systemctl restart rigctld@r1.service;systemctl enable dxberry-screen@gamma-r1.service;'
+    'alpha unwire r1;systemctl try-restart alpha.service;alpha ready;systemctl --no-block restart rigctld@r1.service;systemctl enable dxberry-screen@gamma-r1.service;'
   radio_env; fake_apps; two_radios
   dxb_radio_set r1 '{"ptt":"cm108"}' > /dev/null
   dxb_radio_claim r1 beta > /dev/null; dxb_radio_claim r2 beta > /dev/null
   dxb_radio_apply > /dev/null 2>&1; : > "$TEST_TMP/calls"
   assert_ok dxb_radio_claim r1 gamma
   assert_eq "$(grep -n 'try-restart beta.service\|restart rigctld@r1\|enable dxberry-screen@gamma-r1' "$TEST_TMP/calls" | cut -d: -f2 | tr '\n' ';')" \
-    'systemctl try-restart beta.service;systemctl restart rigctld@r1.service;systemctl enable dxberry-screen@gamma-r1.service;'
+    'systemctl try-restart beta.service;systemctl --no-block restart rigctld@r1.service;systemctl enable dxberry-screen@gamma-r1.service;'
 }
 
 test_catalog_lists_installed_radio_programs_with_kind() {
@@ -723,7 +723,7 @@ test_session_owner_moves_cm108_ptt_into_rigctld_and_back() {
   assert_ok dxb_radio_claim r1 alpha
   assert_file_not_contains "$DXB_RIGCTLD_RUN_DIR/r1.env" "CM108"
   assert_eq "$(grep -n 'disable --now dxberry-screen@gamma-r1\|restart rigctld@r1\|start alpha.service' "$TEST_TMP/calls" | cut -d: -f2 | tr '\n' ';')" \
-    'systemctl disable --now dxberry-screen@gamma-r1.service;systemctl restart rigctld@r1.service;systemctl start alpha.service;'
+    'systemctl disable --now dxberry-screen@gamma-r1.service;systemctl --no-block restart rigctld@r1.service;systemctl start alpha.service;'
   dxb_radio_claim r1 gamma > /dev/null; : > "$TEST_TMP/calls"
   assert_ok dxb_radio_release r1
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl disable --now dxberry-screen@gamma-r1.service"

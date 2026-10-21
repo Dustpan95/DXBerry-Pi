@@ -54,7 +54,10 @@ dxb_rigctld_state() {
 }
 
 # dxb_rigctld_sync NAME RADIO_JSON PRESENT(0|1) [OWNER_KIND]: env file + start/stop/restart
-# (restart only when the env file changed). 0 ok, 6 error.
+# (restart only when the env file changed). Starts and restarts are queued (--no-block): the unit is
+# ordered after dxberry-radio-hotplug.service, and an apply running inside that service (or holding
+# the apply lock while a udev-triggered hotplug waits for it) would wait on itself otherwise; callers
+# that need rigctld ready poll for it. 0 ok, 6 error.
 dxb_rigctld_sync() {
   local name=$1 r=$2 present=$3 kind=${4:-none} env f changed=0 unit="rigctld@$1.service"
   f="$DXB_RIGCTLD_RUN_DIR/$name.env"
@@ -66,9 +69,9 @@ dxb_rigctld_sync() {
   fi
   if (( present )); then
     if systemctl is-active --quiet "$unit"; then
-      (( changed )) && { systemctl restart "$unit" || { dxb_error "restart $unit failed"; return 6; }; dxb_info "$unit restarted (configuration changed)"; }
+      (( changed )) && { systemctl --no-block restart "$unit" || { dxb_error "restart $unit failed"; return 6; }; dxb_info "$unit restarted (configuration changed)"; }
     else
-      systemctl start "$unit" || { dxb_error "start $unit failed"; return 6; }
+      systemctl --no-block start "$unit" || { dxb_error "start $unit failed"; return 6; }
       dxb_info "$unit started on port $(jq -r '.rigctld_port' <<< "$r")"
     fi
   elif systemctl is-active --quiet "$unit"; then

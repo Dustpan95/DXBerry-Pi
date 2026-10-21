@@ -51,7 +51,9 @@ app_js8call_wire() {
   local dev; dev=$(jq -r .card <<< "$w")
   if [[ $(jq -r .ptt <<< "$w") == cat ]]; then pttm=PTT_method_CAT; else pttm=PTT_method_VOX; fi
   mkdir -p "${f%/*}" || return 6
-  _dxb_js8call_set "$f" SoundInName "$(dxb_ini_qstring "$dev")" || return 6
+  # the session's PulseAudio names its capture source CARD.in (sink and source names share one
+  # namespace, so the source cannot be called CARD too)
+  _dxb_js8call_set "$f" SoundInName "$(dxb_ini_qstring "$dev.in")" || return 6
   _dxb_js8call_set "$f" SoundOutName "$(dxb_ini_qstring "$dev")" || return 6
   _dxb_js8call_set "$f" Rig 'Hamlib NET rigctl' || return 6
   _dxb_js8call_set "$f" CATNetworkPort "$(jq -r .rigctld <<< "$w")" || return 6

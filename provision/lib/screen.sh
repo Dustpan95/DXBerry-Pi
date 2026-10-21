@@ -130,7 +130,7 @@ dxb_screen_session_argv() {
     openbox) printf '%s\n' "$DXB_OPENBOX" --sm-disable ;;
     pulse)
       printf '%s\n' "$DXB_PULSEAUDIO" -n --daemonize=no --exit-idle-time=-1 --use-pid-file=no -F /dev/null \
-        -L "module-alsa-sink device=$dev sink_name=$card" -L "module-alsa-source device=$dev source_name=$card" \
+        -L "module-alsa-sink device=$dev sink_name=$card" -L "module-alsa-source device=$dev source_name=$card.in" \
         -L "module-native-protocol-unix socket=$dir/pulse.sock" ;;
     *) dxb_error "dxb_screen_session_argv: no argument list $what"; return 2 ;;
   esac

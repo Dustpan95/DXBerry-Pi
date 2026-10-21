@@ -362,7 +362,7 @@ test_screen_a_start_that_fails_says_so_and_clears_old_failures() {
   sc_env; sc_owned radio2 gamma
   FX_SYSTEMCTL_FAIL_START=dxberry-screen@gamma-radio2.service sc_app start radio2 2> "$TEST_TMP/err"; assert_eq "$?" "9"
   assert_contains "$(cat "$TEST_TMP/err")" "Gamma did not start on radio2; see Services"
-  assert_eq "$(grep -e '^systemctl reset-failed dxberry-screen@gamma-radio2.service$' -e '^systemctl start dxberry-screen@gamma-radio2.service$' "$TEST_TMP/calls" | cut -d' ' -f2)" \
+  assert_eq "$(grep -e '^systemctl reset-failed dxberry-screen@gamma-radio2.service$' -e '^systemctl --no-block start dxberry-screen@gamma-radio2.service$' "$TEST_TMP/calls" | sed 's/ --no-block//' | cut -d' ' -f2)" \
     "$(printf 'reset-failed\nstart')"
   # a session that does not become active in time is the same failure
   : > "$TEST_TMP/calls"

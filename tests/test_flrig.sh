@@ -232,7 +232,7 @@ test_flrig_apply_stops_and_disables_after_switching_back_to_hamlib() {
   assert_contains "$calls" "systemctl stop $FR_UNIT"
   assert_contains "$calls" "systemctl disable $FR_UNIT"
   assert_not_contains "$calls" "start $FR_UNIT"
-  assert_contains "$calls" "systemctl restart rigctld@r1.service"            # rigctld takes the CAT port back
+  assert_contains "$calls" "systemctl --no-block restart rigctld@r1.service"            # rigctld takes the CAT port back
   # and flrig is stopped before rigctld is restarted
   assert_eq "$(grep -nE "systemctl (stop $FR_UNIT|restart rigctld@r1)" "$TEST_TMP/calls" | head -1 | grep -c "$FR_UNIT")" "1"
   assert_file_contains "$DXB_RIGCTLD_RUN_DIR/r1.env" "MODEL=1"

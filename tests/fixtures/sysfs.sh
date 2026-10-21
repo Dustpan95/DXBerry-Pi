@@ -39,6 +39,7 @@ fx_onboard_card() {
 # FX_SYSTEMCTL_FAIL_START=U makes "start U" fail (exit 1, the unit stays inactive).
 fx_systemctl() {
   echo "systemctl $*" >> "$TEST_TMP/calls"
+  while [[ ${1:-} == --no-block || ${1:-} == --quiet ]]; do shift; done   # leading flags are recorded above, not matched
   local u=${*: -1} st
   case $1 in
     is-active)

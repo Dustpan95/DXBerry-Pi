@@ -654,7 +654,7 @@ dxb_app_session_start() {
   rm -f "$(_dxb_session_marker "$1" "$2")"   # started by hand now: no longer waiting for the radio
   systemctl enable "$u" > /dev/null 2>&1 || { dxb_error "could not enable $u"; return 5; }
   systemctl reset-failed "$u" > /dev/null 2>&1
-  systemctl start "$u" || { dxb_error "could not start $u"; return 5; }
+  systemctl --no-block start "$u" || { dxb_error "could not start $u"; return 5; }
   for (( i = 0; ; i++ )); do
     systemctl is-active --quiet "$u" && return 0
     (( i >= wait )) && break

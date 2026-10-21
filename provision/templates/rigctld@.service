@@ -10,3 +10,6 @@ EnvironmentFile=/run/dxberry/rigctld/%i.env
 ExecStart=/usr/bin/rigctld -m $MODEL -T 127.0.0.1 -t $PORT $RIG_ARGS $PTT_ARGS
 Restart=on-failure
 RestartSec=5
+# rigctld ignores SIGTERM while a program holds a connection to it; it keeps no state, so a quick
+# SIGKILL is the right stop (seen on hardware: a restart with Pat connected took 90 s otherwise)
+TimeoutStopSec=5

@@ -37,9 +37,9 @@ test_pat_firstfill_then_wire_into_pats_own_defaults() {
   assert_eq "$(pt_get .locator)" "EM28qv"
   assert_eq "$(pt_get .http_addr)" "127.0.0.1:8180"
   assert_eq "$(pt_get .ardop.addr)" "localhost:8515"
-  assert_eq "$(pt_get .ardop.rig)" "RADIO"
+  assert_eq "$(pt_get .ardop.rig)" "radio2"
   assert_eq "$(pt_get .ardop.ptt_ctrl)" "true"
-  assert_eq "$(pt_get '.hamlib_rigs.RADIO | [.address, .network] | join(" ")')" "127.0.0.1:4534 tcp"
+  assert_eq "$(pt_get '.hamlib_rigs.radio2 | [.address, .network] | join(" ")')" "127.0.0.1:4534 tcp"
   # Pat's own defaults are all still there
   assert_eq "$(pt_get .connect_aliases.telnet)" "telnet://{mycall}:CMSTelnet@cms.winlink.org:8772/wl2k"
   assert_eq "$(pt_get .ardop.connect_requests)" "10"
@@ -56,13 +56,13 @@ test_pat_rewire_keeps_operator_keys() {
   pt_env; app_pat_firstfill radio2; app_pat_wire radio2
   local f; f=$(app_pat_settings_file)
   jq -c '.secure_login_password = "s3cret-pw" | .connect_aliases.vhf = "ardop:///K0ABC" | .mycall = "K0XYZ" | .motd = ["hi"]
-    | .hamlib_rigs.RADIO.VFO = "VFOB"' "$f" > "$TEST_TMP/edited" && cp "$TEST_TMP/edited" "$f"
+    | .hamlib_rigs.radio2.VFO = "VFOB"' "$f" > "$TEST_TMP/edited" && cp "$TEST_TMP/edited" "$f"
   assert_ok app_pat_wire radio2
   assert_eq "$(pt_get .secure_login_password)" "s3cret-pw"
   assert_eq "$(pt_get .connect_aliases.vhf)" "ardop:///K0ABC"
   assert_eq "$(pt_get .mycall)" "K0XYZ"
   assert_eq "$(pt_get '.motd[0]')" "hi"
-  assert_eq "$(pt_get .hamlib_rigs.RADIO.VFO)" "VFOB"
+  assert_eq "$(pt_get .hamlib_rigs.radio2.VFO)" "VFOB"
   assert_eq "$(stat -c %a "$f")" "600"
 }
 test_pat_vox_radio_has_no_ardop_rig_and_no_ptt_ctrl() {
@@ -70,10 +70,10 @@ test_pat_vox_radio_has_no_ardop_rig_and_no_ptt_ctrl() {
   app_pat_firstfill radio2; app_pat_wire radio2
   assert_eq "$(pt_get '.ardop | has("rig")')" "false"
   assert_eq "$(pt_get .ardop.ptt_ctrl)" "false"
-  assert_eq "$(pt_get .hamlib_rigs.RADIO.address)" "127.0.0.1:4534"
+  assert_eq "$(pt_get .hamlib_rigs.radio2.address)" "127.0.0.1:4534"
   # CAT again: the rig comes back
   pt_set_ptt radio2 rigctld; app_pat_wire radio2
-  assert_eq "$(pt_get .ardop.rig)" "RADIO"
+  assert_eq "$(pt_get .ardop.rig)" "radio2"
   assert_eq "$(pt_get .ardop.ptt_ctrl)" "true"
 }
 test_pat_missing_file_asks_pat_for_its_defaults_once() {

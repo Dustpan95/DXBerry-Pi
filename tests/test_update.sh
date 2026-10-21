@@ -1007,7 +1007,7 @@ test_update_app_restarts_the_sessions_that_ran() {
   up_env; up_apps_env
   assert_ok dxb_update_apply_app wsjtx > "$TEST_TMP/out"
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-screen@wsjtx-radio1.service"
-  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start dxberry-screen@wsjtx-radio1.service"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl --no-block start dxberry-screen@wsjtx-radio1.service"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "start dxberry-screen@wsjtx-radio2.service"
   assert_contains "$(cat "$TEST_TMP/calls")" "apt-get install -y --no-install-recommends $DXB_APPS_WORK/wsjtx-3.0.3-linux-aarch64.deb"
 }
@@ -1022,7 +1022,7 @@ test_update_app_exit_6_starts_the_sessions_again_when_nothing_was_replaced() {
   rm -f "$TEST_TMP/http/wsjtx-3.0.3-linux-aarch64.deb"     # the download fails
   dxb_update_apply_app wsjtx > "$TEST_TMP/out" 2>&1; assert_eq "$?" "6"
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-screen@wsjtx-radio1.service"
-  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start dxberry-screen@wsjtx-radio1.service"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl --no-block start dxberry-screen@wsjtx-radio1.service"
   assert_eq "$(cat "$TEST_TMP/active")" "dxberry-screen@wsjtx-radio1.service"
 }
 test_update_app_counts_a_starting_session_as_running() {
@@ -1081,7 +1081,7 @@ test_update_system_restarts_the_sessions_of_upgraded_debian_programs() {
   printf 'dxberry-screen@fldigi-radio1.service\ndxberry-screen@wsjtx-radio1.service\n' > "$TEST_TMP/active"
   assert_ok dxb_update_apply_system > "$TEST_TMP/out"
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-screen@fldigi-radio1.service"
-  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start dxberry-screen@fldigi-radio1.service"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl --no-block start dxberry-screen@fldigi-radio1.service"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "dxberry-screen@wsjtx-radio1.service"
   # one that does not come back is exit 8, named
   FX_SYSTEMCTL_FAIL_START=dxberry-screen@fldigi-radio1.service; DXB_SESSION_WAIT_S=0

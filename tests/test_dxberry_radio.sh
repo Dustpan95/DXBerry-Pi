@@ -73,7 +73,7 @@ test_cli_add_applies_and_status_shows_radio() {
   cli_env
   assert_ok cli add radio1 --audio 1 --cat 2 --label "TM-V71"
   assert_file_contains "$DXB_UDEV_RULES_FILE" 'ATTR{id}="RADIO1"'
-  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start rigctld@radio1"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl --no-block start rigctld@radio1"
   assert_ok cli status --json
   assert_eq "$(jq -r '.radios.radio1.present, .radios.radio1.rigctld, .radios.radio1.freq, .radios.radio1.mode' "$TEST_TMP/out" | tr '\n' ' ')" "true active 145390000 FM "
   assert_ok cli status

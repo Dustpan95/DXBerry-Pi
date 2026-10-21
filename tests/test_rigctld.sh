@@ -36,7 +36,7 @@ test_rigctld_sync_starts_when_present_stops_when_absent() {
   rig_env
   assert_ok dxb_rigctld_sync radio1 "$R_DIGIRIG" 1
   assert_file_contains "$DXB_RIGCTLD_RUN_DIR/radio1.env" "PORT=4532"
-  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start rigctld@radio1"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl --no-block start rigctld@radio1"
   assert_eq "$(dxb_rigctld_state radio1)" "active"
   : > "$TEST_TMP/calls"
   assert_ok dxb_rigctld_sync radio1 "$R_DIGIRIG" 1
@@ -50,7 +50,7 @@ test_rigctld_sync_restarts_on_env_change() {
   rig_env
   dxb_rigctld_sync radio1 "$R_DIGIRIG" 1 > /dev/null; : > "$TEST_TMP/calls"
   assert_ok dxb_rigctld_sync radio1 "$(jq -c '.rig.baud = 9600' <<< "$R_DIGIRIG")" 1
-  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl restart rigctld@radio1"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl --no-block restart rigctld@radio1"
 }
 
 test_rigctld_query_and_failure() {
