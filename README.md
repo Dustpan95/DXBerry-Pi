@@ -117,8 +117,9 @@ The console is [Cockpit](https://cockpit-project.org) from Debian with one extra
 Besides Graywolf, the DXBerry page can install the ham programs you run on a radio: WSJT-X, JS8Call,
 fldigi, flrig, QSSTV, Pat (Winlink email), and Wavelog (a logbook that lives on this Pi). Nothing is
 installed until you ask: the Programs card lists them, and **Install** and **Remove** work like the
-Updates card, as a background job whose output the page shows. Programs always come from their newest
-release, and the Updates card brings them up to date.
+Updates card, as a background job whose output the page shows. WSJT-X, JS8Call, Pat and Wavelog come
+from their authors' newest release; fldigi, flrig and QSSTV come from Debian, in the version Debian
+ships. The Updates card brings them all up to date.
 
 Choose a program for a radio with **Switch program** on the radio's card and it opens in its own browser tab through the console, so you
 use it as if it were a window on the Pi, signed in with the same login as the console. Each radio keeps
@@ -132,6 +133,18 @@ already use. Contacts that WSJT-X and JS8Call log are sent to it, and held and s
 be reached; fldigi follows the same choice unless you changed it inside fldigi. The newest contacts show
 on the DXBerry page. On the command line: `sudo dxberry-app list`, `sudo dxberry-app install fldigi`,
 and `sudo dxberry-logbook get`.
+
+## Release notes for 0.4.0-rc1
+
+- **Log out of the console and back in once** after the first program is installed, before you open
+  a program's tab. Installing it lets your login open program windows, and a login that started
+  before that cannot yet; the tab says so.
+- **Ports 8081 and 8082** answer on your network once Pat (8081) or Wavelog (8082) is installed. Both
+  ask for the console's login first.
+- **Before you roll back to 0.3.x**, set every radio to Graywolf or to No program. 0.3.x does not
+  know the programs, so a radio left with one would have nothing running it.
+- **The logbook's address must start with https://**, except this Pi's own Wavelog. A logbook on
+  your network over plain http (or with a self-signed certificate) is not accepted in this release.
 
 ## Radio plumbing
 
