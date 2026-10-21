@@ -20,7 +20,9 @@ source "$DXB_LIB/logbook.sh"
 # $TEST_TMP/argv (one line per call), the URL in $TEST_TMP/urls, every request body in
 # $TEST_TMP/bodies and the ADIF of every contact it accepted in $TEST_TMP/posted, and answers as
 # LB_SERVER says: wavelog, cloudlog, none (a web server that is no logbook: 404 everywhere),
-# down (nothing answers), dupe (Wavelog refusing every contact as a duplicate).
+# down (nothing answers; curl prints the URL on stderr), dupe (Wavelog refusing every contact as a
+# duplicate), cloudlog-dupe (Cloudlog's 201 that imported nothing: a duplicate) and
+# cloudlog-noimport (the same for another reason).
 lb_env() {
   rm -rf "$TEST_TMP/lb"
   mkdir -p "$TEST_TMP/lb/bin" "$TEST_TMP/lb/state" "$TEST_TMP/lb/run"
@@ -55,7 +57,7 @@ printf '%s\n' "$url" >> "$TEST_TMP/urls"
 # answer CODE FIXTURE: the fixture without its # header, then the write-out (the HTTP code)
 answer() { sed '/^#/d' "$LB_FIX/$2"; printf '\n%s' "$1"; }
 case $LB_SERVER in
-  down) printf '\n000'; echo "curl: (7) Failed to connect to the server" >&2; exit 7 ;;
+  down) printf '\n000'; echo "curl: (7) Failed to connect to $url" >&2; exit 7 ;;
 esac
 case "$LB_SERVER:$url" in
   wavelog:*/index.php/api/version|dupe:*/index.php/api/version) answer 200 wavelog-version.json ;;
@@ -64,10 +66,12 @@ case "$LB_SERVER:$url" in
   dupe:*/index.php/api/qso) answer 400 wavelog-qso-duplicate.json ;;
   wavelog:*/index.php/api/get_contacts_adif)
     if [[ $(jq -r .fetchfromid <<< "$body") == 0 ]]; then answer 200 wavelog-contacts.json; else answer 200 wavelog-contacts-none.json; fi ;;
-  cloudlog:*/index.php/api/auth/*) answer 200 cloudlog-auth.xml ;;
+  cloudlog*:*/index.php/api/auth/*) answer 200 cloudlog-auth.xml ;;
   cloudlog:*/index.php/api/qso)
     jq -r .string <<< "$body" >> "$TEST_TMP/posted"; answer 201 cloudlog-qso.json ;;
-  cloudlog:*/index.php/api/recent_qsos/*) answer 200 cloudlog-recent.json ;;
+  cloudlog-dupe:*/index.php/api/qso) answer 201 cloudlog-qso-duplicate.json ;;
+  cloudlog-noimport:*/index.php/api/qso) answer 201 cloudlog-qso-not-imported.json ;;
+  cloudlog*:*/index.php/api/recent_qsos/*) answer 200 cloudlog-recent.json ;;
   *) printf '<html><body>404 Page Not Found</body></html>\n404' ;;
 esac
 exit 0
@@ -243,7 +247,7 @@ test_logbook_test_without_input_uses_the_stored_setting() {
 test_logbook_get_offers_the_local_wavelog_once_installed() {
   lb_env
   assert_eq "$("$LB_CMD" get --json | jq -c .)" \
-    '{"configured":false,"url":null,"type":null,"station_id":null,"slug":null,"key":null,"queue":0,"refused":0,"local":{"installed":false,"url":null,"web":null}}'
+    '{"configured":false,"url":null,"type":null,"station_id":null,"slug":null,"key":null,"queue":0,"refused":0,"refused_reason":null,"local":{"installed":false,"url":null,"web":null}}'
   mkdir -p "$DXB_APPS_OPT/wavelog"; echo 3.2.4 > "$DXB_APPS_OPT/wavelog/VERSION"
   assert_eq "$("$LB_CMD" get --json | jq -c .local)" '{"installed":true,"url":"http://127.0.0.1:8083/","web":"https://192.0.2.10:8082/"}'
 }
@@ -283,7 +287,7 @@ test_logbook_queue_files_are_private_and_named_by_time() {
     assert_eq "$(stat -c %a "$f")" "600"
   done
   assert_eq "$(lb_queue_count)" "2"
-  assert_eq "$(find "$DXB_LOGBOOK_QUEUE" -mindepth 1 | wc -l)" "2"                   # nothing else: no temp files
+  assert_eq "$(find "$DXB_LOGBOOK_QUEUE" -mindepth 1 ! -name .lock | wc -l)" "2"     # nothing else: no temp files
 }
 test_logbook_flush_posts_oldest_first_and_stops_at_the_first_failure() {
   lb_env; lb_configured wavelog
@@ -326,6 +330,9 @@ test_logbook_a_record_the_server_refuses_is_set_aside() {
   assert_eq "$(find "$DXB_LOGBOOK_QUEUE/refused" -name '*.adi' | wc -l)" "2"
   assert_contains "$(cat "$TEST_TMP/err")" "Duplicate"
   assert_eq "$("$LB_CMD" get --json | jq -c '{queue, refused}')" '{"queue":0,"refused":2}'
+  # the server's reason is kept beside each refused contact, the newest one shown by get
+  assert_eq "$(find "$DXB_LOGBOOK_QUEUE/refused" -name '*.why' | wc -l)" "2"
+  assert_contains "$("$LB_CMD" get --json | jq -r .refused_reason)" "Duplicate for W0BTE"
   "$LB_CMD" submit < "$DXB_ROOT/tests/fixtures/logbook/wsjtx-contact.adi" 2> /dev/null; assert_eq "$?" "0"
   assert_eq "$(find "$DXB_LOGBOOK_QUEUE/refused" -name '*.adi' | wc -l)" "3"
   assert_eq "$(lb_queue_count)" "0"
@@ -362,7 +369,11 @@ test_logbook_recent_wavelog_is_newest_first_and_fetches_only_new_contacts() {
   assert_eq "$(jq -r '[.contacts[] | .call + "/" + .mode] | join(" ")' <<< "$w")" "JA1AAA/SSB VE3XYZ/FT4 K0ABC/FT8"
   assert_eq "$(jq -c '{ok, type, error}' <<< "$w")" '{"ok":true,"type":"wavelog","error":null}'
   assert_eq "$(jq -c 'del(.key)' "$TEST_TMP/bodies")" '{"station_id":"1","fetchfromid":0}'
-  assert_eq "$(jq -r .lastfetchedid "$DXB_STATE_DIR/logbook-wavelog.json")" "1287"
+  # Wavelog sends this id as a string in an export (the fixture's own shape) and as a number when
+  # nothing is new: both are read, and it is kept as a number
+  assert_eq "$(sed '/^#/d' "$LB_FIX/wavelog-contacts.json" | jq -r '.lastfetchedid | type')" "string"
+  assert_eq "$(sed '/^#/d' "$LB_FIX/wavelog-contacts-none.json" | jq -r '.lastfetchedid | type')" "number"
+  assert_eq "$(jq -c .lastfetchedid "$DXB_STATE_DIR/logbook-wavelog.json")" "1287"
   assert_eq "$(jq '.contacts | length' "$DXB_STATE_DIR/logbook-wavelog.json")" "4"
   # a minute later: only what is newer than the last id
   rm -f "$DXB_RUN_DIR/logbook-recent.json"; : > "$TEST_TMP/bodies"
@@ -370,6 +381,7 @@ test_logbook_recent_wavelog_is_newest_first_and_fetches_only_new_contacts() {
   assert_eq "$(jq -c 'del(.key)' "$TEST_TMP/bodies")" '{"station_id":"1","fetchfromid":1287}'
   assert_eq "$(jq '.contacts | length' <<< "$w")" "4"
   assert_eq "$(jq -r '.contacts[3].call' <<< "$w")" "W1AW"
+  assert_eq "$(jq -c .lastfetchedid "$DXB_STATE_DIR/logbook-wavelog.json")" "1287"
 }
 test_logbook_recent_cloudlog_reads_the_public_slug() {
   lb_env; lb_configured cloudlog
@@ -521,4 +533,94 @@ test_logbook_ships_in_the_image() {
   assert_contains "$executable" "provision/bin/dxberry-logbook"
   grep -qF "ln -sf /opt/dxberry/bin/dxberry-logbook " "$DXB_ROOT/build/build-image.sh" || _fail "no /usr/local/sbin link for dxberry-logbook"
   grep -q 'provision_logbook' "$DXB_ROOT/provision/bin/dxberry-provision" || _fail "dxberry-provision does not run provision_logbook"
+}
+
+# ---- never lose a contact (fix round 1) --------------------------------------------------
+
+# refused/ is never pruned: once it holds DXB_LOGBOOK_MAX_REFUSED contacts, a refused one stays
+# queued and the flush stops, so the queue grows where the page shows it
+test_logbook_a_full_refused_dir_leaves_the_contact_queued() {
+  lb_env; lb_configured wavelog; LB_SERVER=dupe; export DXB_LOGBOOK_MAX_REFUSED=2
+  mkdir -p "$DXB_LOGBOOK_QUEUE"
+  printf '<call:4>OLD1 <eor>' > "$DXB_LOGBOOK_QUEUE/1700000000-1.adi"
+  printf '<call:4>MID2 <eor>' > "$DXB_LOGBOOK_QUEUE/1700000001-1.adi"
+  printf '<call:4>NEW3 <eor>' > "$DXB_LOGBOOK_QUEUE/1700000002-1.adi"
+  "$LB_CMD" flush 2> "$TEST_TMP/err"; assert_eq "$?" "6"
+  assert_eq "$(find "$DXB_LOGBOOK_QUEUE/refused" -name '*.adi' | wc -l)" "2"
+  assert_eq "$(lb_queue_count)" "1"
+  assert_eq "$(cat "$DXB_LOGBOOK_QUEUE"/*.adi)" "<call:4>NEW3 <eor>"
+  assert_contains "$(cat "$TEST_TMP/err")" "stays queued"
+  # a submit the server refuses goes to the queue too, and nothing in refused/ was removed
+  "$LB_CMD" submit < "$DXB_ROOT/tests/fixtures/logbook/wsjtx-contact.adi" 2> /dev/null; assert_eq "$?" "0"
+  assert_eq "$(lb_queue_count)" "2"
+  assert_eq "$(grep -l OLD1 "$DXB_LOGBOOK_QUEUE"/refused/*.adi | wc -l)" "1"
+  unset DXB_LOGBOOK_MAX_REFUSED
+}
+# a contact that cannot be set aside (refused/ cannot be made) stays where it was
+test_logbook_a_failed_set_aside_keeps_the_contact() {
+  lb_env; lb_configured wavelog; LB_SERVER=dupe
+  mkdir -p "$DXB_LOGBOOK_QUEUE"; : > "$DXB_LOGBOOK_QUEUE/refused"            # a file where the directory should be
+  printf '<call:4>OLD1 <eor>' > "$DXB_LOGBOOK_QUEUE/1700000000-1.adi"
+  "$LB_CMD" flush 2> /dev/null; assert_eq "$?" "6"
+  assert_eq "$(cat "$DXB_LOGBOOK_QUEUE/1700000000-1.adi")" "<call:4>OLD1 <eor>"
+  "$LB_CMD" submit < "$DXB_ROOT/tests/fixtures/logbook/wsjtx-contact.adi" 2> /dev/null; assert_eq "$?" "0"
+  assert_eq "$(lb_queue_count)" "2"
+}
+# a submit killed while it posted leaves its temp file: the next flush adopts and posts it; a
+# fresh one (a submit still at work) is left alone
+test_logbook_flush_adopts_a_killed_submits_contact() {
+  lb_env; lb_configured wavelog
+  mkdir -p "$DXB_LOGBOOK_QUEUE"
+  printf '<call:5>STALE <eor>' > "$DXB_LOGBOOK_QUEUE/.in.abc123"; touch -d '5 minutes ago' "$DXB_LOGBOOK_QUEUE/.in.abc123"
+  printf '<call:5>FRESH <eor>' > "$DXB_LOGBOOK_QUEUE/.in.def456"
+  : > "$DXB_LOGBOOK_QUEUE/.in.empty1"; touch -d '5 minutes ago' "$DXB_LOGBOOK_QUEUE/.in.empty1"   # cut off: no contact
+  "$LB_CMD" flush; assert_eq "$?" "0"
+  assert_eq "$(cat "$TEST_TMP/posted")" "<call:5>STALE <eor>"
+  [[ -f $DXB_LOGBOOK_QUEUE/.in.def456 ]] || _fail "a submit's fresh temp file must be left alone"
+  [[ -e $DXB_LOGBOOK_QUEUE/.in.abc123 || -e $DXB_LOGBOOK_QUEUE/.in.empty1 ]] && _fail "stale temp files must be adopted or removed"
+  assert_eq "$(lb_queue_count)" "0"
+}
+# Cloudlog answers 201 "created" also when it imported nothing: a duplicate is logged already, any
+# other reason is set aside with that reason
+test_logbook_cloudlog_imported_nothing_is_not_posted() {
+  lb_env; lb_configured cloudlog; LB_SERVER=cloudlog-dupe
+  "$LB_CMD" submit < "$DXB_ROOT/tests/fixtures/logbook/wsjtx-contact.adi"; assert_eq "$?" "0"
+  assert_eq "$(lb_queue_count)" "0"
+  [[ -d $DXB_LOGBOOK_QUEUE/refused ]] && _fail "a duplicate is in the log already: nothing to set aside"
+  LB_SERVER=cloudlog-noimport
+  "$LB_CMD" submit < "$DXB_ROOT/tests/fixtures/logbook/wsjtx-contact.adi" 2> /dev/null; assert_eq "$?" "0"
+  assert_eq "$(find "$DXB_LOGBOOK_QUEUE/refused" -name '*.adi' | wc -l)" "1"
+  assert_contains "$("$LB_CMD" get --json | jq -r .refused_reason)" "RX_PWR (5W) is not a number"
+}
+# curl's own messages are never shown (a Cloudlog URL carries the key); what failed is said in
+# DXBerry's words
+test_logbook_curls_messages_never_reach_the_output() {
+  lb_env; LB_SERVER=down
+  printf '{"url":"https://c/","key":"SECRETKEY9","station_id":"1"}' | "$LB_CMD" test --json > "$TEST_TMP/out" 2> "$TEST_TMP/err"
+  assert_eq "$?" "6"
+  assert_file_not_contains "$TEST_TMP/out" "SECRETKEY9"
+  assert_file_not_contains "$TEST_TMP/err" "SECRETKEY9"
+  assert_file_not_contains "$TEST_TMP/err" "curl:"
+  assert_contains "$(jq -r .error "$TEST_TMP/out")" "nothing answered on its port"
+}
+# set's follow leaves a session that is starting to its own prepare
+test_logbook_set_skips_a_session_that_is_starting() {
+  sc_env; sc_owned radio2 gamma
+  lb_server
+  export DXB_LOGBOOK_FILE=$DXB_STATE_DIR/logbook.json DXB_LOGBOOK_QUEUE=$DXB_STATE_DIR/logbook-queue \
+    DXB_LOGBOOK_CURL=$TEST_TMP/lb/bin/curl LB_SERVER=wavelog LB_FIX=$DXB_ROOT/tests/fixtures/logbook
+  : > "$TEST_TMP/argv"; : > "$TEST_TMP/urls"; : > "$TEST_TMP/bodies"
+  echo enabled > "$TEST_TMP/enabled-dxberry-screen@gamma-radio2.service"
+  printf '#!/bin/bash\nif [[ $1 == is-active && ${*: -1} == dxberry-screen@gamma-radio2.service ]]; then echo activating; exit 3; fi\nsource "$DXB_ROOT/tests/fixtures/sysfs.sh"\nfx_systemctl "$@"\n' > "$TEST_TMP/bin/systemctl"
+  : > "$TEST_TMP/appcalls"
+  printf '{"url":"https://w/","key":"k","station_id":"1"}' | "$DXB_ROOT/provision/bin/dxberry-logbook" set --json > "$TEST_TMP/out"
+  assert_eq "$(jq -c .kept "$TEST_TMP/out")" '[]'
+  assert_eq "$(cat "$TEST_TMP/appcalls")" ""
+}
+test_logbook_units_restart_slowly_and_a_waiting_queue_is_no_failure() {
+  assert_file_contains "$DXB_ROOT/provision/templates/dxberry-logbridge.service" "RestartSec=30"
+  assert_file_contains "$DXB_ROOT/provision/templates/dxberry-logbook-flush.service" "SuccessExitStatus=6"
+  # the detection probe's URL carries a Cloudlog-style key: this Pi's Wavelog does not log it
+  local f=$DXB_ROOT/provision/templates/nginx-wavelog.conf
+  assert_eq "$(awk '/location ~ \^\/index\\.php\/api\/auth\// { getline; print; exit }' "$f" | tr -d ' ')" "access_logoff;"
 }

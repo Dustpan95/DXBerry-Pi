@@ -25,8 +25,12 @@
 # Concurrency: socat runs one submit per datagram and the timer runs flush, all at once. A flush
 # holds logbook-flush.lock (in the run directory) for its whole run, so two flushes never post the
 # same file; a second one leaves at once. Only flush removes queued files. Submit never touches a
-# queued file: it writes a temp file and renames it to a new name under logbook-queue.lock, which
-# is held only for that and never across a request.
+# queued file: it writes a temp file (.in.*) and renames it to a new name under the queue's own
+# .lock, which is held only for that and never across a request. A contact is never deleted
+# before the server took it: a submit killed while posting leaves its .in.* file, which the next
+# flush adopts into the queue; a contact the server refuses for good is kept in refused/ with the
+# server's reason beside it, and once refused/ holds DXB_LOGBOOK_MAX_REFUSED the next one stays
+# queued (the queue grows and the page shows why).
 # Expects common.sh to be sourced; follow_stopped also screen.sh, radio.sh and apps.sh.
 
 : "${DXB_STATE_DIR:=/var/lib/dxberry}"
@@ -39,8 +43,11 @@
 # the queue keeps at most this many contacts (the oldest are kept), each at most this many bytes
 : "${DXB_LOGBOOK_MAX_QUEUE:=1000}"
 : "${DXB_LOGBOOK_MAX_RECORD:=65536}"
-# contacts the server refused (kept for the operator, the oldest go first)
+# contacts the server refused for good, kept in refused/ (never deleted); when it holds this many,
+# a refused contact stays in the queue instead
 : "${DXB_LOGBOOK_MAX_REFUSED:=100}"
+# a submit's temp file this many minutes old belongs to a submit that was killed: flush adopts it
+: "${DXB_LOGBOOK_STALE_MIN:=2}"
 : "${DXB_LOGBOOK_CACHE_S:=60}"
 # this Pi's own Wavelog, as the bridge reaches it (plain http, loopback only) and as a browser does
 : "${DXB_LOGBOOK_LOCAL_URL:=http://127.0.0.1:8083/}"
@@ -127,16 +134,17 @@ _dxb_lb_fingerprint() { jq -r '[.url, (.type // ""), .station_id, .slug] | join(
 # _dxb_lb_request URL MAX_S [post]: one request. The URL, headers and write-out are a curl config
 # on a pipe (-K), so nothing in them is in an argument; a post's body is stdin. https:// may only
 # be fetched (and redirected) over https; the local Wavelog's http:// over http too. Prints the
-# answer, then a last line with the HTTP code (000 when nothing answered).
+# answer, then a last line with the HTTP code (000 when nothing answered); exits with curl's
+# status. curl's own messages are dropped, never shown: a Cloudlog URL carries the key.
 _dxb_lb_request() {
   local url=$1 max=$2 p='=https'
   [[ $url == http://* ]] && p='=https,http'
   if [[ ${3:-} == post ]]; then
     "$DXB_LOGBOOK_CURL" -sS --connect-timeout 5 --max-time "$max" --proto "$p" --proto-redir "$p" -K <(
-      printf 'url = "%s"\nheader = "Content-Type: application/json"\nheader = "Accept: application/json"\ndata-binary = "@-"\nwrite-out = "\\n%%{http_code}"\n' "$url")
+      printf 'url = "%s"\nheader = "Content-Type: application/json"\nheader = "Accept: application/json"\ndata-binary = "@-"\nwrite-out = "\\n%%{http_code}"\n' "$url") 2> /dev/null
   else
     "$DXB_LOGBOOK_CURL" -sS --connect-timeout 5 --max-time "$max" --proto "$p" --proto-redir "$p" -K <(
-      printf 'url = "%s"\nwrite-out = "\\n%%{http_code}"\n' "$url") < /dev/null
+      printf 'url = "%s"\nwrite-out = "\\n%%{http_code}"\n' "$url") < /dev/null 2> /dev/null
   fi
 }
 
@@ -144,12 +152,28 @@ _dxb_lb_request() {
 # _LB_BODY. Called with its stdin redirected, never at the end of a pipe (it sets globals).
 _LB_CODE=000
 _LB_BODY=''
+_LB_CURL_RC=0
 _dxb_lb_call() {
   local out
-  out=$(_dxb_lb_request "$@")
+  out=$(_dxb_lb_request "$@"); _LB_CURL_RC=$?
   if [[ $out == *$'\n'* ]]; then _LB_CODE=${out##*$'\n'}; _LB_BODY=${out%$'\n'*}; else _LB_CODE=$out; _LB_BODY=''; fi
   [[ $_LB_CODE =~ ^[0-9]{3}$ ]] || _LB_CODE=000
   [[ $_LB_CODE != 000 ]]
+}
+
+# _dxb_lb_noanswer URL: why nothing answered, from curl's exit status (its own messages are not
+# shown: the URL may carry the key).
+_dxb_lb_noanswer() {
+  local why
+  case $_LB_CURL_RC in
+    6) why="its name could not be resolved" ;;
+    7) why="nothing answered on its port" ;;
+    28) why="it did not answer in time" ;;
+    35|51|53|54|58|59|60|77|80|83|90|91) why="the TLS connection failed (is its certificate valid?)" ;;
+    1) why="it would have needed a protocol other than https" ;;
+    *) why="curl exit $_LB_CURL_RC" ;;
+  esac
+  printf 'the logbook at %s did not answer: %s\n' "$1" "$why"
 }
 
 # _dxb_lb_reason: the server's own reason in _LB_BODY ("reason", or Wavelog's "messages"), as
@@ -188,31 +212,41 @@ _dxb_lb_detect() {
       return 6
     fi
   fi
-  if (( answered )); then err="no Wavelog or Cloudlog answered at $url"; else err="the server at $url did not answer"; fi
+  if (( answered )); then err="no Wavelog or Cloudlog answered at $url"; else err=$(_dxb_lb_noanswer "$url"); fi
   jq -cn --arg e "$err" '{ok: false, type: null, version: null, error: $e}'
   return 6
 }
 
 # ---- posting and the queue -----------------------------------------------------------------
 # _dxb_lb_post JSON FILE: post the ADIF record in FILE to the logbook. 0 the server took it, 1 it
-# read the record and refused it for good (Wavelog's 400 "abort", e.g. a duplicate: posting it
-# again would never succeed), 2 not posted (no answer, the key or station refused, the server
-# failing). The reason goes to stderr.
+# read the record and refused it for good (Wavelog's 400 "abort": a duplicate, or a station
+# callsign that differs from the station's; Cloudlog's 201 that imported nothing and says why),
+# 2 not posted (no answer, the key or station refused, the server failing). The reason goes to
+# stderr; a refusal's also into _LB_WHY (one line, the server's words).
+_LB_WHY=''
 # shellcheck disable=SC2016  # jq filters, not shell text
 _dxb_lb_post() {
   local c=$1 f=$2 url why
+  _LB_WHY=''
   url=$(jq -r .url <<< "$c")
   if ! _dxb_lb_call "${url}index.php/api/qso" 15 post < <(jq -c --rawfile adif "$f" '{key, station_profile_id: (.station_id // "1"), type: "adif", string: $adif}' <<< "$c"); then
-    echo "the logbook at $url did not answer" >&2; return 2
+    _dxb_lb_noanswer "$url" >&2; return 2
   fi
   why=$(_dxb_lb_reason)
   case $_LB_CODE in
     200|201)
-      jq -e '.status == "created" or .status == "ok"' <<< "$_LB_BODY" > /dev/null 2>&1 && return 0
+      if jq -e '.status == "created" or .status == "ok"' <<< "$_LB_BODY" > /dev/null 2>&1; then
+        # Cloudlog answers 201 "created" also when it imported nothing; a duplicate is in the log already
+        jq -e '(.imported_count? // 1) == 0' <<< "$_LB_BODY" > /dev/null 2>&1 || return 0
+        [[ ${why,,} != *duplicate* ]] || return 0
+        _LB_WHY=${why:-the logbook imported nothing}
+        echo "the logbook did not import the contact: $_LB_WHY" >&2; return 1
+      fi
       echo "the logbook did not take the contact${why:+: $why}" >&2; return 2 ;;
     400)
       if jq -e '.status == "abort"' <<< "$_LB_BODY" > /dev/null 2>&1; then
-        echo "the logbook refused the contact${why:+: $why}" >&2; return 1
+        _LB_WHY=${why:-the logbook refused the contact}
+        echo "the logbook refused the contact: $_LB_WHY" >&2; return 1
       fi ;;
   esac
   echo "the logbook answered HTTP $_LB_CODE${why:+: $why}" >&2
@@ -230,11 +264,12 @@ _dxb_lb_queue_files() {
 }
 _dxb_lb_queue_count() { _dxb_lb_queue_files "$1" | wc -l; }
 
-# _dxb_lb_lock_queue / _dxb_lb_unlock_queue: logbook-queue.lock (fd 6), held only while a name is
-# chosen and a file renamed. 0 locked (also without flock), 6 busy.
+# _dxb_lb_lock_queue / _dxb_lb_unlock_queue: the queue's own .lock (fd 6; in the queue directory,
+# which the sandboxed units may always write), held only while a name is chosen and a file
+# renamed. 0 locked (also without flock), 6 not (nothing was moved or removed).
 _dxb_lb_lock_queue() {
-  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
-  exec 6> "$DXB_RUN_DIR/logbook-queue.lock" || return 6
+  _dxb_lb_queue_dir || return 6
+  exec 6> "$(_dxb_lb_queue)/.lock" || return 6
   command -v flock > /dev/null 2>&1 || return 0
   flock -w 10 6 || { echo "the logbook queue is busy" >&2; return 6; }
 }
@@ -249,42 +284,72 @@ _dxb_lb_place() {
   chmod 600 "$1" && mv -f "$1" "$2/$e-$i.adi" && printf '%s\n' "$e-$i.adi"
 }
 
-# _dxb_lb_enqueue TMP: TMP (a checked record) into the queue, unless it holds DXB_LOGBOOK_MAX_QUEUE
-# contacts already (the oldest are kept). 0 queued, 6 not (TMP is removed).
+# _dxb_lb_enqueue TMP: TMP (a checked record, a .in.* file in the queue directory) into the queue,
+# unless it holds DXB_LOGBOOK_MAX_QUEUE contacts already (the oldest are kept: TMP is refused and
+# removed). 0 queued; 6 not - full, or the lock or rename failed, in which case TMP stays where it
+# is and the next flush adopts it.
 _dxb_lb_enqueue() {
   local q n name
   q=$(_dxb_lb_queue)
-  _dxb_lb_lock_queue || { rm -f "$1"; return 6; }
+  _dxb_lb_lock_queue || { echo "could not lock the logbook queue; the contact waits in $1 for the next flush" >&2; return 6; }
   n=$(_dxb_lb_queue_count "$q")
   if (( n >= DXB_LOGBOOK_MAX_QUEUE )); then
     _dxb_lb_unlock_queue; rm -f "$1"
     echo "the logbook queue is full ($DXB_LOGBOOK_MAX_QUEUE contacts wait for the server); this contact was not kept" >&2
     return 6
   fi
-  name=$(_dxb_lb_place "$1" "$q") || { _dxb_lb_unlock_queue; rm -f "$1"; echo "could not queue the contact in $q" >&2; return 6; }
+  name=$(_dxb_lb_place "$1" "$q") || { _dxb_lb_unlock_queue; echo "could not queue the contact; it waits in $1 for the next flush" >&2; return 6; }
   _dxb_lb_unlock_queue
   dxb_info "logbook: contact queued ($name)"
 }
 
-# _dxb_lb_set_aside FILE: a contact the server refused for good goes to the queue's refused/
-# directory (the newest DXB_LOGBOOK_MAX_REFUSED are kept), out of the queue's way. Always 0.
+# _dxb_lb_set_aside FILE WHY: a contact the server refused for good goes to the queue's refused/
+# directory, the server's reason WHY beside it (<name>.why, one line), out of the queue's way.
+# Nothing there is ever deleted. 0 set aside; 1 not - refused/ holds DXB_LOGBOOK_MAX_REFUSED
+# already, or it could not be made, locked or written - and FILE is left exactly where it was.
 _dxb_lb_set_aside() {
-  local r name old
+  local r name why
   r=$(_dxb_lb_queue)/refused
-  { ( umask 077; mkdir -p "$r" ) && chmod 700 "$r"; } 2> /dev/null || { rm -f "$1"; return 0; }
-  _dxb_lb_lock_queue || { rm -f "$1"; return 0; }
-  name=$(_dxb_lb_place "$1" "$r") || rm -f "$1"
-  while IFS= read -r old; do rm -f "${r:?}/$old"; done < <(_dxb_lb_queue_files "$r" | head -n "-$DXB_LOGBOOK_MAX_REFUSED")
+  why=$(printf '%s' "$2" | tr -s '[:cntrl:]' ' ' | head -c 300)
+  { ( umask 077; mkdir -p "$r" ) && chmod 700 "$r"; } 2> /dev/null || { echo "could not create $r" >&2; return 1; }
+  _dxb_lb_lock_queue || return 1
+  if (( $(_dxb_lb_queue_count "$r") >= DXB_LOGBOOK_MAX_REFUSED )); then
+    _dxb_lb_unlock_queue
+    echo "$DXB_LOGBOOK_MAX_REFUSED refused contacts are kept in $r already; this one stays queued (check the station callsign in the program and in the logbook)" >&2
+    return 1
+  fi
+  name=$(_dxb_lb_place "$1" "$r") || { _dxb_lb_unlock_queue; echo "could not move the refused contact to $r" >&2; return 1; }
+  ( umask 077; printf '%s\n' "$why" > "$r/${name%.adi}.why" ) 2> /dev/null || dxb_warn "logbook: could not write the reason for $r/$name"
   _dxb_lb_unlock_queue
-  [[ -z ${name:-} ]] || dxb_warn "logbook: the refused contact is kept as $r/$name"
+  dxb_warn "logbook: the refused contact is kept as $r/$name"
+  return 0
+}
+
+# _dxb_lb_adopt: a submit's temp file (.in.*) older than DXB_LOGBOOK_STALE_MIN minutes belongs to
+# a submit that was killed while it posted (a bridge restart, a shutdown): into the queue with it.
+# One that holds no contact (cut off while it was read) is removed. Under the queue lock. Always 0.
+_dxb_lb_adopt() {
+  local q f name
+  q=$(_dxb_lb_queue)
+  [[ -d $q ]] || return 0
+  _dxb_lb_lock_queue || return 0
+  while IFS= read -r f; do
+    if grep -qi '<call:' "$f" 2> /dev/null; then
+      name=$(_dxb_lb_place "$f" "$q") && dxb_info "logbook: adopted a contact a stopped submit left ($name)"
+    else
+      rm -f "$f"
+    fi
+  done < <(find "$q" -maxdepth 1 -type f -name '.in.*' -mmin "+$DXB_LOGBOOK_STALE_MIN" 2> /dev/null)
+  _dxb_lb_unlock_queue
   return 0
 }
 
 # dxb_logbook_submit: one ADIF record on stdin (a datagram from WSJT-X or JS8Call). A record that
 # is not UTF-8 is read as Latin-1 (WSJT-X sends Latin-1). Posted when a logbook is set; queued
 # when none is set or the server does not take it; set aside when the server refuses it for
-# good. 0 posted, queued or set aside; 6 refused (over DXB_LOGBOOK_MAX_RECORD bytes, no contact
-# in it, the queue full or not writable).
+# good (queued when refused/ is full). 0 posted, queued or set aside; 6 refused (over
+# DXB_LOGBOOK_MAX_RECORD bytes, no contact in it, the queue full) or left for the next flush to
+# adopt (the queue could not be locked or written).
 dxb_logbook_submit() {
   local q tmp u size c rc
   _dxb_lb_queue_dir || return 6
@@ -307,16 +372,17 @@ dxb_logbook_submit() {
     _dxb_lb_post "$c" "$tmp"; rc=$?
     case $rc in
       0) rm -f "$tmp"; return 0 ;;
-      1) _dxb_lb_set_aside "$tmp"; return 0 ;;
+      1) _dxb_lb_set_aside "$tmp" "$_LB_WHY" && return 0 ;;
     esac
   fi
   _dxb_lb_enqueue "$tmp"
 }
 
 # dxb_logbook_flush: post the queued contacts, oldest first, stopping at the first that is not
-# posted; a contact the server refuses for good is set aside and the flush goes on. Nothing to
-# do without a logbook, or while another flush runs. 0 the queue is empty (or nothing to do), 6
-# contacts still wait.
+# posted; a contact the server refuses for good is set aside and the flush goes on (when it cannot
+# be set aside - refused/ full - it stays queued and the flush stops). A killed submit's temp file
+# is adopted first. Nothing to do without a logbook, or while another flush runs. 0 the queue is
+# empty (or nothing to do), 6 contacts still wait.
 dxb_logbook_flush() {
   local c q name n=0 left rc
   c=$(dxb_logbook_stored) || return 0
@@ -327,12 +393,16 @@ dxb_logbook_flush() {
   if command -v flock > /dev/null 2>&1 && ! flock -n 5; then
     dxb_info "logbook: another flush is running"; exec 5>&-; return 0
   fi
+  _dxb_lb_adopt
   while IFS= read -r name; do
     [[ -f $q/$name ]] || continue
     _dxb_lb_post "$c" "$q/$name"; rc=$?
     case $rc in
       0) rm -f "${q:?}/$name"; n=$(( n + 1 )) ;;
-      1) _dxb_lb_set_aside "$q/$name" ;;
+      1) _dxb_lb_set_aside "$q/$name" "$_LB_WHY" && continue
+         left=$(_dxb_lb_queue_count "$q")
+         echo "$left queued contacts wait for the logbook" >&2
+         exec 5>&-; return 6 ;;
       *) left=$(_dxb_lb_queue_count "$q")
          echo "$left queued contacts wait for the logbook; they are posted again within five minutes" >&2
          exec 5>&-; return 6 ;;
@@ -387,7 +457,7 @@ _dxb_lb_recent_cloudlog() {
   local c=$1 url slug why
   url=$(jq -r .url <<< "$c"); slug=$(jq -r .slug <<< "$c")
   [[ -n $slug ]] || { _dxb_lb_answer cloudlog "Cloudlog shows recent contacts only for a logbook with a public slug: set it under Logbook"; return 0; }
-  _dxb_lb_call "${url}index.php/api/recent_qsos/$slug/25" 15 || { _dxb_lb_answer cloudlog "the logbook at $url did not answer"; return 0; }
+  _dxb_lb_call "${url}index.php/api/recent_qsos/$slug/25" 15 || { _dxb_lb_answer cloudlog "$(_dxb_lb_noanswer "$url")"; return 0; }
   why=$(_dxb_lb_reason)
   if [[ $_LB_CODE == 404 && ( $why == 'No QSOs found' || $why == 'Empty Logbook' ) ]]; then
     jq -cn '{ok: true, type: "cloudlog", contacts: [], error: null}'; return 0
@@ -408,16 +478,18 @@ _dxb_lb_recent_cloudlog() {
 _dxb_lb_recent_wavelog() {
   local c=$1 fp=$2 st url last=0 old='[]' merged next why tmp
   st=$(_dxb_lb_wavelog_state); url=$(jq -r .url <<< "$c")
-  if [[ -f $st ]] && jq -e --arg fp "$fp" '.for == $fp and (.lastfetchedid | type) == "number" and (.contacts | type) == "array"' "$st" > /dev/null 2>&1; then
-    last=$(jq -r '.lastfetchedid | floor' "$st"); old=$(jq -c '.contacts[:25]' "$st")
+  if [[ -f $st ]] && jq -e --arg fp "$fp" '.for == $fp and (.lastfetchedid | tostring | test("^[0-9]+$")) and (.contacts | type) == "array"' "$st" > /dev/null 2>&1; then
+    last=$(jq -r '.lastfetchedid | tostring | tonumber' "$st"); old=$(jq -c '.contacts[:25]' "$st")
   fi
   _dxb_lb_call "${url}index.php/api/get_contacts_adif" 60 post < <(jq -c --argjson f "$last" '{key, station_id, fetchfromid: $f}' <<< "$c") \
-    || { _dxb_lb_answer wavelog "the logbook at $url did not answer"; return 0; }
+    || { _dxb_lb_answer wavelog "$(_dxb_lb_noanswer "$url")"; return 0; }
   why=$(_dxb_lb_reason)
-  if [[ $_LB_CODE != 200 ]] || ! jq -e '.status == "successful" and (.lastfetchedid | type) == "number"' <<< "$_LB_BODY" > /dev/null 2>&1; then
+  if [[ $_LB_CODE != 200 ]] || ! jq -e '.status == "successful" and (.lastfetchedid | tostring | test("^[0-9]+$"))' <<< "$_LB_BODY" > /dev/null 2>&1; then
     _dxb_lb_answer wavelog "the logbook answered HTTP $_LB_CODE${why:+: $why}"; return 0
   fi
-  next=$(jq -r '.lastfetchedid | floor' <<< "$_LB_BODY")
+  # Wavelog's export answer carries the id as a string (max() of the database row's value), its
+  # "no new QSOs" answer as the number that was sent: both are read
+  next=$(jq -r '.lastfetchedid | tostring | tonumber' <<< "$_LB_BODY")
   merged=$(jq -r '.adif // ""' <<< "$_LB_BODY" | _dxb_lb_adif_tsv | jq -Rnc --argjson old "$old" '
     [inputs | split("\t") | select(length == 7)
       | {time_utc: .[0], call: .[1], band: .[2], mode: .[3], rst_sent: .[4], rst_rcvd: .[5], grid: .[6]}] as $new
@@ -484,7 +556,7 @@ dxb_logbook_fldigi_follow_stopped() {
       ( dxb_app_load "$a" && declare -F "app_${a}_logbook_follow" ) > /dev/null 2>&1 || continue
       u=$(dxb_app_session_unit "$a" "$r")
       [[ $("$DXB_SYSTEMCTL" is-enabled "$u" 2> /dev/null) == enabled ]] || continue
-      "$DXB_SYSTEMCTL" is-active --quiet "$u" 2> /dev/null && continue
+      case $("$DXB_SYSTEMCTL" is-active "$u" 2> /dev/null) in active|activating|reloading|deactivating) continue ;; esac
       while IFS= read -r l; do
         [[ $l == "kept "* ]] && kept+=("$r: ${l#kept }")
       done < <(dxb_screen_logbook_follow "$a-$r")

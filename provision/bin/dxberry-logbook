@@ -37,20 +37,29 @@ local_wavelog() {
   jq -cn --arg u "$DXB_LOGBOOK_LOCAL_URL" --arg a "$addr" '{installed: true, url: $u, web: (if $a == "" then null else "https://" + $a + ":8082/" end)}'
 }
 
+# refused_reason: the server's reason for the newest refused contact (refused/<name>.why), or nothing.
+refused_reason() {
+  local d n
+  d=$(_dxb_lb_queue)/refused
+  n=$(_dxb_lb_queue_files "$d" | tail -n 1)
+  [[ -n $n && -f $d/${n%.adi}.why ]] && head -n 1 "$d/${n%.adi}.why"
+}
+
 cmd_get() {
-  local c q r l j
+  local c q r w l j
   q=$(_dxb_lb_queue_count "$(_dxb_lb_queue)"); r=$(_dxb_lb_queue_count "$(_dxb_lb_queue)/refused"); l=$(local_wavelog)
+  w=$(refused_reason)
   if c=$(dxb_logbook_stored); then
-    j=$(jq -c --argjson q "$q" --argjson r "$r" --argjson l "$l" \
-      '{configured: true, url, type: (.type // null), station_id, slug: (.slug // ""), key: (if (.key // "") != "" then "set" else null end), queue: $q, refused: $r, local: $l}' <<< "$c")
+    j=$(jq -c --argjson q "$q" --argjson r "$r" --arg w "$w" --argjson l "$l" \
+      '{configured: true, url, type: (.type // null), station_id, slug: (.slug // ""), key: (if (.key // "") != "" then "set" else null end), queue: $q, refused: $r, refused_reason: (if $w == "" then null else $w end), local: $l}' <<< "$c")
   else
-    j=$(jq -cn --argjson q "$q" --argjson r "$r" --argjson l "$l" \
-      '{configured: false, url: null, type: null, station_id: null, slug: null, key: null, queue: $q, refused: $r, local: $l}')
+    j=$(jq -cn --argjson q "$q" --argjson r "$r" --arg w "$w" --argjson l "$l" \
+      '{configured: false, url: null, type: null, station_id: null, slug: null, key: null, queue: $q, refused: $r, refused_reason: (if $w == "" then null else $w end), local: $l}')
   fi
   if (( JSON )); then printf '%s\n' "$j"; return 0; fi
   jq -r '(if .configured then "logbook: \(.url) (\(.type // "?")), station \(.station_id)\(if .slug != "" then ", public slug \(.slug)" else "" end), key \(.key // "not set")"
           else "logbook: not set" end),
-    "queued contacts: \(.queue)\(if .refused > 0 then " (\(.refused) refused by the server, kept)" else "" end)",
+    "queued contacts: \(.queue)\(if .refused > 0 then " (\(.refused) refused by the server, kept; the last because: \(.refused_reason // "?"))" else "" end)",
     (if .local.installed then "this Pi'\''s Wavelog: \(.local.web // "port 8082") (choose \(.local.url) as the logbook)" else empty end)' <<< "$j"
 }
 

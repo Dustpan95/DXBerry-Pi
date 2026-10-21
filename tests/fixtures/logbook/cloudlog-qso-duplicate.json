@@ -1,0 +1,6 @@
+# Cloudlog 2.8.20 (tag 2.8.20, commit 1676e1123e34988e29a759d1381a3b485c68d2aa), the answer of
+# POST index.php/api/qso for a contact that is in the log already:
+#   application/controllers/Api.php qso(), lines 334-344: the import's message goes into
+#   messages and imported_count stays 0, yet the answer is still HTTP 201 "created"; the message
+#   is application/models/Logbook_model.php import(), line 4986 ("  Duplicate<br>").
+{"status":"created","type":"adif","string":"<call:5>K0ABC <gridsquare:4>EM28 <mode:3>FT8 <rst_sent:3>-10 <rst_rcvd:3>-12 <qso_date:8>20261020 <time_on:6>170400 <qso_date_off:8>20261020 <time_off:6>170500 <band:3>20m <freq:9>14.075500 <station_callsign:5>W0BTE <my_gridsquare:6>EM28qv <eor>","imported_count":0,"messages":["Date\/Time: 2026-10-20 17:04:00 Callsign: K0ABC Band: 20m  Duplicate<br>"]}

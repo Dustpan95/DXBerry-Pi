@@ -9,6 +9,8 @@ StartLimitBurst=3
 Type=oneshot
 # root: it reads the key in the 0600 logbook.json
 ExecStart=/opt/dxberry/bin/dxberry-logbook flush
+# 6: contacts still wait for the server (the timer tries again); not a failed unit
+SuccessExitStatus=6
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/dxberry -/run/dxberry

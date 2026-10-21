@@ -1,0 +1,6 @@
+# Cloudlog 2.8.20 (tag 2.8.20, commit 1676e1123e34988e29a759d1381a3b485c68d2aa), the answer of
+# POST index.php/api/qso when the import reported a problem with the record:
+#   application/controllers/Api.php qso(), lines 334-344: any message from import() keeps the
+#   contact out of imported_count, and the answer is still HTTP 201 "created"; this message is
+#   application/models/Logbook_model.php import(), line 4597 (an RX_PWR that is not a number).
+{"status":"created","type":"adif","string":"<call:5>K0ABC <rx_pwr:2>5W <eor>","imported_count":0,"messages":["Error QSO: Date: 2026-10-20 17:04:00 Callsign: K0ABC RX_PWR (5W) is not a number<br>"]}
