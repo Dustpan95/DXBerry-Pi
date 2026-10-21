@@ -675,7 +675,7 @@ Decisions made while planning the build, in plain words:
 10. Wavelog on the Pi gets its web server, PHP and database installed and a
     database account that needs no password; the first user is created in
     Wavelog's own installer, which only a logged-in console user can reach.
-    PHP is installed by Debian's current-version package names.
+    PHP is installed by Debian's package names without a version number.
 11. Installing the web server never takes port 80 from Cockpit: it is kept
     from starting during install, Debian's default site is removed, and it
     serves only DXBerry's own sites.

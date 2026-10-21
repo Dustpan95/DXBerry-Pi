@@ -71,18 +71,26 @@ dxb_webproxy_cert() {
   printf '%s\n%s\n' "$best" "${best%.cert}.key"
 }
 
-# dxb_webproxy_site NAME [PLACEHOLDER=VALUE...]: render nginx-NAME.conf (CERT and KEY: Cockpit's
-# certificate; the site's own placeholders as given) into sites-available/dxberry-NAME.conf,
-# enable it, check nginx's configuration and reload. A failing check unlinks the site again. 0
-# ok, 6 failed.
-dxb_webproxy_site() {
-  local name=$1 cert key avail enabled content
+# dxb_webproxy_render NAME [PLACEHOLDER=VALUE...]: nginx-NAME.conf with CERT and KEY (Cockpit's
+# certificate) and the site's own placeholders filled in, on stdout. 6 failed.
+dxb_webproxy_render() {
+  local name=$1 cert key
   local -a pair
   shift
   [[ $name =~ ^[a-z][a-z0-9_]{0,15}$ ]] || { echo "not a site name: $name" >&2; return 6; }
   mapfile -t pair < <(dxb_webproxy_cert) && (( ${#pair[@]} == 2 )) || return 6
   cert=${pair[0]}; key=${pair[1]}
-  content=$(dxb_render "$DXB_TEMPLATES/nginx-$name.conf" "CERT=$cert" "KEY=$key" "$@") || { echo "could not render the $name site" >&2; return 6; }
+  dxb_render "$DXB_TEMPLATES/nginx-$name.conf" "CERT=$cert" "KEY=$key" "$@" || { echo "could not render the $name site" >&2; return 6; }
+}
+
+# dxb_webproxy_site NAME [PLACEHOLDER=VALUE...]: render nginx-NAME.conf (CERT and KEY: Cockpit's
+# certificate; the site's own placeholders as given) into sites-available/dxberry-NAME.conf,
+# enable it, check nginx's configuration and reload. A failing check unlinks the site again. 0
+# ok, 6 failed.
+dxb_webproxy_site() {
+  local name=$1 avail enabled content
+  shift
+  content=$(dxb_webproxy_render "$name" "$@") || return 6
   avail=$DXB_NGINX_DIR/sites-available/dxberry-$name.conf; enabled=$DXB_NGINX_DIR/sites-enabled/dxberry-$name.conf
   mkdir -p "$DXB_NGINX_DIR/sites-available" "$DXB_NGINX_DIR/sites-enabled" || return 6
   dxb_write_if_changed "$avail" "$content" 644
@@ -93,6 +101,44 @@ dxb_webproxy_site() {
     echo "nginx rejected the $name site; it is not enabled" >&2
     return 6
   fi
+  "$DXB_SYSTEMCTL" reload nginx || { echo "nginx could not reload with the $name site" >&2; return 6; }
+  return 0
+}
+
+# dxb_webproxy_site_stale NAME [PLACEHOLDER=VALUE...]: 0 when the installed site differs from what
+# would be rendered now, or Cockpit's certificate or key is newer than the site file (renewed in
+# place); 1 when it is current. 6 when it cannot be rendered.
+dxb_webproxy_site_stale() {
+  local name=$1 avail content cert key
+  local -a pair
+  shift
+  avail=$DXB_NGINX_DIR/sites-available/dxberry-$name.conf
+  content=$(dxb_webproxy_render "$name" "$@") || return 6
+  [[ -f $avail && $(< "$avail") == "$content" ]] || return 0
+  mapfile -t pair < <(dxb_webproxy_cert); cert=${pair[0]:-}; key=${pair[1]:-}
+  [[ -n $cert && ( $cert -nt $avail || $key -nt $avail ) ]]
+}
+
+# dxb_webproxy_site_refresh NAME [PLACEHOLDER=VALUE...]: render the site again over an enabled one.
+# Unlike dxb_webproxy_site, a failing nginx check puts the previous file back and keeps the
+# link: a working site is never turned off. The site file's time is set to now, so a certificate
+# that was renewed in place counts as picked up. 0 ok, 6 failed (the old site stays).
+dxb_webproxy_site_refresh() {
+  local name=$1 avail old
+  shift
+  avail=$DXB_NGINX_DIR/sites-available/dxberry-$name.conf
+  [[ -f $avail && -e $DXB_NGINX_DIR/sites-enabled/dxberry-$name.conf ]] || { echo "the $name site is not enabled" >&2; return 6; }
+  old=$(< "$avail")
+  local content
+  content=$(dxb_webproxy_render "$name" "$@") || return 6
+  dxb_write_if_changed "$avail" "$content" 644
+  [[ $(< "$avail") == "$content" ]] || { echo "could not write $avail" >&2; return 6; }
+  if ! "$DXB_NGINX" -t >&2; then
+    dxb_write_if_changed "$avail" "$old" 644
+    echo "nginx rejected the new $name site; the previous one stays" >&2
+    return 6
+  fi
+  touch "$avail"
   "$DXB_SYSTEMCTL" reload nginx || { echo "nginx could not reload with the $name site" >&2; return 6; }
   return 0
 }

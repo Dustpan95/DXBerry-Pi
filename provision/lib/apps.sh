@@ -29,6 +29,7 @@
 : "${DXB_SYSTEMCTL:=systemctl}"
 : "${DXB_SYSTEMD_DIR:=/etc/systemd/system}"
 : "${DXB_TMPFILES_DIR:=/etc/tmpfiles.d}"
+: "${DXB_SYSTEMD_TMPFILES:=systemd-tmpfiles}"
 : "${DXB_NGINX_DIR:=/etc/nginx}"
 # runs a command as dxbapps: runuser -u dxbapps -- CMD... (a downloaded AppImage unpacks itself
 # this way, never as root)
@@ -592,13 +593,16 @@ _dxb_apps_remove() {
 # that fails; nginx is never installed here). It never installs or upgrades a program and never
 # rewrites a program's settings. A failure is a failed step named apps.
 provision_apps() {
-  local t content dest changed=0 rows n=0 name site msg
+  local t content dest changed=0 rows n=0 name site msg line rc noun=programs
+  local -a extra
   if ! msg=$(dxb_apps_user_ensure 2>&1); then
     dxb_step_failed apps "${msg:-the program user could not be set up}"
     return 1
   fi
+  # non-fatal complaints of the user step are warnings
+  while IFS= read -r line; do [[ -z $line ]] || dxb_warn "apps: $line"; done <<< "$msg"
   mkdir -p "$DXB_SYSTEMD_DIR" "$DXB_TMPFILES_DIR" 2> /dev/null
-  for t in dxberry-screen@.service dxberry-ardop@.service dxberry-logbridge.service dxberry-logbook-flush.service dxberry-logbook-flush.timer; do
+  for t in dxberry-screen@.service dxberry-ardop@.service; do
     content=$(< "$DXB_TEMPLATES/$t") || { dxb_step_failed apps "the $t template is missing"; return 1; }
     dest=$DXB_SYSTEMD_DIR/$t
     if dxb_write_if_changed "$dest" "$content" 644; then
@@ -612,11 +616,13 @@ provision_apps() {
     [[ -f $dest && $(< "$dest") == "$content" ]] || { dxb_step_failed apps "could not write $dest"; return 1; }
     changed=1
   fi
+  _dxb_logbook_install_units || return 1
+  (( DXB_LB_UNITS_CHANGED )) && changed=1
   if (( changed )); then
     "$DXB_SYSTEMCTL" daemon-reload || { dxb_step_failed apps "systemctl daemon-reload failed"; return 1; }
-    systemd-tmpfiles --create "$dest" 2> /dev/null || dxb_warn "systemd-tmpfiles could not create the program directories from $dest"
+    "$DXB_SYSTEMD_TMPFILES" --create "$dest" 2> /dev/null || dxb_warn "systemd-tmpfiles could not create the program directories from $dest"
   fi
-  provision_logbook || return 1
+  provision_logbook --installed || return 1
   if rows=$(dxb_apps_rows 2> /dev/null); then
     while IFS= read -r name; do
       dxb_apps_installed "$name" && n=$((n + 1))
@@ -629,13 +635,19 @@ provision_apps() {
       site=$DXB_NGINX_DIR/sites-enabled/dxberry-$name.conf
       [[ -e $site ]] || continue
       dxb_apps_installed "$name" || continue
-      if [[ $name == wavelog ]]; then
-        dxb_webproxy_site wavelog "ROOT=$DXB_APPS_OPT/wavelog" || dxb_warn "apps: the $name nginx site could not be re-rendered"
+      extra=()
+      [[ $name == wavelog ]] && extra=("ROOT=$DXB_APPS_OPT/wavelog")
+      # only when the site differs from what would be rendered now, or the certificate is newer
+      dxb_webproxy_site_stale "$name" "${extra[@]}"; rc=$?
+      (( rc == 1 )) && continue
+      if (( rc == 0 )); then
+        dxb_webproxy_site_refresh "$name" "${extra[@]}" || dxb_warn "apps: the $name nginx site could not be re-rendered"
       else
-        dxb_webproxy_site "$name" || dxb_warn "apps: the $name nginx site could not be re-rendered"
+        dxb_warn "apps: the $name nginx site could not be rendered"
       fi
     done
   fi
-  dxb_status_add "apps: $n programs installed (manage them on the DXBerry page)"
+  (( n == 1 )) && noun=program
+  dxb_status_add "apps: $n $noun installed (manage them on the DXBerry page)"
   return 0
 }

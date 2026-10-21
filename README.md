@@ -118,9 +118,9 @@ Besides Graywolf, the DXBerry page can install the ham programs you run on a rad
 fldigi, flrig, QSSTV, Pat (Winlink email), and Wavelog (a logbook that lives on this Pi). Nothing is
 installed until you ask: the Programs card lists them, and **Install** and **Remove** work like the
 Updates card, as a background job whose output the page shows. Programs always come from their newest
-release, and **Update** on the card brings them up to date.
+release, and the Updates card brings them up to date.
 
-Give a program a radio from its card and it opens in its own browser tab through the console, so you
+Choose a program for a radio with **Switch program** on the radio's card and it opens in its own browser tab through the console, so you
 use it as if it were a window on the Pi, signed in with the same login as the console. Each radio keeps
 its own copy of a program, set up with your callsign and grid square and wired to that radio's sound
 card and rig control, so two radios can run two copies side by side. Pat and QSSTV can only be given

@@ -570,18 +570,30 @@ dxb_logbook_fldigi_follow_stopped() {
 # only when one changed); the timer enabled and started; the bridge enabled, and started now when
 # socat is installed (it comes with the first program that has a screen session; the unit waits
 # for it: ConditionPathExists). A failure is a failed step named apps (provision_apps runs this).
-provision_logbook() {
-  local t content dest changed=0 c
+# _dxb_logbook_install_units: the three units written when they differ; DXB_LB_UNITS_CHANGED=1 when
+# one was. The one place they are installed. 0 ok, 1 failed (the step is marked).
+_dxb_logbook_install_units() {
+  local t content dest
+  DXB_LB_UNITS_CHANGED=0
   mkdir -p "$DXB_SYSTEMD_DIR" 2> /dev/null
   for t in dxberry-logbridge.service dxberry-logbook-flush.service dxberry-logbook-flush.timer; do
     content=$(< "$DXB_TEMPLATES/$t") || { dxb_step_failed apps "the $t template is missing"; return 1; }
     dest=$DXB_SYSTEMD_DIR/$t
     if dxb_write_if_changed "$dest" "$content" 644; then
       [[ $(< "$dest") == "$content" ]] || { dxb_step_failed apps "could not write $dest"; return 1; }
-      changed=1
+      DXB_LB_UNITS_CHANGED=1
     fi
   done
-  if (( changed )); then systemctl daemon-reload || { dxb_step_failed apps "systemctl daemon-reload failed"; return 1; }; fi
+  return 0
+}
+
+# (provision_apps passes --installed after it wrote the units and reloaded systemd itself)
+provision_logbook() {
+  local c
+  if [[ ${1:-} != --installed ]]; then
+    _dxb_logbook_install_units || return 1
+    if (( DXB_LB_UNITS_CHANGED )); then systemctl daemon-reload || { dxb_step_failed apps "systemctl daemon-reload failed"; return 1; }; fi
+  fi
   systemctl enable --now dxberry-logbook-flush.timer > /dev/null 2>&1 || dxb_step_failed apps "could not enable dxberry-logbook-flush.timer"
   if [[ -x $DXB_SOCAT ]]; then
     systemctl enable --now dxberry-logbridge.service > /dev/null 2>&1 || dxb_step_failed apps "could not start dxberry-logbridge.service"

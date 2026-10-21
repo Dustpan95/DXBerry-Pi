@@ -614,7 +614,7 @@ test_provision_apps_installs_every_template_once_and_installs_no_program() {
   done
   assert_eq "$(cat "$DXB_TMPFILES_DIR/dxberry-apps.conf")" "$(cat "$DXB_ROOT/provision/templates/dxberry-apps.tmpfiles")"
   assert_file_contains "$TEST_TMP/calls" "account -aG"                                # dxb_apps_user_ensure ran first
-  assert_file_contains "$TEST_TMP/calls" "systemctl daemon-reload"
+  assert_eq "$(grep -c 'systemctl daemon-reload' "$TEST_TMP/calls")" "1"
   assert_file_contains "$TEST_TMP/calls" "systemd-tmpfiles --create $DXB_TMPFILES_DIR/dxberry-apps.conf"
   assert_file_contains "$TEST_TMP/calls" "systemctl enable --now dxberry-logbook-flush.timer"
   assert_file_not_contains "$TEST_TMP/calls" "apt-get"                                 # no program is installed or upgraded
@@ -643,25 +643,76 @@ test_provision_apps_a_failure_is_a_failed_step_named_apps() (
   assert_contains "${DXB_FAILED_STEPS[0]}" "apps: "
 )
 
-# shellcheck disable=SC2317  # the stubs are called by provision_apps
-test_provision_apps_rerenders_the_nginx_site_of_an_installed_program() (
+# pv_nginx_scene: Pat installed behind a working nginx site (Cockpit's certificate under $TEST_TMP/certs);
+# nginx and its checks are recorded in calls, and the check fails while $TEST_TMP/nginx-bad exists.
+# shellcheck disable=SC2317  # called through the DXB_NGINX override and by provision_apps
+pv_nginx() { echo "nginx $*" >> "$TEST_TMP/calls"; [[ ! -f $TEST_TMP/nginx-bad ]]; }
+pv_nginx_scene() {
   full_env; provision_cfg 'PASSWORD=examplepass'
-  mkdir -p "$DXB_NGINX_DIR/sites-enabled"
-  : > "$DXB_NGINX_DIR/sites-enabled/dxberry-pat.conf"
-  dxb_webproxy_site() { echo "site $*" >> "$TEST_TMP/calls"; }
-  dpkg-query() { case ${*: -1} in nginx|pat) printf 'installed 1.26' ;; cockpit*) printf installed ;; *) return 1 ;; esac; }
-  provision_apps
-  assert_file_contains "$TEST_TMP/calls" "site pat"
-  assert_file_not_contains "$TEST_TMP/calls" "apt-get"
-  # nginx not installed: nothing is rendered (and nothing installs it)
-  dpkg-query() { [[ $* == *cockpit* ]] || return 1; printf installed; }
+  export DXB_NGINX=pv_nginx DXB_COCKPIT_CERTS=$TEST_TMP/certs
+  mkdir -p "$DXB_COCKPIT_CERTS"
+  echo cert > "$DXB_COCKPIT_CERTS/0-self-signed.cert"; echo key > "$DXB_COCKPIT_CERTS/0-self-signed.key"
+  dxb_webproxy_site pat > /dev/null 2>&1
+  touch -d '1 hour ago' "$DXB_COCKPIT_CERTS"/0-self-signed.* 
   : > "$TEST_TMP/calls"
-  provision_apps
-  assert_file_not_contains "$TEST_TMP/calls" "site pat"
-  # a render failure is a warning, not a failed step
-  dpkg-query() { case ${*: -1} in nginx|pat) printf 'installed 1.26' ;; cockpit*) printf installed ;; *) return 1 ;; esac; }
-  dxb_webproxy_site() { return 6; }
-  DXB_FAILED_STEPS=()
+}
+# shellcheck disable=SC2317
+pv_pat_nginx_dpkg() { dpkg-query() { case ${*: -1} in nginx|pat) printf 'installed 1.26' ;; cockpit*) printf installed ;; *) return 1 ;; esac; }; }
+
+test_provision_apps_leaves_a_current_site_alone() (
+  pv_nginx_scene; pv_pat_nginx_dpkg
   provision_apps 2> /dev/null
+  assert_file_not_contains "$TEST_TMP/calls" "nginx -t"
+  assert_file_not_contains "$TEST_TMP/calls" "reload nginx"
+  assert_file_not_contains "$TEST_TMP/calls" "apt-get"
   assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
+)
+
+test_provision_apps_picks_up_a_renewed_certificate_once() (
+  pv_nginx_scene; pv_pat_nginx_dpkg
+  touch "$DXB_COCKPIT_CERTS/0-self-signed.cert"
+  provision_apps 2> /dev/null
+  assert_eq "$(grep -c 'reload nginx' "$TEST_TMP/calls")" "1"
+  : > "$TEST_TMP/calls"
+  provision_apps 2> /dev/null
+  assert_file_not_contains "$TEST_TMP/calls" "reload nginx"
+)
+
+test_provision_apps_rerenders_a_site_whose_template_changed() (
+  pv_nginx_scene; pv_pat_nginx_dpkg
+  echo '# old' >> "$DXB_NGINX_DIR/sites-available/dxberry-pat.conf"
+  provision_apps 2> /dev/null
+  assert_eq "$(grep -c 'reload nginx' "$TEST_TMP/calls")" "1"
+  assert_file_not_contains "$DXB_NGINX_DIR/sites-available/dxberry-pat.conf" "# old"
+)
+
+test_provision_apps_a_rejected_refresh_keeps_the_old_site_and_only_warns() (
+  pv_nginx_scene; pv_pat_nginx_dpkg
+  local avail=$DXB_NGINX_DIR/sites-available/dxberry-pat.conf before
+  echo '# old' >> "$avail"; before=$(< "$avail")
+  : > "$TEST_TMP/nginx-bad"
+  provision_apps 2> /dev/null
+  assert_eq "$(< "$avail")" "$before"
+  [[ -e $DXB_NGINX_DIR/sites-enabled/dxberry-pat.conf ]] || _fail "the site link was removed"
+  assert_file_not_contains "$TEST_TMP/calls" "reload nginx"
+  assert_eq "${#DXB_FAILED_STEPS[@]}" "0"
+  # the helper itself says 6
+  dxb_webproxy_site_refresh pat 2> /dev/null; assert_eq "$?" "6"
+  [[ -e $DXB_NGINX_DIR/sites-enabled/dxberry-pat.conf ]] || _fail "the site link was removed by the helper"
+)
+
+# shellcheck disable=SC2317
+test_provision_apps_skips_a_disabled_site_and_missing_nginx() (
+  pv_nginx_scene; pv_pat_nginx_dpkg
+  echo '# old' >> "$DXB_NGINX_DIR/sites-available/dxberry-pat.conf"
+  rm "$DXB_NGINX_DIR/sites-enabled/dxberry-pat.conf"
+  provision_apps 2> /dev/null
+  assert_file_not_contains "$TEST_TMP/calls" "nginx"
+  # nginx not installed, Pat still is
+  ln -s "$DXB_NGINX_DIR/sites-available/dxberry-pat.conf" "$DXB_NGINX_DIR/sites-enabled/dxberry-pat.conf"
+  dpkg-query() { case ${*: -1} in pat) printf 'installed 1.26' ;; cockpit*) printf installed ;; *) return 1 ;; esac; }
+  : > "$TEST_TMP/calls"
+  provision_apps 2> /dev/null
+  assert_file_not_contains "$TEST_TMP/calls" "nginx"
+  assert_file_not_contains "$TEST_TMP/calls" "apt-get"
 )

@@ -5,6 +5,7 @@
 : "${DXB_RIGCTLD_RUN_DIR:=/run/dxberry/rigctld}"
 : "${DXB_SYSTEMD_DIR:=/etc/systemd/system}"
 : "${DXB_TMPFILES_DIR:=/etc/tmpfiles.d}"
+: "${DXB_SYSTEMD_TMPFILES:=systemd-tmpfiles}"
 : "${DXB_RIGCTL:=rigctl}"
 : "${DXB_TEMPLATES:=/opt/dxberry/templates}"
 
@@ -115,7 +116,7 @@ dxb_rigctld_install_units() {
   fi
   if (( rc == 0 )); then
     systemctl daemon-reload || { dxb_error "systemctl daemon-reload failed"; return 6; }
-    systemd-tmpfiles --create "$DXB_TMPFILES_DIR/dxberry-radio.conf" 2> /dev/null || mkdir -p "$DXB_RIGCTLD_RUN_DIR"
+    "$DXB_SYSTEMD_TMPFILES" --create "$DXB_TMPFILES_DIR/dxberry-radio.conf" 2> /dev/null || mkdir -p "$DXB_RIGCTLD_RUN_DIR"
     dxb_info "rigctld@, dxberry-radio-hotplug and dxberry-radio-wire units installed"
   fi
   systemctl enable dxberry-radio-hotplug.service > /dev/null 2>&1 || { dxb_error "systemctl enable dxberry-radio-hotplug.service failed"; return 6; }
