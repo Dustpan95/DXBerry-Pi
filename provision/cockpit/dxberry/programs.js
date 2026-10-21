@@ -33,6 +33,7 @@ function progBusy() {
 // progStart VERB P: dxberry-app install|remove, or dxberry-update app (an update), as an update job
 // whose output shows under Updates.
 function progStart(verb, p) {
+  if (!PROGRAM_RE.test(p.name)) { notice(`${p.name} is not a valid program name, so nothing was changed.`, "bad"); return; }
   const args = verb === "update" ? [UPDATE, "app", p.name, "--json"] : [APP, verb, p.name, "--json"];
   const what = { install: "Installing", remove: "Removing", update: "Updating" }[verb];
   programs.starting = true;
@@ -70,7 +71,8 @@ function progRow(p, busy) {
       if (check && check.update) {
         acts.push(btn(`Update to ${check.latest}`, () => progStart("update", p), { cls: "primary", key: `prog:${p.name}:update`, aria: `Update ${p.label}`, disabled: busy, title: why }));
       }
-      const running = radios.length ? `${radios.join(", ")} ${radios.length === 1 ? "is" : "are"} running it` : null;
+      // a radio that has the program keeps it, running or stopped, so removal waits for a switch
+      const running = radios.length ? `${radios.join(", ")} ${radios.length === 1 ? "uses" : "use"} it` : null;
       acts.push(btn("Remove", () => progRemove(p), { cls: "danger", key: `prog:${p.name}:remove`, aria: `Remove ${p.label}`,
         disabled: busy || !!running, title: why || (running ? `${running}; switch ${radios.join(", ")} to another program first` : null) }));
     }
@@ -82,7 +84,7 @@ function progRow(p, busy) {
     el("p", {}, p.description),
     el("p", { class: "muted hint" }, [PROG_KINDS[p.kind] || p.kind, PROG_SOURCES[p.source] || p.source].join(" · ")),
     notes.length ? el("p", { class: "hint" }, notes.join(" ")) : null,
-    p.installed && radios.length && p.source !== "builtin" ? el("p", { class: "muted hint" }, `${radios.join(", ")} ${radios.length === 1 ? "is" : "are"} running it.`) : null,
+    p.installed && radios.length && p.source !== "builtin" ? el("p", { class: "muted hint" }, `${radios.join(", ")} ${radios.length === 1 ? "uses" : "use"} it.`) : null,
     p.installed && p.setup_note ? el("p", { class: "hint prog-note" }, p.setup_note) : null,
     acts.length ? el("div", { class: "actions" }, acts) : null);
 }
@@ -123,16 +125,16 @@ function progInput(id, value, attrs) {
 // progLogbookOpen URL: the logbook dialog, its address URL (this Pi's Wavelog) or the stored one.
 function progLogbookOpen(url) {
   const lb = (last && last.apps && last.apps.logbook) || {};
-  const local = lb.local || {};
   const keySet = lb.key === "set";
-  programs.form = { saving: false };
+  programs.form = { saving: false, testing: false };
   document.getElementById("logbook-dialog-title").textContent = "Logbook";
   progSetError("");
   progSetResult("");
   progSetSaving(false);
+  progSetTesting(false);
   document.getElementById("logbook-fields").replaceChildren(
     field("Address", "lb-url", progInput("lb-url", url || lb.url || "", { placeholder: "https://log.example.org/" }),
-      local.installed ? `Starts with https://. This Pi's Wavelog is ${local.url}.` : "Your Wavelog or Cloudlog, starting with https://."),
+      "Your Wavelog or Cloudlog, starting with https://. This Pi's own logbook is offered as a choice once it is installed."),
     field("API key", "lb-key", progInput("lb-key", "", { type: "password", autocomplete: "new-password", placeholder: keySet ? "Leave empty to keep the stored key" : "" }),
       keySet ? "Leave empty to keep the stored key." : "Made in the logbook, under your account's API keys; it needs to read and write."),
     field("Station ID", "lb-station", progInput("lb-station", lb.station_id || "1", { inputmode: "numeric" }),
@@ -152,6 +154,12 @@ function progSetResult(text) {
   const p = document.getElementById("logbook-result");
   p.textContent = text;
   p.hidden = !text;
+}
+
+function progSetTesting(on) {
+  const b = document.getElementById("logbook-test");
+  b.disabled = on;
+  b.textContent = on ? "Testing…" : "Test";
 }
 
 function progSetSaving(on) {
@@ -188,16 +196,21 @@ function progKept(line) {
 
 function progLogbookTest() {
   const f = programs.form;
-  if (!f || f.saving) return;
+  if (!f || f.saving || f.testing) return;
+  f.testing = true;
+  progSetTesting(true);
   progSetError("");
   progSetResult("Asking the logbook…");
+  const done = () => { f.testing = false; if (programs.form === f) progSetTesting(false); };
   run([PROG_LOGBOOK, "test", "--json"], progLogbookStdin()).then(out => {
     let j = null;
     try { j = JSON.parse(out); } catch (e) { j = null; }
+    done();
     if (programs.form !== f) return;
     if (j && j.ok) progSetResult(`${DASH_LOGBOOKS[j.type] || j.type}${j.version ? " " + j.version : ""} answers.`);
     else progSetResult(`Not a logbook: ${(j && j.error) || "no answer could be read"}`);
   }, (ex, data) => {
+    done();
     if (programs.form !== f) return;
     progSetResult("");
     progSetError(progProblem(ex, data));
@@ -207,7 +220,7 @@ function progLogbookTest() {
 function progLogbookSave(e) {
   e.preventDefault();
   const f = programs.form;
-  if (!f || f.saving) return;
+  if (!f || f.saving || f.testing) return;
   const d = document.getElementById("logbook-dialog");
   f.saving = true;
   progSetError("");

@@ -18,7 +18,7 @@ const UPDATE_SETTING_EXITS = Object.assign({}, UPDATE_EXITS, { 6: "the setting c
 const UPDATE_POLL_MS = 2000;
 // what a running job is doing, by kind
 const UPDATE_RUNNING = { graywolf: "Updating Graywolf…", dxberry: "Updating DXBerry…", rollback: "Rolling back…", system: "Updating system packages…",
-  "app-install": "Installing a program…", "app-remove": "Removing a program…" };
+  "app-install": "Installing a program…", "app-remove": "Removing a program…", app: "Updating a program…" };
 
 /* update-fields-begin: what the page reads from dxberry-update's --json answers, as COMMAND:PATH.
  * tests/test_page.sh checks each one against the command's real output. */
@@ -30,7 +30,7 @@ const UPDATE_FIELDS = [
   "check:system.count", "check:system.packages",
   "check:rollback.available", "check:rollback.version", "check:rollback.updates",
   "start:job", "start:kind",
-  "job:now", "job:reboot_required", "job:job.unit", "job:job.kind", "job:job.state", "job:job.exit", "job:job.lines",
+  "job:now", "job:reboot_required", "job:job.unit", "job:job.kind", "job:job.name", "job:job.state", "job:job.exit", "job:job.lines",
   "prereleases:include_prereleases",
 ];
 /* update-fields-end */
@@ -105,7 +105,8 @@ function updProgramLabel(name) {
 
 function updFinished(job) {
   const what = { graywolf: "Graywolf update", dxberry: "DXBerry update", rollback: "Rollback", system: "System update",
-    "app-install": `Installing ${updProgramLabel(job.name)}`, "app-remove": `Removing ${updProgramLabel(job.name)}` }[job.kind] || "Update";
+    "app-install": `Installing ${updProgramLabel(job.name)}`, "app-remove": `Removing ${updProgramLabel(job.name)}`,
+    app: `Updating ${updProgramLabel(job.name)}` }[job.kind] || "Update";
   // a program installed or removed: the status report says so (Programs, the radios' choices)
   if (/^app/.test(job.kind || "")) refresh(true);
   if (job.exit === 0) notice(`${what} finished.`, "good");

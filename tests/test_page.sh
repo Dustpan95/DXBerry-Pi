@@ -4,14 +4,19 @@ PG_DIR=$DXB_ROOT/provision/cockpit/dxberry
 
 # pg_fields: the dxberry-status --json paths dxberry.js declares it reads (between its markers).
 # Anchored on the comment's own `/* fields-begin` so it does not also match `radio-fields-begin`.
-pg_fields() { sed -n '/\/\* fields-begin/,/\/\* fields-end/p' "$PG_DIR/dxberry.js" | grep -oE '"[a-z0-9_.*]+"' | tr -d '"'; }
-# pg_has_path FILE PATH: PATH (dot-separated; * = any element or entry) exists in FILE's JSON. Any,
-# not the first: the elements of a list differ (Graywolf has nothing to open, Pat has a web page).
+pg_fields() { sed -n '/\/\* fields-begin/,/\/\* fields-end/p' "$PG_DIR/dxberry.js" | grep -oE '"[a-z0-9_.*?]+"' | tr -d '"'; }
+# pg_has_path FILE PATH: PATH (dot-separated) exists in FILE's JSON. * = the first element or entry;
+# ? = some element or entry, for a member not every entry has (Graywolf has nothing to open, Pat
+# has a web page).
 pg_has_path() {
   jq -e --arg p "$2" '
     def has_path($t):
       if ($t | length) == 0 then true
       elif $t[0] == "*" then
+        (if type == "object" and length > 0 then (to_entries[0].value | has_path($t[1:]))
+         elif type == "array" and length > 0 then (.[0] | has_path($t[1:]))
+         else false end)
+      elif $t[0] == "?" then
         (if type == "object" and length > 0 then any(to_entries[]; .value | has_path($t[1:]))
          elif type == "array" and length > 0 then any(.[]; has_path($t[1:]))
          else false end)

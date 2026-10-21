@@ -35,6 +35,8 @@ const PTT_METHODS = { rigctld: "rigctld", cm108: "CM108 HID", gpio: "Pi GPIO", v
 const PTT_TYPES = { RIG: "a CAT command", RTS: "the RTS line", DTR: "the DTR line", NONE: "nothing" };
 const FUNCTION_KINDS = { audio: "sound", serial: "serial", hid: "HID" };
 const NAME_RE = /^[a-z][a-z0-9]{0,11}$/;
+// a program's name as dxberry-app takes it (a catalog name)
+const PROGRAM_RE = /^[a-z][a-z0-9_]{0,15}$/;
 const PTT_METHOD_CHOICES = [["rigctld", "rigctld (CAT command or a serial line)"], ["cm108", "CM108 HID (the sound card's PTT pin)"],
   ["gpio", "Pi GPIO pin"], ["vox", "VOX (the radio keys on audio)"], ["digirig_tone", "DigiRig Lite tone"], ["none", "None (receive only)"]];
 const PTT_TYPE_CHOICES = [["RIG", "A CAT command"], ["RTS", "The RTS line"], ["DTR", "The DTR line"], ["NONE", "Nothing"]];
@@ -52,7 +54,8 @@ const RESTART_WARNINGS = {
 };
 
 /* fields-begin: every path of dxberry-status --json this page reads. tests/test_page.sh checks each
- * one against the command's real output; a * stands for every element or entry. */
+ * one against the command's real output; a * stands for every element or entry (checked on the
+ * first), a ? for a member only some entries have (checked on any). */
 const FIELDS = [
   "generated",
   "pi.ok", "pi.model", "pi.temp_c", "pi.load", "pi.mem_total", "pi.mem_used", "pi.disk_total", "pi.disk_used", "pi.uptime_s",
@@ -70,7 +73,7 @@ const FIELDS = [
   "radios.radios.*.alsa_id", "radios.radios.*.kernel.audio", "radios.radios.*.kernel.cat", "radios.radios.*.kernel.hid",
   "radios.radios.*.kernel.ptt_serial", "radios.radios.*.audio.path", "radios.radios.*.cat.path", "radios.radios.*.hid.path",
   "radios.radios.*.ptt_serial", "radios.radios.*.ptt.method", "radios.radios.*.ptt.gpio_line",
-  "radios.radios.*.rig.model", "radios.radios.*.rig.baud", "radios.radios.*.rig.ptt_type", "radios.radios.*.rig.control",
+  "radios.radios.*.rig.model", "radios.radios.*.rig.baud", "radios.radios.*.rig.ptt_type", "radios.radios.?.rig.control",
   "radios.candidates.*.index", "radios.candidates.*.port", "radios.candidates.*.name", "radios.candidates.*.profile",
   "radios.candidates.*.defaults.ptt", "radios.candidates.*.defaults.ptt_type", "radios.candidates.*.defaults.cat",
   "radios.candidates.*.defaults.model", "radios.candidates.*.defaults.baud",
@@ -85,9 +88,9 @@ const FIELDS = [
   "services.units.*.result", "services.units.*.type",
   "station.ok", "station.callsign", "station.grid",
   "apps.ok", "apps.programs.*.name", "apps.programs.*.label", "apps.programs.*.kind", "apps.programs.*.description",
-  "apps.programs.*.source", "apps.programs.*.installed", "apps.programs.*.version", "apps.programs.*.sessions.*.radio",
-  "apps.programs.*.sessions.*.state", "apps.programs.*.single_copy", "apps.programs.*.open.kind", "apps.programs.*.open.port",
-  "apps.programs.*.open.path", "apps.programs.*.setup_note",
+  "apps.programs.*.source", "apps.programs.*.installed", "apps.programs.*.version", "apps.programs.?.sessions.*.radio",
+  "apps.programs.?.sessions.*.state", "apps.programs.*.single_copy", "apps.programs.?.open.kind", "apps.programs.?.open.port",
+  "apps.programs.?.open.path", "apps.programs.?.setup_note",
   "apps.logbook.configured", "apps.logbook.type", "apps.logbook.url", "apps.logbook.key", "apps.logbook.station_id",
   "apps.logbook.slug", "apps.logbook.queue", "apps.logbook.refused", "apps.logbook.refused_reason",
   "apps.logbook.local.installed", "apps.logbook.local.url", "apps.logbook.local.web",

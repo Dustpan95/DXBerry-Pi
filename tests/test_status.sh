@@ -243,7 +243,8 @@ test_status_json_keeps_the_other_parts_when_one_fails() {
   local j; j=$(st_run dxb_status_json pi time release)
   assert_eq "$(jq -c '[.pi.ok, .time.ok, .time.error, .release.ok]' <<< "$j")" '[true,false,"chrony is not answering",true]'
   assert_eq "$(jq -r 'keys | join(" ")' <<< "$j")" "generated pi release time"
-  [[ $(jq -r .generated <<< "$j") =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || _fail "generated is not a UTC timestamp"
+  # milliseconds: the DXBerry page's UTC clock is set from it, and whole seconds read up to 1 s late
+  [[ $(jq -r .generated <<< "$j") =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$ ]] || _fail "generated is not a UTC timestamp in milliseconds"
 }
 
 test_status_graywolf_reports_channels_igate_and_position_log_size() {
@@ -444,12 +445,12 @@ test_status_apps_a_failing_piece_is_an_error_inside_the_part() {
   # an answer that is not JSON is an error too
   rm -f "$TEST_TMP/st-dxberry-logbook-fails"; echo 'not json' > "$TEST_TMP/st-list.json"
   assert_eq "$(st_run dxb_status_json apps | jq -c '[.apps.ok, .apps.programs.error, .apps.logbook.configured]')" \
-    '[true,"dxberry-app list did not return a report",false]'
+    '[true,"the program list could not be read",false]'
   # one that hangs is given up after the timeout (20 s on the Pi)
   : > "$TEST_TMP/st-dxberry-app-slow"
   local DXB_STATUS_APPS_TIMEOUT=1
   assert_eq "$(st_run dxb_status_json apps | jq -c '[.apps.ok, .apps.programs.error]')" \
-    '[true,"dxberry-app list did not answer within 1 seconds"]'
+    '[true,"the program list did not answer within 1 seconds"]'
 }
 
 # dxberry-status, sourced in a clean process, defines what the station part calls (the shared

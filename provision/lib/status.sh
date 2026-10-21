@@ -281,21 +281,23 @@ dxb_status_station() {
   jq -c '{callsign: .call, grid: .grid}' <<< "$st"
 }
 
-# _dxb_status_piece CMD ARGS...: CMD's JSON answer, run under a timeout
-# (DXB_STATUS_APPS_TIMEOUT seconds, 20 by default), or {"error": why} - its last line on stderr
-# without the log timestamp, or what went wrong in words.
+# _dxb_status_piece WHAT CMD ARGS...: CMD's JSON answer, run under a timeout
+# (DXB_STATUS_APPS_TIMEOUT seconds, 20 by default; killed 5 s after that), or {"error": why} - its
+# last line on stderr without the log timestamp, or what went wrong in words (WHAT names the piece:
+# "the program list"; the page shows this text, so it names no command).
 _dxb_status_piece() {
-  local t=${DXB_STATUS_APPS_TIMEOUT:-20} what="${1##*/} $2" out errf rc e
+  local what=$1 t=${DXB_STATUS_APPS_TIMEOUT:-20} out errf rc e
+  shift
   errf=$(mktemp)
-  out=$(timeout "$t" "$@" 2> "$errf"); rc=$?
+  out=$(timeout -k 5 "$t" "$@" 2> "$errf"); rc=$?
   if (( rc == 0 )) && jq -e 'type == "object" or type == "array"' <<< "$out" > /dev/null 2>&1; then
     jq -c . <<< "$out"
   else
     if (( rc == 124 || rc == 137 )); then e="$what did not answer within $t seconds"
-    elif (( rc == 0 )); then e="$what did not return a report"
+    elif (( rc == 0 )); then e="$what could not be read"
     else
       e=$(grep -v '^[[:space:]]*$' "$errf" | tail -1 | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} \[[A-Z]+\] //')
-      [[ -n $e ]] || e="$what failed (exit $rc)"
+      [[ -n $e ]] || e="$what could not be read (exit $rc)"
     fi
     jq -cn --arg e "$e" '{error: $e}'
   fi
@@ -308,9 +310,9 @@ _dxb_status_piece() {
 dxb_status_apps() {
   local dir
   dir=$(mktemp -d) || { echo "could not create a temporary directory" >&2; return 1; }
-  _dxb_status_piece "$DXB_APP_CMD" list --json > "$dir/programs" &
-  _dxb_status_piece "$DXB_LOGBOOK_CMD" get --json > "$dir/logbook" &
-  _dxb_status_piece "$DXB_LOGBOOK_CMD" recent --json 10 > "$dir/recent" &
+  _dxb_status_piece "the program list" "$DXB_APP_CMD" list --json > "$dir/programs" &
+  _dxb_status_piece "the logbook" "$DXB_LOGBOOK_CMD" get --json > "$dir/logbook" &
+  _dxb_status_piece "the recent contacts" "$DXB_LOGBOOK_CMD" recent --json 10 > "$dir/recent" &
   wait
   jq -cn --slurpfile p "$dir/programs" --slurpfile l "$dir/logbook" --slurpfile r "$dir/recent" \
     '{programs: $p[0], logbook: $l[0], recent: $r[0]}'
@@ -339,10 +341,12 @@ dxb_status_json() {
   dir=$(mktemp -d) || { echo "could not create a temporary directory" >&2; return 1; }
   for p in "${parts[@]}"; do _dxb_status_part "$p" > "$dir/$p" & done
   wait
-  out=$(jq -cn --arg g "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '{generated: $g}')
+  out='{}'
   for p in "${parts[@]}"; do
     out=$(jq -c --arg p "$p" --slurpfile v "$dir/$p" '.[$p] = $v[0]' <<< "$out")
   done
+  # stamped last and to the millisecond: the DXBerry page sets its clocks from it
+  out=$(jq -c --arg g "$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')" '{generated: $g} + .' <<< "$out")
   rm -rf "$dir"
   printf '%s\n' "$out"
 }

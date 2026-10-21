@@ -14,8 +14,10 @@ const DASH_APP_JOBS = ["app", "app-install", "app-remove"];
 const DASH_LOGBOOKS = { wavelog: "Wavelog", cloudlog: "Cloudlog" };
 
 // skew: the Pi's clock minus the browser's (ms), taken when a new report arrives (generated is that
-// report's time); timer: the one 1 s interval that ticks the two clocks; utc/local: their elements;
-// switching: the radio the Switch program dialog is open for.
+// report's time, to the millisecond); timer: what ticks the two clocks - first a timeout to the
+// Pi's next second, then one 1 s interval, made once and kept across redraws (it ticks whichever
+// clock elements are current); utc/local: those elements; switching: the radio the Switch program
+// dialog is open for.
 const dashboard = { skew: 0, generated: null, timer: null, utc: null, local: null, switching: null };
 
 // ---- reading the report ---------------------------------------------------------------------
@@ -86,9 +88,9 @@ function dashStrip(s) {
   return el("div", { class: "card dash-strip" },
     el("div", { class: "dash-welcome" },
       el("h2", { id: "dashboard-title" }, call ? `Welcome, ${call}` : "Welcome"),
-      call ? null : el("p", { class: "muted hint" }, "Set CALLSIGN in dxberry.txt or Graywolf to see it here."),
+      call ? null : el("p", { class: "muted hint" }, "Set CALLSIGN in dxberry.txt to see it here."),
       el("p", { class: "dash-facts" }, facts.filter(Boolean).map((f, i) => (i ? [" · ", f] : f))),
-      problems.length ? el("p", { class: "muted hint" }, `Not read: ${problems.join(", ")} (see the cards below).`) : null,
+      problems.length ? el("p", { class: "muted hint" }, "Some station details could not be read.") : null,
       st && st.grid ? el("p", { class: "muted hint" }, `Grid ${st.grid}`) : null),
     el("div", { class: "dash-clocks" },
       el("div", {}, el("span", { class: "muted" }, "UTC"), dashboard.utc),
@@ -112,12 +114,27 @@ function dashOpenLink(s, n, x, label) {
   }
   const p = dashProgram(s, x.owner);
   const o = (p && p.open) || { kind: "screen" };
-  if (o.kind === "url") return a(`https://${location.hostname}:${o.port}${o.path || "/"}`, `Open ${label}`, "noopener");
+  if (o.kind === "url") {
+    const path = o.path === undefined || o.path === null ? "/" : String(o.path);
+    // only a port and a plain path go into the address; anything else gets no link
+    if (!/^\d{1,5}$/.test(String(o.port)) || !/^\/[A-Za-z0-9._~/-]*$/.test(path)) return null;
+    return a(`https://${location.hostname}:${o.port}${path}`, `Open ${label}`, "noopener");
+  }
+  if (!PROGRAM_RE.test(x.owner) || !NAME_RE.test(n)) return null;
   return a(DASH_SCREEN + `${x.owner}-${n}`, `Open ${label}`, "noopener");
+}
+
+// dashNamesOk RADIO [PROGRAM]: the names are fit to go into a command's arguments; otherwise a
+// notice says so and nothing runs.
+function dashNamesOk(n, app) {
+  if (NAME_RE.test(n) && (app === undefined || PROGRAM_RE.test(app))) return true;
+  notice(`${n}${app === undefined ? "" : " / " + app} is not a valid radio or program name, so nothing was changed.`, "bad");
+  return false;
 }
 
 // dashAppAction NAME VERB LABEL: dxberry-app start|stop for radio NAME; the radio stays the program's.
 function dashAppAction(n, verb, label) {
+  if (!dashNamesOk(n)) return;
   pending[n] = verb === "stop" ? `Stopping ${label}` : `Starting ${label}`;
   show();
   run([APP, verb, n, "--json"]).then(() => {
@@ -145,8 +162,10 @@ function dashRadioCard(s, n, x) {
   rows.push(["Program", x.owner ? [label, " ", badge(stText, stKind)] : "No program"]);
   if (x.owner === "graywolf") rows.push(["APRS", dashGraywolfLine(s.graywolf, n)]);
   const acts = [];
-  if (x.owner && state === "running") acts.push(dashOpenLink(s, n, x, label));
-  if (x.rig && x.rig.control === "flrig") {
+  // no Open while a job installs, updates or removes the program
+  if (x.owner && state === "running" && !job) acts.push(dashOpenLink(s, n, x, label));
+  const flrig = dashProgram(s, "flrig");
+  if (x.rig && x.rig.control === "flrig" && flrig && flrig.installed && NAME_RE.test(n)) {
     acts.push(el("a", { class: "btn small", href: DASH_SCREEN + `flrig-${n}`, target: "_blank", rel: "noopener", "data-key": `dash:${n}:flrig` }, "Open flrig"));
   }
   if (x.owner) {
@@ -214,6 +233,7 @@ function dashSwitchSave(e) {
   const x = last && last.radios && last.radios.radios[n];
   if (!x) return;
   if (value === (x.owner || "")) { notice(`${n}: nothing changed.`, "good"); return; }
+  if (!dashNamesOk(n, value || undefined)) return;
   if (!value) { release(n); return; }
   const app = (last.radios.apps || []).find(a => a.name === value);
   if (app) giveTo(n, app);
@@ -288,9 +308,14 @@ function dashRender(s) {
     names.length ? el("div", { class: "dash-radios" }, names.map(n => dashRadioCard(s, n, radios[n])))
       : el("p", { class: "card muted" }, s.radios && s.radios.ok ? "No radios set up yet: add one under Radios below." : "The radios could not be read; see the Radios card below."),
     el("div", { class: "dash-bottom" }, dashRecent(s), dashStationBox(s)));
-  if (dashboard.timer !== null) clearInterval(dashboard.timer);
-  dashboard.timer = setInterval(dashTick, 1000);
   dashTick();
+  if (dashboard.timer === null) {
+    // the first tick lands on the Pi's next whole second, then one tick a second
+    dashboard.timer = setTimeout(() => {
+      dashTick();
+      dashboard.timer = setInterval(dashTick, 1000);
+    }, 1000 - (((Date.now() + dashboard.skew) % 1000) + 1000) % 1000);
+  }
   if (focused) {
     const again = [...sec.querySelectorAll("[data-key]")].find(e => e.dataset.key === focused);
     if (again) again.focus();
