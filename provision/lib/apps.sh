@@ -31,9 +31,11 @@
 : "${DXB_TMPFILES_DIR:=/etc/tmpfiles.d}"
 : "${DXB_SYSTEMD_TMPFILES:=systemd-tmpfiles}"
 : "${DXB_NGINX_DIR:=/etc/nginx}"
-# runs a command as dxbapps: runuser -u dxbapps -- CMD... (a downloaded AppImage unpacks itself
-# this way, never as root)
+# runs a command as dxbapps: runuser -u dxbapps -- CMD... (the settings step of a session)
 : "${DXB_RUNUSER:=runuser}"
+# a downloaded AppImage unpacks itself as dxbapps in a transient unit (systemd-run --wait), never
+# as root: whatever it leaves running is killed when the unit ends
+: "${DXB_SYSTEMD_RUN:=systemd-run}"
 # where an AppImage unpacks itself as dxbapps, in a fresh mktemp directory: outside the state
 # directory, which is 0700 root on the Pi and so out of dxbapps' reach
 : "${DXB_APPS_EXTRACT_BASE:=/var/tmp}"
@@ -331,20 +333,30 @@ dxb_apps_download() {
 _dxb_apps_keep() { if _dxb_apps_has "$1" keep; then "app_$1_keep"; fi; }
 
 # _dxb_apps_unpack_appimage FILE DEST: FILE (an AppImage) unpacks itself - as dxbapps, never as
-# root - in a fresh directory under DXB_APPS_EXTRACT_BASE that only dxbapps can enter, with that
-# directory as HOME (the AppImage never sees /root). Root then moves the tree to DEST, out of
-# dxbapps' reach first (nothing it runs can add to the tree after that), owns it and takes off
-# every setuid/setgid bit and every write bit but its own. The directory is deleted on every way
-# out. 0 ok, 1 failed (an error on stderr).
+# root - in a transient unit (systemd-run --wait: the unit ends with the extraction, and every
+# process it left behind is killed with it), in a directory W that only dxbapps can enter, with W
+# as HOME (the AppImage never sees /root). W sits in a fresh root-owned directory under
+# DXB_APPS_EXTRACT_BASE, so dxbapps can never rename W itself. When the unit has ended, root takes
+# W (owner root, never following a symlink; no write bit but its own) before it looks at anything
+# in it, so nothing dxbapps runs can swap squashfs-root for a symlink after the check. Then root
+# moves the tree to DEST, owns it and takes off every setuid/setgid bit and every write bit but its
+# own. The directory is deleted on every way out. 0 ok, 1 failed (an error on stderr).
 _dxb_apps_unpack_appimage() {
-  local file=$1 dest=$2 asset=${1##*/} x rc=1
+  local file=$1 dest=$2 asset=${1##*/} x w rc=1
   x=$(mktemp -d "$DXB_APPS_EXTRACT_BASE/dxberry-appimage.XXXXXXXX") || { echo "could not create a directory in $DXB_APPS_EXTRACT_BASE to unpack $asset" >&2; return 1; }
-  if ! { cp "$file" "$x/$asset" && chmod 700 "$x" "$x/$asset" && "$DXB_CHOWN" -R "$DXB_APPS_USER:$DXB_APPS_USER" "$x"; }; then
-    echo "could not prepare $x to unpack $asset" >&2
-  elif ! ( cd "$x" && "$DXB_RUNUSER" -u "$DXB_APPS_USER" -- env HOME="$x" "$x/$asset" --appimage-extract ) > /dev/null 2>&1 \
-      || [[ -L $x/squashfs-root || ! -d $x/squashfs-root ]]; then
+  w=$x/w
+  if ! { chmod 711 "$x" && mkdir -m 700 "$w" && cp "$file" "$w/$asset" && chmod 700 "$w/$asset" \
+      && "$DXB_CHOWN" -R "$DXB_APPS_USER:$DXB_APPS_USER" "$w"; }; then
+    echo "could not prepare $w to unpack $asset" >&2
+  elif ! "$DXB_SYSTEMD_RUN" --quiet --wait --pipe --collect -p "User=$DXB_APPS_USER" -p "Group=$DXB_APPS_USER" \
+      -p KillMode=control-group --description="DXBerry: unpack $asset" --working-directory="$w" --setenv=HOME="$w" \
+      -- "$w/$asset" --appimage-extract < /dev/null > /dev/null 2>&1; then
     echo "$asset could not be unpacked" >&2
-  elif ! { mv -T "$x/squashfs-root" "$dest" && "$DXB_CHOWN" -R root:root "$dest" && chmod -R u-s,g-s,go-w,a+rX "$dest"; }; then
+  elif ! { "$DXB_CHOWN" -R -h root:root "$w" && chmod 700 "$w"; }; then
+    echo "$asset could not be taken over from $DXB_APPS_USER" >&2
+  elif [[ -L $w/squashfs-root || ! -d $w/squashfs-root ]]; then
+    echo "$asset could not be unpacked" >&2
+  elif ! { mv -T "$w/squashfs-root" "$dest" && "$DXB_CHOWN" -R root:root "$dest" && chmod -R u-s,g-s,go-w,a+rX "$dest"; }; then
     echo "$asset could not be taken over from $DXB_APPS_USER" >&2
   else
     rc=0

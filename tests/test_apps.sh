@@ -187,6 +187,7 @@ app_wavelog_keep() { printf "%s\n" application/config/config.php userdata; }'
 }
 
 test_apps_install_appimage_unpacks_and_replaces_the_old_deb() {
+  local DXB_SYSTEMD_RUN=ap_systemd_run
   fx_apps_env
   ap_release JS8Call-improved/JS8Call-improved v3.0.3 JS8Call-v3.0.3-aarch64.AppImage
   echo appimage > "$TEST_TMP/http/JS8Call-v3.0.3-aarch64.AppImage"
@@ -201,14 +202,18 @@ test_apps_install_appimage_unpacks_and_replaces_the_old_deb() {
   assert_eq "$(dxb_apps_version js8call)" "3.0.3"
 }
 
-# A downloaded AppImage never runs as root: it unpacks itself as dxbapps in a directory of
+# A downloaded AppImage never runs as root: it unpacks itself as dxbapps in a transient unit
+# (systemd-run --wait: whatever it leaves running is killed when the unit ends), in a directory of
 # dxbapps' own, and root then takes the tree over (no setuid/setgid bits, owned by root).
 test_apps_install_appimage_unpacks_as_dxbapps_never_as_root() {
+  local DXB_SYSTEMD_RUN=ap_systemd_run
   fx_apps_env
   ap_release JS8Call-improved/JS8Call-improved v3.0.3 JS8Call-v3.0.3-aarch64.AppImage
   echo appimage > "$TEST_TMP/http/JS8Call-v3.0.3-aarch64.AppImage"
   assert_ok dxb_apps_install js8call > "$TEST_TMP/out"
-  assert_eq "$(grep -c -- '--appimage-extract' "$TEST_TMP/calls")" "$(grep -c '^runuser -u dxbapps -- env HOME=.*--appimage-extract' "$TEST_TMP/calls")"
+  assert_eq "$(grep -c -- '--appimage-extract' "$TEST_TMP/calls")" \
+    "$(grep -c '^systemd-run --quiet --wait --pipe --collect -p User=dxbapps -p Group=dxbapps -p KillMode=control-group .* -- .*--appimage-extract$' "$TEST_TMP/calls")"
+  assert_eq "$(grep -c '^runuser' "$TEST_TMP/calls")" "0"
   assert_contains "$(cat "$TEST_TMP/calls")" "chown -R root:root $DXB_APPS_OPT/.js8call.new/squashfs-root"
   assert_eq "$(stat -c %a "$DXB_APPS_OPT/js8call/squashfs-root/helper")" "755"
   assert_eq "$(stat -c %a "$DXB_APPS_OPT/js8call/squashfs-root/AppRun")" "755"
@@ -219,15 +224,16 @@ test_apps_install_appimage_unpacks_as_dxbapps_never_as_root() {
 # outside it (DXB_APPS_EXTRACT_BASE), with that directory as HOME (never /root); the directory is
 # gone afterwards, also when the unpacking fails.
 test_apps_appimage_unpacks_outside_the_state_dir_with_its_own_home() {
-  local line x
+  local line x DXB_SYSTEMD_RUN=ap_systemd_run
   fx_apps_env
   ap_release JS8Call-improved/JS8Call-improved v3.0.3 JS8Call-v3.0.3-aarch64.AppImage
   echo appimage > "$TEST_TMP/http/JS8Call-v3.0.3-aarch64.AppImage"
   assert_ok dxb_apps_install js8call > /dev/null
   line=$(grep -- '--appimage-extract' "$TEST_TMP/calls")
-  [[ $line =~ ^runuser\ -u\ dxbapps\ --\ env\ HOME=([^ ]+)\ ([^ ]+)\ --appimage-extract$ ]] || { _fail "unexpected extraction call: $line"; return; }
+  [[ $line =~ \ --working-directory=([^ ]+)\ --setenv=HOME=([^ ]+)\ --\ ([^ ]+)\ --appimage-extract$ ]] || { _fail "unexpected extraction call: $line"; return; }
   x=${BASH_REMATCH[1]}
-  assert_eq "${BASH_REMATCH[2]}" "$x/JS8Call-v3.0.3-aarch64.AppImage"
+  assert_eq "${BASH_REMATCH[2]}" "$x"
+  assert_eq "${BASH_REMATCH[3]}" "$x/JS8Call-v3.0.3-aarch64.AppImage"
   [[ $x == "$DXB_APPS_EXTRACT_BASE"/?* && $x != "$DXB_STATE_DIR"* ]] || _fail "extracted in $x"
   assert_contains "$(cat "$TEST_TMP/calls")" "chown -R dxbapps:dxbapps $x"
   [[ ! -e $x ]] || _fail "$x was left behind"
@@ -239,10 +245,44 @@ test_apps_appimage_unpacks_outside_the_state_dir_with_its_own_home() {
   assert_eq "$(stat -c %a "$DXB_APPS_WORK")" "700"
   assert_eq "$(stat -c %a "$DXB_APPS_WORK/wsjtx-3.0.2-linux-aarch64.deb")" "600"
   # a failed unpack leaves no directory behind either (8: the packages it needs went in)
-  AP_RUNUSER_RC=1; rm -rf "$DXB_APPS_OPT/js8call"
+  AP_EXTRACT_RC=1; rm -rf "$DXB_APPS_OPT/js8call"
   dxb_apps_install js8call > "$TEST_TMP/out" 2>&1; assert_eq "$?" "8"
   assert_contains "$(cat "$TEST_TMP/out")" "JS8Call-v3.0.3-aarch64.AppImage could not be unpacked"
   assert_eq "$(ls -A "$DXB_APPS_EXTRACT_BASE")" ""
+}
+
+# Nothing dxbapps runs can turn the unpacking into root changing files elsewhere: the extraction
+# ends with its unit (no process of it is left), the directory is root's before anything in it is
+# looked at (its parent is root's all along, so dxbapps cannot rename it either), and a
+# squashfs-root that is a symlink is refused - the place it points to is never moved or chmodded.
+test_apps_appimage_refuses_a_symlink_and_takes_the_directory_first() {
+  local w v=$TEST_TMP/victim calls DXB_SYSTEMD_RUN=ap_systemd_run
+  fx_apps_env
+  ap_release JS8Call-improved/JS8Call-improved v3.0.3 JS8Call-v3.0.3-aarch64.AppImage
+  echo appimage > "$TEST_TMP/http/JS8Call-v3.0.3-aarch64.AppImage"
+  mkdir -p "$v"; : > "$v/shadow"; chmod 644 "$v/shadow"; : > "$v/sudo"; chmod 4755 "$v/sudo"; chmod 755 "$v"
+  AP_EXTRACT_SYMLINK=$v
+  dxb_apps_install js8call > "$TEST_TMP/out" 2>&1; assert_eq "$?" "8"
+  assert_contains "$(cat "$TEST_TMP/out")" "JS8Call-v3.0.3-aarch64.AppImage could not be unpacked"
+  assert_eq "$(stat -c %a "$v/shadow") $(stat -c %a "$v/sudo") $(stat -c %a "$v")" "644 4755 755"
+  [[ -e $DXB_APPS_OPT/js8call ]] && _fail "a symlinked squashfs-root was put in place"
+  calls=$(cat "$TEST_TMP/calls")
+  w=$(sed -n 's/.* --working-directory=\([^ ]*\) .*/\1/p' <<< "$calls")
+  [[ -n $w ]] || { _fail "no extraction call: $calls"; return; }
+  # the unpacking, then root takes the directory (never following a symlink), then nothing more
+  assert_eq "$(grep -n -e '^systemd-run' -e "^chown -R -h root:root $w\$" <<< "$calls" | cut -d: -f2- | cut -c1-24)" \
+    "$(printf '%s\n' "systemd-run --quiet --wa" "chown -R -h root:root $w" | cut -c1-24)"
+  assert_not_contains "$calls" "chown -R root:root $DXB_APPS_OPT"
+  assert_eq "$(ls -A "$DXB_APPS_EXTRACT_BASE")" ""
+  # a good unpacking: the same takeover comes before the move
+  fx_apps_env
+  ap_release JS8Call-improved/JS8Call-improved v3.0.3 JS8Call-v3.0.3-aarch64.AppImage
+  echo appimage > "$TEST_TMP/http/JS8Call-v3.0.3-aarch64.AppImage"
+  assert_ok dxb_apps_install js8call > "$TEST_TMP/out"
+  calls=$(cat "$TEST_TMP/calls")
+  w=$(sed -n 's/.* --working-directory=\([^ ]*\) .*/\1/p' <<< "$calls")
+  assert_eq "$(grep -e '^systemd-run.*--appimage-extract' -e "^chown -R -h root:root $w\$" -e "^chown -R root:root $DXB_APPS_OPT/" <<< "$calls" | cut -c1-12)" \
+    "$(printf '%s\n' "systemd-run " "chown -R -h " "chown -R roo")"
 }
 
 test_apps_https_downloads_never_follow_a_redirect_to_http() {

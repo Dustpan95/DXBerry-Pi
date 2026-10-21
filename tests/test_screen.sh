@@ -44,7 +44,8 @@ sc_env() {
   # runuser -u USER -- CMD...: recorded with its arguments, its stdin kept in settings-stdin; CMD
   # then runs as "not root"
   printf '#!/bin/bash\necho "runuser $*" >> "$TEST_TMP/calls"\n[[ $1 == -u && $3 == -- ]] || exit 1\nshift 3\ntee -a "$TEST_TMP/settings-stdin" | DXB_FAKE_EUID=900 "$@"\nexit "${PIPESTATUS[1]}"\n' > "$TEST_TMP/bin/runuser"
-  printf '#!/bin/bash\necho "xauth $*" >> "$TEST_TMP/xauth-calls"\n' > "$TEST_TMP/bin/xauth"
+  # xauth: its arguments in xauth-calls, its standard input in xauth-stdin
+  printf '#!/bin/bash\necho "xauth $*" >> "$TEST_TMP/xauth-calls"\ncat >> "$TEST_TMP/xauth-stdin"\n' > "$TEST_TMP/bin/xauth"
   # id -nG: the caller's groups (no dxbscreen once $TEST_TMP/no-access exists)
   printf '#!/bin/bash\nif [[ -e $TEST_TMP/no-access ]]; then echo dietpi; else echo "dietpi dxbscreen"; fi\n' > "$TEST_TMP/bin/id"
   chmod 755 "$TEST_TMP/bin/systemctl" "$TEST_TMP/bin/chown" "$TEST_TMP/bin/systemd-run" "$TEST_TMP/bin/dpkg-query" \
@@ -461,8 +462,12 @@ test_screen_session_runs_the_program_and_ends_with_it() {
     "XAUTHORITY=$d/Xauthority" "XDG_RUNTIME_DIR=$d" "args --rig-name=radio2")"
   assert_eq "$(LC_ALL=C sort "$TEST_TMP/helpers" | tr '\n' ';')" "Xvnc ended;openbox ended;"
   assert_eq "$(cat "$d/client.conf")" "autospawn = no"
-  cookie=$(sed -n "s|^xauth -q -f $d/Xauthority add :102 MIT-MAGIC-COOKIE-1 \([0-9a-f]*\)$|\1|p" "$TEST_TMP/xauth-calls")
+  # the cookie reaches xauth on its standard input, never in its arguments (any user can read
+  # those in /proc)
+  assert_eq "$(cat "$TEST_TMP/xauth-calls")" "xauth -q -f $d/Xauthority source -"
+  cookie=$(sed -n 's|^add :102 MIT-MAGIC-COOKIE-1 \([0-9a-f]*\)$|\1|p' "$TEST_TMP/xauth-stdin")
   assert_eq "${#cookie}" "32"
+  assert_not_contains "$(cat "$TEST_TMP/xauth-calls")" "$cookie"
   assert_contains "$(cat "$TEST_TMP/xvnc-args")" ":102 -auth $d/Xauthority -rfbunixpath"
   assert_not_contains "$(cat "$TEST_TMP/xvnc-args")" "$cookie"
 }

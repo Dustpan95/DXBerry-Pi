@@ -33,7 +33,9 @@ fx_apps_env() {
   # AP_INSTALLED: Debian packages dpkg-query reports installed, "name" (version 1.0) or "name=version"
   # AP_CANDIDATE: what apt-cache policy offers ("" = no candidate)
   # AP_RUNUSER_RC: when set, ap_runuser fails with it
-  AP_INSTALLED=''; AP_CANDIDATE=1.0; AP_RUNUSER_RC=''
+  # AP_EXTRACT_RC: when set, the AppImage's unpacking (ap_systemd_run) fails with it
+  # AP_EXTRACT_SYMLINK: when set, the unpacking leaves squashfs-root as a symlink to it
+  AP_INSTALLED=''; AP_CANDIDATE=1.0; AP_RUNUSER_RC=''; AP_EXTRACT_RC=''; AP_EXTRACT_SYMLINK=''
   DXB_CFG=()
   DXB_RADIOS='{"version":1,"gps":{"device":"auto","baud":9600,"pps":""},"radios":{
     "radio1":{"label":"FT-818","profile":"generic","audio":{"path":"usb-0:1.3:1.0","vidpid":"0d8c:013c","serial":""},"cat":null,"hid":null,"ptt_serial":null,
@@ -103,18 +105,37 @@ ap_useradd() {
 }
 ap_usermod() { echo "usermod $*" >> "$TEST_TMP/calls"; }
 ap_chown() { echo "chown $*" >> "$TEST_TMP/calls"; }
-# ap_runuser -u USER -- CMD ARGS...: runuser - records the call. An AppImage's --appimage-extract
-# makes ./squashfs-root (an AppRun and a setuid helper, so a test can see the bit taken off);
-# any other command runs as it is.
+# ap_runuser -u USER -- CMD ARGS...: runuser - records the call and runs CMD as it is.
 ap_runuser() {
   echo "runuser $*" >> "$TEST_TMP/calls"
   [[ -z ${AP_RUNUSER_RC:-} ]] || return "$AP_RUNUSER_RC"
   [[ $1 == -u && $3 == -- ]] || return 1
   shift 3
+  "$@"
+}
+# ap_systemd_run OPTIONS... -- CMD ARGS...: systemd-run --wait for a test that unpacks an AppImage
+# (it says `local DXB_SYSTEMD_RUN=ap_systemd_run`, so no other test sees it) - records the call, then runs CMD in
+# its --working-directory. An AppImage's --appimage-extract makes ./squashfs-root (an AppRun and a
+# setuid helper, so a test can see the bit taken off; a symlink to AP_EXTRACT_SYMLINK instead when
+# that is set); any other command runs as it is.
+ap_systemd_run() {
+  local wd=.
+  echo "systemd-run $*" >> "$TEST_TMP/calls"
+  while (( $# )) && [[ $1 != -- ]]; do
+    case $1 in --working-directory=*) wd=${1#*=} ;; -p) shift ;; esac
+    shift
+  done
+  [[ ${1:-} == -- ]] || return 1
+  shift
+  [[ -z ${AP_EXTRACT_RC:-} ]] || return "$AP_EXTRACT_RC"
   if [[ " $* " == *" --appimage-extract "* ]]; then
-    mkdir -p squashfs-root && printf '#!/bin/sh\n' > squashfs-root/AppRun && chmod 755 squashfs-root/AppRun \
-      && : > squashfs-root/helper && chmod 4755 squashfs-root/helper
+    (
+      cd "$wd" || exit 1
+      if [[ -n ${AP_EXTRACT_SYMLINK:-} ]]; then ln -s "$AP_EXTRACT_SYMLINK" squashfs-root; exit; fi
+      mkdir -p squashfs-root && printf '#!/bin/sh\n' > squashfs-root/AppRun && chmod 755 squashfs-root/AppRun \
+        && : > squashfs-root/helper && chmod 4755 squashfs-root/helper
+    )
     return
   fi
-  "$@"
+  ( cd "$wd" && "$@" )
 }

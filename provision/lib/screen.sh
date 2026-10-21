@@ -457,13 +457,14 @@ _dxb_screen_x_ready() {
 }
 
 # _dxb_screen_cookie FILE N: a new X authority FILE for display :N with a random cookie. The
-# cookie is in xauth's own argument list, a process of this same user (dxbapps) - nobody else's.
+# cookie reaches xauth on its standard input (xauth source -), never in an argument: any user on
+# the Pi can read every process's arguments in /proc.
 _dxb_screen_cookie() {
   local c
   c=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
   [[ $c =~ ^[0-9a-f]{32}$ ]] || return 1
   rm -f "$1"
-  ( umask 077; "$DXB_XAUTH" -q -f "$1" add ":$2" MIT-MAGIC-COOKIE-1 "$c" )
+  ( umask 077; printf 'add :%s MIT-MAGIC-COOKIE-1 %s\n' "$2" "$c" | "$DXB_XAUTH" -q -f "$1" source - )
 }
 
 # dxb_screen_session_run S: the session itself. Reads S.env (never the radio record), writes
