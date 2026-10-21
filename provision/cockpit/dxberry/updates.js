@@ -17,7 +17,8 @@ const UPDATE_EXITS = {
 const UPDATE_SETTING_EXITS = Object.assign({}, UPDATE_EXITS, { 6: "the setting could not be saved, so it is unchanged" });
 const UPDATE_POLL_MS = 2000;
 // what a running job is doing, by kind
-const UPDATE_RUNNING = { graywolf: "Updating Graywolf…", dxberry: "Updating DXBerry…", rollback: "Rolling back…", system: "Updating system packages…" };
+const UPDATE_RUNNING = { graywolf: "Updating Graywolf…", dxberry: "Updating DXBerry…", rollback: "Rolling back…", system: "Updating system packages…",
+  "app-install": "Installing a program…", "app-remove": "Removing a program…" };
 
 /* update-fields-begin: what the page reads from dxberry-update's --json answers, as COMMAND:PATH.
  * tests/test_page.sh checks each one against the command's real output. */
@@ -37,6 +38,9 @@ const UPDATE_FIELDS = [
 // check: dxberry-update check's answer (or {failed: text}); job: dxberry-update job's answer;
 // jobError: why the last job poll could not be read (null once one is).
 const updates = { check: null, job: null, jobError: null, poll: null, retry: null, logOpen: false, checking: false };
+// what else on the page follows the job and the check (the dashboard's radio cards and Programs,
+// whose buttons wait for a job): each is called after every redraw of this section
+const updWatchers = [];
 
 function updRun(args) {
   return run([UPDATE, ...args, "--json"]);
@@ -93,8 +97,17 @@ function updLoadJob() {
   });
 }
 
+// updProgramLabel NAME: a program's name as the page shows it (from the last status report).
+function updProgramLabel(name) {
+  const p = last && last.apps && Array.isArray(last.apps.programs) ? last.apps.programs.find(q => q.name === name) : null;
+  return (p && p.label) || name || "the program";
+}
+
 function updFinished(job) {
-  const what = { graywolf: "Graywolf update", dxberry: "DXBerry update", rollback: "Rollback", system: "System update" }[job.kind] || "Update";
+  const what = { graywolf: "Graywolf update", dxberry: "DXBerry update", rollback: "Rollback", system: "System update",
+    "app-install": `Installing ${updProgramLabel(job.name)}`, "app-remove": `Removing ${updProgramLabel(job.name)}` }[job.kind] || "Update";
+  // a program installed or removed: the status report says so (Programs, the radios' choices)
+  if (/^app/.test(job.kind || "")) refresh(true);
   if (job.exit === 0) notice(`${what} finished.`, "good");
   else if (job.exit === 8) notice(`${what}: installed, but a later step failed; see its output under Updates.`, "bad");
   else if (job.exit === 6) notice(`${what} failed. ${job.kind === "rollback" ? "Nothing was rolled back" : "Nothing changed"}; see its output under Updates.`, "bad");
@@ -206,6 +219,7 @@ function updRender() {
     const again = [...sec.querySelectorAll("[data-key]")].find(e => e.dataset.key === focused);
     if (again) again.focus();
   }
+  for (const f of updWatchers) f();
 }
 
 function updInit() {

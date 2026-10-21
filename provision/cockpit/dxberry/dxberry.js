@@ -19,6 +19,18 @@ const RADIO_EXITS = {
   6: "applying the change failed",
   7: "the current owner could not be re-wired",
 };
+const APP = "/opt/dxberry/bin/dxberry-app";
+// dxberry-app's exit codes in words (applications spec section 7)
+const APP_EXITS = {
+  1: "this needs administrative access",
+  2: "the request was not valid",
+  3: "there is no such program or radio",
+  4: "the radio is not plugged in",
+  5: "another change is still running, or the program runs on one radio at a time",
+  6: "it failed, so nothing was changed",
+  7: "the program could not be set up for the radio",
+  8: "it was changed, but a later step failed",
+};
 const PTT_METHODS = { rigctld: "rigctld", cm108: "CM108 HID", gpio: "Pi GPIO", vox: "VOX", digirig_tone: "DigiRig Lite tone", none: "none" };
 const PTT_TYPES = { RIG: "a CAT command", RTS: "the RTS line", DTR: "the DTR line", NONE: "nothing" };
 const FUNCTION_KINDS = { audio: "sound", serial: "serial", hid: "HID" };
@@ -58,19 +70,30 @@ const FIELDS = [
   "radios.radios.*.alsa_id", "radios.radios.*.kernel.audio", "radios.radios.*.kernel.cat", "radios.radios.*.kernel.hid",
   "radios.radios.*.kernel.ptt_serial", "radios.radios.*.audio.path", "radios.radios.*.cat.path", "radios.radios.*.hid.path",
   "radios.radios.*.ptt_serial", "radios.radios.*.ptt.method", "radios.radios.*.ptt.gpio_line",
-  "radios.radios.*.rig.model", "radios.radios.*.rig.baud", "radios.radios.*.rig.ptt_type",
+  "radios.radios.*.rig.model", "radios.radios.*.rig.baud", "radios.radios.*.rig.ptt_type", "radios.radios.*.rig.control",
   "radios.candidates.*.index", "radios.candidates.*.port", "radios.candidates.*.name", "radios.candidates.*.profile",
   "radios.candidates.*.defaults.ptt", "radios.candidates.*.defaults.ptt_type", "radios.candidates.*.defaults.cat",
   "radios.candidates.*.defaults.model", "radios.candidates.*.defaults.baud",
   "radios.candidates.*.functions.*.kind", "radios.candidates.*.functions.*.kernel", "radios.candidates.*.functions.*.path",
   "radios.candidates.*.functions.*.product",
-  "radios.apps.*.name", "radios.apps.*.label",
+  "radios.apps.*.name", "radios.apps.*.label", "radios.apps.*.session", "radios.apps.*.installed",
   "radios.gps.fix", "radios.gps.receiver", "radios.gps.grid", "radios.gps.sats_used", "radios.gps.sats_seen",
   "time.ok", "time.synced", "time.source", "time.reference", "time.stratum", "time.offset_ms",
   "release.ok", "release.dxberry", "release.dxberry_commit", "release.graywolf", "release.cockpit",
   "release.update.graywolf", "release.update.dxberry", "release.update.system",
   "services.ok", "services.units.*.unit", "services.units.*.load", "services.units.*.active", "services.units.*.sub",
   "services.units.*.result", "services.units.*.type",
+  "station.ok", "station.callsign", "station.grid",
+  "apps.ok", "apps.programs.*.name", "apps.programs.*.label", "apps.programs.*.kind", "apps.programs.*.description",
+  "apps.programs.*.source", "apps.programs.*.installed", "apps.programs.*.version", "apps.programs.*.sessions.*.radio",
+  "apps.programs.*.sessions.*.state", "apps.programs.*.single_copy", "apps.programs.*.open.kind", "apps.programs.*.open.port",
+  "apps.programs.*.open.path", "apps.programs.*.setup_note",
+  "apps.logbook.configured", "apps.logbook.type", "apps.logbook.url", "apps.logbook.key", "apps.logbook.station_id",
+  "apps.logbook.slug", "apps.logbook.queue", "apps.logbook.refused", "apps.logbook.refused_reason",
+  "apps.logbook.local.installed", "apps.logbook.local.url", "apps.logbook.local.web",
+  "apps.recent.ok", "apps.recent.error", "apps.recent.contacts.*.time_utc", "apps.recent.contacts.*.call",
+  "apps.recent.contacts.*.band", "apps.recent.contacts.*.mode", "apps.recent.contacts.*.rst_sent",
+  "apps.recent.contacts.*.rst_rcvd", "apps.recent.contacts.*.grid",
 ];
 /* fields-end */
 /* radio-fields-begin: what the page reads from dxberry-radio's own --json answers, as COMMAND:PATH
@@ -374,6 +397,13 @@ function radioAction(name, t, args) {
   });
 }
 
+// perRadioProgram APP: whether APP runs once per radio (WSJT-X, fldigi, ...): giving its radio away
+// stops it on that radio only. Graywolf is one program for all its radios.
+function perRadioProgram(app) {
+  const a = ((last && last.radios && last.radios.apps) || []).find(x => x.name === app);
+  return a && typeof a.session === "boolean" ? a.session : app !== "graywolf";
+}
+
 function giveTo(name, app) {
   const x = last.radios.radios[name];
   const go = () => radioAction(name, { busy: `Giving to ${app.label}`, what: `Giving ${name} to ${app.label}`, done: `${name} now belongs to ${app.label}.` },
@@ -381,7 +411,8 @@ function giveTo(name, app) {
   const warn = [];
   if (x.owner) {
     const prev = appLabel(last.radios, x.owner);
-    warn.push(ownsOthers(x.owner, name) ? `${prev} lets go of ${name} first.` : `${prev} lets go of ${name} first and stops, because it owns no other radio.`);
+    if (perRadioProgram(x.owner)) warn.push(`${prev} stops on ${name} first.`);
+    else warn.push(ownsOthers(x.owner, name) ? `${prev} lets go of ${name} first.` : `${prev} lets go of ${name} first and stops, because it owns no other radio.`);
   }
   // DXBerry makes Graywolf a channel for the radio only with full wiring (names wiring leaves
   // Graywolf to the operator), so only then can a hand-made channel compete with it
@@ -723,10 +754,20 @@ function fillRadioForm(name, cand) {
       value: edit && typeof x.ptt.gpio_line === "number" ? String(x.ptt.gpio_line) : "" }), "The BCM GPIO number that keys the radio."),
     field("Wiring", "rf-wiring", choice("rf-wiring", [["full", "Full: DXBerry sets up the application"],
       ["names", "Names only: I set up the application myself"]], edit ? x.wiring : "full")),
+    // a radio with a CAT port is controlled by Hamlib's rigctld, or by flrig (applications spec 10)
+    edit && x.cat ? field("Rig control", "rf-rig-control", choice("rf-rig-control", [["hamlib", "Hamlib"], ["flrig", "flrig"]],
+      (x.rig && x.rig.control) || "hamlib"), flrigHint()) : null,
   ].filter(Boolean));
   document.getElementById("rf-ptt").addEventListener("change", syncPttFields);
   syncPttFields();
   document.getElementById("radio-dialog").showModal();
+}
+
+// flrigHint: what the rig-control choice needs to say - flrig must be installed under Programs.
+function flrigHint() {
+  const p = last && last.apps && Array.isArray(last.apps.programs) ? last.apps.programs.find(q => q.name === "flrig") : null;
+  const hint = "flrig shows your radio's whole front panel; this page and the programs then reach the radio through it.";
+  return p && !p.installed ? hint + " Install flrig under Programs first." : hint;
 }
 
 // radioFormArgs: the dxberry-radio arguments for the open form - every field for add, only what
@@ -773,6 +814,8 @@ function radioFormArgs() {
   if (ptt === "rigctld" && o.ptt_type !== x.rig.ptt_type) add("--ptt-type", o.ptt_type);
   if (ptt === "gpio" && Number(o.gpio_line) !== x.ptt.gpio_line) add("--gpio-line", o.gpio_line);
   if (o.wiring !== x.wiring) add("--wiring", o.wiring);
+  const control = v("rf-rig-control");
+  if (control && control !== ((x.rig && x.rig.control) || "hamlib")) add("--rig-control", control);
   return { args: flags.length ? ["set", form.name, ...flags] : null, name: form.name };
 }
 
@@ -813,6 +856,9 @@ function render(s) {
   document.getElementById("cards").replaceChildren(
     stationCard(s.graywolf), radiosCard(s.radios), networkCard(s.network), piCard(s.pi),
     timeCard(s.time, s.radios), aboutCard(s.release), servicesCard(s.services), powerCard());
+  // the station dashboard (dashboard.js) and the Programs section (programs.js)
+  dashRender(s);
+  progRender(s);
   if (focused) {
     const again = [...document.querySelectorAll("[data-key]")].find(e => e.dataset.key === focused);
     if (again) again.focus();

@@ -184,7 +184,20 @@ sform.append(mk("h2", "settings-dialog-title"), mk("div", "settings-fields", "fo
 settingsD.append(sform);
 // updates.js's own element: the section it fills (it reuses the shared #confirm dialog, no own one).
 const updatesSec = mk("section", "updates", "card settings");
-doc.body.append(mk("span", "host"), mk("p", "updated"), mk("button", "refresh"), mk("div", "notices"), cards, confirmD, radioD, settingsSec, settingsD, updatesSec);
+// dashboard.js and programs.js: the sections they fill, the Switch program dialog and the logbook dialog
+const dashSec = mk("section", "dashboard");
+const progSec = mk("section", "programs", "card settings");
+const switchD = mk("dialog", "switch-dialog"); const swform = mk("form", "switch-form");
+swform.append(mk("h2", "switch-dialog-title"), mk("div", "switch-fields", "form-grid"), mk("button", "switch-cancel", "btn"), mk("button", "switch-ok", "btn primary"));
+switchD.append(swform);
+const logbookD = mk("dialog", "logbook-dialog"); const lbform = mk("form", "logbook-form");
+const lberr = mk("p", "logbook-form-error", "error"); lberr.hidden = true;
+const lbres = mk("p", "logbook-result", "muted"); lbres.hidden = true;
+lbform.append(mk("h2", "logbook-dialog-title"), mk("div", "logbook-fields", "form-grid"), lberr, lbres, mk("button", "logbook-cancel", "btn"),
+  mk("button", "logbook-test", "btn"), mk("button", "logbook-save", "btn primary"));
+logbookD.append(lbform);
+doc.body.append(mk("span", "host"), mk("p", "updated"), mk("button", "refresh"), mk("div", "notices"), dashSec, cards, confirmD, radioD, settingsSec, settingsD, updatesSec,
+  progSec, switchD, logbookD);
 
 // ---- fake cockpit -----------------------------------------------------------------------------
 const calls = [];
@@ -269,14 +282,20 @@ let updJobAnswer = { now: 1700000000, reboot_required: false, job: null };
 
 // every setTimeout's delay, in order (nothing is ever run from it: the test calls what it needs)
 const timers = [];
+// the intervals that are live: id -> {ms, fn} (cleared ones are gone), so a test can count them
+const intervals = new Map();
+let intervalId = 0;
 const ctx = {
-  document: doc, cockpit, console, setTimeout: (f, ms) => { timers.push(ms); return 0; }, setInterval: () => 0, clearTimeout: () => 0,
+  document: doc, cockpit, console, setTimeout: (f, ms) => { timers.push(ms); return 0; }, clearTimeout: () => 0,
+  setInterval: (fn, ms) => { intervals.set(++intervalId, { ms, fn }); return intervalId; }, clearInterval: id => { intervals.delete(id); },
   window: { addEventListener() {} }, localStorage: { getItem: () => null }, location: { hostname: "10.0.0.90" }, Node: N,
 };
 vm.createContext(ctx);
 const flush = () => new Promise(r => setImmediate(r));
 const settingsPath = path.replace(/dxberry\.js$/, "settings.js");
 const updatesPath = path.replace(/dxberry\.js$/, "updates.js");
+const dashboardPath = path.replace(/dxberry\.js$/, "dashboard.js");
+const programsPath = path.replace(/dxberry\.js$/, "programs.js");
 
 (async () => {
   answer = args => {
@@ -291,6 +310,8 @@ const updatesPath = path.replace(/dxberry\.js$/, "updates.js");
   vm.runInContext(fs.readFileSync(path, "utf8"), ctx, { filename: "dxberry.js" });
   vm.runInContext(fs.readFileSync(settingsPath, "utf8"), ctx, { filename: "settings.js" });
   vm.runInContext(fs.readFileSync(updatesPath, "utf8"), ctx, { filename: "updates.js" });
+  vm.runInContext(fs.readFileSync(dashboardPath, "utf8"), ctx, { filename: "dashboard.js" });
+  vm.runInContext(fs.readFileSync(programsPath, "utf8"), ctx, { filename: "programs.js" });
   await flush(); await flush(); await flush();
   const text = () => cards.textContent;
   ok(cards.querySelectorAll("section").length === 8, "eight cards render");
@@ -812,6 +833,301 @@ const updatesPath = path.replace(/dxberry\.js$/, "updates.js");
   // Services spans the whole row of cards, so its unit names and buttons are not squeezed
   const svc = cards.querySelectorAll("section").find(e => e.querySelector("h2").textContent === "Services");
   ok(svc && svc.className.split(" ").includes("wide"), "the Services card is a wide card: " + (svc && svc.className));
+
+  // ---- the dashboard and Programs (dashboard.js, programs.js) ------------------------------------
+  // A station like the Pi's: radio1 is Graywolf's (its rig control flrig), radio2 runs WSJT-X, and a
+  // Wavelog logbook with 3 recent contacts.
+  const dashText = () => dashSec.textContent;
+  const progText = () => progSec.textContent;
+  const dkey = k => doc.querySelectorAll("[data-key]").find(e => e.dataset.key === k);
+  const radioCard = n => dashSec.querySelectorAll("section").find(e => e.dataset.radio === n);
+  const linkIn = (e, text) => (e ? e.querySelectorAll("a").find(a => a.textContent === text) : undefined);
+  const buttonsIn = e => (e ? e.querySelectorAll("button") : []);
+  const programsList = [
+    { name: "graywolf", label: "Graywolf", kind: "radio", description: "APRS digipeater, iGate and beacons", source: "builtin", installed: true, version: "0.14.13",
+      sessions: [{ radio: "radio1", state: "running" }], single_copy: false, open: null, setup_note: null },
+    { name: "wsjtx", label: "WSJT-X", kind: "radio", description: "FT8, FT4, WSPR and the other weak-signal modes", source: "upstream", installed: true, version: "3.0.2",
+      sessions: [{ radio: "radio2", state: "running" }], single_copy: false, open: { kind: "screen" }, setup_note: null },
+    { name: "fldigi", label: "fldigi", kind: "radio", description: "RTTY, PSK, Olivia, MFSK, CW and many more", source: "debian", installed: false, version: null,
+      sessions: [], single_copy: false, open: { kind: "screen" }, setup_note: null },
+    { name: "qsstv", label: "QSSTV", kind: "radio", description: "Slow-scan TV pictures, analog and digital", source: "debian", installed: false, version: null,
+      sessions: [], single_copy: true, open: { kind: "screen" }, setup_note: null },
+    { name: "pat", label: "Pat (Winlink)", kind: "radio", description: "Winlink email over the air with ARDOP", source: "upstream", installed: false, version: null,
+      sessions: [], single_copy: true, open: { kind: "url", port: 8081, path: "/" }, setup_note: null },
+    { name: "flrig", label: "flrig", kind: "rigcontrol", description: "Rig control with your radio's full front panel", source: "debian", installed: false, version: null,
+      sessions: [], single_copy: false, open: { kind: "screen" }, setup_note: null },
+    { name: "wavelog", label: "Wavelog", kind: "service", description: "A logbook on this Pi", source: "upstream", installed: false, version: null,
+      sessions: [], single_copy: false, open: null,
+      setup_note: "Finish setting up Wavelog: open it, and on the database step enter localhost, wavelog, www-data and no password. Then create an API key in Wavelog and choose it under Logbook." },
+  ];
+  const st = JSON.parse(JSON.stringify(status));
+  Object.assign(st.radios.radios.radio1, { owner: "graywolf", present: true, wiring: "full" });
+  st.radios.radios.radio1.rig.control = "flrig";
+  st.radios.radios.radio2 = { label: "IC-7300", profile: "generic", audio: { path: "usb-0:1.4:1.0", vidpid: "08bb:2901", serial: "" }, cat: { path: "usb-0:1.4:1.2", vidpid: "10c4:ea60", serial: "" },
+    hid: null, ptt_serial: null, ptt: { method: "rigctld", gpio_line: null }, rig: { model: 3073, baud: 115200, ptt_type: "RIG" }, rigctld_port: 4534, wiring: "full", owner: "wsjtx",
+    present: true, kernel: { audio: "card3", cat: "ttyUSB2", hid: null, ptt_serial: null }, rigctld: "active", alsa_id: "RADIO2", freq: "14074000", mode: "USB" };
+  st.radios.apps = [{ name: "graywolf", label: "Graywolf", kind: "radio", session: false, installed: true }, { name: "wsjtx", label: "WSJT-X", kind: "radio", session: true, installed: true },
+    { name: "pat", label: "Pat (Winlink)", kind: "radio", session: true, installed: false }];
+  st.release.dxberry = "0.4.0";
+  st.station = { ok: true, callsign: "W0BTE", grid: "EM28qv" };
+  const lbConfigured = { configured: true, url: "https://log.example.org/", type: "wavelog", station_id: "1", slug: "", key: "set", queue: 0, refused: 0, refused_reason: null,
+    local: { installed: false, url: null, web: null } };
+  const contacts = [
+    { time_utc: "2026-10-20T18:03:00Z", call: "K1ABC", band: "20m", mode: "FT8", rst_sent: "-10", rst_rcvd: "-12", grid: "FN42" },
+    { time_utc: "2026-10-20T17:58:00Z", call: "VE3XYZ", band: "20m", mode: "FT8", rst_sent: "-05", rst_rcvd: "-08", grid: "FN03" },
+    { time_utc: "2026-10-20T17:40:00Z", call: "JA1AAA", band: "20m", mode: "FT4", rst_sent: "+02", rst_rcvd: "-01", grid: "PM95" }];
+  st.apps = { ok: true, programs: programsList, logbook: lbConfigured, recent: { ok: true, type: "wavelog", contacts, error: null } };
+  st.generated = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  let dashJob = { now: 1, reboot_required: false, job: null };
+  let lbAnswer = { set: () => Promise.resolve(JSON.stringify({ ok: true, type: "wavelog", kept: ["radio2: CLOUDLOG_STATION_ID (changed in fldigi)"] })),
+    test: () => Promise.resolve(JSON.stringify({ ok: true, type: "wavelog", version: "3.2.4", error: null })) };
+  answer = args => {
+    const c = args[0].split("/").pop();
+    if (c === "dxberry-status") return Promise.resolve(JSON.stringify(st));
+    if (c === "dxberry-radio" && args[1] === "models") return Promise.resolve(JSON.stringify(models));
+    if (c === "dxberry-radio") return Promise.resolve(JSON.stringify({ radios: {}, warnings: [] }));
+    if (c === "dxberry-app" && args[1] === "install") return Promise.resolve(JSON.stringify({ ok: true, job: "dxberry-job-update-app-install-fldigi-1", kind: "app-install", name: "fldigi" }));
+    if (c === "dxberry-app") return Promise.resolve(JSON.stringify({ ok: true, session: `wsjtx-${args[2]}`, state: "stopped" }));
+    if (c === "dxberry-update" && args[1] === "job") return Promise.resolve(JSON.stringify(dashJob));
+    if (c === "dxberry-update" && args[1] === "check") return Promise.resolve(JSON.stringify(updCheckAnswer));
+    if (c === "dxberry-logbook" && lbAnswer[args[1]]) return lbAnswer[args[1]]();
+    return Promise.reject({ problem: "not-found" });
+  };
+  const redraw = async () => { doc.getElementById("refresh").click(); await flush(); await flush(); await flush(); };
+  vm.runInContext("updLoadJob()", ctx); await flush(); await flush();
+  await redraw();
+  ok(dashText().includes("Welcome, W0BTE"), "the strip welcomes the callsign: " + dashText());
+  ok(dashText().includes("DXBerry 0.4.0") && dashText().includes("2 radios") && dashText().includes("All parts OK"), "the strip has the version, the radios and the health: " + dashText());
+  ok(/^\d\d:\d\d:\d\d$/.test(doc.getElementById("dash-utc").textContent), "the UTC clock reads HH:MM:SS: " + doc.getElementById("dash-utc").textContent);
+  ok(/^\d\d:\d\d$/.test(doc.getElementById("dash-local").textContent), "the local clock reads HH:MM: " + doc.getElementById("dash-local").textContent);
+  // one 1 s interval ticks the clocks (settings.js has its own); a second render does not add one
+  const live1s = () => [...intervals.values()].filter(i => i.ms === 1000).length;
+  const before1s = live1s();
+  await redraw();
+  ok(before1s === 2 && live1s() === 2, "a re-render leaves exactly one clock interval (plus settings.js's): " + before1s + " then " + live1s());
+  const tick = [...intervals.values()].find(i => i.fn.name === "dashTick");
+  doc.getElementById("dash-utc").textContent = "x";
+  if (tick) tick.fn();
+  ok(!!tick && /^\d\d:\d\d:\d\d$/.test(doc.getElementById("dash-utc").textContent), "the interval updates the UTC clock");
+  // the clocks follow the Pi's time, not the browser's: a Pi one hour ahead shows an hour ahead
+  st.generated = new Date(Date.now() + 3600e3).toISOString().replace(/\.\d+Z$/, "Z");
+  await redraw();
+  const hourAhead = new Date(Date.now() + 3600e3).getUTCHours();
+  ok(Number(doc.getElementById("dash-utc").textContent.slice(0, 2)) === hourAhead, "the UTC clock is the Pi's time: " + doc.getElementById("dash-utc").textContent);
+  st.generated = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  await redraw();
+
+  const r2 = radioCard("radio2"), r1 = radioCard("radio1");
+  ok(!!r2 && r2.textContent.includes("IC-7300") && r2.textContent.includes("radio2"), "radio2's card has its label and name");
+  ok(r2 && r2.textContent.includes("WSJT-X") && r2.textContent.includes("Running"), "radio2's card names its program and its state: " + (r2 && r2.textContent));
+  ok(r2 && r2.textContent.includes("14.074 MHz USB"), "radio2's card has its frequency and mode");
+  ok(r2 && r2.textContent.includes("sound card3 (RADIO2) · CAT ttyUSB2"), "radio2's card says what it is connected through");
+  const openW = linkIn(r2, "Open WSJT-X");
+  ok(openW && openW.getAttribute("href") === "/cockpit/@localhost/dxberry/screen.html#wsjtx-radio2" && openW.getAttribute("target") === "_blank"
+    && openW.getAttribute("rel").split(" ").includes("noopener"), "Open WSJT-X opens the program tab in a new tab: " + (openW && openW.getAttribute("href")));
+  ok(buttonsIn(r2).some(b => b.textContent === "Stop") && buttonsIn(r2).some(b => b.textContent === "Switch program") && buttonsIn(r2).some(b => b.textContent === "Radio settings"),
+    "radio2 has Stop, Switch program and Radio settings");
+  ok(r1 && !buttonsIn(r1).some(b => b.textContent === "Stop" || b.textContent === "Start"), "a Graywolf radio has no Stop (or Start)");
+  const openG = linkIn(r1, "Open Graywolf");
+  ok(openG && openG.getAttribute("href") === "http://10.0.0.90:8080/" && openG.getAttribute("target") === "_blank", "Open Graywolf is Graywolf's own page, as the Station card has it");
+  const openF = linkIn(r1, "Open flrig");
+  ok(openF && openF.getAttribute("href") === "/cockpit/@localhost/dxberry/screen.html#flrig-radio1", "a radio whose rig control is flrig has Open flrig");
+  ok(!linkIn(r2, "Open flrig"), "a Hamlib radio has no Open flrig");
+  ok(r1 && r1.textContent.includes("Heard 0") && r1.textContent.includes("10 gated to APRS-IS"), "Graywolf's radio has the heard/sent/gated line: " + (r1 && r1.textContent));
+
+  // Switch program on radio2: No program first, then the installed programs, the current one marked
+  dkey("dash:radio2:switch").click();
+  ok(switchD.open, "Switch program opens its dialog");
+  const swOpts = $("sw-app") ? $("sw-app").options.map(o => o.textContent) : [];
+  ok(JSON.stringify(swOpts) === JSON.stringify(["No program", "Graywolf", "WSJT-X (running now)"]), "the choices: " + JSON.stringify(swOpts));
+  ok(!!switchD.querySelectorAll("button").find(b => b.textContent === "Install more…"), "the dialog offers Install more…");
+  $("sw-app").value = "graywolf";
+  swform.fire("submit");
+  ok(!switchD.open && confirmD.open && confirmD.querySelector("p").textContent.includes("WSJT-X stops on radio2"),
+    "choosing Graywolf asks first, saying WSJT-X stops on radio2: " + confirmD.querySelector("p").textContent);
+  confirmD.returnValue = "ok"; confirmD.close();
+  await flush(); await flush(); await flush();
+  const swClaim = calls.filter(c => c.args && c.args[1] === "claim").pop();
+  ok(swClaim && swClaim.args.join(" ") === "/opt/dxberry/bin/dxberry-radio claim radio2 graywolf --json", "confirming runs claim: " + (swClaim && swClaim.args.join(" ")));
+  // No program releases the radio
+  dkey("dash:radio2:switch").click();
+  $("sw-app").value = "";
+  swform.fire("submit");
+  ok(confirmD.open && confirmD.querySelector("h2").textContent === "Release radio2?", "No program asks before releasing");
+  confirmD.returnValue = "ok"; confirmD.close();
+  await flush(); await flush(); await flush();
+  ok(calls.filter(c => c.args && c.args[1] === "release").pop().args.join(" ") === "/opt/dxberry/bin/dxberry-radio release radio2 --json", "No program runs release");
+
+  // Stop: dxberry-app stop, the card busy meanwhile
+  const callsBeforeStop = calls.length;
+  dkey("dash:radio2:stop").click();
+  ok(dkey("dash:radio2:settings").disabled && radioCard("radio2").textContent.includes("Stopping WSJT-X…"), "radio2's buttons are disabled while it stops");
+  ok(!dkey("dash:radio1:settings").disabled, "the other radio's buttons are not");
+  await flush(); await flush(); await flush();
+  const stopCall = calls.slice(callsBeforeStop).find(c => c.args && c.args[0].endsWith("dxberry-app"));
+  ok(stopCall && stopCall.args.join(" ") === "/opt/dxberry/bin/dxberry-app stop radio2 --json" && stopCall.opts.superuser === "require", "Stop runs dxberry-app stop radio2 --json");
+  ok(!dkey("dash:radio2:settings").disabled, "and the buttons come back");
+  // a stopped program: Start instead of Stop, no Open link
+  programsList[1].sessions[0].state = "stopped";
+  await redraw();
+  ok(radioCard("radio2").textContent.includes("Stopped") && buttonsIn(radioCard("radio2")).some(b => b.textContent === "Start") && !linkIn(radioCard("radio2"), "Open WSJT-X"),
+    "a stopped program shows Stopped and Start, and no Open link: " + radioCard("radio2").textContent);
+  programsList[1].sessions[0].state = "running";
+  // a program with a web page opens it on this Pi's address
+  programsList[4].installed = true; programsList[4].sessions = [{ radio: "radio2", state: "running" }];
+  st.radios.radios.radio2.owner = "pat";
+  await redraw();
+  const openP = linkIn(radioCard("radio2"), "Open Pat (Winlink)");
+  ok(openP && openP.getAttribute("href") === "https://10.0.0.90:8081/", "a program with a web page opens https://<pi>:<port><path>: " + (openP && openP.getAttribute("href")));
+  st.radios.radios.radio2.owner = "wsjtx"; programsList[4].installed = false; programsList[4].sessions = [];
+  // a radio with no program: Choose a program
+  st.radios.radios.radio2.owner = "";
+  await redraw();
+  ok(!!dkey("dash:radio2:choose") && !dkey("dash:radio2:switch") && !buttonsIn(radioCard("radio2")).some(b => b.textContent === "Stop"), "a radio with no program has Choose a program");
+  st.radios.radios.radio2.owner = "wsjtx";
+  await redraw();
+
+  // recent contacts and the station box
+  const recent = dashSec.querySelectorAll("tbody")[0];
+  ok(recent && recent.children.length === 3, "the recent contacts table has 3 rows");
+  ok(dashText().includes("K1ABC") && dashText().includes("FN42") && dashText().includes("2026-10-20 18:03"), "a contact's call, grid and UTC time show: " + dashText());
+  const openLog = linkIn(dashSec, "Open the logbook");
+  ok(openLog && openLog.getAttribute("href") === "https://log.example.org/" && openLog.getAttribute("target") === "_blank", "Open the logbook opens the logbook");
+  ok(dashText().includes("APRS-IS") && dashText().includes("rotate.aprs2.net:14580"), "the station box has APRS-IS");
+  ok(dashText().includes("Wavelog at log.example.org"), "the station box names the logbook: " + dashText());
+
+  // Programs
+  const wsjtxRow = progSec.querySelectorAll("div").find(e => e.dataset.program === "wsjtx");
+  ok(wsjtxRow && wsjtxRow.textContent.includes("Installed 3.0.2") && wsjtxRow.textContent.includes("From its authors"), "WSJT-X shows Installed 3.0.2 and where it comes from: " + (wsjtxRow && wsjtxRow.textContent));
+  ok(dkey("prog:wsjtx:remove") && dkey("prog:wsjtx:remove").disabled && wsjtxRow.textContent.includes("radio2 is running it"), "Remove is disabled while radio2 runs WSJT-X, and says so");
+  const fldigiRow = progSec.querySelectorAll("div").find(e => e.dataset.program === "fldigi");
+  ok(fldigiRow && fldigiRow.textContent.includes("Not installed") && fldigiRow.textContent.includes("From Debian"), "fldigi is not installed, from Debian");
+  ok(progText().includes("Runs on one radio at a time.") && progText().includes("Log SSTV contacts by hand in the logbook."), "the single-copy and QSSTV notes show");
+  ok(!progText().includes("Finish setting up Wavelog"), "Wavelog's setup note waits until it is installed");
+  ok(!dkey("prog:graywolf:remove") && !dkey("prog:graywolf:install"), "Graywolf, part of DXBerry, has no Install or Remove");
+  const callsBeforeInstall = calls.length;
+  dkey("prog:fldigi:install").click();
+  await flush(); await flush(); await flush();
+  const after = calls.slice(callsBeforeInstall).filter(c => c.args);
+  const iInstall = after.findIndex(c => c.args.join(" ") === "/opt/dxberry/bin/dxberry-app install fldigi --json");
+  const iJob = after.findIndex(c => c.args.join(" ") === "/opt/dxberry/bin/dxberry-update job --json");
+  ok(iInstall >= 0 && iJob > iInstall, "Install runs dxberry-app install fldigi --json, then dxberry-update job --json: " + after.map(c => c.args.join(" ")).join(" | "));
+  // Remove asks first, saying what stays
+  programsList[2].installed = true; programsList[2].version = "4.2.06";
+  await redraw();
+  dkey("prog:fldigi:remove").click();
+  ok(confirmD.open && confirmD.querySelector("p").textContent === "fldigi is removed; its settings and logs stay, so a reinstall picks up where you left off.",
+    "Remove asks first: " + confirmD.querySelector("p").textContent);
+  confirmD.returnValue = "ok"; confirmD.close();
+  await flush(); await flush(); await flush();
+  ok(calls.some(c => c.args && c.args.join(" ") === "/opt/dxberry/bin/dxberry-app remove fldigi --json"), "OK runs dxberry-app remove fldigi --json");
+  programsList[2].installed = false; programsList[2].version = null;
+  await redraw();
+
+  // busy: a job for WSJT-X disables radio2's buttons and every Programs button; an install says so on its row
+  dashJob = { now: 2, reboot_required: false, job: { unit: "dxberry-job-update-app-wsjtx-2", kind: "app", name: "wsjtx", started: 2, state: "running", exit: null, finished: null, lines: ["working"] } };
+  vm.runInContext("updLoadJob()", ctx); await flush(); await flush(); await flush();
+  ok(dkey("dash:radio2:switch").disabled && dkey("dash:radio2:stop").disabled && dkey("dash:radio2:settings").disabled, "a job for WSJT-X disables radio2's buttons");
+  ok(!dkey("dash:radio1:switch").disabled, "but not Graywolf's radio's");
+  ok(dkey("prog:fldigi:install").disabled && dkey("prog:logbook:own").disabled, "every Programs button is disabled while a job runs");
+  dashJob = { now: 3, reboot_required: false, job: Object.assign({}, dashJob.job, { kind: "app-install", name: "fldigi", unit: "dxberry-job-update-app-install-fldigi-3" }) };
+  vm.runInContext("updLoadJob()", ctx); await flush(); await flush(); await flush();
+  ok(progSec.querySelectorAll("div").find(e => e.dataset.program === "fldigi").textContent.includes("Installing…"), "the row being installed says Installing…");
+  ok(!dkey("dash:radio2:switch").disabled, "an install of another program leaves radio2 alone");
+  dashJob = { now: 4, reboot_required: false, job: Object.assign({}, dashJob.job, { state: "finished", exit: 0, finished: 4 }) };
+  vm.runInContext("updLoadJob()", ctx); await flush(); await flush(); await flush();
+  ok(!dkey("prog:fldigi:install").disabled, "the buttons come back once the job is done");
+
+  // the logbook dialog: the fields go on standard input, never in the arguments
+  dkey("prog:logbook:own").click();
+  ok(logbookD.open, "Use my own opens the logbook dialog");
+  ok($("lb-url").value === "https://log.example.org/" && $("lb-key").getAttribute("type") === "password", "it opens with the address, the key a password field");
+  ok($("lb-key").getAttribute("placeholder") === "Leave empty to keep the stored key", "a stored key: leave it empty to keep it");
+  ok(logbookD.textContent.includes("Cloudlog only"), "the public slug is for Cloudlog only");
+  $("lb-url").value = "https://log2.example.org/"; $("lb-key").value = "SECRETKEY42"; $("lb-station").value = "3"; $("lb-slug").value = "";
+  $("logbook-test").click();
+  await flush(); await flush(); await flush();
+  const testCall = calls.filter(c => c.args && c.args[0].endsWith("dxberry-logbook") && c.args[1] === "test").pop();
+  ok(testCall && testCall.args.join(" ") === "/opt/dxberry/bin/dxberry-logbook test --json" && JSON.parse(testCall.input).key === "SECRETKEY42", "Test sends the fields on stdin");
+  ok($("logbook-result").textContent.includes("Wavelog 3.2.4 answers"), "Test says what answered: " + $("logbook-result").textContent);
+  lbform.fire("submit");
+  await flush(); await flush(); await flush();
+  const setLb = calls.filter(c => c.args && c.args[0].endsWith("dxberry-logbook") && c.args[1] === "set").pop();
+  ok(setLb && setLb.args.join(" ") === "/opt/dxberry/bin/dxberry-logbook set --json", "Save runs dxberry-logbook set --json: " + (setLb && setLb.args.join(" ")));
+  ok(setLb && !setLb.args.some(a => /SECRETKEY42|log2\.example|^3$/.test(a)), "no field value is in the arguments");
+  ok(setLb && JSON.stringify(JSON.parse(setLb.input)) === JSON.stringify({ url: "https://log2.example.org/", key: "SECRETKEY42", station_id: "3", slug: "" }),
+    "the fields go on standard input: " + (setLb && setLb.input));
+  ok(!logbookD.open, "the dialog closes once saved");
+  ok(doc.getElementById("notices").textContent.includes("radio2: fldigi keeps its own CLOUDLOG_STATION_ID"), "a kept key becomes a notice in words: " + doc.getElementById("notices").textContent);
+  // no key typed: none is sent, so the stored one is kept; a refusal shows in the dialog
+  lbAnswer.set = () => Promise.reject({ exit_status: 6, message: "no Wavelog or Cloudlog answered at https://x/" });
+  dkey("prog:logbook:own").click();
+  $("lb-url").value = "https://x/";
+  lbform.fire("submit");
+  await flush(); await flush(); await flush();
+  const setLb2 = calls.filter(c => c.args && c.args[0].endsWith("dxberry-logbook") && c.args[1] === "set").pop();
+  ok(setLb2 && !("key" in JSON.parse(setLb2.input)), "an empty key field sends no key: " + (setLb2 && setLb2.input));
+  ok(logbookD.open && $("logbook-form-error").textContent.includes("no Wavelog or Cloudlog answered at https://x/"), "a refused save says why in the dialog: " + $("logbook-form-error").textContent);
+  $("logbook-cancel").click();
+  ok(!logbookD.open, "Cancel closes the logbook dialog");
+  // Forget asks first, then sends {"clear":true}
+  lbAnswer.set = () => Promise.resolve(JSON.stringify({ ok: true, type: null, kept: [] }));
+  dkey("prog:logbook:forget").click();
+  ok(confirmD.open && confirmD.querySelector("h2").textContent === "Forget the logbook?", "Forget asks first");
+  confirmD.returnValue = "ok"; confirmD.close();
+  await flush(); await flush(); await flush();
+  const forget = calls.filter(c => c.args && c.args[0].endsWith("dxberry-logbook") && c.args[1] === "set").pop();
+  ok(forget && forget.input === '{"clear":true}', "Forget sends {\"clear\":true}: " + (forget && forget.input));
+
+  // Radio settings: the rig control choice, for a radio with a CAT port
+  dkey("dash:radio2:settings").click();
+  await flush(); await flush();
+  ok(radioD.open && $("rf-rig-control") && $("rf-rig-control").value === "hamlib", "Radio settings shows Hamlib when no rig control is set");
+  $("rf-rig-control").value = "flrig";
+  rform.fire("submit");
+  await flush(); await flush(); await flush();
+  const rcSet = calls.filter(c => c.args && c.args[1] === "set" && c.args[0].endsWith("dxberry-radio")).pop();
+  ok(rcSet && rcSet.args.join(" ") === "/opt/dxberry/bin/dxberry-radio set radio2 --rig-control flrig --json", "it sends --rig-control: " + (rcSet && rcSet.args.join(" ")));
+  dkey("dash:radio1:settings").click();
+  await flush(); await flush();
+  ok($("rf-rig-control") && $("rf-rig-control").value === "flrig", "a radio under flrig shows flrig");
+  doc.getElementById("radio-cancel").click();
+  delete st.radios.radios.radio1.cat;
+  st.radios.radios.radio1.cat = null;
+  await redraw();
+  dkey("dash:radio1:settings").click();
+  await flush(); await flush();
+  ok(radioD.open && !$("rf-rig-control"), "a radio without a CAT port has no rig control choice");
+  doc.getElementById("radio-cancel").click();
+
+  // a Pi under 2 GB, the local Wavelog, no logbook, no callsign, a failed part
+  st.pi.mem_total = 1.5 * 1024 ** 3;
+  programsList[6].installed = true; programsList[6].version = "2.1";
+  st.apps.logbook = Object.assign({}, lbConfigured, { url: "http://127.0.0.1:8083/", local: { installed: true, url: "http://127.0.0.1:8083/", web: "https://10.0.0.90:8082/" } });
+  await redraw();
+  ok(progText().includes("This Pi has less than 2 GB of memory. One program at a time works best."), "a Pi under 2 GB warns once");
+  ok(progText().includes("Finish setting up Wavelog: open it"), "an installed Wavelog shows its setup note");
+  ok(linkIn(dashSec, "Open the logbook").getAttribute("href") === "https://10.0.0.90:8082/", "the local Wavelog opens on its own page");
+  ok(dashText().includes("this Pi's Wavelog"), "the station box names this Pi's Wavelog: " + dashText());
+  st.apps.logbook = { configured: false, url: null, type: null, station_id: null, slug: null, key: null, queue: 2, refused: 0, refused_reason: null, local: { installed: false, url: null, web: null } };
+  st.apps.recent = { ok: false, type: null, contacts: [], error: "no logbook is set" };
+  st.station.callsign = "";
+  st.time.ok = false; st.time.error = "chrony is not answering";
+  await redraw();
+  ok(dashText().includes("No logbook yet. Set one up under Programs → Logbook."), "no logbook: says where to set one up");
+  ok(!linkIn(dashSec, "Open the logbook"), "and no Open the logbook");
+  ok(dashText().includes("2 contacts waiting to be sent"), "contacts waiting are counted: " + dashText());
+  ok(dashText().includes("Welcome") && dashText().includes("Set CALLSIGN in dxberry.txt or Graywolf to see it here."), "no callsign: Welcome and where to set it");
+  ok(dashText().includes("1 problem"), "a failed part counts as a problem: " + dashText());
+  st.apps.logbook = lbConfigured;
+  st.apps.recent = { ok: false, type: "wavelog", contacts: [], error: "the logbook did not answer" };
+  await redraw();
+  ok(dashText().includes("the logbook did not answer"), "a recent-contacts failure shows its reason");
+  ok(!/\b(sessions?|units?|sockets?|spawn)\b/i.test(dashText() + progText() + switchD.textContent + logbookD.textContent),
+    "no session, unit, socket or spawn in what the dashboard and Programs say");
+  st.apps = { ok: false, error: "dxberry-app list did not answer within 20 seconds" };
+  await redraw();
+  ok(radioCard("radio2") && progText().includes("dxberry-app list did not answer within 20 seconds"), "a failed apps part: the cards still draw, Programs says why");
 
   console.log(failures ? `${failures} failure(s)` : "all ok");
   process.exit(failures ? 1 : 0);

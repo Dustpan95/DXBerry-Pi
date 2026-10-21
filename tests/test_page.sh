@@ -5,14 +5,15 @@ PG_DIR=$DXB_ROOT/provision/cockpit/dxberry
 # pg_fields: the dxberry-status --json paths dxberry.js declares it reads (between its markers).
 # Anchored on the comment's own `/* fields-begin` so it does not also match `radio-fields-begin`.
 pg_fields() { sed -n '/\/\* fields-begin/,/\/\* fields-end/p' "$PG_DIR/dxberry.js" | grep -oE '"[a-z0-9_.*]+"' | tr -d '"'; }
-# pg_has_path FILE PATH: PATH (dot-separated; * = the first element or entry) exists in FILE's JSON.
+# pg_has_path FILE PATH: PATH (dot-separated; * = any element or entry) exists in FILE's JSON. Any,
+# not the first: the elements of a list differ (Graywolf has nothing to open, Pat has a web page).
 pg_has_path() {
   jq -e --arg p "$2" '
     def has_path($t):
       if ($t | length) == 0 then true
       elif $t[0] == "*" then
-        (if type == "object" and length > 0 then (to_entries[0].value | has_path($t[1:]))
-         elif type == "array" and length > 0 then (.[0] | has_path($t[1:]))
+        (if type == "object" and length > 0 then any(to_entries[]; .value | has_path($t[1:]))
+         elif type == "array" and length > 0 then any(.[]; has_path($t[1:]))
          else false end)
       elif type == "object" and has($t[0]) then (.[$t[0]] | has_path($t[1:]))
       else false end;
@@ -36,7 +37,8 @@ test_page_manifest_makes_dxberry_the_first_menu_entry() {
 # Cockpit's page policy allows this package's own files only: no inline script, handler or style.
 test_page_html_loads_only_its_own_files() {
   local html=$PG_DIR/index.html
-  assert_eq "$(grep -oE 'src="[^"]*"' "$html" | sort | tr '\n' ' ')" 'src="../base1/cockpit.js" src="dxberry.js" src="settings.js" src="updates.js" '
+  # in this order: dashboard.js and programs.js use what the three before them define
+  assert_eq "$(grep -oE 'src="[^"]*"' "$html" | tr '\n' ' ')" 'src="../base1/cockpit.js" src="dxberry.js" src="settings.js" src="updates.js" src="dashboard.js" src="programs.js" '
   assert_eq "$(grep -oE 'href="[^"]*"' "$html" | tr '\n' ' ')" 'href="dxberry.css" '
   assert_file_not_contains "$html" "http"
   assert_file_not_contains "$html" "style="
@@ -166,15 +168,30 @@ test_page_script_parses() {
 
 # Every field the page reads must exist in the real command's output, so a change to dxberry-status
 # that would leave a card blank fails here. The radios part is real dxberry-radio output, with one
-# radio pinned and a second DigiRig plugged in but not set up.
+# radio pinned (its rig control flrig) and a second DigiRig plugged in but not set up. The apps part
+# is real dxberry-app and dxberry-logbook output: WSJT-X installed and running on radio2 (Pat's and
+# Wavelog's modules loaded too: Pat has a web page to open, Wavelog a setup note), and a Wavelog
+# logbook with its recent contacts.
 test_page_reads_only_fields_that_dxberry_status_produces() {
-  local DXB_GPSPIPE=pg_gpspipe f n=0
+  local DXB_GPSPIPE=pg_gpspipe f n=0 m
   cli_env
   rm -rf "$DXB_SYSFS_ROOT"; fx_scene "$DXB_SYSFS_ROOT" two-digirigs
   cli add radio1 --audio 1 --cat 2 --label TM-V71 > /dev/null 2>&1
+  cli set radio1 --rig-control flrig > /dev/null 2>&1 || _fail "dxberry-radio set --rig-control flrig failed: $(cat "$TEST_TMP/err")"
   cli status --json || _fail "dxberry-radio status --json failed: $(cat "$TEST_TMP/err")"
   cp "$TEST_TMP/out" "$TEST_TMP/radio.json"
+  sc_env; sc_owned radio2 wsjtx; sc_active dxberry-screen@wsjtx-radio2.service
+  for m in wsjtx pat wavelog; do cp "$DXB_ROOT/provision/lib/apps/$m.sh" "$DXB_APPS_DIR/"; done
+  # shellcheck disable=SC2016  # the stub's own ${*: -1}, expanded when it runs
+  printf '#!/bin/bash\ncase ${*: -1} in gamma) echo "installed 1.0" ;; wsjtx) echo "installed 3.0.2" ;; *) exit 1 ;; esac\n' > "$TEST_TMP/bin/dpkg-query"
+  "$DXB_ROOT/provision/bin/dxberry-app" list --json > "$TEST_TMP/pg-list.json" || _fail "dxberry-app list --json failed"
+  lb_env; lb_configured wavelog
+  "$LB_CMD" get --json > "$TEST_TMP/pg-get.json" || _fail "dxberry-logbook get --json failed"
+  "$LB_CMD" recent --json 10 > "$TEST_TMP/pg-recent.json" || _fail "dxberry-logbook recent --json failed"
   st_env
+  cp "$TEST_TMP/pg-list.json" "$TEST_TMP/st-list.json"; cp "$TEST_TMP/pg-get.json" "$TEST_TMP/st-get.json"
+  cp "$TEST_TMP/pg-recent.json" "$TEST_TMP/st-recent.json"
+  printf 'CALLSIGN=W0BTE\nLATITUDE=38.9\nLONGITUDE=-94.6\n' > "$DXB_BOOT_DIR/dxberry.txt"
   export DXB_UPDATE_CACHE=$TEST_TMP/state/update-check.json
   echo '{"checked_at":1,"graywolf":{"update":true},"dxberry":{"update":false},"system":{"count":0}}' > "$DXB_UPDATE_CACHE"
   st_cli --json || _fail "dxberry-status --json failed: $(cat "$TEST_TMP/err")"
@@ -182,7 +199,10 @@ test_page_reads_only_fields_that_dxberry_status_produces() {
     n=$(( n + 1 ))
     pg_has_path "$TEST_TMP/out" "$f" || _fail "dxberry.js reads $f, which dxberry-status --json does not produce"
   done
-  (( n >= 60 )) || _fail "only $n fields found between the markers in dxberry.js"
+  (( n >= 100 )) || _fail "only $n fields found between the markers in dxberry.js"
+  # the fake station is what the smoke test's station is: WSJT-X running on radio2, contacts in the log
+  assert_eq "$(jq -c '[.station.callsign, (.apps.programs[] | select(.name == "wsjtx") | .sessions[0].state), (.apps.recent.contacts | length > 0)]' "$TEST_TMP/out")" \
+    '["W0BTE","running",true]'
   unset DXB_UPDATE_CACHE
 }
 
@@ -520,4 +540,42 @@ test_page_screen_smoke_drives_the_program_tab() {
   local out
   out=$(node "$DXB_ROOT/tests/page_smoke.js" --screen "$PG_DIR/screen.js" 2>&1) || _fail "page_smoke.js --screen failed:
 $out"
+}
+
+# The dashboard, then the cards; Programs after Updates; the two new dialogs.
+test_page_html_puts_the_station_first_and_programs_after_updates() {
+  local html=$PG_DIR/index.html ids
+  ids=$(grep -oE '<(section|main|div|dialog) id="[a-z-]+"' "$html" | grep -oE '"[a-z-]+"' | tr -d '"' | tr '\n' ' ')
+  assert_contains "$ids" "notices dashboard cards settings updates programs "
+  assert_file_contains "$html" '<section id="programs" class="card settings" aria-labelledby="programs-title">'
+  assert_file_contains "$html" '<dialog id="switch-dialog" aria-labelledby="switch-dialog-title">'
+  assert_file_contains "$html" '<dialog id="logbook-dialog" aria-labelledby="logbook-dialog-title">'
+}
+
+# dashboard.js and programs.js share the page's global scope: their own top-level names start with
+# dash/DASH and prog/PROG (plus their one state object each), and the five scripts parse as one.
+test_page_dashboard_and_programs_keep_to_their_own_names() {
+  local bad
+  bad=$(grep -oE '^(function|const|let|var) [A-Za-z_][A-Za-z0-9_]*' "$PG_DIR/dashboard.js" | awk '{print $2}' | grep -vE '^(dash|DASH_)|^dashboard$' || true)
+  assert_eq "$bad" ""
+  bad=$(grep -oE '^(function|const|let|var) [A-Za-z_][A-Za-z0-9_]*' "$PG_DIR/programs.js" | awk '{print $2}' | grep -vE '^(prog|PROG_)|^programs$' || true)
+  assert_eq "$bad" ""
+  assert_file_not_contains "$PG_DIR/dashboard.js" "innerHTML"
+  assert_file_not_contains "$PG_DIR/programs.js" "innerHTML"
+  command -v node > /dev/null 2>&1 || return 0
+  cat "$PG_DIR/dxberry.js" "$PG_DIR/settings.js" "$PG_DIR/updates.js" "$PG_DIR/dashboard.js" "$PG_DIR/programs.js" > "$TEST_TMP/all.js"
+  node --check "$TEST_TMP/all.js" 2> "$TEST_TMP/node.err" || _fail "the five scripts do not parse as one: $(cat "$TEST_TMP/node.err")"
+}
+
+# The page shows why a logbook was not saved or did not answer: Cockpit hands a failed command's
+# standard error to the page, so dxberry-logbook says it there too, not only in its JSON answer.
+test_page_a_logbook_that_does_not_answer_says_why_on_stderr() {
+  lb_env; export LB_SERVER=none
+  printf '{"url":"https://x/","key":"k","station_id":"1"}' | "$LB_CMD" set --json > "$TEST_TMP/out" 2> "$TEST_TMP/err"
+  assert_eq "$?" "6"
+  assert_eq "$(jq -r .error "$TEST_TMP/out")" "no Wavelog or Cloudlog answered at https://x/"
+  assert_contains "$(cat "$TEST_TMP/err")" "no Wavelog or Cloudlog answered at https://x/"
+  printf '{"url":"https://x/","key":"k","station_id":"1"}' | "$LB_CMD" test --json > "$TEST_TMP/out" 2> "$TEST_TMP/err"
+  assert_eq "$?" "6"
+  assert_contains "$(cat "$TEST_TMP/err")" "no Wavelog or Cloudlog answered at https://x/"
 }

@@ -63,9 +63,14 @@ cmd_get() {
     (if .local.installed then "this Pi'\''s Wavelog: \(.local.web // "port 8082") (choose \(.local.url) as the logbook)" else empty end)' <<< "$j"
 }
 
-# say_test ANSWER: test's answer as JSON or text.
+# say_test ANSWER: test's answer as JSON or text. A logbook that did not answer says why on stderr
+# too: the DXBerry page reads a failed command's reason from there.
 say_test() {
-  if (( JSON )); then printf '%s\n' "$1"; return 0; fi
+  if (( JSON )); then
+    printf '%s\n' "$1"
+    jq -r 'select(.ok != true) | .error // empty' <<< "$1" >&2
+    return 0
+  fi
   jq -r 'if .ok then "\(.type)\(if .version then " " + .version else "" end) answers" else "not a logbook: \(.error)" end' <<< "$1"
 }
 
@@ -96,7 +101,9 @@ cmd_set() {
   else
     c=$(_dxb_lb_input "$in") || return 2
     ans=$(_dxb_lb_detect "$c") || {
-      if (( JSON )); then jq -c '{ok: false, type: null, kept: [], error}' <<< "$ans"; else jq -r '"not saved: " + .error' <<< "$ans" >&2; fi
+      # the reason on stderr in both forms: the DXBerry page reads a failed command's reason from there
+      if (( JSON )); then jq -c '{ok: false, type: null, kept: [], error}' <<< "$ans"; fi
+      jq -r '"not saved: " + .error' <<< "$ans" >&2
       return 6
     }
     type=$(jq -r .type <<< "$ans")

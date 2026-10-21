@@ -15,9 +15,11 @@
     <button id="refresh" class="btn" type="button">Refresh</button>
   </header>
   <div id="notices" aria-live="polite"></div>
+  <section id="dashboard" class="dashboard" aria-labelledby="dashboard-title"></section>
   <main id="cards" class="cards"><p class="muted">Reading the station&hellip;</p></main>
   <section id="settings" class="card settings" aria-labelledby="settings-title"></section>
   <section id="updates" class="card settings" aria-labelledby="updates-title"></section>
+  <section id="programs" class="card settings" aria-labelledby="programs-title"></section>
   <dialog id="confirm" aria-labelledby="confirm-title">
     <form method="dialog">
       <h2 id="confirm-title"></h2>
@@ -50,9 +52,34 @@
       </div>
     </form>
   </dialog>
+  <dialog id="switch-dialog" aria-labelledby="switch-dialog-title">
+    <form id="switch-form" novalidate>
+      <h2 id="switch-dialog-title"></h2>
+      <div id="switch-fields" class="form-grid"></div>
+      <div class="actions">
+        <button id="switch-cancel" class="btn" type="button">Cancel</button>
+        <button id="switch-ok" class="btn primary" type="submit">Switch</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="logbook-dialog" aria-labelledby="logbook-dialog-title">
+    <form id="logbook-form" novalidate>
+      <h2 id="logbook-dialog-title"></h2>
+      <div id="logbook-fields" class="form-grid"></div>
+      <p id="logbook-form-error" class="error" hidden></p>
+      <p id="logbook-result" class="muted" aria-live="polite" hidden></p>
+      <div class="actions">
+        <button id="logbook-cancel" class="btn" type="button">Cancel</button>
+        <button id="logbook-test" class="btn" type="button">Test</button>
+        <button id="logbook-save" class="btn primary" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
   <script src="../base1/cockpit.js"></script>
   <script src="dxberry.js"></script>
   <script src="settings.js"></script>
   <script src="updates.js"></script>
+  <script src="dashboard.js"></script>
+  <script src="programs.js"></script>
 </body>
 </html>

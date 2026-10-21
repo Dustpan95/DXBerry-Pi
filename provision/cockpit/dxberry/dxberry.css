@@ -112,6 +112,33 @@ pre.log { max-height: 260px; overflow: auto; margin: 8px 0 0; padding: 8px 10px;
 .upd-switch { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; color: var(--muted); }
 #updates { margin-top: 16px; }
 
+/* The station dashboard (dashboard.js): a strip, one card per radio, then recent contacts and the station. */
+.dashboard { display: grid; gap: 16px; margin-bottom: 16px; }
+.dash-strip { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px 24px; }
+.dash-welcome { min-width: 0; }
+.dash-welcome h2 { font-size: 20px; margin: 0 0 4px; }
+.dash-welcome p { margin: 2px 0 0; }
+.dash-clocks { display: flex; gap: 20px; }
+.dash-clocks div { display: flex; flex-direction: column; align-items: flex-end; }
+.dash-clock { font: 600 24px/1.1 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+.dash-radios { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 16px; align-items: start; }
+.dash-radio h3 { margin: 0 0 10px; font-size: 15px; }
+.dash-radio .actions { margin-top: 12px; }
+.dash-radio > p { margin: 0 0 8px; }
+.dash-bottom { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 760px) {
+  .dash-bottom { grid-template-columns: minmax(0, 1fr); }
+  .dash-clocks div { align-items: flex-start; }
+}
+
+/* Programs (programs.js): one row per program, then the logbook. */
+#programs { margin-top: 16px; }
+.prog-row { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.prog-row p { margin: 0 0 4px; }
+.prog-row .actions { margin-top: 8px; }
+.prog-note { color: var(--warn); }
+#switch-dialog, #logbook-dialog { width: 100%; }
+
 /* The program tab (screen.html): a slim bar over a screen that fills the rest of the window. */
 body.screen-page { height: 100vh; padding: 0; display: flex; flex-direction: column; }
 .screenbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 16px; background: var(--card); border-bottom: 1px solid var(--line); }
