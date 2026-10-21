@@ -529,3 +529,75 @@ test_screen_remove_job_rechecks_the_owner_under_the_record_lock() {
     kill "$holder" 2> /dev/null; wait "$holder" 2> /dev/null
   fi
 }
+
+# ---- flrig: the rig-control session on a radio (it is not an owner) -----------------------------
+# sc_flrig_module: a flrig module for the tests, recording its wiring; installed unless FLRIG_MISSING
+sc_flrig_module() {
+  local f; for f in $(declare -F | awk '$3 ~ /^app_flrig_/ {print $3}'); do unset -f "$f"; done
+  cat > "$DXB_APPS_DIR/flrig.sh" <<'FLRIG'
+app_flrig_kind() { echo rigcontrol; }
+app_flrig_session() { echo yes; }
+app_flrig_installed() { return "${FLRIG_MISSING:-0}"; }
+app_flrig_label() { echo flrig; }
+app_flrig_unit() { dxb_app_session_unit flrig "$1"; }
+app_flrig_audio() { echo alsa; }
+app_flrig_wire_each_start() { echo yes; }
+app_flrig_wire() { echo "flrig wire $1" >> "$TEST_TMP/appcalls"; }
+app_flrig_command() { printf '%s\n' flrig; }
+FLRIG
+}
+# sc_set_control RADIO CONTROL: change RADIO's rig control in the record
+sc_set_control() {
+  DXB_RADIOS=$(jq -c --arg n "$1" --arg c "$2" '.radios[$n].rig.control = $c' <<< "$DXB_RADIOS")
+  printf '%s\n' "$DXB_RADIOS" > "$DXB_RADIOS_FILE"
+}
+
+test_screen_prepare_accepts_a_flrig_session_for_a_flrig_radio() {
+  sc_env; sc_flrig_module; sc_set_control radio2 flrig
+  assert_ok sc_app prepare flrig-radio2                 # no owner at all
+  assert_contains "$(cat "$TEST_TMP/appcalls")" "flrig wire radio2"
+  sc_owned radio2 gamma                                 # whatever the owner is
+  assert_ok sc_app prepare flrig-radio2
+  assert_contains "$(cat "$(dxb_screen_envfile flrig-radio2)")" "APP=flrig"
+}
+test_screen_prepare_refuses_a_flrig_session_for_a_hamlib_radio() {
+  sc_env; sc_flrig_module
+  sc_app prepare flrig-radio2 2> /dev/null; assert_eq "$?" "3"          # no rig.control at all
+  sc_set_control radio2 hamlib
+  sc_app prepare flrig-radio2 2> /dev/null; assert_eq "$?" "3"
+  sc_set_control radio2 flrig
+  sc_app prepare flrig-radio1 2> /dev/null; assert_eq "$?" "3"          # radio1 is still hamlib
+  FLRIG_MISSING=1 sc_app prepare flrig-radio2 2> /dev/null; assert_eq "$?" "3"
+}
+test_screen_prepare_wires_a_flrig_session_at_every_start() {
+  sc_env; sc_flrig_module; sc_set_control radio2 flrig
+  sc_app prepare flrig-radio2; : > "$TEST_TMP/appcalls"
+  sc_app prepare flrig-radio2
+  assert_eq "$(tr '\n' ';' < "$TEST_TMP/appcalls")" "flrig wire radio2;"      # the hash did not change: wired anyway
+  sc_app prepare flrig-radio2
+  assert_eq "$(grep -c 'flrig wire' "$TEST_TMP/appcalls")" "2"
+  assert_contains "$(cat "$TEST_TMP/settings-stdin")" '"steps":["wire"]'
+}
+test_screen_prepare_wire_each_start_respects_names_wiring() {
+  sc_env; sc_flrig_module; sc_set_control radio2 flrig
+  DXB_RADIOS=$(jq -c '.radios.radio2.wiring = "names"' <<< "$DXB_RADIOS"); printf '%s\n' "$DXB_RADIOS" > "$DXB_RADIOS_FILE"
+  assert_ok sc_app prepare flrig-radio2
+  assert_not_contains "$(cat "$TEST_TMP/appcalls")" "flrig wire"
+}
+test_screen_prepare_does_not_rewire_a_module_without_the_hook() {
+  sc_env; sc_owned radio2 gamma
+  sc_app prepare gamma-radio2; : > "$TEST_TMP/appcalls"
+  sc_app prepare gamma-radio2
+  assert_eq "$(cat "$TEST_TMP/appcalls")" ""
+}
+test_screen_flrig_never_waits_for_its_radio_in_a_marker() {
+  sc_env; sc_flrig_module; sc_set_control radio2 flrig
+  sc_unplug radio2
+  sc_app present flrig-radio2 2> /dev/null; assert_eq "$?" "1"
+  [[ ! -e $DXB_SESSIONS_DIR/flrig-radio2.waiting ]] || _fail "present left a waiting marker for flrig"
+  sc_app stopped flrig-radio2
+  [[ ! -e $DXB_SESSIONS_DIR/flrig-radio2.waiting ]] || _fail "stopped left a waiting marker for flrig"
+  sc_owned radio2 gamma
+  sc_app present gamma-radio2 2> /dev/null
+  [[ -e $DXB_SESSIONS_DIR/gamma-radio2.waiting ]] || _fail "an owner's session lost its waiting marker"
+}

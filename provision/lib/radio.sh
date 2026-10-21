@@ -120,6 +120,7 @@ dxb_radio_validate() {
         (if ($r.ptt.method as $m | ["rigctld","cm108","gpio","vox","digirig_tone","none"] | index($m)) == null then bad($n + ": bad ptt method") else empty end),
         (if ($r.rig.ptt_type as $t | ["RIG","RTS","DTR","NONE"] | index($t)) == null then bad($n + ": bad ptt_type") else empty end),
         (if ($r.wiring as $w | ["full","names"] | index($w)) == null then bad($n + ": bad wiring") else empty end),
+        (if ($r.rig.control // "hamlib") as $c | ["hamlib","flrig"] | index($c) == null then bad($n + ": bad rig control") else empty end),
         (if ($r.rig.model | type) != "number" or $r.rig.model < 1 then bad($n + ": bad model") else empty end),
         (if ($r.rigctld_port | type) != "number" or $r.rigctld_port < 4532 or ($r.rigctld_port % 2) != 0 then bad($n + ": bad port") else empty end),
         (if ($r.owner | type) != "string" then bad($n + ": bad owner") else empty end),
@@ -213,7 +214,8 @@ _dxb_radio_build() {
     . + (if $o.label != null then {label: $o.label} else {} end)
       + (if $o.wiring != null then {wiring: $o.wiring} else {} end)
     | .ptt.method = ($o.ptt // .ptt.method) | .ptt.gpio_line = (if $o.gpio_line != null then $o.gpio_line else .ptt.gpio_line end)
-    | .rig.model = ($o.model // .rig.model) | .rig.baud = ($o.baud // .rig.baud) | .rig.ptt_type = ($o.ptt_type // .rig.ptt_type)' <<< "$r")
+    | .rig.model = ($o.model // .rig.model) | .rig.baud = ($o.baud // .rig.baud) | .rig.ptt_type = ($o.ptt_type // .rig.ptt_type)
+    | if $o.rig_control != null then .rig.control = $o.rig_control else . end' <<< "$r")
   # rigctld's ptt_type must not point at a serial line or CAT socket that has no pin behind it
   old_type=$(jq -r '.rig.ptt_type' <<< "$r")
   r=$(jq -c '
@@ -432,6 +434,10 @@ _dxb_radio_apply() {
   dxb_rigctld_stop_all_except $(dxb_radio_names)
   dxb_radio_write_state || rc=6
   for n in $(dxb_radio_names); do
+    if dxb_radio_present "$n"; then present=1; else present=0; fi
+    _dxb_radio_apply_flrig "$n" "$(dxb_radio_get "$n")" "$present" || { (( rc == 0 )) && rc=7; }
+  done
+  for n in $(dxb_radio_names); do
     r=$(dxb_radio_get "$n"); owner=$(jq -r '.owner' <<< "$r")
     [[ -n $owner ]] || continue
     # a session program wires itself when its session starts (ruling 7): apply only follows presence
@@ -473,6 +479,39 @@ _dxb_radio_apply() {
     fi
   done
   return $rc
+}
+
+# _dxb_radio_apply_flrig NAME RADIO_JSON PRESENT(0|1): flrig is a radio's rig control, not its owner
+# (spec: kind rigcontrol), so apply itself runs its session, dxberry-screen@flrig-NAME. A present
+# radio whose rig.control is flrig gets the session enabled and started; an absent one gets it
+# stopped (it stays enabled and comes back with the radio, no waiting marker). Any other radio
+# gets a session that is enabled or running stopped and disabled. flrig must be installed; if
+# not, one warning and nothing else. 0 ok, 1 start failed.
+_dxb_radio_apply_flrig() {
+  local n=$1 control u
+  control=$(jq -r '.rig.control // "hamlib"' <<< "$2")
+  u=$(dxb_app_session_unit flrig "$n")
+  if [[ $control != flrig ]]; then
+    if systemctl is-enabled --quiet "$u" > /dev/null 2>&1 || systemctl is-active --quiet "$u" > /dev/null 2>&1; then
+      systemctl stop "$u" > /dev/null 2>&1 || dxb_warn "radio $n: could not stop $u"
+      systemctl disable "$u" > /dev/null 2>&1 || dxb_warn "radio $n: could not disable $u"
+      dxb_info "radio $n: $u stopped and disabled (rig control is $control)"
+    fi
+    return 0
+  fi
+  if (( ! $3 )); then
+    # unconditionally: a session still starting is not "active" yet
+    systemctl stop "$u" > /dev/null 2>&1 || dxb_warn "radio $n: could not stop $u"
+    return 0
+  fi
+  if ! (dxb_app_load flrig && dxb_app_is_installed flrig) > /dev/null 2>&1; then
+    dxb_warn "radio $n: rig control is flrig but flrig is not installed; install it from Programs"
+    return 0
+  fi
+  systemctl enable "$u" > /dev/null 2>&1 || { dxb_error "radio $n: could not enable $u"; return 1; }
+  systemctl is-active --quiet "$u" && return 0
+  systemctl --no-block start "$u" || { dxb_error "radio $n: could not start $u"; return 1; }
+  dxb_info "radio $n: starting flrig"
 }
 
 # _dxb_radio_apply_session NAME APP: an unplugged radio's session is stopped (never disabled); one
@@ -517,7 +556,10 @@ dxb_app_load() {
 # installed (absent: installed); app_<a>_multi prints no when it runs on one radio at a time
 # (absent: yes); app_<a>_companions RADIO prints the units that run beside the program's session,
 # one per line (absent: none): the session's prepare step starts them once its env file exists (a
-# failure is a warning), its stopped step stops them. Every one of these needs the module loaded first (dxb_app_load).
+# failure is a warning), its stopped step stops them; app_<a>_wire_each_start prints yes when a
+# session program's wiring must run at every start of its session, not only when the radio's wiring
+# hash changed (absent: no; flrig, whose transceiver the operator can switch inside the program).
+# Every one of these needs the module loaded first (dxb_app_load).
 dxb_app_kind() { if declare -F "app_$1_kind" > /dev/null; then "app_$1_kind"; else echo radio; fi; }
 dxb_app_is_session() { declare -F "app_$1_session" > /dev/null && [[ $("app_$1_session") == yes ]]; }
 dxb_app_is_installed() { declare -F "app_$1_installed" > /dev/null || return 0; "app_$1_installed"; }

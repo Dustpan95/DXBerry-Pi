@@ -11,7 +11,9 @@
 # dxb_rigctld_env NAME RADIO_JSON [OWNER_KIND]: the EnvironmentFile content for rigctld@NAME.
 # OWNER_KIND is dxb_radio_owner_kind's answer (graywolf | session | none; absent = none). Graywolf
 # keys cm108 and gpio PTT itself, so only a session program's radio has rigctld key them (spec
-# 9.1): the program then uses CAT PTT through rigctld like on any other radio.
+# 9.1): the program then uses CAT PTT through rigctld like on any other radio. A radio whose
+# rig.control is flrig runs Hamlib's flrig model (4) against flrig's XML-RPC port; the CAT serial
+# port is flrig's then, so rigctld gets neither it nor an RTS/DTR line on it.
 dxb_rigctld_env() {
   local name=$1 r=$2 kind=${3:-none} model port baud ptt cat='' pttdev='' rig_args='' ptt_args=''
   model=$(jq -r '.rig.model' <<< "$r"); port=$(jq -r '.rigctld_port' <<< "$r")
@@ -19,6 +21,12 @@ dxb_rigctld_env() {
   [[ $(jq -r '.cat' <<< "$r") == null ]] || cat="/dev/dxberry/$name-cat"
   [[ $(jq -r '.ptt_serial' <<< "$r") == null ]] || pttdev="/dev/dxberry/$name-ptt"
   [[ -z $cat ]] || rig_args="-r $cat -s $baud"
+  if [[ $(jq -r '.rig.control // "hamlib"' <<< "$r") == flrig ]]; then
+    # flrig owns the CAT serial port: rigctld talks to flrig (Hamlib model 4) on the radio's own
+    # XML-RPC port (12345 + index, index = (rigctld port - 4532) / 2) and never opens the port
+    model=4; rig_args="-r 127.0.0.1:$(( 12345 + (port - 4532) / 2 ))"
+    [[ -n $pttdev ]] || cat=''
+  fi
   case $ptt in
     RIG) ptt_args='-P RIG' ;;
     RTS|DTR) [[ -n ${pttdev:-$cat} ]] && ptt_args="-P $ptt -p ${pttdev:-$cat}" ;;

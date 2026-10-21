@@ -12,11 +12,11 @@
 #   hotplug                    udev entry point (apply without touching udev)
 #   gps                        GPS fix, satellites and grid square
 #   models                     Hamlib's rig models (number, maker, name) for --model
-# Options: --ptt M --ptt-type T --model K --baud B --wiring full|names --label S --gpio-line N; --json on any subcommand.
+# Options: --ptt M --ptt-type T --model K --baud B --wiring full|names --rig-control hamlib|flrig --label S --gpio-line N; --json on any subcommand.
 set -uo pipefail
 
 DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
-for _m in common config graywolf radio radio_udev rigctld gps; do
+for _m in common config graywolf settings update radio radio_udev rigctld gps apps; do
   # shellcheck disable=SC1090
   source "$DXB_LIB/$_m.sh"
 done
@@ -61,7 +61,7 @@ parse_opts() {
   local o='{}' k v
   while (( $# )); do
     case $1 in
-      --audio|--cat|--hid|--ptt-serial|--ptt|--ptt-type|--wiring|--label)
+      --audio|--cat|--hid|--ptt-serial|--ptt|--ptt-type|--wiring|--label|--rig-control)
         [[ $# -ge 2 && $2 != --* ]] || { echo "$1 needs a value" >&2; return 2; }
         k=${1#--}; k=${k//-/_}; v=$2; shift
         o=$(jq -c --arg k "$k" --arg v "$v" '.[$k] = $v' <<< "$o") ;;

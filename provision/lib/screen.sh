@@ -148,9 +148,11 @@ _dxb_screen_put() {
 }
 
 # dxb_screen_mark_waiting S: S waits for its radio (radio.sh's apply starts it when the radio is
-# back). Always 0: a marker that cannot be written is a warning.
+# back; nothing for a rig-control session). Always 0: a marker that cannot be written is a warning.
 dxb_screen_mark_waiting() {
   local f; f=$(_dxb_sessions_dir)/$1.waiting
+  # a rig-control session (flrig) is started and stopped by apply itself, never marked as waiting
+  dxb_app_load "${1%%-*}" > /dev/null 2>&1 && [[ $(dxb_app_kind "${1%%-*}") == rigcontrol ]] && return 0
   { _dxb_sessions_ensure && _dxb_screen_put "$f" '' 600 root:root; } 2> /dev/null \
     || dxb_warn "could not write $f; start $1 by hand when its radio is back"
   return 0
@@ -243,12 +245,28 @@ dxb_screen_settings() {
 # stopped. Nothing when the module has none.
 _dxb_screen_companions() { if declare -F "app_$1_companions" > /dev/null; then "app_$1_companions" "$2"; fi; }
 
+# _dxb_screen_session_ok APP RADIO: APP may run a session on RADIO - it owns the radio and is a
+# program that can, or it is a rig-control program (flrig) and RADIO's rig.control names it, whoever
+# the owner is. APP is loaded and installed afterwards. 0 yes, 3 no (the reason on stderr).
+_dxb_screen_session_ok() {
+  local a=$1 r=$2
+  if dxb_app_load "$a" 2> /dev/null && [[ $(dxb_app_kind "$a") == rigcontrol ]]; then
+    [[ $(jq -r --arg n "$r" '.radios[$n].rig.control // "hamlib"' <<< "$DXB_RADIOS") == "$a" ]] \
+      || { dxb_error "radio $r's rig control is not $a"; return 3; }
+    dxb_app_is_installed "$a" || { dxb_error "$a is not installed; install it from Programs"; return 3; }
+    return 0
+  fi
+  [[ $(jq -r --arg n "$r" '.radios[$n].owner' <<< "$DXB_RADIOS") == "$a" ]] || { dxb_error "radio $r is not $a's"; return 3; }
+  dxb_app_load_owner "$a"
+}
+
 # dxb_screen_prepare S: the unit's ExecStartPre (root; DXB_RADIOS loaded, DXB_RADIO_SCAN fresh,
-# DXB_CFG loaded for the first fill). RADIO must exist, be owned by APP, APP an installed session
-# program, RADIO plugged in. Then the settings step as dxbapps (dxberry-app settings, input on
+# DXB_CFG loaded for the first fill). RADIO must exist, be owned by APP (or, for a rig-control program
+# such as flrig, name it in its rig.control), APP an installed session program, RADIO plugged in. Then the settings step as dxbapps (dxberry-app settings, input on
 # stdin): the first fill once per program per radio, and the wiring whenever the radio's wiring
-# hash differs from the one last wired for S (ruling 7; a radio set to "names" wiring is never
-# wired); root records each step the settings step reports done. Then S.env, a fresh S.d (root
+# hash differs from the one last wired for S (ruling 7), or at every start when the module's
+# app_APP_wire_each_start says yes (flrig: the operator can switch transceivers inside it); a radio
+# set to "names" wiring is never wired; root records each step the settings step reports done. Then S.env, a fresh S.d (root
 # only makes it and gives it to dxbapps) and the wait for rigctld. 0 ok, 2 bad name, 3 not owned /
 # not installed / unknown, 4 radio absent, 6 the session's files could not be made, 7 first fill
 # or wiring failed.
@@ -258,15 +276,16 @@ dxb_screen_prepare() {
   ar=$(dxb_screen_split "$s") || return 2
   a=${ar% *}; r=${ar#* }
   dxb_radio_get "$r" > /dev/null || return 3
-  [[ $(jq -r --arg n "$r" '.radios[$n].owner' <<< "$DXB_RADIOS") == "$a" ]] || { dxb_error "radio $r is not $a's"; return 3; }
-  dxb_app_load_owner "$a" || return 3
+  _dxb_screen_session_ok "$a" "$r" || return 3
   dxb_app_is_session "$a" || { dxb_error "$a does not run in a screen session"; return 3; }
   dxb_radio_present "$r" || { dxb_error "radio $r is not plugged in"; return 4; }
   w=$(dxb_apps_wiring "$r") || return 3
   h=$(jq -r .hash <<< "$w"); hf=$DXB_APPS_STATE/wired/$s
   dxb_apps_firstfill_done "$a" "$r" || steps+=(firstfill)
-  if [[ $(cat "$hf" 2> /dev/null) != "$h" && $(jq -r --arg n "$r" '.radios[$n].wiring' <<< "$DXB_RADIOS") != names ]]; then
-    steps+=(wire)
+  if [[ $(jq -r --arg n "$r" '.radios[$n].wiring' <<< "$DXB_RADIOS") != names ]]; then
+    if [[ $(cat "$hf" 2> /dev/null) != "$h" ]] || { declare -F "app_${a}_wire_each_start" > /dev/null && [[ $("app_${a}_wire_each_start") == yes ]]; }; then
+      steps+=(wire)
+    fi
   fi
   if (( ${#steps[@]} )); then
     out=$(dxb_screen_settings_input "$s" "${steps[@]}" \
