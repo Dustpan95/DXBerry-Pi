@@ -13,7 +13,7 @@ set -uo pipefail
 
 DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
 # gps, radio and apps: the program jobs' bodies (dxb_apps_install, dxb_apps_remove)
-for _m in common config graywolf settings update gps radio apps; do
+for _m in common config graywolf settings update gps radio apps webproxy; do
   # shellcheck disable=SC1090
   source "$DXB_LIB/$_m.sh"
 done
