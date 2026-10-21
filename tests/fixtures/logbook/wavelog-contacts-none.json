@@ -1,0 +1,7 @@
+# Wavelog 3.2.4 (tag 3.2.4, commit 7f8eef4de94c674f73c6859ed4e0b0247f68dcd9), the answer of
+# POST index.php/api/get_contacts_adif when nothing is newer than fetchfromid:
+#   application/controllers/Api.php get_contacts_adif(), lines 737-739: HTTP 200 and
+#   json_encode(['status' => 'successful', 'message' => 'No new QSOs available.',
+#   'lastfetchedid' => $fetchfromid, 'exported_qsos' => 0, 'adif' => null]) - lastfetchedid is the
+#   fetchfromid that was sent (here 1287, the last id of wavelog-contacts.json).
+{"status":"successful","message":"No new QSOs available.","lastfetchedid":1287,"exported_qsos":0,"adif":null}

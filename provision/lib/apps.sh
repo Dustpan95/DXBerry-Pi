@@ -463,6 +463,10 @@ dxb_apps_install() {
     fi
     # from here on a failure leaves the Pi changed: the packages stay
     fail=8
+    # the logging bridge (logbook.sh) waits for socat: it starts now that socat is here
+    if [[ " ${missing[*]} " == *" socat "* ]] && "$DXB_SYSTEMCTL" is-enabled --quiet dxberry-logbridge.service 2> /dev/null; then
+      "$DXB_SYSTEMCTL" --no-block start dxberry-logbridge.service > /dev/null 2>&1 || echo "the logging bridge did not start; it starts at the next restart" >&2
+    fi
   fi
   if [[ $stype == apt && $mode == update ]]; then
     echo "upgrading $pkg"

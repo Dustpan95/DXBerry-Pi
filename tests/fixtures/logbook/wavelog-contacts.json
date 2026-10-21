@@ -1,0 +1,15 @@
+# Wavelog 3.2.4 (tag 3.2.4, commit 7f8eef4de94c674f73c6859ed4e0b0247f68dcd9), the answer of
+# POST index.php/api/get_contacts_adif {"key","station_id","fetchfromid":0}:
+#   application/controllers/Api.php get_contacts_adif(), lines 510-745: HTTP 200 and
+#   json_encode(['status' => 'successful', 'message' => 'Export successful', 'lastfetchedid' =>
+#   $lastfetchedid, 'exported_qsos' => $total_fetched, 'adif' => $adif_content]) (line 743);
+#   QSOs come in COL_PRIMARY_KEY order (application/models/Adif_data.php
+#   export_past_id_chunked(), line 318: ORDER BY COL_PRIMARY_KEY ASC).
+#   The ADIF is application/libraries/AdifHelper.php getAdifHeader() (lines 272-279) and one
+#   getAdifLine() per QSO (lines 5-270): upper-case tags, one "<FIELD:LEN>value\r\n" per
+#   non-empty field (getAdifFieldLine, lines 281-287; LEN is mb_strlen, characters), in the
+#   order of its $normalFields list, then FREQ, QSO_DATE, TIME_ON, QSO_DATE_OFF, TIME_OFF and
+#   the MY_ station fields, ending "<EOR>\r\n\r\n".
+# The QSOs: W1AW has the highest id but the oldest time; VE3XYZ's NAME is multi-byte (José).
+# Lines starting with # are this header (the test server strips them).
+{"status":"successful","message":"Export successful","lastfetchedid":1287,"exported_qsos":4,"adif":"Wavelog ADIF export\n<ADIF_VER:5>3.1.6\n<PROGRAMID:7>Wavelog\r\n<PROGRAMVERSION:5>3.2.4\r\n<EOH>\n\n<BAND:3>20m\r\n<CALL:5>K0ABC\r\n<GRIDSQUARE:4>EM28\r\n<MODE:3>FT8\r\n<RST_RCVD:3>-12\r\n<RST_SENT:3>-10\r\n<FREQ:6>14.074\r\n<QSO_DATE:8>20261020\r\n<TIME_ON:6>170400\r\n<QSO_DATE_OFF:8>20261020\r\n<TIME_OFF:6>170400\r\n<STATION_CALLSIGN:5>W0BTE\r\n<MY_COUNTRY:24>United States Of America\r\n<MY_DXCC:3>291\r\n<MY_GRIDSQUARE:6>EM28QV\r\n<MY_CQ_ZONE:1>4\r\n<MY_ITU_ZONE:1>7\r\n<MY_STATE:2>KS\r\n<EOR>\r\n\r\n<BAND:3>40m\r\n<CALL:6>VE3XYZ\r\n<GRIDSQUARE:4>FN03\r\n<MODE:4>MFSK\r\n<NAME:4>Jos\u00e9\r\n<RST_RCVD:3>+02\r\n<RST_SENT:3>-05\r\n<SUBMODE:3>FT4\r\n<FREQ:6>14.074\r\n<QSO_DATE:8>20261020\r\n<TIME_ON:6>172015\r\n<QSO_DATE_OFF:8>20261020\r\n<TIME_OFF:6>172015\r\n<STATION_CALLSIGN:5>W0BTE\r\n<MY_COUNTRY:24>United States Of America\r\n<MY_DXCC:3>291\r\n<MY_GRIDSQUARE:6>EM28QV\r\n<MY_CQ_ZONE:1>4\r\n<MY_ITU_ZONE:1>7\r\n<MY_STATE:2>KS\r\n<EOR>\r\n\r\n<BAND:3>15m\r\n<CALL:6>JA1AAA\r\n<GRIDSQUARE:4>PM95\r\n<MODE:3>SSB\r\n<RST_RCVD:2>57\r\n<RST_SENT:2>59\r\n<FREQ:6>14.074\r\n<QSO_DATE:8>20261020\r\n<TIME_ON:6>180130\r\n<QSO_DATE_OFF:8>20261020\r\n<TIME_OFF:6>180130\r\n<STATION_CALLSIGN:5>W0BTE\r\n<MY_COUNTRY:24>United States Of America\r\n<MY_DXCC:3>291\r\n<MY_GRIDSQUARE:6>EM28QV\r\n<MY_CQ_ZONE:1>4\r\n<MY_ITU_ZONE:1>7\r\n<MY_STATE:2>KS\r\n<EOR>\r\n\r\n<BAND:3>20m\r\n<CALL:4>W1AW\r\n<GRIDSQUARE:4>FN31\r\n<MODE:2>CW\r\n<RST_RCVD:3>599\r\n<RST_SENT:3>599\r\n<FREQ:6>14.074\r\n<QSO_DATE:8>20261019\r\n<TIME_ON:6>235959\r\n<QSO_DATE_OFF:8>20261019\r\n<TIME_OFF:6>235959\r\n<STATION_CALLSIGN:5>W0BTE\r\n<MY_COUNTRY:24>United States Of America\r\n<MY_DXCC:3>291\r\n<MY_GRIDSQUARE:6>EM28QV\r\n<MY_CQ_ZONE:1>4\r\n<MY_ITU_ZONE:1>7\r\n<MY_STATE:2>KS\r\n<EOR>\r\n\r\n"}

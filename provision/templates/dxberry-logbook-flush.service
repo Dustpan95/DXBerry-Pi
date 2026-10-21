@@ -1,0 +1,18 @@
+[Unit]
+Description=DXBerry-Pi logbook: post the contacts queued while the server could not be reached
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+# root: it reads the key in the 0600 logbook.json
+ExecStart=/opt/dxberry/bin/dxberry-logbook flush
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dxberry -/run/dxberry
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes

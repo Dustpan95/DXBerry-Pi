@@ -1,0 +1,6 @@
+# Wavelog 3.2.4 (tag 3.2.4, commit 7f8eef4de94c674f73c6859ed4e0b0247f68dcd9), the answer of
+# POST index.php/api/version {"key"} for a key with at least read rights:
+#   application/controllers/Api.php version(), lines 1497-1516: HTTP 200 and
+#   json_encode(['status' => 'ok', 'version' => $this->optionslib->get_option('version')]) (line 1511);
+#   a missing or unknown key is HTTP 401 {"status":"failed","reason":"missing or invalid api key"}.
+{"status":"ok","version":"3.2.4"}

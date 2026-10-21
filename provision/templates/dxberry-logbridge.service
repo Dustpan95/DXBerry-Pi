@@ -1,0 +1,27 @@
+[Unit]
+Description=DXBerry-Pi logging bridge: contacts WSJT-X and JS8Call log go to the logbook
+After=network-online.target
+Wants=network-online.target
+# socat comes with the first program that has a screen session
+ConditionPathExists=/usr/bin/socat
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+# root: each contact is posted with the key in the 0600 logbook.json (dxberry-logbook submit)
+ExecStart=/usr/bin/socat -u UDP4-RECVFROM:2333,bind=127.0.0.1,fork SYSTEM:/opt/dxberry/bin/dxberry-logbook\ submit
+Restart=on-failure
+RestartSec=3
+# the queue in the state directory and the locks in the run directory are all it writes; curl
+# must reach the logbook server, so there is no IP filter
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dxberry -/run/dxberry
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target

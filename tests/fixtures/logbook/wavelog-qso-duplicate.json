@@ -1,0 +1,7 @@
+# Wavelog 3.2.4 (tag 3.2.4, commit 7f8eef4de94c674f73c6859ed4e0b0247f68dcd9), the answer of
+# POST index.php/api/qso for a record Wavelog read and would not import - here a duplicate:
+#   application/controllers/Api.php qso(), lines 493-498: HTTP 400 and json_encode(['status' =>
+#   'abort', ...]) with the import's error text appended to messages (line 494); the duplicate
+#   text is application/models/Logbook_model.php import(), line 6056, categorised "duplicate"
+#   by import_bulk() (lines 5119-5127).
+{"status":"abort","type":"adif","string":"","adif_count":1,"adif_errors":1,"messages":["","Date\/Time: 2026-10-20 17:04:00 Callsign: K0ABC Band: 20m Duplicate for W0BTE<br>"]}

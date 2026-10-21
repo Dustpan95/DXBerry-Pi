@@ -1,0 +1,146 @@
+#!/bin/bash
+# dxberry-logbook: the logbook - any Wavelog or Cloudlog, or this Pi's own Wavelog. Spec: docs/design/2026-10-19-applications.md
+#   get                the setting (the key only as "set"), the queue, this Pi's own Wavelog
+#   set                JSON on stdin {"url","key","station_id","slug"} (no key: the stored one is kept;
+#                      {"clear":true} forgets the logbook); the server is tested first, saved only when it answers
+#   test               the same JSON on stdin, or the stored setting when there is none: what answers there
+#   submit             one ADIF contact on stdin (the logging bridge): posted, or queued for later
+#   flush              post the queued contacts, oldest first (dxberry-logbook-flush.timer)
+#   recent [N]         the newest N contacts (1-25, default 10), cached a minute
+# The url is https://, or this Pi's own Wavelog: http://127.0.0.1:8083/. --json on any subcommand.
+# Exit: 0 ok, 1 not root, 2 usage or bad input, 6 the server refused or did not answer (nothing saved),
+#  could not queue, or contacts still wait.
+set -uo pipefail
+
+DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
+# radio, apps and screen: set lets stopped program sessions follow the logbook as prepare does
+for _m in common config graywolf settings update gps radio rigctld inifile apps screen webproxy logbook; do
+  # shellcheck disable=SC1090
+  source "$DXB_LIB/$_m.sh"
+done
+# the libraries call systemctl by name; DXB_SYSTEMCTL stands in for it everywhere in this command
+if [[ $DXB_SYSTEMCTL != systemctl ]]; then systemctl() { "$DXB_SYSTEMCTL" "$@"; }; fi
+
+usage() { sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+JSON=0
+
+# read_input: what is on stdin (at most 64 KiB), or nothing when stdin is a terminal.
+read_input() { [[ -t 0 ]] || head -c 65536; }
+
+# local_wavelog: {"installed","url","web"} - this Pi's Wavelog as the logbook setting names it
+# (the loopback listener) and as a browser reaches it.
+local_wavelog() {
+  local addr=${DXB_PI_ADDRESS:-}
+  if ! dxb_apps_installed wavelog 2> /dev/null; then jq -cn '{installed: false, url: null, web: null}'; return 0; fi
+  [[ -n $addr ]] || addr=$(hostname -I 2> /dev/null | awk '{ print $1 }')
+  [[ -n $addr ]] || addr=$(hostname 2> /dev/null)
+  jq -cn --arg u "$DXB_LOGBOOK_LOCAL_URL" --arg a "$addr" '{installed: true, url: $u, web: (if $a == "" then null else "https://" + $a + ":8082/" end)}'
+}
+
+cmd_get() {
+  local c q r l j
+  q=$(_dxb_lb_queue_count "$(_dxb_lb_queue)"); r=$(_dxb_lb_queue_count "$(_dxb_lb_queue)/refused"); l=$(local_wavelog)
+  if c=$(dxb_logbook_stored); then
+    j=$(jq -c --argjson q "$q" --argjson r "$r" --argjson l "$l" \
+      '{configured: true, url, type: (.type // null), station_id, slug: (.slug // ""), key: (if (.key // "") != "" then "set" else null end), queue: $q, refused: $r, local: $l}' <<< "$c")
+  else
+    j=$(jq -cn --argjson q "$q" --argjson r "$r" --argjson l "$l" \
+      '{configured: false, url: null, type: null, station_id: null, slug: null, key: null, queue: $q, refused: $r, local: $l}')
+  fi
+  if (( JSON )); then printf '%s\n' "$j"; return 0; fi
+  jq -r '(if .configured then "logbook: \(.url) (\(.type // "?")), station \(.station_id)\(if .slug != "" then ", public slug \(.slug)" else "" end), key \(.key // "not set")"
+          else "logbook: not set" end),
+    "queued contacts: \(.queue)\(if .refused > 0 then " (\(.refused) refused by the server, kept)" else "" end)",
+    (if .local.installed then "this Pi'\''s Wavelog: \(.local.web // "port 8082") (choose \(.local.url) as the logbook)" else empty end)' <<< "$j"
+}
+
+# say_test ANSWER: test's answer as JSON or text.
+say_test() {
+  if (( JSON )); then printf '%s\n' "$1"; return 0; fi
+  jq -r 'if .ok then "\(.type)\(if .version then " " + .version else "" end) answers" else "not a logbook: \(.error)" end' <<< "$1"
+}
+
+cmd_test() {
+  local in c ans rc
+  in=$(read_input)
+  if [[ -z ${in//[[:space:]]/} ]]; then
+    c=$(dxb_logbook_stored) || { echo "no logbook is set" >&2; return 2; }
+  else
+    c=$(_dxb_lb_input "$in") || return 2
+  fi
+  ans=$(_dxb_lb_detect "$c"); rc=$?
+  say_test "$ans"
+  return $rc
+}
+
+# forget: the setting and every answer cached for it go.
+forget() { rm -f "$(_dxb_lb_file)" "$(_dxb_lb_recent_cache)" "$(_dxb_lb_wavelog_state)"; }
+
+cmd_set() {
+  local in c ans type kept j
+  in=$(read_input)
+  jq -e 'type == "object"' <<< "$in" > /dev/null 2>&1 || { echo "set reads one JSON object on stdin: {\"url\",\"key\",\"station_id\",\"slug\"} or {\"clear\":true}" >&2; return 2; }
+  if jq -e '.clear == true' <<< "$in" > /dev/null 2>&1; then
+    forget || { echo "could not forget the logbook" >&2; return 6; }
+    dxb_info "logbook: cleared"
+    type=null
+  else
+    c=$(_dxb_lb_input "$in") || return 2
+    ans=$(_dxb_lb_detect "$c") || {
+      if (( JSON )); then jq -c '{ok: false, type: null, kept: [], error}' <<< "$ans"; else jq -r '"not saved: " + .error' <<< "$ans" >&2; fi
+      return 6
+    }
+    type=$(jq -r .type <<< "$ans")
+    _dxb_lb_save "$c" "$type" || { echo "could not save $(_dxb_lb_file)" >&2; return 6; }
+    rm -f "$(_dxb_lb_recent_cache)"
+    dxb_info "logbook: set to $(jq -r .url <<< "$c") ($type)"
+    type="\"$type\""
+  fi
+  # stopped sessions follow now; running ones at their next start
+  kept=$(dxb_logbook_fldigi_follow_stopped)
+  # what waited in the queue goes to the logbook now (in the background: set does not wait)
+  [[ $type == null ]] || "$DXB_SYSTEMCTL" --no-block start dxberry-logbook-flush.service > /dev/null 2>&1 || true
+  j=$(jq -cn --argjson t "$type" --argjson k "$kept" '{ok: true, type: $t, kept: $k}')
+  if (( JSON )); then printf '%s\n' "$j"; return 0; fi
+  jq -r '(if .type then "logbook set (\(.type))" else "logbook cleared" end), (.kept[] | "kept in the program: " + .)' <<< "$j"
+}
+
+cmd_recent() {
+  local n=${1:-10} ans
+  if [[ ! $n =~ ^[0-9]{1,2}$ ]] || (( 10#$n < 1 || 10#$n > 25 )); then
+    echo "usage: dxberry-logbook recent [N] (N is 1 to 25)" >&2; return 2
+  fi
+  ans=$(dxb_logbook_recent "$(( 10#$n ))")
+  if (( JSON )); then printf '%s\n' "$ans"; return 0; fi
+  jq -r 'if .ok then (.contacts[] | "\(.time_utc)  \(.call)  \(.band)  \(.mode)  \(.rst_sent)/\(.rst_rcvd)  \(.grid)") else "no recent contacts: \(.error)" end' <<< "$ans"
+}
+
+main() {
+  local cmd='' a
+  local -a args=()
+  for a in "$@"; do case $a in --json) JSON=1 ;; *) args+=("$a") ;; esac; done
+  cmd=${args[0]:-}; args=("${args[@]:1}")
+  case $cmd in
+    -h|--help) usage; return 0 ;;
+    get|set|test|submit|flush) [[ ${#args[@]} -eq 0 ]] || { echo "usage: dxberry-logbook $cmd" >&2; return 2; } ;;
+    recent) [[ ${#args[@]} -le 1 ]] || { echo "usage: dxberry-logbook recent [N]" >&2; return 2; } ;;
+    '') usage >&2; return 2 ;;
+    *) echo "unknown subcommand: $cmd" >&2; usage >&2; return 2 ;;
+  esac
+  dxb_require_root
+  umask 077
+  mkdir -p "$DXB_STATE_DIR" 2> /dev/null; chmod 700 "$DXB_STATE_DIR" 2> /dev/null
+  # the journal (stderr) only: the bridge runs this for every contact, and nothing here may grow
+  # a file on the SD card
+  export DXB_LOG_FILE=/dev/null
+  case $cmd in
+    get) cmd_get ;;
+    set) cmd_set ;;
+    test) cmd_test ;;
+    submit) dxb_logbook_submit ;;
+    flush) dxb_logbook_flush ;;
+    recent) cmd_recent "${args[0]:-}" ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; exit $?; fi

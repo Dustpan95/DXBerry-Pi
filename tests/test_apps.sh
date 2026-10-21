@@ -27,7 +27,8 @@ test_apps_rows_carry_every_column() {
   fx_apps_env
   assert_eq "$(dxb_apps_row flrig | jq -c .)" \
     '{"name":"flrig","label":"flrig","kind":"rigcontrol","source":"apt:flrig","packages":[],"description":"Rig control with your radio'\''s full front panel"}'
-  assert_eq "$(dxb_apps_row wavelog | jq -r '.packages | join(" ")')" "nginx php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd mariadb-server"
+  # no nginx: it comes only through dxb_webproxy_install, inside its policy-rc.d guard (Task 12)
+  assert_eq "$(dxb_apps_row wavelog | jq -r '.packages | join(" ")')" "php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd mariadb-server"
   assert_eq "$(dxb_apps_rows | jq -r 'map(.name) | unique | length')" "8"
 }
 
@@ -146,12 +147,14 @@ test_apps_install_debian_program_and_update_mode() {
 
 test_apps_install_service_skips_the_session_packages() {
   fx_apps_env
+  # a stand-in module: the real one's set-up (database, web site) is test_app_wavelog.sh's
+  ap_module wavelog 'app_wavelog_kind() { echo service; }'
   ap_release wavelog/wavelog 2.1.2
   mkdir -p "$TEST_TMP/src/wavelog-2.1.2"; echo '<?php' > "$TEST_TMP/src/wavelog-2.1.2/index.php"
   mkdir -p "$TEST_TMP/http/wavelog/wavelog/archive/refs/tags"
   tar -czf "$TEST_TMP/http/wavelog/wavelog/archive/refs/tags/2.1.2.tar.gz" -C "$TEST_TMP/src" wavelog-2.1.2
   assert_ok dxb_apps_install wavelog > "$TEST_TMP/out"
-  assert_contains "$(cat "$TEST_TMP/calls")" "apt-get install -y --no-install-recommends --no-upgrade nginx php-fpm"
+  assert_contains "$(cat "$TEST_TMP/calls")" "apt-get install -y --no-install-recommends --no-upgrade php-fpm"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "tigervnc"
   assert_eq "$(cat "$DXB_APPS_OPT/wavelog/VERSION")" "2.1.2"
   assert_eq "$(cat "$DXB_APPS_OPT/wavelog/index.php")" "<?php"

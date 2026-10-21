@@ -1,0 +1,8 @@
+# Cloudlog 2.8.20 (tag 2.8.20, commit 1676e1123e34988e29a759d1381a3b485c68d2aa), the answer of
+# GET index.php/api/auth/<key> for a valid key:
+#   application/controllers/Api.php auth(), lines 115-129: Content-type text/xml, then
+#   echo "<auth>"; echo "<status>Valid</status>"; echo "<rights>" . access($key) . "</rights>";
+#   echo "</auth>" (lines 124-127), with no newlines between them; an unknown key gives
+#   <auth><message>Key Invalid - either not found or disabled</message></auth> (lines 120-122).
+#   Cloudlog has no api/version (Api.php has no version() method at this tag).
+<auth><status>Valid</status><rights>rw</rights></auth>

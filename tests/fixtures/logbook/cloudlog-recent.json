@@ -1,0 +1,68 @@
+# Cloudlog 2.8.20 (tag 2.8.20, commit 1676e1123e34988e29a759d1381a3b485c68d2aa), the answer of
+# GET index.php/api/recent_qsos/<public_slug>/<limit> (no key; limit 1-50, default 10):
+#   application/controllers/Api.php recent_qsos(), lines 1512-1631: HTTP 200 and
+#   json_encode(['qsos' => $qsos, 'count' => count($qsos), 'logbook_slug' => $public_slug],
+#   JSON_PRETTY_PRINT) (lines 1617-1622). Each QSO (lines 1561-1612): date (Y-m-d) and time (H:i)
+#   of COL_TIME_ON, callsign (upper case), mode (COL_SUBMODE when set, else COL_MODE), band
+#   (COL_SAT_NAME when set, else COL_BAND), rst_sent, rst_rcvd; optional stx_string, srx_string,
+#   gridsquare (COL_VUCC_GRIDS, else COL_GRIDSQUARE), qth, name, lat/long and country. Newest
+#   first: application/models/Logbook_model.php get_last_qsos(), lines 2571-2596 (ORDER BY
+#   col_time_on desc, col_primary_key desc). W1AW has no grid square here.
+{
+    "qsos": [
+        {
+            "date": "2026-10-20",
+            "time": "18:01",
+            "callsign": "JA1AAA",
+            "mode": "SSB",
+            "band": "15m",
+            "rst_sent": "59",
+            "rst_rcvd": "57",
+            "gridsquare": "PM95",
+            "lat": 35.5,
+            "long": 139,
+            "country": "Japan"
+        },
+        {
+            "date": "2026-10-20",
+            "time": "17:20",
+            "callsign": "VE3XYZ",
+            "mode": "FT4",
+            "band": "40m",
+            "rst_sent": "-05",
+            "rst_rcvd": "+02",
+            "gridsquare": "FN03",
+            "name": "José",
+            "lat": 43.5,
+            "long": -79,
+            "country": "Canada"
+        },
+        {
+            "date": "2026-10-20",
+            "time": "17:04",
+            "callsign": "K0ABC",
+            "mode": "FT8",
+            "band": "20m",
+            "rst_sent": "-10",
+            "rst_rcvd": "-12",
+            "gridsquare": "EM28",
+            "lat": 38.5,
+            "long": -95,
+            "country": "United States Of America"
+        },
+        {
+            "date": "2026-10-19",
+            "time": "23:59",
+            "callsign": "W1AW",
+            "mode": "CW",
+            "band": "20m",
+            "rst_sent": "599",
+            "rst_rcvd": "599",
+            "lat": 37.53,
+            "long": -97.14,
+            "country": "United States Of America"
+        }
+    ],
+    "count": 4,
+    "logbook_slug": "me"
+}

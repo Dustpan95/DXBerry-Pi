@@ -6,7 +6,7 @@
 set -uo pipefail
 
 DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
-for _m in common config system network storage graywolf radio radio_udev rigctld gps settings update inifile apps console scrub; do
+for _m in common config system network storage graywolf radio radio_udev rigctld gps settings update inifile apps logbook console scrub; do
   # shellcheck disable=SC1090
   source "$DXB_LIB/$_m.sh"
 done
@@ -132,6 +132,7 @@ main() {
     dxb_status_add "graywolf: version $(dxb_gw_installed_version) at http://${DXB_CFG[_IP]:-<this-pi>}:8080 (user ${DXB_CFG[WEBUI_USER]})"
   fi
   provision_radio
+  provision_logbook
   provision_console
   provision_scrub
 

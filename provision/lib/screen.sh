@@ -193,6 +193,44 @@ dxb_screen_settings_input() {
     '{radios: $rec, cfg: {CALLSIGN: $c, LATITUDE: $la, LONGITUDE: $lo}, logbook: ., steps: $ARGS.positional}' --args "$@"
 }
 
+# _dxb_screen_run_settings S STEP...: the settings step for S as dxbapps (dxberry-app settings S
+# through runuser), its input built here (dxb_screen_settings_input) and handed over on stdin.
+# Its stdout ("done STEP" and the logbook step's "kept" lines) on stdout; its exit status.
+_dxb_screen_run_settings() {
+  local s=$1; shift
+  dxb_screen_settings_input "$s" "$@" \
+    | "$DXB_RUNUSER" -u "$DXB_APPS_USER" -- env HOME="$DXB_APPS_HOME" "$DXB_APP_CMD" settings "$s"
+}
+
+# dxb_screen_kept_file S: where root keeps S's last "kept KEY (changed in PROGRAM)" lines (the
+# logbook keys the operator changed in the program, which the logbook no longer sets there), for
+# the Programs row. Root's own state directory; 0600.
+dxb_screen_kept_file() { printf '%s/logbook-kept/%s\n' "$DXB_APPS_STATE" "$1"; }
+
+# _dxb_screen_kept_store S OUT: after a logbook step that reported done (OUT, the settings step's
+# stdout), its "kept" lines replace S's kept file; none removes it. Always 0 (a warning).
+_dxb_screen_kept_store() {
+  local f k
+  grep -qx 'done logbook' <<< "$2" || return 0
+  f=$(dxb_screen_kept_file "$1"); k=$(grep '^kept ' <<< "$2")
+  if [[ -z $k ]]; then rm -f "$f"; return 0; fi
+  { mkdir -p "${f%/*}" && { dxb_write_if_changed "$f" "$k" 600; [[ $(< "$f") == "$k" ]]; }; } 2> /dev/null \
+    || dxb_warn "$1: could not record the logbook keys kept in the program ($f)"
+  return 0
+}
+
+# dxb_screen_logbook_follow S: the logbook step alone for S (a stopped session follows a new
+# logbook now: dxberry-logbook set). Its "kept" lines on stdout and in S's kept file. DXB_RADIOS
+# loaded. 0 ok, 7 the step failed (a warning).
+dxb_screen_logbook_follow() {
+  local out rc
+  out=$(_dxb_screen_run_settings "$1" logbook); rc=$?
+  _dxb_screen_kept_store "$1" "$out"
+  grep '^kept ' <<< "$out"
+  (( rc == 0 )) || { dxb_warn "$1: could not follow the logbook (exit $rc); it does at its next start"; return 7; }
+  return 0
+}
+
 # dxb_screen_settings S: the settings step itself, as dxbapps: one JSON object
 # (dxb_screen_settings_input) on stdin; DXB_RADIOS and DXB_CFG come from it alone, and
 # dxb_logbook_fldigi_values answers its logbook. Runs app_APP_firstfill and / or app_APP_wire
@@ -266,7 +304,10 @@ _dxb_screen_session_ok() {
 # stdin): the first fill once per program per radio, and the wiring whenever the radio's wiring
 # hash differs from the one last wired for S (ruling 7), or at every start when the module's
 # app_APP_wire_each_start says yes (flrig: the operator can switch transceivers inside it); a radio
-# set to "names" wiring is never wired; root records each step the settings step reports done. Then S.env, a fresh S.d (root
+# set to "names" wiring is never wired; and, at every start, the logbook step for a program that
+# follows the logbook (app_APP_logbook_follow: fldigi), whose "kept" lines root keeps in S's kept
+# file (dxb_screen_kept_file) - a logbook step that fails is only a warning. Root records each
+# step the settings step reports done. Then S.env, a fresh S.d (root
 # only makes it and gives it to dxbapps) and the wait for rigctld. 0 ok, 2 bad name, 3 not owned /
 # not installed / unknown, 4 radio absent, 6 the session's files could not be made, 7 first fill
 # or wiring failed.
@@ -287,9 +328,10 @@ dxb_screen_prepare() {
       steps+=(wire)
     fi
   fi
+  # the module is loaded (_dxb_screen_session_ok): a program that follows the logbook does so at every start
+  declare -F "app_${a}_logbook_follow" > /dev/null && steps+=(logbook)
   if (( ${#steps[@]} )); then
-    out=$(dxb_screen_settings_input "$s" "${steps[@]}" \
-      | "$DXB_RUNUSER" -u "$DXB_APPS_USER" -- env HOME="$DXB_APPS_HOME" "$DXB_APP_CMD" settings "$s"); rc=$?
+    out=$(_dxb_screen_run_settings "$s" "${steps[@]}"); rc=$?
     if grep -qx 'done firstfill' <<< "$out"; then
       dxb_apps_firstfill_mark "$a" "$r" || dxb_warn "$s: could not mark the first fill done; it runs again next time"
     fi
@@ -297,7 +339,14 @@ dxb_screen_prepare() {
       { mkdir -p "${hf%/*}" && printf '%s\n' "$h" > "$hf"; } 2> /dev/null \
         || dxb_warn "$s: could not record the wiring; it is wired again next time"
     fi
-    (( rc == 0 )) || { dxb_error "$s: $a's settings could not be written (${steps[*]}; exit $rc)"; return 7; }
+    _dxb_screen_kept_store "$s" "$out"
+    if (( rc != 0 )); then
+      local st ok=1
+      for st in "${steps[@]}"; do [[ $st == logbook ]] || grep -qx "done $st" <<< "$out" || ok=0; done
+      # only the logbook follow failed: the program starts with the logbook it had
+      (( ok )) || { dxb_error "$s: $a's settings could not be written (${steps[*]}; exit $rc)"; return 7; }
+      dxb_warn "$s: $a could not follow the logbook (exit $rc); it tries again at the next start"
+    fi
   fi
   env=$(dxb_screen_env "$s") || return 3
   dir=$(dxb_screen_dir "$s")

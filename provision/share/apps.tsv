@@ -11,4 +11,4 @@ fldigi	fldigi	radio	apt:fldigi	pulseaudio	RTTY, PSK, Olivia, MFSK, CW and many m
 qsstv	QSSTV	radio	apt:qsstv	pulseaudio	Slow-scan TV pictures, analog and digital
 pat	Pat (Winlink)	radio	github:la5nta/pat:deb=^pat_[0-9.]+_linux_arm64\.deb$	-	Winlink email over the air with ARDOP
 flrig	flrig	rigcontrol	apt:flrig	-	Rig control with your radio's full front panel
-wavelog	Wavelog	service	tag:wavelog/wavelog	nginx php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd mariadb-server	A logbook on this Pi
+wavelog	Wavelog	service	tag:wavelog/wavelog	php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd mariadb-server	A logbook on this Pi

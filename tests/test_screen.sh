@@ -114,11 +114,13 @@ test_screen_pulse_loads_only_the_session_card() {
 test_prepare_fills_once_and_rewires_on_hash_change() {
   sc_env; sc_owned radio2 gamma
   assert_ok "$DXB_ROOT/provision/bin/dxberry-app" prepare gamma-radio2
-  assert_eq "$(tr '\n' ';' < "$TEST_TMP/appcalls")" "gamma firstfill radio2;gamma wire radio2;"
+  # gamma follows the logbook (app_gamma_logbook_follow): that step runs at every start (Task 12)
+  assert_eq "$(tr '\n' ';' < "$TEST_TMP/appcalls")" "gamma firstfill radio2;gamma wire radio2;gamma logbook radio2;"
   : > "$TEST_TMP/appcalls"; "$DXB_ROOT/provision/bin/dxberry-app" prepare gamma-radio2
-  assert_eq "$(cat "$TEST_TMP/appcalls")" ""                        # nothing changed: neither again
+  assert_eq "$(cat "$TEST_TMP/appcalls")" "gamma logbook radio2"    # nothing changed: neither again
+  : > "$TEST_TMP/appcalls"
   sc_set_ptt radio2 vox; "$DXB_ROOT/provision/bin/dxberry-app" prepare gamma-radio2
-  assert_eq "$(tr '\n' ';' < "$TEST_TMP/appcalls")" "gamma wire radio2;"
+  assert_eq "$(tr '\n' ';' < "$TEST_TMP/appcalls")" "gamma wire radio2;gamma logbook radio2;"
 }
 test_present_skips_start_for_unplugged_radio() {
   sc_env; sc_owned radio2 gamma; sc_unplug radio2
@@ -225,7 +227,7 @@ test_screen_prepare_writes_settings_as_dxbapps_with_input_on_stdin() {
   echo 'dxb_logbook_fldigi_values() { echo '"'"'{"url":"https://log.example/","key":"SECRET-KEY-123","station_id":"1"}'"'"'; }' > "$TEST_TMP/lib/logbook.sh"
   assert_ok env DXB_LIB="$TEST_TMP/lib" "$DXB_ROOT/provision/bin/dxberry-app" prepare gamma-radio2
   assert_contains "$(cat "$TEST_TMP/calls")" "runuser -u dxbapps -- env HOME=$DXB_APPS_HOME $DXB_ROOT/provision/bin/dxberry-app settings gamma-radio2"
-  assert_eq "$(jq -c '.steps' "$TEST_TMP/settings-stdin")" '["firstfill","wire"]'
+  assert_eq "$(jq -c '.steps' "$TEST_TMP/settings-stdin")" '["firstfill","wire","logbook"]'
   assert_eq "$(jq -r '.radios.radios | keys | join(" ")' "$TEST_TMP/settings-stdin")" "radio2"
   assert_eq "$(jq -r '.logbook.key' "$TEST_TMP/settings-stdin")" "SECRET-KEY-123"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "SECRET-KEY-123"
@@ -245,7 +247,12 @@ test_screen_prepare_writes_settings_as_dxbapps_with_input_on_stdin() {
   assert_contains "$(cat "$TEST_TMP/jq-argv")" "logbook: ."
   assert_not_contains "$(cat "$TEST_TMP/jq-argv")" "SECRET-KEY-123"
   assert_eq "$(jq -r '.logbook.key' "$TEST_TMP/settings-stdin")" "SECRET-KEY-123"
-  # nothing to do: no settings step at all
+  # nothing else to do: only the logbook step, which gamma (it follows the logbook) gets at every
+  # start; a program without the hook gets no settings step at all
+  : > "$TEST_TMP/calls"; : > "$TEST_TMP/settings-stdin"
+  assert_ok sc_app prepare gamma-radio2
+  assert_eq "$(jq -c '.steps' "$TEST_TMP/settings-stdin")" '["logbook"]'
+  sed -i '/^app_gamma_logbook_follow()/d' "$DXB_APPS_DIR/gamma.sh"
   : > "$TEST_TMP/calls"
   assert_ok sc_app prepare gamma-radio2
   assert_not_contains "$(cat "$TEST_TMP/calls")" "runuser"
@@ -593,7 +600,7 @@ test_screen_prepare_does_not_rewire_a_module_without_the_hook() {
   sc_env; sc_owned radio2 gamma
   sc_app prepare gamma-radio2; : > "$TEST_TMP/appcalls"
   sc_app prepare gamma-radio2
-  assert_eq "$(cat "$TEST_TMP/appcalls")" ""
+  assert_eq "$(cat "$TEST_TMP/appcalls")" "gamma logbook radio2"     # the logbook step only (Task 12)
 }
 test_screen_flrig_never_waits_for_its_radio_in_a_marker() {
   sc_env; sc_flrig_module; sc_set_control radio2 flrig

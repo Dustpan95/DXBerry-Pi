@@ -14,8 +14,19 @@ bl_missing() {
 
 test_binaries_that_load_modules_define_the_libraries_modules_call() {
   local b out
-  for b in dxberry-app dxberry-update dxberry-radio dxberry-provision; do
+  for b in dxberry-app dxberry-update dxberry-radio dxberry-provision dxberry-logbook; do
     out=$(bl_missing "$b")
+    assert_eq "$out" ""
+  done
+}
+
+# the logbook: dxberry-app's prepare tells a program the logbook (logbook.sh), and
+# dxberry-logbook's set runs the settings step of stopped sessions the way prepare does (screen.sh)
+test_binaries_load_the_logbook_where_it_is_used() {
+  local b out
+  for b in dxberry-app dxberry-logbook; do
+    out=$(env -i PATH=/usr/bin:/bin DXB_LIB="$DXB_LIB" BIN="$DXB_ROOT/provision/bin/$b" \
+      bash -c 'source "$BIN" || exit 99; for f in dxb_logbook_fldigi_values dxb_screen_settings_input dxb_screen_logbook_follow; do declare -F "$f" > /dev/null || echo "$f"; done' 2>&1)
     assert_eq "$out" ""
   done
 }

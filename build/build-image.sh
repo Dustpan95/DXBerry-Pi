@@ -74,11 +74,14 @@ REQUIRED_FILES=(
   provision/cockpit/dxberry/settings.js provision/cockpit/dxberry/updates.js
   provision/bin/dxberry-config provision/lib/settings.sh provision/templates/dxberry-config-boot.service
   provision/bin/dxberry-update provision/lib/update.sh
-  provision/lib/webproxy.sh provision/lib/apps/pat.sh provision/templates/nginx-dxberry-auth.conf provision/templates/nginx-pat.conf provision/templates/dxberry-ardop@.service
+  provision/lib/webproxy.sh provision/lib/apps/pat.sh provision/templates/nginx-dxberry-auth-gate.conf provision/templates/nginx-dxberry-auth-endpoints.conf
+  provision/templates/nginx-pat.conf provision/templates/dxberry-ardop@.service
+  provision/bin/dxberry-logbook provision/lib/logbook.sh provision/lib/apps/wavelog.sh provision/templates/nginx-wavelog.conf
+  provision/templates/dxberry-logbridge.service provision/templates/dxberry-logbook-flush.service provision/templates/dxberry-logbook-flush.timer
 )
 EXECUTABLE_FILES=(
   provision/bin/dxberry-preboot provision/bin/dxberry-provision provision/bin/dxberry-netwatch provision/bin/dxberry-radio
-  provision/bin/dxberry-status provision/bin/dxberry-config provision/bin/dxberry-update
+  provision/bin/dxberry-status provision/bin/dxberry-config provision/bin/dxberry-update provision/bin/dxberry-logbook
   boot/Automation_Custom_PreScript.sh boot/Automation_Custom_Script.sh
 )
 
@@ -320,6 +323,9 @@ if ! ln -sf /opt/dxberry/bin/dxberry-config "$MNT/root/usr/local/sbin/dxberry-co
 fi
 if ! ln -sf /opt/dxberry/bin/dxberry-update "$MNT/root/usr/local/sbin/dxberry-update"; then
   die "failed to symlink dxberry-update"
+fi
+if ! ln -sf /opt/dxberry/bin/dxberry-logbook "$MNT/root/usr/local/sbin/dxberry-logbook"; then
+  die "failed to symlink dxberry-logbook"
 fi
 if ! cat > "$MNT/root/etc/dxberry-release" << EOF
 DXBERRY_VERSION=$VERSION
