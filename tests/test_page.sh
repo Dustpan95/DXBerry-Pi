@@ -468,10 +468,10 @@ pg_update_fields() { sed -n '/\/\* update-fields-begin/,/\/\* update-fields-end/
 
 test_page_reads_only_fields_that_dxberry_update_produces() {
   local f n=0
-  up_cli_env
+  up_cli_env; up_apps_env
   dxb_update_set_prereleases on
   up_cli check --json || _fail "dxberry-update check --json failed: $(cat "$TEST_TMP/err")"; cp "$TEST_TMP/out" "$TEST_TMP/check.json"
-  up_cli system --json || _fail "dxberry-update system --json failed: $(cat "$TEST_TMP/err")"; cp "$TEST_TMP/out" "$TEST_TMP/start.json"
+  up_cli app wsjtx --json || _fail "dxberry-update app wsjtx --json failed: $(cat "$TEST_TMP/err")"; cp "$TEST_TMP/out" "$TEST_TMP/start.json"
   up_cli job --json || _fail "dxberry-update job --json failed"; cp "$TEST_TMP/out" "$TEST_TMP/job.json"
   up_cli prereleases on --json; cp "$TEST_TMP/out" "$TEST_TMP/prereleases.json"
   for f in $(pg_update_fields); do

@@ -276,6 +276,11 @@ let updCheckAnswer = {
   graywolf: { installed: "0.14.13", latest: "0.14.14", pinned: null, update: true },
   dxberry: { installed: "0.3.0-rc3", latest: "0.3.0-rc4", prerelease: true, update: true, include_prereleases: true },
   system: { count: 2, packages: ["libfoo1", "bar"] },
+  apps: {
+    wsjtx: { installed: "3.0.2", latest: "3.0.3", source: "upstream", update: true },
+    fldigi: { installed: "4.1.0", latest: "4.1.0", source: "debian", update: false },
+    pat: { error: "Pat's newest version could not be found" },
+  },
   rollback: { available: true, version: "0.3.0-rc2", updates: true },
 };
 let updJobAnswer = { now: 1700000000, reboot_required: false, job: null };
@@ -660,6 +665,37 @@ const programsPath = path.replace(/dxberry\.js$/, "programs.js");
   const checkNow = calls.filter(c => c.args && c.args[0].endsWith("dxberry-update") && c.args[1] === "check").pop();
   ok(checkNow && checkNow.args.join(" ") === "/opt/dxberry/bin/dxberry-update check --refresh --json",
     "Check now runs check --refresh --json: " + (checkNow && checkNow.args.join(" ")));
+
+  // one row per installed program: the newest version with Update, "is the newest", or the error
+  ok(utext().includes("3.0.2 → 3.0.3") && utext().includes("4.1.0 is the newest") && utext().includes("Pat's newest version could not be found"),
+    "Updates shows one row per program: " + utext());
+  ok(!!ubtn("upd:app:wsjtx") && !ubtn("upd:app:fldigi") && !ubtn("upd:app:pat"), "only a program with an update gets an Update button");
+  // Update on a program: no confirmation, runs dxberry-update app NAME --json, then follows the job under its label
+  const savedLast = vm.runInContext("last", ctx);
+  vm.runInContext("last = Object.assign({}, last || {}, { apps: { programs: [{ name: 'wsjtx', label: 'WSJT-X' }] } })", ctx);
+  answer = args => {
+    if (!args[0].endsWith("dxberry-update")) return Promise.reject({ problem: "not-found" });
+    if (args[1] === "app") return Promise.resolve(JSON.stringify({ ok: true, job: "dxberry-job-update-app-wsjtx-1700000300", kind: "app", name: args[2] }));
+    if (args[1] === "job") return Promise.resolve(JSON.stringify(uJob));
+    if (args[1] === "check") return Promise.resolve(JSON.stringify(updCheckAnswer));
+    return Promise.reject({ problem: "not-found" });
+  };
+  vm.runInContext("updRender()", ctx);
+  ubtn("upd:app:wsjtx").click();
+  await flush(); await flush(); await flush();
+  const appStart = calls.filter(c => c.args && c.args[0].endsWith("dxberry-update") && c.args[1] === "app").pop();
+  ok(appStart && appStart.args.join(" ") === "/opt/dxberry/bin/dxberry-update app wsjtx --json",
+    "Update on a program runs dxberry-update app wsjtx --json: " + (appStart && appStart.args.join(" ")));
+  ok(!confirmD.open, "updating one program does not ask first");
+  // a running program job is named by its program's label; every button is disabled meanwhile
+  const finishedJob = vm.runInContext("updates.job", ctx);
+  ctx.__appJob = { now: 1700000300, reboot_required: false,
+    job: { unit: "dxberry-job-update-app-wsjtx-1700000300", kind: "app", name: "wsjtx", started: 1700000300, state: "running", exit: null, finished: null, lines: ["stopping WSJT-X"] } };
+  vm.runInContext("updates.job = __appJob; updRender()", ctx);
+  ok(utext().includes("Updating WSJT-X…"), "the job view names the program: " + utext());
+  ok(ubtn("upd:app:wsjtx").disabled, "the program's Update button is disabled while a job runs");
+  ctx.__finishedJob = finishedJob;
+  vm.runInContext("updates.job = __finishedJob; last = __saved; updRender()", Object.assign(ctx, { __saved: savedLast }));
 
   // Roll back: asks first, naming the kept version
   ubtn("upd:rollback").click();

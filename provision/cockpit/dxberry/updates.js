@@ -28,8 +28,9 @@ const UPDATE_FIELDS = [
   "check:dxberry.installed", "check:dxberry.latest", "check:dxberry.prerelease", "check:dxberry.update",
   "check:dxberry.include_prereleases",
   "check:system.count", "check:system.packages",
+  "check:apps.*.installed", "check:apps.*.latest", "check:apps.*.update", "check:apps.*.source",
   "check:rollback.available", "check:rollback.version", "check:rollback.updates",
-  "start:job", "start:kind",
+  "start:job", "start:kind", "start:name",
   "job:now", "job:reboot_required", "job:job.unit", "job:job.kind", "job:job.name", "job:job.state", "job:job.exit", "job:job.lines",
   "prereleases:include_prereleases",
 ];
@@ -139,6 +140,15 @@ function updRows(c) {
     : `${d.installed}, ${updNewest(d)}`]);
   const s = c.system || {};
   rows.push(["System", s.error ? s.error : s.count ? [badge("update", "warn"), ` ${s.count} package${s.count === 1 ? "" : "s"} to upgrade`] : "up to date"]);
+  // one row per installed program: its newest version, with an Update button when there is one
+  const busy = updBusy() || updates.checking || (typeof progBusy === "function" && progBusy());
+  for (const [name, a] of Object.entries(c.apps || {})) {
+    const label = updProgramLabel(name);
+    rows.push([label, a.error ? a.error : a.update
+      ? [badge("update", "warn"), ` ${a.installed} → ${a.latest} `, btn("Update", () => progStart("update", { name, label }),
+        { cls: "primary", key: `upd:app:${name}`, aria: `Update ${label}`, disabled: busy })]
+      : `${a.installed} is the newest`]);
+  }
   if (c.rollback && c.rollback.available) rows.push(["Rollback", `DXBerry ${c.rollback.version} is kept`]);
   rows.push(["Checked", c.checked_at ? new Date(c.checked_at * 1000).toLocaleString("en-US") + (c.cached ? " (from the last check)" : "") : DASH]);
   return rows;
@@ -190,7 +200,8 @@ function updJobBlock() {
   const j = updates.job;
   if (!j) return out;
   const job = j.job;
-  if (job && job.state === "running") out.push(el("div", { class: "notice warn" }, el("span", {}, UPDATE_RUNNING[job.kind] || "Updating…")));
+  if (job && job.state === "running") out.push(el("div", { class: "notice warn" }, el("span", {},
+    job.kind === "app" && job.name ? `Updating ${updProgramLabel(job.name)}…` : UPDATE_RUNNING[job.kind] || "Updating…")));
   if (j.reboot_required && !(job && job.state === "running")) {
     out.push(el("div", { class: "notice warn" }, el("span", {}, "Restart the Pi to finish the updates."),
       btn("Restart the Pi", () => power("reboot.target"), { cls: "danger", key: "upd:reboot" })));

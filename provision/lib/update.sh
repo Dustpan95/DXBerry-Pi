@@ -100,6 +100,32 @@ dxb_update_system_info() {
   awk '/^Inst /{ print $2 }' <<< "$sim" | jq -Rsc 'split("\n") | map(select(length > 0)) | {count: length, packages: .[:50]}'
 }
 
+# dxb_update_apps_info: {NAME: {installed, latest, source: "upstream"|"debian", update} | {error}}
+# for every installed program except Graywolf (which keeps its own part). A Debian program's
+# newest version is the apt candidate (the system part has already run apt-get update, so this
+# does not); an upstream one's is GitHub's newest release (dxb_apps_latest). "update" is true when
+# the newest is known and written differently from the installed one - compared as plain strings,
+# not with dpkg --compare-versions, because the two come from different places (a Debian version
+# carries an epoch or revision that an upstream tag does not) and "different" is what is wanted.
+dxb_update_apps_info() {
+  local rows name label src installed latest out='{}' e
+  declare -F dxb_apps_rows > /dev/null || { echo '{}'; return 0; }
+  rows=$(dxb_apps_rows 2> /dev/null) || { echo '{}'; return 0; }
+  while IFS=$'\t' read -r name label src; do
+    [[ -n $name ]] || continue
+    installed=$(dxb_apps_version "$name" 2> /dev/null)
+    [[ -n $installed ]] || continue
+    if latest=$(dxb_apps_latest "$name" 2> /dev/null) && latest=$(jq -r '.version // empty' <<< "$latest" 2> /dev/null) && [[ -n $latest ]]; then
+      e=$(jq -cn --arg i "$installed" --arg l "$latest" --arg s "$([[ $src == apt:* ]] && echo debian || echo upstream)" \
+        '{installed: $i, latest: $l, source: $s, update: ($l != "" and $l != $i)}')
+    else
+      e=$(jq -cn --arg m "$label's newest version could not be found" '{error: $m}')
+    fi
+    out=$(jq -c --arg n "$name" --argjson e "$e" '. + {($n): $e}' <<< "$out")
+  done < <(jq -r '.[] | select(.name != "graywolf") | [.name, .label, .source] | @tsv' <<< "$rows")
+  printf '%s\n' "$out"
+}
+
 # dxb_update_rollback_info: .prev is only ever offered when it looks like a complete tree (a
 # provisioner, its libraries and a VERSION) - a half-deleted .prev must never be offered or
 # swapped in. "updates" says whether .prev still carries dxberry-update, so the page can warn
@@ -129,11 +155,11 @@ _dxb_update_job_ended_since() {
 # cache when it ends, and what this check read may be from before it. rollback and
 # reboot_required are always worked out now.
 dxb_update_check() {
-  local now age='' ttl=$DXB_UPDATE_TTL_S j gw dx sy
+  local now age='' ttl=$DXB_UPDATE_TTL_S j gw dx sy ap
   now=$(date +%s)
   if [[ ${1:-} != refresh && -f $DXB_UPDATE_CACHE ]]; then
     age=$(( now - $(jq -r '.checked_at // 0' "$DXB_UPDATE_CACHE" 2> /dev/null || echo 0) ))
-    if jq -e '[.graywolf.error, .dxberry.error, .system.error] | any(. != null)' "$DXB_UPDATE_CACHE" > /dev/null 2>&1; then
+    if jq -e '[.graywolf.error, .dxberry.error, .system.error] + [(.apps // {})[] | .error] | any(. != null)' "$DXB_UPDATE_CACHE" > /dev/null 2>&1; then
       ttl=$DXB_UPDATE_ERROR_TTL_S
     fi
   fi
@@ -146,7 +172,9 @@ dxb_update_check() {
     dx=$(dxb_update_dxberry_info) || dx=$(jq -cn --argjson p "$([[ $(dxb_update_prereleases) == on ]] && echo true || echo false)" \
       '{error: "the DXBerry release list could not be read", include_prereleases: $p}')
     sy=$(dxb_update_system_info) || sy='{"error":"apt-get could not simulate an upgrade"}'
-    j=$(jq -cn --argjson t "$now" --argjson g "$gw" --argjson d "$dx" --argjson s "$sy" '{checked_at: $t, graywolf: $g, dxberry: $d, system: $s}')
+    ap=$(dxb_update_apps_info) || ap='{}'
+    j=$(jq -cn --argjson t "$now" --argjson g "$gw" --argjson d "$dx" --argjson s "$sy" --argjson a "$ap" \
+      '{checked_at: $t, graywolf: $g, dxberry: $d, system: $s, apps: $a}')
     if ! dxb_update_job_running && ! _dxb_update_job_ended_since "$now"; then
       mkdir -p "$(dirname "$DXB_UPDATE_CACHE")" 2> /dev/null
       dxb_write_if_changed "$DXB_UPDATE_CACHE" "$j" 644 > /dev/null 2>&1
@@ -388,7 +416,88 @@ dxb_update_apply_system() {
     printf '*** System restart required ***\n' > "$DXB_REBOOT_FLAG" 2> /dev/null || true
     echo "a restart is needed to use the new kernel or firmware"
   fi
+  _dxb_update_restart_upgraded_programs "$pkgs" || return 8
   return 0
+}
+
+# ---- one program's update ------------------------------------------------------------------
+# _dxb_update_app_sessions NAME: the units of NAME's running sessions, one per line. A session
+# that is still starting counts as running. A radio the record no longer names is found through
+# systemd's own list.
+_dxb_update_app_sessions() {
+  local name=$1 sc=${DXB_SYSTEMCTL:-systemctl} u st r
+  if [[ -f ${DXB_RADIOS_FILE:-} ]] && declare -F dxb_radio_load > /dev/null; then dxb_radio_load > /dev/null 2>&1 || true; fi
+  while IFS= read -r u; do
+    [[ -n $u ]] || continue
+    st=$("$sc" is-active "$u" 2> /dev/null)
+    [[ $st == active || $st == activating ]] && printf '%s\n' "$u"
+  done < <({
+    if [[ -n ${DXB_RADIOS:-} ]]; then
+      for r in $(jq -r '.radios | keys[]' <<< "$DXB_RADIOS" 2> /dev/null); do dxb_app_session_unit "$name" "$r"; done
+    fi
+    "$sc" list-units --all --plain --no-legend "dxberry-screen@$name-*" 2> /dev/null | awk '{ print $1 }'
+  } | sort -u)
+  return 0
+}
+
+# _dxb_update_sessions_start NAME LABEL UNIT...: start each unit again and wait for it
+# (dxb_app_session_start waits up to DXB_SESSION_WAIT_S, 30 s). 8 when one does not come back,
+# named in the output with its radio.
+_dxb_update_sessions_start() {
+  local name=$1 label=$2 u s radio rc=0
+  shift 2
+  for u in "$@"; do
+    s=${u#dxberry-screen@}; s=${s%.service}; radio=${s#"$name"-}
+    dxb_app_session_start "$name" "$radio" > /dev/null || { echo "$label did not start again on $radio" >&2; rc=8; }
+  done
+  return $rc
+}
+
+# _dxb_update_restart_upgraded_programs PACKAGES: after a system upgrade, restart the running
+# sessions of every Debian-sourced program whose package was upgraded (apt replaces the files
+# under a running program without harm; the new version runs from the restart). 8 when one does
+# not come back.
+_dxb_update_restart_upgraded_programs() {
+  local pkgs=" ${1//$'\n'/ } " rows name label pkg rc=0 sc=${DXB_SYSTEMCTL:-systemctl} u
+  local -a units
+  declare -F dxb_apps_rows > /dev/null || return 0
+  rows=$(dxb_apps_rows 2> /dev/null) || return 0
+  while IFS=$'\t' read -r name label pkg; do
+    [[ -n $name && $pkgs == *" $pkg "* ]] || continue
+    mapfile -t units < <(_dxb_update_app_sessions "$name")
+    (( ${#units[@]} )) || continue
+    echo "restarting $label"
+    for u in "${units[@]}"; do "$sc" stop "$u" > /dev/null 2>&1; done
+    _dxb_update_sessions_start "$name" "$label" "${units[@]}" || rc=8
+  done < <(jq -r '.[] | select(.source | startswith("apt:")) | [.name, .label, (.source | ltrimstr("apt:"))] | @tsv' <<< "$rows")
+  return $rc
+}
+
+# dxb_update_apply_app NAME: update one program. Its running sessions are stopped, the install
+# path of Task 3 puts the newer version in (dxb_apps_install NAME update: apt --only-upgrade for a
+# Debian program, download / checksum / place for an upstream one), and the sessions are started
+# again and waited for. 0 ok, 6 nothing replaced (the sessions are started again), 8 installed but
+# a session did not come back (named in the output).
+dxb_update_apply_app() {
+  local name=$1 row label rc sc=${DXB_SYSTEMCTL:-systemctl} u
+  local -a units
+  if [[ $name == graywolf ]]; then echo "Graywolf is updated on its own (the Graywolf update above), not here" >&2; return 6; fi
+  row=$(dxb_apps_row "$name") || { echo "there is no program called $name" >&2; return 6; }
+  label=$(jq -r .label <<< "$row")
+  dxb_apps_installed "$name" || { echo "$label is not installed; nothing to update" >&2; return 6; }
+  mapfile -t units < <(_dxb_update_app_sessions "$name")
+  if (( ${#units[@]} )); then
+    echo "stopping $label"
+    for u in "${units[@]}"; do "$sc" stop "$u" > /dev/null 2>&1; done
+  fi
+  dxb_apps_install "$name" update; rc=$?
+  (( rc == 0 || rc == 8 )) || rc=6
+  if (( ${#units[@]} )); then
+    echo "starting $label again"
+    # nothing replaced stays 6 (the output names the program that is down); a replaced one is 8
+    _dxb_update_sessions_start "$name" "$label" "${units[@]}" || { (( rc == 6 )) || rc=8; }
+  fi
+  return $rc
 }
 
 # ---- the update job ------------------------------------------------------------------------

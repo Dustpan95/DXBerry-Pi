@@ -5,6 +5,7 @@
 #   dxberry                    update DXBerry to the newest release with an update file
 #   rollback                   go back to the DXBerry before the last update
 #   system                     apt-get upgrade, never asking
+#   app NAME                   update one program (its running windows are stopped and started again)
 #   job                        the last update: running or finished, its exit and output
 #   prereleases on|off         whether DXBerry pre-releases are offered
 #   apply KIND [NAME]          an update job itself, started by the commands above or dxberry-app
@@ -18,7 +19,7 @@ for _m in common config graywolf settings update gps radio inifile apps webproxy
   source "$DXB_LIB/$_m.sh"
 done
 
-usage() { sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 JSON=0
 REFRESH=0
 
@@ -32,17 +33,18 @@ cmd_check() {
     (.dxberry | if .error then "DXBerry: \(.error)" elif .update then "DXBerry \(.installed) -> \(.latest)\(if .prerelease then " (pre-release)" else "" end)"
       else "DXBerry \(.installed) is the newest\(if .include_prereleases then "" else " (pre-releases are off)" end)" end),
     (.system | if .error then "System: \(.error)" elif .count == 0 then "System packages are up to date" else "System: \(.count) packages to upgrade" end),
+    (.apps // {} | to_entries[] | "\(.key): \(if .value.error then .value.error elif .value.update then "\(.value.installed) -> \(.value.latest)" else "\(.value.installed) is the newest" end)"),
     (if .rollback.available then "Rollback to DXBerry \(.rollback.version) is possible" else empty end),
     (if .reboot_required then "A restart is needed" else empty end),
     "checked \(.checked_at | todate)\(if .cached then " (cached)" else "" end)"' <<< "$j"
 }
 
-# cmd_start KIND: start an update job (dxb_update_job_start; the update lock is held). 5 busy, 6 not started.
+# cmd_start KIND [NAME]: start an update job (dxb_update_job_start; the update lock is held). 5 busy, 6 not started.
 cmd_start() {
-  local kind=$1 rc
-  dxb_update_job_start "$kind"; rc=$?
+  local kind=$1 name=${2:-} rc
+  dxb_update_job_start "$kind" "$name"; rc=$?
   (( rc == 0 )) || return $rc
-  if (( JSON )); then jq -cn --arg u "$DXB_UPDATE_JOB_UNIT" --arg k "$kind" '{ok: true, job: $u, kind: $k}'
+  if (( JSON )); then jq -cn --arg u "$DXB_UPDATE_JOB_UNIT" --arg k "$kind" --arg n "$name" '{ok: true, job: $u, kind: $k} + (if $n == "" then {} else {name: $n} end)'
   else echo "started $DXB_UPDATE_JOB_UNIT (follow it with: sudo dxberry-update job)"; fi
 }
 
@@ -53,6 +55,7 @@ cmd_apply() {
     dxberry) dxb_update_apply_dxberry ;;
     rollback) dxb_update_apply_rollback ;;
     system) dxb_update_apply_system ;;
+    app) dxb_update_apply_app "$name" ;;
     app-install) dxb_apps_install "$name" ;;
     app-remove) dxb_apps_remove "$name" ;;
   esac
@@ -116,11 +119,12 @@ main() {
   case $cmd in
     -h|--help) usage; return 0 ;;
     check|graywolf|dxberry|rollback|system|job|prereleases) ;;
+    app) [[ ${#args[@]} -eq 1 && ${args[0]} =~ ^[a-z][a-z0-9_]{0,15}$ ]] || { echo "usage: dxberry-update app NAME" >&2; return 2; } ;;
     apply)
-      if [[ ${args[0]:-} =~ ^(app-install|app-remove)$ ]]; then
+      if [[ ${args[0]:-} =~ ^(app|app-install|app-remove)$ ]]; then
         [[ ${#args[@]} -eq 2 && ${args[1]} =~ ^[a-z][a-z0-9_]{0,15}$ ]] || { echo "usage: dxberry-update apply ${args[0]} NAME" >&2; return 2; }
       else
-        [[ ${args[0]:-} =~ ^(graywolf|dxberry|rollback|system)$ ]] || { echo "usage: dxberry-update apply graywolf|dxberry|rollback|system|app-install NAME|app-remove NAME" >&2; return 2; }
+        [[ ${args[0]:-} =~ ^(graywolf|dxberry|rollback|system)$ ]] || { echo "usage: dxberry-update apply graywolf|dxberry|rollback|system|app NAME|app-install NAME|app-remove NAME" >&2; return 2; }
       fi ;;
     '') usage >&2; return 2 ;;
     *) echo "unknown subcommand: $cmd" >&2; usage >&2; return 2 ;;
@@ -133,6 +137,7 @@ main() {
   case $cmd in
     check) cmd_check ;;
     graywolf|dxberry|rollback|system) dxb_update_lock || return 5; cmd_start "$cmd" ;;
+    app) dxb_update_lock || return 5; cmd_start app "${args[0]}" ;;
     job) cmd_job ;;
     prereleases) cmd_prereleases "${args[0]:-}" ;;
     apply) cmd_apply "${args[0]}" "${args[1]:-}" ;;

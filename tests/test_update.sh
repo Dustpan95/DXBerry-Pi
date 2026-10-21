@@ -5,6 +5,10 @@ source "$DXB_LIB/config.sh"
 source "$DXB_LIB/graywolf.sh"
 source "$DXB_LIB/settings.sh"
 source "$DXB_LIB/update.sh"
+source "$DXB_LIB/gps.sh"
+source "$DXB_LIB/radio.sh"
+source "$DXB_LIB/apps.sh"
+source "$DXB_ROOT/tests/fixtures/apps.sh"
 
 # up_env: a Pi on DXBerry 0.3.0-rc3 with Graywolf 0.14.13; GitHub, Graywolf's releases and apt
 # answer from files under $TEST_TMP (nothing reaches the network).
@@ -12,6 +16,8 @@ up_env() {
   # a stub path from a deleted temp dir must never leak from one test into the next (both are
   # exported into this shared shell by up_provision_stub, below)
   unset DXB_UPDATE_PROVISION DXB_PROVISION_LOG
+  # up_apps_env's systemctl stand-in must not outlive its test
+  unset -f systemctl
   export DXB_STATE_DIR=$TEST_TMP/state DXB_LOG_FILE=$TEST_TMP/state/log DXB_RUN_DIR=$TEST_TMP/run \
     DXB_UPDATE_CACHE=$TEST_TMP/state/update-check.json DXB_UPDATE_CONF=$TEST_TMP/state/update.conf \
     DXB_UPDATE_JOB_FILE=$TEST_TMP/run/update-job.json DXB_UPDATE_RESULT=$TEST_TMP/run/update-result.json \
@@ -982,4 +988,123 @@ test_update_cli_prereleases_and_usage() {
   up_cli apply nonsense; assert_eq "$?" "2"
   assert_ok up_cli -h
   assert_contains "$(cat "$TEST_TMP/out")" "rollback"
+}
+
+# ---- program updates (Task 14) -------------------------------------------------------------
+# up_apps_env: up_env, then the programs' stand-ins: WSJT-X 3.0.2 installed (upstream newest 3.0.3),
+# a session of it running on radio1 and none on radio2.
+up_apps_env() {
+  fx_apps_env
+  systemctl() { fx_systemctl "$@"; }
+  AP_INSTALLED=wsjtx=3.0.2
+  ap_release WSJTX/wsjtx v3.0.3 wsjtx-3.0.3-linux-aarch64.deb
+  echo deb > "$TEST_TMP/http/wsjtx-3.0.3-linux-aarch64.deb"
+  echo dxberry-screen@wsjtx-radio1.service > "$TEST_TMP/active"
+  : > "$TEST_TMP/calls"
+}
+
+test_update_app_restarts_the_sessions_that_ran() {
+  up_env; up_apps_env
+  assert_ok dxb_update_apply_app wsjtx > "$TEST_TMP/out"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-screen@wsjtx-radio1.service"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start dxberry-screen@wsjtx-radio1.service"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "start dxberry-screen@wsjtx-radio2.service"
+  assert_contains "$(cat "$TEST_TMP/calls")" "apt-get install -y --no-install-recommends $DXB_APPS_WORK/wsjtx-3.0.3-linux-aarch64.deb"
+}
+test_update_app_exit_8_when_a_session_does_not_return() {
+  up_env; up_apps_env; FX_SYSTEMCTL_FAIL_START=dxberry-screen@wsjtx-radio1.service; DXB_SESSION_WAIT_S=0
+  dxb_update_apply_app wsjtx > "$TEST_TMP/out" 2>&1; assert_eq "$?" "8"
+  assert_contains "$(cat "$TEST_TMP/out")" "WSJT-X did not start again on radio1"
+  unset FX_SYSTEMCTL_FAIL_START DXB_SESSION_WAIT_S
+}
+test_update_app_exit_6_starts_the_sessions_again_when_nothing_was_replaced() {
+  up_env; up_apps_env
+  rm -f "$TEST_TMP/http/wsjtx-3.0.3-linux-aarch64.deb"     # the download fails
+  dxb_update_apply_app wsjtx > "$TEST_TMP/out" 2>&1; assert_eq "$?" "6"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-screen@wsjtx-radio1.service"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start dxberry-screen@wsjtx-radio1.service"
+  assert_eq "$(cat "$TEST_TMP/active")" "dxberry-screen@wsjtx-radio1.service"
+}
+test_update_app_counts_a_starting_session_as_running() {
+  up_env; up_apps_env
+  ( systemctl() {
+      if [[ $1 == is-active && ${*: -1} == dxberry-screen@wsjtx-radio2.service ]]; then echo activating; return 3; fi
+      fx_systemctl "$@"
+    }
+    DXB_SYSTEMCTL=systemctl DXB_SESSION_WAIT_S=0
+    dxb_update_apply_app wsjtx > /dev/null 2>&1 )
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-screen@wsjtx-radio2.service"
+}
+test_update_app_refuses_graywolf() {
+  up_env; up_apps_env
+  dxb_update_apply_app graywolf > "$TEST_TMP/out" 2>&1; assert_eq "$?" "6"
+  assert_contains "$(cat "$TEST_TMP/out")" "Graywolf"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl stop"
+}
+test_update_check_reports_installed_programs() {
+  up_env; up_apps_env
+  assert_eq "$(dxb_update_check refresh | jq -c '.apps.wsjtx')" '{"installed":"3.0.2","latest":"3.0.3","source":"upstream","update":true}'
+  assert_eq "$(dxb_update_check refresh | jq -c '.apps | has("graywolf")')" "false"
+  assert_eq "$(dxb_update_check refresh | jq -c '.apps | keys')" '["wsjtx"]'
+  # the cached answer carries them too
+  assert_eq "$(dxb_update_check | jq -c '[.cached, .apps.wsjtx.latest]')" '[true,"3.0.3"]'
+}
+test_update_check_debian_programs_use_the_apt_candidate() {
+  up_env; up_apps_env
+  AP_INSTALLED="wsjtx=3.0.3 fldigi=4.1.0"; AP_CANDIDATE=4.2.0
+  assert_eq "$(dxb_update_check refresh | jq -c '.apps.fldigi')" '{"installed":"4.1.0","latest":"4.2.0","source":"debian","update":true}'
+  assert_eq "$(dxb_update_check refresh | jq -c '.apps.wsjtx.update')" 'false'
+  AP_CANDIDATE=4.1.0
+  assert_eq "$(dxb_update_check refresh | jq -c '.apps.fldigi.update')" 'false'
+  # the check does not run apt-get update itself for them (the system part already has)
+  : > "$TEST_TMP/calls"; dxb_update_check refresh > /dev/null
+  assert_eq "$(grep -c 'apt-get update' "$TEST_TMP/calls")" "1"
+}
+test_update_check_a_program_that_cannot_be_read_has_an_error() {
+  local now j
+  up_env; up_apps_env
+  AP_INSTALLED="wsjtx=3.0.2 fldigi=4.1.0"; AP_CANDIDATE=''
+  j=$(dxb_update_check refresh)
+  assert_contains "$(jq -r '.apps.fldigi.error' <<< "$j")" "fldigi"
+  assert_eq "$(jq -r '.apps.wsjtx.update' <<< "$j")" "true"
+  # an error in apps keeps the cached answer only for the short time
+  now=$(date +%s)
+  jq -cn --argjson t "$(( now - 1000 ))" '{checked_at: $t, graywolf: {update: false}, dxberry: {update: false}, system: {count: 0}, apps: {fldigi: {error: "x"}}}' > "$DXB_UPDATE_CACHE"
+  assert_eq "$(dxb_update_check | jq -r '.cached')" "false"
+  jq -cn --argjson t "$(( now - 1000 ))" '{checked_at: $t, graywolf: {update: false}, dxberry: {update: false}, system: {count: 0}, apps: {wsjtx: {update: false}}}' > "$DXB_UPDATE_CACHE"
+  assert_eq "$(dxb_update_check | jq -r '.cached')" "true"
+}
+test_update_system_restarts_the_sessions_of_upgraded_debian_programs() {
+  up_env; up_apps_env
+  DXB_APT_GET=up_apt
+  printf 'Inst fldigi [4.1] (4.2 Debian:13/stable [arm64])\nInst bar [2] (3 Debian:13/stable [all])\n' > "$TEST_TMP/apt-sim"
+  printf 'dxberry-screen@fldigi-radio1.service\ndxberry-screen@wsjtx-radio1.service\n' > "$TEST_TMP/active"
+  assert_ok dxb_update_apply_system > "$TEST_TMP/out"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-screen@fldigi-radio1.service"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl start dxberry-screen@fldigi-radio1.service"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "dxberry-screen@wsjtx-radio1.service"
+  # one that does not come back is exit 8, named
+  FX_SYSTEMCTL_FAIL_START=dxberry-screen@fldigi-radio1.service; DXB_SESSION_WAIT_S=0
+  dxb_update_apply_system > "$TEST_TMP/out" 2>&1; assert_eq "$?" "8"
+  assert_contains "$(cat "$TEST_TMP/out")" "fldigi did not start again on radio1"
+  unset FX_SYSTEMCTL_FAIL_START DXB_SESSION_WAIT_S
+}
+test_update_system_leaves_programs_that_were_not_upgraded_alone() {
+  up_env; up_apps_env
+  DXB_APT_GET=up_apt
+  printf 'Inst bar [2] (3 Debian:13/stable [all])\n' > "$TEST_TMP/apt-sim"
+  echo dxberry-screen@fldigi-radio1.service > "$TEST_TMP/active"
+  assert_ok dxb_update_apply_system > "$TEST_TMP/out"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "dxberry-screen@fldigi"
+}
+test_update_cli_updates_one_program() {
+  up_cli_env
+  assert_ok up_cli app wsjtx --json
+  assert_eq "$(jq -c '[.ok, .kind, .name]' "$TEST_TMP/out")" '[true,"app","wsjtx"]'
+  assert_contains "$(cat "$TEST_TMP/calls")" "dxberry-update apply app wsjtx"
+  assert_eq "$(jq -r '.kind, .name' "$DXB_UPDATE_JOB_FILE" | tr '\n' ' ')" "app wsjtx "
+  up_cli app; assert_eq "$?" "2"
+  up_cli app 'Bad Name'; assert_eq "$?" "2"
+  up_cli apply app; assert_eq "$?" "2"
+  up_cli apply app 'x;y'; assert_eq "$?" "2"
 }
