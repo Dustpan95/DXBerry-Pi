@@ -917,7 +917,7 @@ const programsPath = path.replace(/dxberry\.js$/, "programs.js");
   st.apps = { ok: true, programs: programsList, logbook: lbConfigured, recent: { ok: true, type: "wavelog", contacts, error: null } };
   st.generated = new Date().toISOString();
   let dashJob = { now: 1, reboot_required: false, job: null };
-  let lbAnswer = { set: () => Promise.resolve(JSON.stringify({ ok: true, type: "wavelog", kept: ["radio2: CLOUDLOG_STATION_ID (changed in fldigi)"] })),
+  let lbAnswer = { set: () => Promise.resolve(JSON.stringify({ ok: true, type: "wavelog", kept: ["radio2: CLOUDLOG_STATION_ID (changed in fldigi)"], following_later: ["radio2"] })),
     test: () => Promise.resolve(JSON.stringify({ ok: true, type: "wavelog", version: "3.2.4", error: null })) };
   answer = args => {
     const c = args[0].split("/").pop();
@@ -1070,6 +1070,12 @@ const programsPath = path.replace(/dxberry\.js$/, "programs.js");
   confirmD.returnValue = "ok"; confirmD.close();
   await flush(); await flush(); await flush();
   ok(calls.some(c => c.args && c.args.join(" ") === "/opt/dxberry/bin/dxberry-app remove fldigi --json"), "OK runs dxberry-app remove fldigi --json");
+  // the logbook keys fldigi kept show on its row, in words
+  programsList[2].kept = ["radio1: CLOUDLOG_STATION_ID (changed in fldigi)"];
+  await redraw();
+  ok(progSec.querySelectorAll("div").find(e => e.dataset.program === "fldigi").textContent.includes("radio1: fldigi keeps its own CLOUDLOG_STATION_ID"),
+    "a key fldigi kept shows on its row in words: " + progSec.querySelectorAll("div").find(e => e.dataset.program === "fldigi").textContent);
+  programsList[2].kept = [];
   programsList[2].installed = false; programsList[2].version = null;
   await redraw();
 
@@ -1109,6 +1115,8 @@ const programsPath = path.replace(/dxberry\.js$/, "programs.js");
     "the fields go on standard input: " + (setLb && setLb.input));
   ok(!logbookD.open, "the dialog closes once saved");
   ok(doc.getElementById("notices").textContent.includes("radio2: fldigi keeps its own CLOUDLOG_STATION_ID"), "a kept key becomes a notice in words: " + doc.getElementById("notices").textContent);
+  ok(doc.getElementById("notices").textContent.includes("WSJT-X on radio2 is running, so it follows the new logbook when it next starts."),
+    "a running program that follows later is named in a notice: " + doc.getElementById("notices").textContent);
   // no key typed: none is sent, so the stored one is kept; a refusal shows in the dialog
   lbAnswer.set = () => Promise.reject({ exit_status: 6, message: "no Wavelog or Cloudlog answered at https://x/" });
   dkey("prog:logbook:own").click();

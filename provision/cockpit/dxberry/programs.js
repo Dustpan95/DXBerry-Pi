@@ -86,6 +86,8 @@ function progRow(p, busy) {
     notes.length ? el("p", { class: "hint" }, notes.join(" ")) : null,
     p.installed && radios.length && p.source !== "builtin" ? el("p", { class: "muted hint" }, `${radios.join(", ")} ${radios.length === 1 ? "uses" : "use"} it.`) : null,
     p.installed && p.setup_note ? el("p", { class: "hint prog-note" }, p.setup_note) : null,
+    // the logbook keys the operator changed in the program, which the logbook no longer sets there
+    (Array.isArray(p.kept) ? p.kept : []).map(k => el("p", { class: "hint" }, progKept(k))),
     acts.length ? el("div", { class: "actions" }, acts) : null);
 }
 
@@ -194,6 +196,14 @@ function progKept(line) {
   return m ? `${m[1]}: ${m[3]} keeps its own ${m[2]}` : line;
 }
 
+// progFollowsLater RADIO: a program running on RADIO when the logbook changed follows it at its
+// next start, in words.
+function progFollowsLater(r) {
+  const x = last && last.radios && last.radios.radios ? last.radios.radios[r] : null;
+  const label = x && x.owner ? appLabel(last.radios, x.owner) : "The program";
+  return `${label} on ${r} is running, so it follows the new logbook when it next starts.`;
+}
+
 function progLogbookTest() {
   const f = programs.form;
   if (!f || f.saving || f.testing) return;
@@ -233,6 +243,7 @@ function progLogbookSave(e) {
     try { j = JSON.parse(out) || {}; } catch (ex) { j = {}; }
     notice(`Logbook saved${j.type ? `: ${DASH_LOGBOOKS[j.type] || j.type}` : ""}. Contacts go there from now on.`, "good");
     for (const k of j.kept || []) notice(progKept(k), "warn");
+    for (const r of j.following_later || []) notice(progFollowsLater(r), "warn");
     refresh(true);
   }, (ex, data) => {
     f.saving = false;

@@ -177,7 +177,7 @@ test_logbook_recent_is_cached_for_a_minute() {
 test_logbook_set_saves_0600_atomically_and_get_never_shows_the_key() {
   lb_env
   printf '{"url":"https://log.example","key":"k1","station_id":"7","slug":""}' | "$LB_CMD" set --json > "$TEST_TMP/out"; assert_eq "$?" "0"
-  assert_eq "$(jq -c . "$TEST_TMP/out")" '{"ok":true,"type":"wavelog","kept":[]}'
+  assert_eq "$(jq -c . "$TEST_TMP/out")" '{"ok":true,"type":"wavelog","kept":[],"following_later":[]}'
   assert_eq "$(stat -c %a "$DXB_LOGBOOK_FILE")" "600"
   assert_eq "$(jq -c . "$DXB_LOGBOOK_FILE")" '{"url":"https://log.example/","type":"wavelog","key":"k1","station_id":"7","slug":""}'
   assert_eq "$(find "$DXB_STATE_DIR" -maxdepth 1 -name '.*' | wc -l)" "0"           # no temp file left
@@ -432,6 +432,8 @@ test_logbook_set_makes_stopped_sessions_follow_now() {
   : > "$TEST_TMP/appcalls"
   printf '{"url":"https://w/","key":"SECRET-K","station_id":"1"}' | "$DXB_ROOT/provision/bin/dxberry-logbook" set --json > "$TEST_TMP/out"
   assert_eq "$(jq -c .kept "$TEST_TMP/out")" '["radio2: KEY_A (changed in gamma)"]'
+  # the running one follows at its next start, and set says so
+  assert_eq "$(jq -c .following_later "$TEST_TMP/out")" '["radio1"]'
   assert_eq "$(cat "$TEST_TMP/appcalls")" "gamma logbook radio2"
   assert_contains "$(cat "$TEST_TMP/calls")" "runuser -u dxbapps -- env HOME=$DXB_APPS_HOME $DXB_ROOT/provision/bin/dxberry-app settings gamma-radio2"
   assert_eq "$(jq -c .steps "$TEST_TMP/settings-stdin")" '["logbook"]'
@@ -615,6 +617,7 @@ test_logbook_set_skips_a_session_that_is_starting() {
   : > "$TEST_TMP/appcalls"
   printf '{"url":"https://w/","key":"k","station_id":"1"}' | "$DXB_ROOT/provision/bin/dxberry-logbook" set --json > "$TEST_TMP/out"
   assert_eq "$(jq -c .kept "$TEST_TMP/out")" '[]'
+  assert_eq "$(jq -c .following_later "$TEST_TMP/out")" '["radio2"]'
   assert_eq "$(cat "$TEST_TMP/appcalls")" ""
 }
 test_logbook_units_restart_slowly_and_a_waiting_queue_is_no_failure() {

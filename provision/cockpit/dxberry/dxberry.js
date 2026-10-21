@@ -90,7 +90,7 @@ const FIELDS = [
   "apps.ok", "apps.programs.*.name", "apps.programs.*.label", "apps.programs.*.kind", "apps.programs.*.description",
   "apps.programs.*.source", "apps.programs.*.installed", "apps.programs.*.version", "apps.programs.?.sessions.*.radio",
   "apps.programs.?.sessions.*.state", "apps.programs.*.single_copy", "apps.programs.?.open.kind", "apps.programs.?.open.port",
-  "apps.programs.?.open.path", "apps.programs.?.setup_note",
+  "apps.programs.?.open.path", "apps.programs.?.setup_note", "apps.programs.*.kept",
   "apps.logbook.configured", "apps.logbook.type", "apps.logbook.url", "apps.logbook.key", "apps.logbook.station_id",
   "apps.logbook.slug", "apps.logbook.queue", "apps.logbook.refused", "apps.logbook.refused_reason",
   "apps.logbook.local.installed", "apps.logbook.local.url", "apps.logbook.local.web",

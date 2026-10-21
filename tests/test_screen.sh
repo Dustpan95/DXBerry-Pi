@@ -357,10 +357,24 @@ test_screen_list_json() {
   sc_env; sc_owned radio2 gamma; sc_active dxberry-screen@gamma-radio2.service
   assert_ok sc_app list --json > "$TEST_TMP/out"
   assert_eq "$(jq -c '.[] | select(.name == "gamma")' "$TEST_TMP/out")" \
-    '{"name":"gamma","label":"Gamma","kind":"radio","description":"A program for the tests","source":"debian","installed":true,"version":"1.0","sessions":[{"radio":"radio2","state":"running"}],"single_copy":false,"open":{"kind":"screen"},"setup_note":null}'
+    '{"name":"gamma","label":"Gamma","kind":"radio","description":"A program for the tests","source":"debian","installed":true,"version":"1.0","sessions":[{"radio":"radio2","state":"running"}],"single_copy":false,"open":{"kind":"screen"},"setup_note":null,"kept":[]}'
   assert_eq "$(jq -c '.[] | select(.name == "wsjtx") | [.source, .installed, .version, .sessions]' "$TEST_TMP/out")" '["upstream",false,null,[]]'
   assert_eq "$(jq -r '.[] | select(.name == "graywolf") | .source' "$TEST_TMP/out")" "builtin"
   assert_eq "$(jq -r 'map(.name) | join(" ")' "$TEST_TMP/out")" "graywolf wsjtx js8call fldigi qsstv pat flrig wavelog gamma"
+}
+
+# the logbook keys the operator changed in the program (the kept files root wrote at its last
+# logbook step) are in the list, per radio the program has now, for the page's Programs row
+test_screen_list_shows_the_logbook_keys_a_program_kept() {
+  sc_env; sc_owned radio2 gamma
+  mkdir -p "$DXB_APPS_STATE/logbook-kept"
+  printf 'kept CLOUDLOG_STATION_ID (changed in gamma)\nkept CLOUDLOG_URL (changed in gamma)\n' > "$DXB_APPS_STATE/logbook-kept/gamma-radio2"
+  # radio1 is not gamma's any more: what it kept there no longer counts
+  printf 'kept CLOUDLOG_APIKEY (changed in gamma)\n' > "$DXB_APPS_STATE/logbook-kept/gamma-radio1"
+  assert_ok sc_app list --json > "$TEST_TMP/out"
+  assert_eq "$(jq -c '.[] | select(.name == "gamma") | .kept' "$TEST_TMP/out")" \
+    '["radio2: CLOUDLOG_STATION_ID (changed in gamma)","radio2: CLOUDLOG_URL (changed in gamma)"]'
+  assert_eq "$(jq -c '[.[] | .kept | length] | add' "$TEST_TMP/out")" "2"
 }
 
 # a module's finish-setup text (app_<a>_setup_note) is in the list, for the page's Programs row

@@ -545,24 +545,25 @@ dxb_logbook_recent() {
 # dxb_logbook_fldigi_follow_stopped: every session program that follows the logbook
 # (app_<a>_logbook_follow: fldigi) and whose session is enabled but not running follows it now,
 # through the same settings step as dxbapps that its prepare runs (dxb_screen_logbook_follow); a
-# running one follows at its next start. Prints the "kept" keys as a JSON array of
-# "<radio>: <KEY> (changed in <program>)". Always 0 (a failure is a warning).
+# running (or starting, or stopping) one follows at its next start. Prints
+# {"kept": ["<radio>: <KEY> (changed in <program>)", ...], "following_later": ["<radio>", ...]}.
+# Always 0 (a failure is a warning).
 dxb_logbook_fldigi_follow_stopped() {
   local r a u l
-  local -a kept=()
+  local -a kept=() later=()
   if [[ -f $DXB_RADIOS_FILE ]] && dxb_radio_load > /dev/null 2>&1; then
     while IFS=$'\t' read -r r a; do
       [[ -n $a ]] || continue
       ( dxb_app_load "$a" && declare -F "app_${a}_logbook_follow" ) > /dev/null 2>&1 || continue
       u=$(dxb_app_session_unit "$a" "$r")
       [[ $("$DXB_SYSTEMCTL" is-enabled "$u" 2> /dev/null) == enabled ]] || continue
-      case $("$DXB_SYSTEMCTL" is-active "$u" 2> /dev/null) in active|activating|reloading|deactivating) continue ;; esac
+      case $("$DXB_SYSTEMCTL" is-active "$u" 2> /dev/null) in active|activating|reloading|deactivating) later+=("$r"); continue ;; esac
       while IFS= read -r l; do
         [[ $l == "kept "* ]] && kept+=("$r: ${l#kept }")
       done < <(dxb_screen_logbook_follow "$a-$r")
     done < <(jq -r '.radios | to_entries[] | [.key, (.value.owner // "")] | @tsv' <<< "$DXB_RADIOS")
   fi
-  jq -cn '$ARGS.positional' --args "${kept[@]}"
+  jq -cn --argjson k "$(jq -cn '$ARGS.positional' --args "${kept[@]}")" '{kept: $k, following_later: $ARGS.positional}' --args "${later[@]}"
 }
 
 # ---- provisioning --------------------------------------------------------------------------

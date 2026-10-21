@@ -91,7 +91,7 @@ cmd_test() {
 forget() { rm -f "$(_dxb_lb_file)" "$(_dxb_lb_recent_cache)" "$(_dxb_lb_wavelog_state)"; }
 
 cmd_set() {
-  local in c ans type kept j
+  local in c ans type follow j
   in=$(read_input)
   jq -e 'type == "object"' <<< "$in" > /dev/null 2>&1 || { echo "set reads one JSON object on stdin: {\"url\",\"key\",\"station_id\",\"slug\"} or {\"clear\":true}" >&2; return 2; }
   if jq -e '.clear == true' <<< "$in" > /dev/null 2>&1; then
@@ -102,7 +102,7 @@ cmd_set() {
     c=$(_dxb_lb_input "$in") || return 2
     ans=$(_dxb_lb_detect "$c") || {
       # the reason on stderr in both forms: the DXBerry page reads a failed command's reason from there
-      if (( JSON )); then jq -c '{ok: false, type: null, kept: [], error}' <<< "$ans"; fi
+      if (( JSON )); then jq -c '{ok: false, type: null, kept: [], following_later: [], error}' <<< "$ans"; fi
       jq -r '"not saved: " + .error' <<< "$ans" >&2
       return 6
     }
@@ -112,13 +112,14 @@ cmd_set() {
     dxb_info "logbook: set to $(jq -r .url <<< "$c") ($type)"
     type="\"$type\""
   fi
-  # stopped sessions follow now; running ones at their next start
-  kept=$(dxb_logbook_fldigi_follow_stopped)
+  # stopped sessions follow now; running ones at their next start (following_later names their radios)
+  follow=$(dxb_logbook_fldigi_follow_stopped)
   # what waited in the queue goes to the logbook now (in the background: set does not wait)
   [[ $type == null ]] || "$DXB_SYSTEMCTL" --no-block start dxberry-logbook-flush.service > /dev/null 2>&1 || true
-  j=$(jq -cn --argjson t "$type" --argjson k "$kept" '{ok: true, type: $t, kept: $k}')
+  j=$(jq -cn --argjson t "$type" --argjson f "$follow" '{ok: true, type: $t, kept: $f.kept, following_later: $f.following_later}')
   if (( JSON )); then printf '%s\n' "$j"; return 0; fi
-  jq -r '(if .type then "logbook set (\(.type))" else "logbook cleared" end), (.kept[] | "kept in the program: " + .)' <<< "$j"
+  jq -r '(if .type then "logbook set (\(.type))" else "logbook cleared" end), (.kept[] | "kept in the program: " + .),
+    (.following_later[] | "running on " + . + ": follows the logbook when it next starts")' <<< "$j"
 }
 
 cmd_recent() {
