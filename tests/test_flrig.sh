@@ -169,12 +169,15 @@ FR_UNIT=dxberry-screen@flrig-r1.service
 
 test_flrig_radio_set_stores_the_control_and_refuses_junk() {
   fr_radio_env
+  local h0; h0=$(dxb_radio_wire_hash "$(dxb_radio_get r1)")
   assert_ok dxb_radio_set r1 '{"rig_control":"flrig"}'
   assert_eq "$(jq -r '.rig.control' <<< "$(dxb_radio_get r1)")" "flrig"
   assert_ok dxb_radio_set r1 '{"rig_control":"hamlib"}'
-  assert_eq "$(jq -r '.rig.control' <<< "$(dxb_radio_get r1)")" "hamlib"
+  # hamlib is the default: the key goes, so the wiring hash is what it was before flrig
+  assert_eq "$(jq -r '.rig | has("control")' <<< "$(dxb_radio_get r1)")" "false"
+  assert_eq "$(dxb_radio_wire_hash "$(dxb_radio_get r1)")" "$h0"
   dxb_radio_set r1 '{"rig_control":"fldigi"}' 2> /dev/null; assert_eq "$?" "2"
-  assert_eq "$(jq -r '.rig.control' <<< "$(dxb_radio_get r1)")" "hamlib"      # the refused value was not kept
+  assert_eq "$(jq -r '.rig | has("control")' <<< "$(dxb_radio_get r1)")" "false"      # the refused value was not kept
   # a record that never had the key stays valid, and the key is not invented
   dxb_radio_add r2 '{"audio":"1","cat":"2"}' > /dev/null
   assert_eq "$(jq -r '.rig | has("control")' <<< "$(dxb_radio_get r2)")" "false"
@@ -219,21 +222,35 @@ test_flrig_apply_stops_the_session_when_the_radio_is_absent() {
 test_flrig_apply_stops_and_disables_after_switching_back_to_hamlib() {
   fr_radio_env; dxb_radio_set r1 '{"rig_control":"flrig"}' > /dev/null
   dxb_radio_apply > /dev/null
+  # what enabling the unit leaves behind
+  mkdir -p "$DXB_SYSTEMD_DIR/multi-user.target.wants"; : > "$DXB_SYSTEMD_DIR/multi-user.target.wants/$FR_UNIT"
   echo "$FR_UNIT" >> "$TEST_TMP/active"; echo enabled > "$TEST_TMP/enabled-$FR_UNIT"
   dxb_radio_set r1 '{"rig_control":"hamlib"}' > /dev/null; : > "$TEST_TMP/calls"
   assert_ok dxb_radio_apply
-  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop $FR_UNIT"
-  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl disable $FR_UNIT"
-  assert_not_contains "$(cat "$TEST_TMP/calls")" "start $FR_UNIT"
+  local calls; calls=$(cat "$TEST_TMP/calls")
+  assert_contains "$calls" "systemctl stop $FR_UNIT"
+  assert_contains "$calls" "systemctl disable $FR_UNIT"
+  assert_not_contains "$calls" "start $FR_UNIT"
+  assert_contains "$calls" "systemctl restart rigctld@r1.service"            # rigctld takes the CAT port back
+  # and flrig is stopped before rigctld is restarted
+  assert_eq "$(grep -nE "systemctl (stop $FR_UNIT|restart rigctld@r1)" "$TEST_TMP/calls" | head -1 | grep -c "$FR_UNIT")" "1"
   assert_file_contains "$DXB_RIGCTLD_RUN_DIR/r1.env" "MODEL=1"
+  # a radio that never had flrig is not asked about it again
+  : > "$TEST_TMP/calls"; rm -f "$DXB_SYSTEMD_DIR/multi-user.target.wants/$FR_UNIT"
+  assert_ok dxb_radio_apply
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "dxberry-screen@flrig"
+}
+test_flrig_apply_does_not_enable_an_enabled_unit_again() {
+  fr_radio_env; dxb_radio_set r1 '{"rig_control":"flrig"}' > /dev/null
+  echo enabled > "$TEST_TMP/enabled-$FR_UNIT"
+  assert_ok dxb_radio_apply
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl enable $FR_UNIT"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl --no-block start $FR_UNIT"
 }
 test_flrig_apply_leaves_radios_without_flrig_alone() {
   fr_radio_env
   assert_ok dxb_radio_apply
-  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl enable $FR_UNIT"
-  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl stop $FR_UNIT"
-  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl disable $FR_UNIT"
-  assert_not_contains "$(cat "$TEST_TMP/calls")" "start $FR_UNIT"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "dxberry-screen@flrig"      # not even a query
 }
 
 test_flrig_cannot_own_a_radio() {
@@ -245,4 +262,19 @@ test_flrig_cannot_own_a_radio() {
 test_flrig_cli_takes_rig_control() {
   assert_eq "$( source "$DXB_ROOT/provision/bin/dxberry-radio"; parse_opts --rig-control flrig | jq -c . )" '{"rig_control":"flrig"}'
   assert_contains "$( source "$DXB_ROOT/provision/bin/dxberry-radio"; usage )" "--rig-control"
+}
+
+test_flrig_cli_refuses_flrig_as_an_owner_and_a_bogus_control() {
+  cli_env      # test_dxberry_radio.sh's command harness
+  cat > "$DXB_APPS_DIR/flrig.sh" <<'MOD'
+app_flrig_kind() { echo rigcontrol; }
+app_flrig_session() { echo yes; }
+app_flrig_unit() { dxb_app_session_unit flrig "$1"; }
+MOD
+  cli add radio1 --audio 1 --cat 2 > /dev/null
+  cli claim radio1 flrig; assert_eq "$?" "3"
+  assert_contains "$(cat "$TEST_TMP/err")" "flrig cannot own a radio"
+  cli set radio1 --rig-control bogus; assert_eq "$?" "2"
+  cli set radio1 --rig-control flrig; assert_eq "$?" "0"
+  assert_eq "$(jq -r '.radios.radio1.rig.control' "$DXB_STATE_DIR/radios.json")" "flrig"
 }

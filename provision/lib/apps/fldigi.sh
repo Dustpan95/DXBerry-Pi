@@ -27,8 +27,9 @@ _dxb_fldigi_logbook_record() { printf '%s/dxberry-logbook.json\n' "$(_dxb_fldigi
 
 # _dxb_fldigi_set FILE KEY VALUE: one key; 0 written or unchanged.
 _dxb_fldigi_set() {
-  dxb_xml_set "$1" "$2" "$3"
-  (( $? != 6 )) || { echo "fldigi: could not write $2 in $1" >&2; return 6; }
+  local rc
+  dxb_xml_set "$1" "$2" "$3"; rc=$?
+  (( rc <= 1 )) || { echo "fldigi: could not write $2 in $1" >&2; return 6; }
 }
 
 # _dxb_fldigi_hash VALUE: its sha256 (the value goes in through stdin, never an argument).

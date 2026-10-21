@@ -15,7 +15,7 @@
 set -uo pipefail
 
 DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
-for _m in common config graywolf settings update gps radio rigctld apps screen webproxy; do
+for _m in common config graywolf settings update gps radio rigctld inifile apps screen webproxy; do
   # shellcheck disable=SC1090
   source "$DXB_LIB/$_m.sh"
 done
@@ -177,7 +177,11 @@ cmd_present() {
   dxb_radio_get "$r" > /dev/null || return 3
   dxb_radio_scan_cache
   if dxb_radio_present "$r"; then (( JSON )) && jq -cn '{present: true}'; return 0; fi
-  dxb_info "radio $r is not plugged in; $1 waits for it"
+  if dxb_app_load "${1%%-*}" > /dev/null 2>&1 && [[ $(dxb_app_kind "${1%%-*}") == rigcontrol ]]; then
+    dxb_info "radio $r is not plugged in; $1 is started again when it is back"
+  else
+    dxb_info "radio $r is not plugged in; $1 waits for it"
+  fi
   dxb_screen_mark_waiting "$1"
   (( JSON )) && jq -cn '{present: false}'
   return 1

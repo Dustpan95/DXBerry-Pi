@@ -560,6 +560,11 @@ test_screen_prepare_accepts_a_flrig_session_for_a_flrig_radio() {
   assert_ok sc_app prepare flrig-radio2
   assert_contains "$(cat "$(dxb_screen_envfile flrig-radio2)")" "APP=flrig"
 }
+test_screen_prepare_does_not_make_flrig_wait_for_rigctld() {
+  sc_env; sc_flrig_module; sc_set_control radio2 flrig      # rigctld@radio2 is not running
+  sc_app prepare flrig-radio2 2> "$TEST_TMP/err"; assert_eq "$?" "0"
+  assert_not_contains "$(cat "$TEST_TMP/err")" "is not active"
+}
 test_screen_prepare_refuses_a_flrig_session_for_a_hamlib_radio() {
   sc_env; sc_flrig_module
   sc_app prepare flrig-radio2 2> /dev/null; assert_eq "$?" "3"          # no rig.control at all
@@ -593,7 +598,8 @@ test_screen_prepare_does_not_rewire_a_module_without_the_hook() {
 test_screen_flrig_never_waits_for_its_radio_in_a_marker() {
   sc_env; sc_flrig_module; sc_set_control radio2 flrig
   sc_unplug radio2
-  sc_app present flrig-radio2 2> /dev/null; assert_eq "$?" "1"
+  sc_app present flrig-radio2 2> "$TEST_TMP/err"; assert_eq "$?" "1"
+  assert_contains "$(cat "$TEST_TMP/err")" "flrig-radio2 is started again when it is back"
   [[ ! -e $DXB_SESSIONS_DIR/flrig-radio2.waiting ]] || _fail "present left a waiting marker for flrig"
   sc_app stopped flrig-radio2
   [[ ! -e $DXB_SESSIONS_DIR/flrig-radio2.waiting ]] || _fail "stopped left a waiting marker for flrig"

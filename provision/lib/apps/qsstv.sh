@@ -35,8 +35,9 @@ app_qsstv_settings_file() { printf '%s/.config/ON4QZ/qsstv_9.0.conf\n' "$DXB_APP
 
 # _dxb_qsstv_set FILE SECTION KEY VALUE: one key; 0 written or unchanged.
 _dxb_qsstv_set() {
-  dxb_ini_set "$1" "$2" "$3" "$4"
-  (( $? != 6 )) || { echo "qsstv: could not write $3 in $1" >&2; return 6; }
+  local rc
+  dxb_ini_set "$1" "$2" "$3" "$4"; rc=$?
+  (( rc <= 1 )) || { echo "qsstv: could not write $3 in $1" >&2; return 6; }
 }
 
 # app_qsstv_firstfill RADIO: call sign and locator (when known).

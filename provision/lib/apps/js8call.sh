@@ -23,8 +23,9 @@ app_js8call_settings_file() { printf '%s/.config/JS8Call - %s.ini\n' "$DXB_APPS_
 
 # _dxb_js8call_set FILE KEY VALUE: one key of the Configuration section; 0 written or unchanged.
 _dxb_js8call_set() {
-  dxb_ini_set "$1" Configuration "$2" "$3"
-  (( $? != 6 )) || { echo "js8call: could not write $2 in $1" >&2; return 6; }
+  local rc
+  dxb_ini_set "$1" Configuration "$2" "$3"; rc=$?
+  (( rc <= 1 )) || { echo "js8call: could not write $2 in $1" >&2; return 6; }
 }
 
 # app_js8call_firstfill RADIO: call sign, grid (when known) and the logging broadcast to the one

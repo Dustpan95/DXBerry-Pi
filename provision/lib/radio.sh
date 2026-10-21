@@ -215,7 +215,7 @@ _dxb_radio_build() {
       + (if $o.wiring != null then {wiring: $o.wiring} else {} end)
     | .ptt.method = ($o.ptt // .ptt.method) | .ptt.gpio_line = (if $o.gpio_line != null then $o.gpio_line else .ptt.gpio_line end)
     | .rig.model = ($o.model // .rig.model) | .rig.baud = ($o.baud // .rig.baud) | .rig.ptt_type = ($o.ptt_type // .rig.ptt_type)
-    | if $o.rig_control != null then .rig.control = $o.rig_control else . end' <<< "$r")
+    | if $o.rig_control == "hamlib" then del(.rig.control) elif $o.rig_control != null then .rig.control = $o.rig_control else . end' <<< "$r")
   # rigctld's ptt_type must not point at a serial line or CAT socket that has no pin behind it
   old_type=$(jq -r '.rig.ptt_type' <<< "$r")
   r=$(jq -c '
@@ -428,14 +428,18 @@ _dxb_radio_apply() {
     if dxb_radio_present "$n"; then present=1; else present=0; dxb_info "radio $n: device absent"; fi
     (( present )) && _dxb_radio_report_alsa_id "$n"
     kinds[$n]=$(dxb_radio_owner_kind "$n")
+    # a radio leaving flrig control: flrig lets go of the CAT port before rigctld takes it back
+    [[ $(jq -r '.rig.control // "hamlib"' <<< "$r") == flrig ]] || _dxb_radio_apply_flrig "$n" "$r" "$present"
     dxb_rigctld_sync "$n" "$r" "$present" "${kinds[$n]}" || rc=6
   done
   # shellcheck disable=SC2046
   dxb_rigctld_stop_all_except $(dxb_radio_names)
   dxb_radio_write_state || rc=6
   for n in $(dxb_radio_names); do
+    r=$(dxb_radio_get "$n")
+    [[ $(jq -r '.rig.control // "hamlib"' <<< "$r") == flrig ]] || continue
     if dxb_radio_present "$n"; then present=1; else present=0; fi
-    _dxb_radio_apply_flrig "$n" "$(dxb_radio_get "$n")" "$present" || { (( rc == 0 )) && rc=7; }
+    _dxb_radio_apply_flrig "$n" "$r" "$present" || { (( rc == 0 )) && rc=7; }
   done
   for n in $(dxb_radio_names); do
     r=$(dxb_radio_get "$n"); owner=$(jq -r '.owner' <<< "$r")
@@ -485,17 +489,22 @@ _dxb_radio_apply() {
 # (spec: kind rigcontrol), so apply itself runs its session, dxberry-screen@flrig-NAME. A present
 # radio whose rig.control is flrig gets the session enabled and started; an absent one gets it
 # stopped (it stays enabled and comes back with the radio, no waiting marker). Any other radio
-# gets a session that is enabled or running stopped and disabled. flrig must be installed; if
+# gets a session left from flrig stopped and disabled (found by its wants link or env file, with no systemctl call otherwise). flrig must be installed; if
 # not, one warning and nothing else. 0 ok, 1 start failed.
 _dxb_radio_apply_flrig() {
   local n=$1 control u
   control=$(jq -r '.rig.control // "hamlib"' <<< "$2")
   u=$(dxb_app_session_unit flrig "$n")
   if [[ $control != flrig ]]; then
-    if systemctl is-enabled --quiet "$u" > /dev/null 2>&1 || systemctl is-active --quiet "$u" > /dev/null 2>&1; then
+    # only a radio that had flrig has anything to undo: an enabled unit (its wants link) or a
+    # session env file left in /run; no systemctl call at all for a radio that never did
+    local envf wants
+    envf=$(_dxb_sessions_dir)/flrig-$n.env; wants=${DXB_SYSTEMD_DIR:-/etc/systemd/system}/multi-user.target.wants/$u
+    if [[ -e $envf || -e $wants || -L $wants ]]; then
       systemctl stop "$u" > /dev/null 2>&1 || dxb_warn "radio $n: could not stop $u"
       systemctl disable "$u" > /dev/null 2>&1 || dxb_warn "radio $n: could not disable $u"
-      dxb_info "radio $n: $u stopped and disabled (rig control is $control)"
+      rm -f "$envf"
+      dxb_info "radio $n: $u stopped and disabled (rig control is not flrig)"
     fi
     return 0
   fi
@@ -508,7 +517,8 @@ _dxb_radio_apply_flrig() {
     dxb_warn "radio $n: rig control is flrig but flrig is not installed; install it from Programs"
     return 0
   fi
-  systemctl enable "$u" > /dev/null 2>&1 || { dxb_error "radio $n: could not enable $u"; return 1; }
+  systemctl is-enabled --quiet "$u" > /dev/null 2>&1 \
+    || systemctl enable "$u" > /dev/null 2>&1 || { dxb_error "radio $n: could not enable $u"; return 1; }
   systemctl is-active --quiet "$u" && return 0
   systemctl --no-block start "$u" || { dxb_error "radio $n: could not start $u"; return 1; }
   dxb_info "radio $n: starting flrig"

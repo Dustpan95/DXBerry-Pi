@@ -313,7 +313,9 @@ dxb_screen_prepare() {
   for u in $(_dxb_screen_companions "$a" "$r"); do
     "$DXB_SYSTEMCTL" start "$u" || dxb_warn "$s: could not start $u"
   done
-  _dxb_screen_wait_rigctld "$r" "$w"
+  # rigctld (model 4) depends on flrig, not the other way round: flrig never waits for it
+  [[ $(dxb_app_kind "$a") == rigcontrol ]] || _dxb_screen_wait_rigctld "$r" "$w"
+  return 0
 }
 
 # dxb_screen_stopped S: after the session ended (its ExecStopPost, root). A radio that is gone

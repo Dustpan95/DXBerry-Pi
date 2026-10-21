@@ -52,7 +52,7 @@ _dxb_flrig_version() {
 # app_flrig_wire RADIO: RADIO's XML-RPC port (12345 + the radio's index) in the transceiver's own
 # preferences file (this key, and a version entry when the file has none, so flrig reads it).
 app_flrig_wire() {
-  local dir w x f
+  local dir w x f rc
   dir=$(_dxb_flrig_dir "$1")
   w=$(dxb_apps_wiring "$1") || return 6
   x=$(_dxb_flrig_xcvr "$dir"); f="$dir/$x.prefs"
@@ -61,11 +61,11 @@ app_flrig_wire() {
     printf '; FLTK preferences file format 1.0\n; vendor: w1hkj.com\n; application: %s\n\n[.]\n\n' "$x" > "$f" \
       || { echo "flrig: could not write $f" >&2; return 6; }
   fi
-  dxb_prefs_set "$f" xmlport "$(jq -r .flrig_port <<< "$w")"
-  (( $? != 6 )) || { echo "flrig: could not write xmlport in $f" >&2; return 6; }
+  dxb_prefs_set "$f" xmlport "$(jq -r .flrig_port <<< "$w")"; rc=$?
+  (( rc <= 1 )) || { echo "flrig: could not write xmlport in $f" >&2; return 6; }
   if [[ -z $(dxb_prefs_get "$f" version) ]]; then
-    dxb_prefs_set "$f" version "$(_dxb_flrig_version)"
-    (( $? != 6 )) || { echo "flrig: could not write version in $f" >&2; return 6; }
+    dxb_prefs_set "$f" version "$(_dxb_flrig_version)"; rc=$?
+    (( rc <= 1 )) || { echo "flrig: could not write version in $f" >&2; return 6; }
   fi
   return 0
 }
