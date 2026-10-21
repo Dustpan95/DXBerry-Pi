@@ -64,6 +64,7 @@ app_gamma_firstfill() {
   [[ ${GAMMA_FAIL:-} != firstfill ]]
 }
 app_gamma_wire() { echo "gamma wire $1" >> "$TEST_TMP/appcalls"; [[ ${GAMMA_FAIL:-} != wire ]]; }
+app_gamma_logbook_follow() { echo "gamma logbook $1" >> "$TEST_TMP/appcalls"; echo "kept KEY_A (changed in gamma)"; echo "chatter" >&2; }
 app_gamma_unwire() { :; }
 app_gamma_needs_service_restart() { echo no; }
 app_gamma_command() { echo "gamma command $1 $2" >> "$TEST_TMP/appcalls"; printf '%s\n--rig-name=%s\n' "${GAMMA_CMD:-gamma}" "$1"; }
@@ -251,6 +252,17 @@ test_screen_prepare_writes_settings_as_dxbapps_with_input_on_stdin() {
   # the step itself never runs as root and reads only JSON
   echo '{}' | sc_app settings gamma-radio2 2> /dev/null; assert_eq "$?" "1"
   echo 'nonsense' | DXB_FAKE_EUID=900 sc_app settings gamma-radio2 2> /dev/null; assert_eq "$?" "2"
+}
+
+# the logbook step: the module's "kept" lines reach the step's stdout before "done logbook", its
+# chatter stays on stderr
+test_screen_settings_logbook_step_passes_the_kept_lines() {
+  sc_env; sc_owned radio2 gamma
+  local out
+  out=$(dxb_screen_settings_input gamma-radio2 logbook | DXB_FAKE_EUID=900 sc_app settings gamma-radio2 2> "$TEST_TMP/err"); assert_eq "$?" "0"
+  assert_eq "$out" $'kept KEY_A (changed in gamma)\ndone logbook'
+  assert_eq "$(cat "$TEST_TMP/err")" "chatter"
+  assert_contains "$(cat "$TEST_TMP/appcalls")" "gamma logbook radio2"
 }
 
 test_screen_prepare_refusals() {

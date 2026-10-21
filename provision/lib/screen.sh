@@ -195,7 +195,9 @@ dxb_screen_settings_input() {
 # (dxb_screen_settings_input) on stdin; DXB_RADIOS and DXB_CFG come from it alone, and
 # dxb_logbook_fldigi_values answers its logbook. Runs app_APP_firstfill and / or app_APP_wire
 # RADIO in the order given (a module without the hook has nothing to do) and prints "done STEP"
-# after each one; the module's own output goes to stderr. 0 ok, 2 bad input, 3 unknown program
+# after each one; the module's own output goes to stderr. The step "logbook" calls
+# app_APP_logbook_follow RADIO instead, whose stdout (the "kept KEY (changed in PROGRAM)" lines)
+# passes through before "done logbook". 0 ok, 2 bad input, 3 unknown program
 # or radio, 7 a step failed.
 DXB_APPS_LOGBOOK='{}'
 dxb_screen_settings() {
@@ -218,10 +220,16 @@ dxb_screen_settings() {
   dxb_app_load "$a" || return 3
   for step in $(jq -r '.steps[]' <<< "$in"); do
     case $step in
-      firstfill|wire) ;;
+      firstfill|wire|logbook) ;;
       *) echo "unknown settings step: $step" >&2; return 2 ;;
     esac
-    if declare -F "app_${a}_$step" > /dev/null; then
+    if [[ $step == logbook ]]; then
+      # the logbook step reports on stdout (the "kept KEY (changed in PROGRAM)" lines); its
+      # other output is stderr as for every step
+      if declare -F "app_${a}_logbook_follow" > /dev/null; then
+        "app_${a}_logbook_follow" "$r" || { echo "$s: $step failed" >&2; return 7; }
+      fi
+    elif declare -F "app_${a}_$step" > /dev/null; then
       "app_${a}_$step" "$r" >&2 || { echo "$s: $step failed" >&2; return 7; }
     fi
     echo "done $step"
