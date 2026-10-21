@@ -353,7 +353,7 @@ _dxb_apps_unpack_appimage() {
       -p KillMode=control-group --description="DXBerry: unpack $asset" --working-directory="$w" --setenv=HOME="$w" \
       -- "$w/$asset" --appimage-extract < /dev/null > /dev/null 2>&1; then
     echo "$asset could not be unpacked" >&2
-  elif ! { "$DXB_CHOWN" -R -h root:root "$w" && chmod 700 "$w"; }; then
+  elif ! { "$DXB_CHOWN" -R -h root:root "$w" && chmod -R go-w "$w" && chmod 700 "$w"; }; then
     echo "$asset could not be taken over from $DXB_APPS_USER" >&2
   elif [[ -L $w/squashfs-root || ! -d $w/squashfs-root ]]; then
     echo "$asset could not be unpacked" >&2

@@ -136,6 +136,8 @@ and `sudo dxberry-logbook get`.
 
 ## Release notes for 0.4.0-rc1
 
+- **Recent contacts from a Wavelog logbook can take up to five minutes to show** on the dashboard:
+  the Pi fetches them on the same five-minute schedule it uses to send waiting contacts.
 - **Log out of the console and back in once** after the first program is installed, before you open
   a program's tab. Installing it lets your login open program windows, and a login that started
   before that cannot yet; the tab says so.
