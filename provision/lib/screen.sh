@@ -217,7 +217,7 @@ dxb_screen_settings() {
   DXB_CFG[LONGITUDE]=$(jq -r '.cfg.LONGITUDE // ""' <<< "$in")
   DXB_CFG[_GPS]=1; DXB_CFG[GPS_DEVICE]=auto; DXB_CFG[GPS_PPS]=''; DXB_CFG[_GPS_PATH]=''; DXB_CFG[GPS_BAUD]=9600
   DXB_APPS_LOGBOOK=$(jq -c '.logbook // {} | if type == "object" then . else {} end' <<< "$in")
-  # shellcheck disable=SC2329  # called by the modules (fldigi's first fill), not here
+  # shellcheck disable=SC2317,SC2329  # called by the modules (fldigi's first fill), not here
   dxb_logbook_fldigi_values() { printf '%s\n' "$DXB_APPS_LOGBOOK"; }
   dxb_app_load "$a" || return 3
   for step in $(jq -r '.steps[]' <<< "$in"); do
