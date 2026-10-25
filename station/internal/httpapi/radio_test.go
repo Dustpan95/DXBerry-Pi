@@ -231,3 +231,58 @@ func TestTuneAndATURefuseWithoutTheirOwnTab(t *testing.T) {
 		t.Fatalf("the owner's tune: %q", rec.Body.String())
 	}
 }
+
+// vanishing records: Get answers from a map the test edits and counts misses.
+type vanishRecords struct {
+	mu     sync.Mutex
+	m      map[string]radios.Radio
+	misses int
+}
+
+func (v *vanishRecords) Get(n string) (radios.Radio, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	r, ok := v.m[n]
+	if !ok {
+		v.misses++
+	}
+	return r, ok
+}
+
+func (v *vanishRecords) remove(n string) { v.mu.Lock(); delete(v.m, n); v.mu.Unlock() }
+func (v *vanishRecords) missCount() int  { v.mu.Lock(); defer v.mu.Unlock(); return v.misses }
+
+func TestOwedUnkeyEndsWhenTheRadioLeavesTheRecords(t *testing.T) {
+	f := &rwRig{st: rig.State{Connected: true, Mode: "USB", Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}
+	recs := &vanishRecords{m: map[string]radios.Radio{"radio1": {Name: "radio1", Port: 4532}}}
+	api := &RadioAPI{Auth: multiAuth{}, Radios: recs, Rigs: rwRigs{f}, Owners: session.NewOwners(realNow{}), Ctx: context.Background()}
+	h := New(Config{Listen: "127.0.0.1:0", Auth: multiAuth{}, Routes: api.Register}).Handler
+	hdr := map[string]string{TabHeader: "iPad#a1", "X-Test-Session": "s1"}
+	rwDo(h, "POST", "/api/radio/radio1/claim", `{}`, hdr)
+	if rec := rwDo(h, "POST", "/api/radio/radio1/tune", `{"on":true}`, hdr); !strings.Contains(rec.Body.String(), `"ok":true`) {
+		t.Fatalf("tune: %q", rec.Body.String())
+	}
+	f.mu.Lock()
+	f.st.Connected = false
+	f.mu.Unlock()
+	rwDo(h, "POST", "/api/radio/radio1/stop", `{}`, hdr) // refused; the unkey is owed and retried
+	recs.remove("radio1")
+	deadline := time.Now().Add(4 * time.Second)
+	for recs.missCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the retry loop never consulted the records")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	f.mu.Lock()
+	f.st.Connected = true
+	f.mu.Unlock()
+	time.Sleep(1500 * time.Millisecond) // more than one retry period
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.calls {
+		if c == "set_ptt 0" {
+			t.Fatalf("the retry loop outlived its radio: %v", f.calls)
+		}
+	}
+}

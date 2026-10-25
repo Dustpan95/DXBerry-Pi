@@ -56,6 +56,8 @@ type RadioAPI struct {
 	Rigs   Rigs
 	Owners *session.Owners
 	Clock  rig.Clock // nil: real time
+	// Ctx ends the owed-unkey retry loops with the service (nil: they end only when the radio leaves the records).
+	Ctx context.Context
 
 	mu      sync.Mutex
 	intents map[string]*rig.Intents
@@ -217,10 +219,22 @@ func (a *RadioAPI) lookup(w http.ResponseWriter, r *http.Request) (radios.Radio,
 	}
 	rec, ok := a.Radios.Get(name)
 	if !ok {
+		a.drop(name)
 		writeError(w, http.StatusNotFound, "no such radio")
 		return radios.Radio{}, false
 	}
 	return rec, true
+}
+
+// drop forgets a radio's Intents (the radio left the records) and ends their retry loop.
+func (a *RadioAPI) drop(name string) {
+	a.mu.Lock()
+	in := a.intents[name]
+	delete(a.intents, name)
+	a.mu.Unlock()
+	if in != nil {
+		in.Close()
+	}
 }
 
 func (a *RadioAPI) intentsFor(rec radios.Radio) *rig.Intents {
@@ -239,6 +253,11 @@ func (a *RadioAPI) intentsFor(rec radios.Radio) *rig.Intents {
 		Poller: dynWriter{a, name},
 		Owners: a.Owners,
 		Clock:  a.Clock,
+		Ctx:    a.Ctx,
+		Gone: func() bool {
+			_, ok := a.Radios.Get(name)
+			return !ok
+		},
 	}
 	a.intents[name] = in
 	return in
