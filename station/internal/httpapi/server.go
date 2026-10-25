@@ -34,7 +34,11 @@ type Config struct {
 
 // ungated paths answer without a session. /api/auth/ is the login itself.
 func ungated(p string) bool {
-	return p == "/login" || p == "/station.crt" || p == "/api/version" || strings.HasPrefix(p, "/api/auth/")
+	switch p {
+	case "/login", "/login.js", "/login.css", "/dxberry.css":
+		return true
+	}
+	return p == "/station.crt" || p == "/api/version" || strings.HasPrefix(p, "/api/auth/")
 }
 
 // SameOrigin reports whether a request came from a page on this host: fetch metadata says

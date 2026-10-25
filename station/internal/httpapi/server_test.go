@@ -66,6 +66,25 @@ func TestLoginPageIsOpen(t *testing.T) {
 	}
 }
 
+func TestLoginAssetsAreOpen(t *testing.T) {
+	web := fstest.MapFS{
+		"index.html":  {Data: []byte("<title>DXBerry</title>")},
+		"login.js":    {Data: []byte("//")},
+		"login.css":   {Data: []byte("/**/")},
+		"dxberry.css": {Data: []byte("/**/")},
+		"dxberry.js":  {Data: []byte("//")},
+	}
+	h := New(Config{Web: web, Auth: stubAuth{}}).Handler
+	for _, p := range []string{"/login.js", "/login.css", "/dxberry.css"} {
+		if rec := do(h, "GET", p, nil); rec.Code != 200 {
+			t.Errorf("%s: got %d", p, rec.Code)
+		}
+	}
+	if rec := do(h, "GET", "/dxberry.js", map[string]string{"Accept": "text/html"}); rec.Code != 303 {
+		t.Errorf("/dxberry.js: got %d", rec.Code)
+	}
+}
+
 func TestAPIWithoutSessionIs401(t *testing.T) {
 	rec := do(testServer(false), "GET", "/api/status", map[string]string{"Sec-Fetch-Site": "same-origin"})
 	if rec.Code != 401 || strings.TrimSpace(rec.Body.String()) != `{"error":"login required"}` {
