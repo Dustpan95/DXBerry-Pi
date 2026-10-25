@@ -34,7 +34,7 @@ test_dxb_run_names_a_refused_command() {
 test_dxb_run_401_redirects() {
   command -v node > /dev/null 2>&1 || return 0
   local j; j=$(sp_run 401)
-  assert_eq "$(jq -r '.assigned[0]' <<< "$j")" "/login?next=%2Fradios%3Fx%3D1"
+  assert_eq "$(jq -r '.assigned[0]' <<< "$j")" "/login?next=%2Fradios%3Fx%3D1%23s"
   assert_eq "$(jq -r '.settled' <<< "$j")" "false"
 }
 

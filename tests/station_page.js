@@ -22,7 +22,7 @@ const fetch = (url, opts) => {
 const el = () => ({ hidden: false, textContent: "", addEventListener() {}, append() {}, replaceChildren() {}, setAttribute() {}, classList: { toggle() {} } });
 const ctx = {
   document: { hidden: false, getElementById: el, addEventListener() {}, createElement: el },
-  location: { pathname: "/radios", search: "?x=1", protocol: "https:", host: "pi.local", assign: (u) => assigned.push(u) },
+  location: { pathname: "/radios", search: "?x=1", hash: "#s", protocol: "https:", host: "pi.local", assign: (u) => assigned.push(u) },
   fetch, JSON, encodeURIComponent, Promise, setInterval() {}, WebSocket: function (u) { this.url = u; },
 };
 ctx.window = ctx;
