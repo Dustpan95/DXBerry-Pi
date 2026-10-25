@@ -19,18 +19,28 @@ rc_env() {
     DXB_USB_DRIVER_DIR=$TEST_TMP/sys/bus/usb/drivers/usb
   unset DXB_SYS_SOUND
   mkdir -p "$DXB_STATE_DIR" "$TEST_TMP/etc" "$DXB_DEV_SND" "$DXB_USB_DRIVER_DIR"; : > "$TEST_TMP/calls"
-  rm -f "$TEST_TMP/id-write-fails" "$TEST_TMP/card-busy"
+  rm -f "$TEST_TMP"/{id-write-fails,card-busy,fuser-missing,bind-fails,card-returns}
+  : > "$DXB_DEV_SND/pcmC1D0c"; : > "$DXB_DEV_SND/pcmC1D0p"
   fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
   DXB_STATUS_LINES=(); DXB_FAILED_STEPS=()
 }
 rc_udevadm() { echo "udevadm $*" >> "$TEST_TMP/calls"; }
 rc_sleep() { echo "sleep $*" >> "$TEST_TMP/calls"; }
-rc_fuser() { echo "fuser $*" >> "$TEST_TMP/calls"; [[ -e $TEST_TMP/card-busy ]] && { echo " 4242"; return 0; }; return 1; }
+# fuser: 0 and a pid when $TEST_TMP/card-busy, 127 when $TEST_TMP/fuser-missing, else 1 (nobody)
+rc_fuser() {
+  echo "fuser $*" >> "$TEST_TMP/calls"
+  [[ -e $TEST_TMP/fuser-missing ]] && return 127
+  [[ -e $TEST_TMP/card-busy ]] && { echo " 4242"; return 0; }
+  return 1
+}
 rc_ps() { echo "ps $*" >> "$TEST_TMP/calls"; echo graywolf; }
 # a sysfs write: recorded, then really made unless $TEST_TMP/id-write-fails and it is an id file
 rc_sys_write() {
   echo "write ${1#"$TEST_TMP"/} $2" >> "$TEST_TMP/calls"
   if [[ $1 == */id && -e $TEST_TMP/id-write-fails ]]; then return 22; fi
+  if [[ $1 == */bind && -e $TEST_TMP/bind-fails ]]; then return 19; fi
+  # the card re-enumerates under its own id when the device is bound again
+  if [[ $1 == */bind && -e $TEST_TMP/card-returns ]]; then printf 'Device\n' > "$DXB_SYSFS_ROOT/class/sound/card1/id"; return 0; fi
   printf '%s\n' "$2" > "$1"
 }
 # rc_added NAME: the radio added on the digirig, then its udev rename applied to the card
@@ -60,21 +70,83 @@ test_radio_remove_restores_the_card_id_by_sysfs() {
   assert_eq "$(rc_card_id)" "Device"
   assert_contains "$(cat "$TEST_TMP/calls")" "write sys/class/sound/card1/id Device"
   assert_not_contains "$(cat "$TEST_TMP/calls")" "unbind"
+  assert_contains "$(cat "$TEST_TMP/calls")" "fuser $DXB_DEV_SND/pcmC1D0c $DXB_DEV_SND/pcmC1D0p"
 }
 
 test_radio_remove_rebinds_usb_when_the_id_write_fails() {
   rc_env; rc_added chk1
-  : > "$TEST_TMP/id-write-fails"
-  local rec; rec=$(dxb_radio_get chk1)
+  : > "$TEST_TMP/id-write-fails"; : > "$TEST_TMP/card-returns"
+  local rec err; rec=$(dxb_radio_get chk1)
   dxb_radio_remove chk1 > /dev/null
-  _dxb_radio_card_restore chk1 "$rec" > /dev/null 2>&1
+  err=$(_dxb_radio_card_restore chk1 "$rec" 2>&1)
   assert_eq "$(grep -E '^(write .*(unbind|bind)|sleep)' "$TEST_TMP/calls" | tr '\n' '|')" \
-    "write sys/bus/usb/drivers/usb/unbind 1-1.3|sleep 3|write sys/bus/usb/drivers/usb/bind 1-1.3|"
+    "write sys/bus/usb/drivers/usb/unbind 1-1.3|sleep 3|write sys/bus/usb/drivers/usb/bind 1-1.3|sleep 1|"
+  assert_contains "$(cat "$TEST_TMP/calls")" "fuser $DXB_DEV_SND/pcmC1D0c $DXB_DEV_SND/pcmC1D0p"
+  assert_contains "$err" "re-enumerated to restore the sound card id Device"
+  assert_eq "$(rc_card_id)" "Device"
+}
+
+test_radio_remove_rebind_whose_bind_fails_warns_without_success() {
+  rc_env; rc_added chk1
+  : > "$TEST_TMP/id-write-fails"; : > "$TEST_TMP/bind-fails"
+  local rec err; rec=$(dxb_radio_get chk1)
+  dxb_radio_remove chk1 > /dev/null
+  err=$(_dxb_radio_card_restore chk1 "$rec" 2>&1)
+  assert_contains "$err" "could not bind USB device 1-1.3 again; replug it"
+  assert_not_contains "$err" "re-enumerated"
+}
+
+test_radio_remove_rebind_whose_card_never_returns_warns() {
+  rc_env; rc_added chk1
+  : > "$TEST_TMP/id-write-fails"
+  local rec err; rec=$(dxb_radio_get chk1)
+  dxb_radio_remove chk1 > /dev/null
+  err=$(_dxb_radio_card_restore chk1 "$rec" 2>&1)
+  assert_contains "$err" "the sound card did not come back as Device after re-enumeration; replug it or restart the Pi"
+  assert_not_contains "$err" "re-enumerated"
+  assert_eq "$(grep -c '^sleep 1' "$TEST_TMP/calls")" "5"
+}
+
+test_radio_remove_leaves_the_card_when_another_holds_the_wanted_id() {
+  rc_env; rc_added chk1
+  fx_onboard_card "$DXB_SYSFS_ROOT" card0 bcm2835; printf 'Device\n' > "$DXB_SYSFS_ROOT/class/sound/card0/id"
+  local rec err; rec=$(dxb_radio_get chk1)
+  dxb_radio_remove chk1 > /dev/null; : > "$TEST_TMP/calls"
+  err=$(_dxb_radio_card_restore chk1 "$rec" 2>&1)
+  assert_contains "$err" "another sound card already has the id Device"
+  assert_eq "$(rc_card_id)" "CHK1"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "write "
+}
+
+# fuser exit 1 means nobody holds the card; any other failure is not an answer
+test_radio_remove_does_nothing_when_fuser_cannot_answer() {
+  rc_env; rc_added chk1
+  : > "$TEST_TMP/fuser-missing"
+  local rec err; rec=$(dxb_radio_get chk1)
+  dxb_radio_remove chk1 > /dev/null
+  err=$(_dxb_radio_card_restore chk1 "$rec" 2>&1)
+  assert_contains "$err" "could not check whether the sound card is in use (fuser): leaving its name CHK1"
+  assert_eq "$(rc_card_id)" "CHK1"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "write "
+}
+
+# a card an earlier busy remove left named CHK1 is not recorded as the next radio's original id
+test_radio_add_does_not_record_a_renamed_id() {
+  rc_env
+  printf 'CHK1\n' > "$DXB_SYSFS_ROOT/class/sound/card1/id"
+  dxb_radio_load; DXB_RADIOS=$(jq -c '.radios.chk1 = {"audio":null}' <<< "$DXB_RADIOS")
+  local err; err=$(dxb_radio_add other '{"audio":"1"}' 2>&1)
+  assert_eq "$(jq -r '.radios.other.audio | has("card_id")' <<< "$DXB_RADIOS")" "false"
+  assert_contains "$err" "original id is unknown"
+  # nor the new radio's own name
+  printf 'THIRD\n' > "$DXB_SYSFS_ROOT/class/sound/card1/id"
+  err=$(dxb_radio_add third '{"audio":"1"}' 2>&1)
+  assert_eq "$(jq -r '.radios.third.audio | has("card_id")' <<< "$DXB_RADIOS")" "false"
 }
 
 test_radio_remove_leaves_a_busy_card_and_warns() {
   rc_env; rc_added chk1
-  : > "$TEST_TMP/card-busy"; : > "$DXB_DEV_SND/pcmC1D0p"; : > "$DXB_DEV_SND/pcmC1D0c"
+  : > "$TEST_TMP/card-busy"
   local rec err; rec=$(dxb_radio_get chk1)
   dxb_radio_remove chk1 > /dev/null
   err=$(_dxb_radio_card_restore chk1 "$rec" 2>&1)

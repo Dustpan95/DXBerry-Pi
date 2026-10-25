@@ -136,7 +136,9 @@ _dxb_station_site_prepare() {
     return 6
   fi
   # the site file is stamped as current (touched) by provision_station once nginx has reloaded, so
-  # a certificate renewed in place counts as picked up only when it really was
+  # a certificate renewed in place counts as picked up only when it really was. A site that was
+  # rewritten but not reloaded is retried on the next run only while the stamp is still old; once
+  # the content is on disk it is "current" by content, so it retries when the content changes again
   return 0
 }
 

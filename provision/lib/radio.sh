@@ -23,6 +23,7 @@
 : "${DXB_FUSER:=fuser}"
 : "${DXB_PS:=ps}"
 : "${DXB_SLEEP:=sleep}"
+: "${DXB_READLINK:=readlink}"
 # DXB_SYS_WRITE FILE VALUE writes VALUE into a sysfs file (the tests swap it to see or fail the write)
 : "${DXB_SYS_WRITE:=_dxb_radio_sys_write}"
 : "${DXB_APPS_DIR:=${DXB_LIB:-/opt/dxberry/lib}/apps}"
@@ -265,6 +266,12 @@ _dxb_radio_record_card_id() {
     dxb_info "radio $name: could not read the sound card's id; it will not be restored on remove" >&2
     printf '%s\n' "$radio"; return 0
   fi
+  # an id that is some radio's upper-cased name (a card that stayed renamed after a busy remove) is
+  # not the card's original id; recording it would write that name back on the next remove
+  if jq -e --arg id "$id" --arg n "$name" '$id == ($n | ascii_upcase) or ([.radios | keys[] | ascii_upcase] | index($id)) != null' <<< "$DXB_RADIOS" > /dev/null 2>&1; then
+    dxb_info "radio $name: the sound card is already named $id by a radio's rule, so its original id is unknown and will not be restored on remove" >&2
+    printf '%s\n' "$radio"; return 0
+  fi
   jq -c --arg id "$id" '.audio.card_id = $id' <<< "$radio"
 }
 
@@ -290,22 +297,37 @@ _dxb_radio_sys_write() { printf '%s' "$2" > "$1"; }
 # renamed would stay NAME. Put the recorded id back: written into the card's sysfs id when nothing
 # holds the card, else by unbinding and rebinding its USB device; a held card is left, with a warning.
 _dxb_radio_card_restore() {
-  local name=$1 rec=$2 want=${1^^} id c cid='' card='' num devs=() pids='' real ctx dev comm drv=${DXB_USB_DRIVER_DIR:-$DXB_SYSFS_ROOT/bus/usb/drivers/usb}
+  local name=$1 rec=$2 want=${1^^} id c cid='' card='' num devs=() pids='' frc real ctx dev comm i found
+  local drv=${DXB_USB_DRIVER_DIR:-$DXB_SYSFS_ROOT/bus/usb/drivers/usb} snd=${DXB_SYS_SOUND:-$DXB_SYSFS_ROOT/class/sound}
   id=$(jq -r '.audio.card_id // empty' <<< "$rec" 2> /dev/null)
   [[ -n $id && $id != "$want" ]] || return 0
-  for c in "${DXB_SYS_SOUND:-$DXB_SYSFS_ROOT/class/sound}"/card*; do
+  for c in "$snd"/card*; do
     [[ -e $c ]] || continue
     cid=''; [[ -f $c/id ]] && read -r cid < "$c/id"
     if [[ $cid == "$want" ]]; then card=$c; break; fi
   done
   [[ -n $card ]] || return 0
+  # another card already answers to the wanted id: renaming this one would clash with it
+  for c in "$snd"/card*; do
+    [[ -e $c && $c != "$card" && -f $c/id ]] || continue
+    read -r cid < "$c/id"
+    if [[ $cid == "$id" ]]; then
+      dxb_warn "another sound card already has the id $id; the sound card keeps the name $want until it is replugged or the Pi restarts"
+      return 0
+    fi
+  done
   num=${card##*/card}
   devs=("$DXB_DEV_SND"/pcmC"${num}"D*)
   [[ -e ${devs[0]} ]] || devs=()
   if (( ${#devs[@]} )); then
-    pids=$("$DXB_FUSER" "${devs[@]}" 2> /dev/null) || pids=''
+    pids=$("$DXB_FUSER" "${devs[@]}" 2> /dev/null); frc=$?
+    # fuser: 0 somebody holds a file, 1 nobody does; anything else (missing, errored) is not an answer
+    if (( frc > 1 )); then
+      dxb_warn "could not check whether the sound card is in use (fuser): leaving its name $want"
+      return 0
+    fi
     pids=${pids//[^0-9 ]/}
-    if [[ -n ${pids//[[:space:]]/} ]]; then
+    if (( frc == 0 )) && [[ -n ${pids//[[:space:]]/} ]]; then
       read -r pids _ <<< "$pids"
       comm=$("$DXB_PS" -o comm= -p "$pids" 2> /dev/null) || comm=''
       dxb_warn "the sound card keeps the name $want until it is replugged or the Pi restarts (in use by ${comm:-process $pids})"
@@ -317,19 +339,37 @@ _dxb_radio_card_restore() {
     return 0
   fi
   # the id will not take: re-enumerate the USB device, which brings the card back under its own id
-  real=$(readlink -f "$card"); ctx=$(_dxb_radio_usb_ctx "$real")
+  real=$("$DXB_READLINK" -f "$card"); ctx=$(_dxb_radio_usb_ctx "$real")
   if [[ -z $ctx ]]; then
     dxb_warn "the sound card keeps the name $want until it is replugged or the Pi restarts"
     return 0
   fi
   read -r _ _ real <<< "$ctx"
   dev=${real##*/}
-  if "$DXB_SYS_WRITE" "$drv/unbind" "$dev" 2> /dev/null; then
-    "$DXB_SLEEP" 3
-    "$DXB_SYS_WRITE" "$drv/bind" "$dev" 2> /dev/null || dxb_warn "radio $name: could not bind USB device $dev again; replug it"
+  if ! "$DXB_SYS_WRITE" "$drv/unbind" "$dev" 2> /dev/null; then
+    dxb_warn "the sound card keeps the name $want until it is replugged or the Pi restarts"
+    return 0
+  fi
+  "$DXB_SLEEP" 3
+  if ! "$DXB_SYS_WRITE" "$drv/bind" "$dev" 2> /dev/null; then
+    dxb_warn "radio $name: could not bind USB device $dev again; replug it"
+    return 0
+  fi
+  # the card comes back a moment after the bind; say success only once it carries the recorded id
+  for i in 1 2 3 4 5; do
+    "$DXB_SLEEP" 1
+    found=0
+    for c in "$snd"/card*; do
+      [[ -f $c/id ]] || continue
+      read -r cid < "$c/id"
+      [[ $cid == "$id" ]] && found=1
+    done
+    (( found )) && break
+  done
+  if (( found )); then
     dxb_info "radio $name: USB device $dev re-enumerated to restore the sound card id $id"
   else
-    dxb_warn "the sound card keeps the name $want until it is replugged or the Pi restarts"
+    dxb_warn "the sound card did not come back as $id after re-enumeration; replug it or restart the Pi"
   fi
   return 0
 }
@@ -904,7 +944,7 @@ dxb_radio_release() {
 }
 
 # ---- provisioning step ---------------------------------------------------------------------
-DXB_RADIO_PACKAGES='libhamlib-utils gpsd gpsd-clients chrony alsa-utils'
+DXB_RADIO_PACKAGES='libhamlib-utils gpsd gpsd-clients chrony alsa-utils psmisc'
 # Set in run mode when dxb_gps_boot_config changed config.txt (spec section 10); on first boot
 # the reboot at the end of the run happens regardless, so this is never set there.
 # shellcheck disable=SC2034
