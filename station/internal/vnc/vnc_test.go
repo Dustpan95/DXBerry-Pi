@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -31,7 +32,7 @@ func rig(t *testing.T, dir string, active bool, loggedIn bool) *httptest.Server 
 		Web:  fstest.MapFS{"index.html": {Data: []byte("x")}},
 		Auth: stubAuth{ok: loggedIn},
 		Routes: func(mux *http.ServeMux) {
-			mux.Handle("GET /api/vnc/{session}", Handler(dir, func(ctx context.Context, s string) bool { return active }))
+			mux.Handle("GET /api/vnc/{session}", Handler(dir, func(ctx context.Context, s string) bool { return active }, func(*http.Request) bool { return true }))
 		},
 	})
 	ts := httptest.NewServer(srv.Handler)
@@ -223,5 +224,43 @@ func TestVNCRefusesOversizedFrame(t *testing.T) {
 	_ = c.Write(ctx, websocket.MessageBinary, make([]byte, 200<<10))
 	if _, _, err := c.Read(ctx); websocket.CloseStatus(err) != websocket.StatusMessageTooBig {
 		t.Fatalf("want StatusMessageTooBig, got %v", err)
+	}
+}
+
+func TestVNCClosesOnLogout(t *testing.T) {
+	dir := sockDir(t)
+	gone := make(chan struct{})
+	listen(t, dir, "wsjtx-radio2", func(c net.Conn) {
+		_, _ = io.Copy(io.Discard, c)
+		close(gone)
+	})
+	var alive atomic.Bool
+	alive.Store(true)
+	srv := httpapi.New(httpapi.Config{
+		Web:  fstest.MapFS{"index.html": {Data: []byte("x")}},
+		Auth: stubAuth{ok: true},
+		Routes: func(mux *http.ServeMux) {
+			mux.Handle("GET /api/vnc/{session}", newHandler(dir, func(context.Context, string) bool { return true },
+				func(*http.Request) bool { return alive.Load() }, 30*time.Millisecond))
+		},
+	})
+	ts := httptest.NewServer(srv.Handler)
+	defer ts.Close()
+	c, _, err := dial(ts, "wsjtx-radio2", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	alive.Store(false)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _, err = c.Read(ctx)
+	if got := websocket.CloseStatus(err); got != websocket.StatusPolicyViolation {
+		t.Fatalf("closed with %d (%v), want policy violation", got, err)
+	}
+	select {
+	case <-gone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the program's socket stayed open after the logout")
 	}
 }

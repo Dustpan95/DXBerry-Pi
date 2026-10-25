@@ -214,7 +214,7 @@ func serve(t *testing.T, st *Status, loggedIn bool) *httptest.Server {
 	srv := httpapi.New(httpapi.Config{
 		Web:    fstest.MapFS{"index.html": {Data: []byte("x")}},
 		Auth:   stubAuth{ok: loggedIn},
-		Routes: st.Register,
+		Routes: func(mux *http.ServeMux) { st.Register(mux, func(*http.Request) bool { return true }) },
 	})
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)
@@ -428,4 +428,37 @@ func TestStatusNotJSONIsAFailure(t *testing.T) {
 	if gen != 0 || !stale || string(status) != "null" {
 		t.Fatalf("gen %d stale %v status %s", gen, stale, status)
 	}
+}
+
+func TestEventsCloseOnLogout(t *testing.T) {
+	r := newRig(t)
+	eventually(t, "the first run", func() bool { return r.count() == 1 })
+	var alive atomic.Bool
+	alive.Store(true)
+	srv := httpapi.New(httpapi.Config{
+		Web:  fstest.MapFS{"index.html": {Data: []byte("x")}},
+		Auth: stubAuth{ok: true},
+		Routes: func(mux *http.ServeMux) {
+			mux.Handle("GET /api/events", r.st.eventsHandler(func(*http.Request) bool { return alive.Load() }, 30*time.Millisecond))
+		},
+	})
+	ts := httptest.NewServer(srv.Handler)
+	defer ts.Close()
+	c, err := dial(t, ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readMsg(t, c)
+	alive.Store(false)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		if _, _, err = c.Read(ctx); err != nil {
+			break
+		}
+	}
+	if got := websocket.CloseStatus(err); got != websocket.StatusPolicyViolation {
+		t.Fatalf("closed with %d (%v), want policy violation", got, err)
+	}
+	eventually(t, "the listener gone", func() bool { return r.st.Listeners() == 0 })
 }

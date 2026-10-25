@@ -61,7 +61,7 @@ func main() {
 	routes := func(mux *http.ServeMux) {
 		mgr.Register(mux)
 		runner.Register(mux)
-		st.Register(mux)
+		st.Register(mux, mgr.Alive)
 		sessionOf := func(r *http.Request) *httpapi.Session {
 			s, _ := mgr.Session(r)
 			return s
@@ -84,7 +84,7 @@ func main() {
 		mux.Handle("GET /api/vnc/{session}", vnc.Handler(*screens, func(ctx context.Context, session string) bool {
 			res, err := runner.Run(ctx, cli.Call{Command: "systemctl", Args: []string{"is-active", "dxberry-screen@" + session + ".service"}})
 			return err == nil && res.Exit == 0
-		}))
+		}, mgr.Alive))
 	}
 	srv := httpapi.New(httpapi.Config{Listen: *listen, Web: web.Files, Auth: mgr, Version: version, CertFile: filepath.Join(*tlsDir, "station.crt"), Routes: routes})
 	log.Printf("dxberryd %s listening on %s (state %s, bin %s)", version, *listen, *state, *bin)

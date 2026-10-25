@@ -16,15 +16,17 @@ var (
 
 const readLimit = 64 << 10 // the most a client frame may carry
 
+const pollEvery = 5 * time.Second // how often an open events socket re-checks that its session is still logged in
+
 // Register mounts GET /api/status and GET /api/events. Both sit behind httpapi's session gate
-// and same-origin rule.
-func (s *Status) Register(mux *http.ServeMux) {
+// and same-origin rule; alive re-checks the login session of an open events socket.
+func (s *Status) Register(mux *http.ServeMux, alive func(*http.Request) bool) {
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(s.Snapshot())
 	})
-	mux.HandleFunc("GET /api/events", s.events)
+	mux.Handle("GET /api/events", s.eventsHandler(alive, pollEvery))
 }
 
 func (s *Status) message() []byte {
@@ -39,7 +41,11 @@ func (s *Status) message() []byte {
 // in between. This goroutine writes; one reader goroutine drains and ignores what the browser
 // sends (a "watch" message is accepted and does nothing in this release). Both end with the
 // socket.
-func (s *Status) events(w http.ResponseWriter, r *http.Request) {
+func (s *Status) eventsHandler(alive func(*http.Request) bool, every time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.events(w, r, alive, every) })
+}
+
+func (s *Status) events(w http.ResponseWriter, r *http.Request, alive func(*http.Request) bool, every time.Duration) {
 	ws, err := websocket.Accept(w, r, nil) // writes its own refusal, a foreign Origin among them
 	if err != nil {
 		return
@@ -74,6 +80,8 @@ func (s *Status) events(w http.ResponseWriter, r *http.Request) {
 	}
 	ping := time.NewTicker(pingEvery)
 	defer ping.Stop()
+	check := time.NewTicker(every)
+	defer check.Stop()
 	pingMsg, _ := json.Marshal(map[string]string{"type": "ping"})
 	for {
 		select {
@@ -81,6 +89,11 @@ func (s *Status) events(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-updates:
 			if !send(s.message()) {
+				return
+			}
+		case <-check.C:
+			if !alive(r) {
+				_ = ws.Close(websocket.StatusPolicyViolation, "logged out") // before cancel: see term.go
 				return
 			}
 		case <-ping.C:

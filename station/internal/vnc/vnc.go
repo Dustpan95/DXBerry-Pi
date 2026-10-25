@@ -23,6 +23,7 @@ var reSession = regexp.MustCompile(`^[a-z][a-z0-9_]{0,15}-[a-z][a-z0-9]{0,11}$`)
 const (
 	chunk       = 64 << 10 // the most held in flight, per direction
 	dialTimeout = 3 * time.Second
+	pollEvery   = 5 * time.Second // how often an open window re-checks that its session is still logged in
 )
 
 func refuse(w http.ResponseWriter, code int, msg string) {
@@ -32,10 +33,16 @@ func refuse(w http.ResponseWriter, code int, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-// Handler serves GET .../{session}. isActive says whether the session's screen unit is running.
+// Handler serves GET .../{session}. isActive says whether the session's screen unit is running;
+// alive says whether the request's login session still is, and is polled while the window is open.
 // Mount it behind the session gate; it refuses a bad name (400), an inactive session (409) and a
 // socket that does not answer (502) before it upgrades.
-func Handler(socketDir string, isActive func(ctx context.Context, session string) bool) http.Handler {
+func Handler(socketDir string, isActive func(ctx context.Context, session string) bool, alive func(*http.Request) bool) http.Handler {
+	return newHandler(socketDir, isActive, alive, pollEvery)
+}
+
+// newHandler is Handler with its own poll interval.
+func newHandler(socketDir string, isActive func(ctx context.Context, session string) bool, alive func(*http.Request) bool, every time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		session := r.PathValue("session")
 		if !reSession.MatchString(session) {
@@ -56,12 +63,12 @@ func Handler(socketDir string, isActive func(ctx context.Context, session string
 			sock.Close()
 			return
 		}
-		relay(r.Context(), ws, sock)
+		relay(r.Context(), ws, sock, func() bool { return alive(r) }, every)
 	})
 }
 
 // relay copies binary frames both ways until either side ends, then closes both.
-func relay(parent context.Context, ws *websocket.Conn, sock net.Conn) {
+func relay(parent context.Context, ws *websocket.Conn, sock net.Conn, alive func() bool, every time.Duration) {
 	ws.SetReadLimit(chunk)
 	ctx, cancel := context.WithCancel(parent)
 	var once sync.Once
@@ -73,7 +80,23 @@ func relay(parent context.Context, ws *websocket.Conn, sock net.Conn) {
 		})
 	}
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
+	go func() { // the login session may end while the window is open
+		defer wg.Done()
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if !alive() {
+					end(websocket.StatusPolicyViolation, "logged out")
+					return
+				}
+			}
+		}
+	}()
 	go func() { // program -> browser
 		defer wg.Done()
 		buf := make([]byte, chunk)
