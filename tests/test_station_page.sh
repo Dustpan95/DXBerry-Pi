@@ -147,7 +147,7 @@ test_station_dashboard_opens_programs_on_the_screen_page() {
 test_station_index_loads_the_page_scripts_in_order() {
   local got
   got=$(grep -oE '<script src="[^"]+"' "$SP_WEB/index.html" | grep -oE '/[a-z.]+' | tr '\n' ' ')
-  assert_eq "$got" "/app.js /dxberry.js /settings.js /updates.js /dashboard.js /programs.js "
+  assert_eq "$got" "/app.js /dxberry.js /settings.js /updates.js /dashboard.js /programs.js /vfo.js "
 }
 
 test_station_pages_parse_together() {
@@ -256,4 +256,165 @@ test_radio_settings_form_values() {
   assert_eq "$(jq -r '.probeCall.method + " " + .probeCall.url' <<< "$j")" "POST /api/radio/radio1/reprobe"
   assert_contains "$(jq -r '.probeRefused' <<< "$j")" "wait a few seconds"
   assert_eq "$(jq -r '.probeOk' <<< "$j")" "Capabilities re-read."
+}
+
+# ---- the VFO page (Task 6) ---------------------------------------------------------------------
+# svf_run: the pure logic of vfo.js, answered as JSON
+svf_run() { node "$DXB_ROOT/tests/station_vfo.js" "${SVF_JS:-$SP_WEB/vfo.js}"; }
+
+test_vfo_format_freq() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(svf_run) || { _fail "station_vfo.js failed"; return; }
+  assert_eq "$(jq -c '.fmt' <<< "$j")" '["14.074.000","7.074.000","500","0","1.296.100.000","144.174.000","—","—"]'
+  # the keypad: MHz with a point, kHz without, Hz when long, grouped Hz; nonsense is refused
+  assert_eq "$(jq -c '.parse' <<< "$j")" '[14074000,14074000,14074000,14074000,null,null,null,144000,1296000]'
+}
+
+test_vfo_step_math() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(svf_run) || { _fail "station_vfo.js failed"; return; }
+  assert_eq "$(jq -c '.steps' <<< "$j")" '[10,100,1000,10000,100000,1000000]'
+  assert_eq "$(jq -r '.stepUp' <<< "$j")" "14075000"
+  assert_eq "$(jq -r '.stepDown' <<< "$j")" "14073900"
+  # clamped to the end of the range it is in; a gap between ranges goes to the nearest edge
+  assert_eq "$(jq -r '.stepBig' <<< "$j")" "14350000"
+  assert_eq "$(jq -r '.stepTop' <<< "$j")" "14350000"
+  assert_eq "$(jq -r '.stepBottom' <<< "$j")" "14000000"
+  assert_eq "$(jq -r '.stepGap' <<< "$j")" "14000000"
+  assert_eq "$(jq -r '.stepNoRanges' <<< "$j")" "0"
+}
+
+test_vfo_bands_from_ranges() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(svf_run) || { _fail "station_vfo.js failed"; return; }
+  assert_eq "$(jq -r '.bands | join(",")' <<< "$j")" "160 m,80 m,60 m,40 m,30 m,20 m,17 m,15 m,12 m,10 m,6 m"
+  assert_eq "$(jq -r '.bandsNormalized' <<< "$j")" "11"
+  assert_eq "$(jq -r '.bandsLower' <<< "$j")" "11"
+  # a range inside a band: only that band, tuning from the range's own start
+  assert_eq "$(jq -c '.bandsPartial' <<< "$j")" '[["20 m",14100000]]'
+  assert_eq "$(jq -c '.bandOf' <<< "$j")" '["20 m",null]'
+  # modes: only those the radio has, in the page's order
+  assert_eq "$(jq -r '.modes | join(",")' <<< "$j")" "USB,LSB,CW,CWR,AM,FM,RTTY,PKTUSB,PKTLSB"
+  assert_eq "$(jq -r '.modesNone | join(",")' <<< "$j")" "FM"
+}
+
+test_vfo_no_cat_layout() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(svf_run) || { _fail "station_vfo.js failed"; return; }
+  assert_eq "$(jq -c '.layoutDummy' <<< "$j")" '["nocat","stop","owner"]'
+  assert_eq "$(jq -c '.layoutNoCatRecord' <<< "$j")" '["nocat","stop","owner","program"]'
+  assert_eq "$(jq -c '.layoutNoCapsYet' <<< "$j")" '["connecting","stop","owner"]'
+  # a radio with CAT: dial, readout, S-meter, STOP, and what is hidden is listed under why
+  assert_eq "$(jq -c '.layoutIC' <<< "$j")" '["readout","dial","bands","modes","vfo","filter","levels","smeter","atu","tune","stop","owner","why"]'
+  assert_eq "$(jq -c '.layoutLower' <<< "$j")" '["readout","dial","bands","modes","vfo","filter","smeter","tune","stop","owner","why"]'
+  assert_eq "$(jq -c '.hiddenMeterGone' <<< "$j")" '["readout","dial","modes","filter","tune","stop","owner","why"]'
+}
+
+test_vfo_owner_line_texts() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(svf_run) || { _fail "station_vfo.js failed"; return; }
+  assert_eq "$(jq -r '.owners.mine' <<< "$j")" "You have the transmitter"
+  assert_eq "$(jq -r '.owners.other' <<< "$j")" "iPad has the transmitter"
+  assert_eq "$(jq -r '.owners.program' <<< "$j")" "WSJT-X has this radio"
+  assert_eq "$(jq -r '.owners.none' <<< "$j")" "Nobody has the transmitter"
+  assert_eq "$(jq -c '.actions' <<< "$j")" '[["claim"],["release"],["takeover"],["open"]]'
+}
+
+test_vfo_meters_and_paths() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(svf_run) || { _fail "station_vfo.js failed"; return; }
+  assert_eq "$(jq -c '.s' <<< "$j")" '["S0","S8","S9","S9+20","S9+60"]'
+  assert_eq "$(jq -c '.sUnits' <<< "$j")" '[0,9,15,15]'
+  assert_eq "$(jq -c '.filters' <<< "$j")" '[[1800,2400,3000],[200,500,1000,1800],[]]'
+  assert_eq "$(jq -r '.pathOk' <<< "$j")" "ic7300"
+  assert_eq "$(jq -c '.pathBad' <<< "$j")" '[null,null,null,null,null]'
+  assert_eq "$(jq -c '.percent' <<< "$j")" '[50,100,0]'
+}
+
+# svf_api [PATH]: the radio pages' layer in app.js (tab token, dxb.api, events extras) as JSON
+svf_api() { node "$DXB_ROOT/tests/station_vfo_api.js" "$SP_WEB/app.js" "$@"; }
+
+test_vfo_api_sends_the_tab_token_and_shapes_failures() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(svf_api) || { _fail "station_vfo_api.js failed"; return; }
+  assert_eq "$(jq -r '.tab' <<< "$j")" "uuid-1"
+  assert_eq "$(jq -r '.tabStable' <<< "$j")" "true"
+  assert_eq "$(jq -c '.calls[0]' <<< "$j")" '{"url":"/api/radio/ic7300/freq","method":"POST","tab":"uuid-1","type":"application/json","body":"{\"hz\":99}"}'
+  assert_eq "$(jq -r '.calls[1].tab' <<< "$j")" "uuid-1"
+  assert_eq "$(jq -r '.otherHasTab' <<< "$j")" "false"
+  assert_eq "$(jq -c '.refused' <<< "$j")" '{"ok":false,"reason":"99 is outside this radio'"'"'s range","fix":"this radio tunes 30000-74800000 Hz"}'
+  assert_eq "$(jq -r '.accepted.ok' <<< "$j")" "true"
+  assert_eq "$(jq -r '(.missing.ok|tostring) + " " + .missing.reason' <<< "$j")" "false no such radio"
+  assert_eq "$(jq -r '.garbled.ok' <<< "$j")" "false"
+  assert_eq "$(jq -r '.down.reason' <<< "$j")" "The station could not be reached."
+}
+
+test_vfo_events_carry_the_tab_and_deliver_rig_messages() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(svf_api) || { _fail "station_vfo_api.js failed"; return; }
+  assert_eq "$(jq -r '.socketUrl' <<< "$j")" "wss://pi.local/api/events?tab=uuid-1"
+  assert_eq "$(jq -r '.sendBeforeOpen' <<< "$j")" "false"
+  assert_eq "$(jq -r '(.opened|tostring) + " " + (.sendOpen|tostring)' <<< "$j")" "1 true"
+  assert_eq "$(jq -r '.sent[0]' <<< "$j")" '{"type":"watch","radio":"ic7300","level":"page"}'
+  assert_eq "$(jq -c '.rig' <<< "$j")" '[{"type":"rig","radio":"ic7300","data":{"freq":14074000}}]'
+  assert_eq "$(jq -r '.closed' <<< "$j")" "1"
+  # off a radio page the address carries no token
+  j=$(svf_api /) || { _fail "station_vfo_api.js failed"; return; }
+  assert_eq "$(jq -r '.socketUrl' <<< "$j")" "wss://pi.local/api/events"
+}
+
+test_vfo_page_files_are_plain() {
+  local f
+  for f in vfo.js dashboard.js app.js; do assert_file_not_contains "$SP_WEB/$f" "innerHTML"; done
+  assert_file_not_contains "$SP_WEB/vfo.js" "cockpit"
+  assert_file_not_contains "$SP_WEB/vfo.js" "setAttribute(\"style\""
+  assert_file_not_contains "$SP_WEB/vfo.js" "fetch("
+  assert_file_not_contains "$SP_WEB/vfo.css" "http"
+  assert_file_contains "$SP_WEB/index.html" '<link rel="stylesheet" href="/vfo.css">'
+  assert_file_contains "$SP_WEB/vfo.js" 'anchor.parentNode.insertBefore(root'
+  # the dashboard card links to the page
+  assert_file_contains "$SP_WEB/dashboard.js" 'href: `/radio/${n}`'
+  command -v node > /dev/null 2>&1 || return 0
+  node --check "$SP_WEB/vfo.js" 2> "$TEST_TMP/node.err" || _fail "vfo.js does not parse: $(cat "$TEST_TMP/node.err")"
+}
+
+# svf_page SCENARIO: vfo.js run as the page /radio/<name> over a fake DOM and fetch, as JSON
+svf_page() { node "$DXB_ROOT/tests/station_vfo_page.js" "$SP_WEB" "$1"; }
+
+test_vfo_page_draws_a_radio_with_cat() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(svf_page ic7300 2> "$TEST_TMP/p.err") || { _fail "station_vfo_page.js failed: $(cat "$TEST_TMP/p.err")"; return; }
+  assert_eq "$(jq -r '.socketUrl' <<< "$j")" "wss://pi.local/api/events?tab=tab-1"
+  assert_eq "$(jq -r '.watch[0]' <<< "$j")" '{"type":"watch","radio":"ic7300","level":"page"}'
+  assert_eq "$(jq -r '.getTabs | unique | join(",")' <<< "$j")" "tab-1"
+  assert_eq "$(jq -r '.readout' <<< "$j")" "14.074.000 Hz"
+  assert_eq "$(jq -r '.readoutAfterEvent' <<< "$j")" "7.074.000 Hz"
+  assert_eq "$(jq -r '.hasDial' <<< "$j")" "true"
+  assert_eq "$(jq -r '.sectionTitles | join(",")' <<< "$j")" "Band,Mode,VFO,Filter width,Levels,Signal,Antenna tuner,Tune"
+  assert_eq "$(jq -r '.bandButtons' <<< "$j")" "160 m,80 m,60 m,40 m,30 m,20 m,17 m,15 m,12 m,10 m,6 m"
+  assert_eq "$(jq -r '.modeButtons' <<< "$j")" "USB,LSB,CW,AM,FM"
+  assert_eq "$(jq -r '.ownerText' <<< "$j")" "Nobody has the transmitterTake the transmitter"
+  assert_contains "$(jq -r '.why' <<< "$j")" "RF gain: this radio cannot set RF over CAT"
+  # a tapped mode shows at once, goes to the station with the tab token, and clears with the next state
+  assert_eq "$(jq -r '.cwPressedAtOnce' <<< "$j")" "true"
+  assert_eq "$(jq -r '.modeCall[0]' <<< "$j")" '/api/radio/ic7300/mode {"mode":"CW"} tab-1'
+  assert_eq "$(jq -r '.cwPressedAfter' <<< "$j")" "false"
+  # the rig link down: the chip shows, controls are disabled, STOP is never dimmed
+  assert_eq "$(jq -r '.chipHidden' <<< "$j")" "false"
+  assert_eq "$(jq -r '.dimmed' <<< "$j")" "true"
+  assert_eq "$(jq -r '.stopCount' <<< "$j")" "1"
+  assert_eq "$(jq -r '.stopDimmable' <<< "$j")" "0"
+  assert_eq "$(jq -r '.stopDisabled' <<< "$j")" "0"
+}
+
+test_vfo_page_no_cat_and_unknown_radio() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(svf_page dummy 2> "$TEST_TMP/p.err") || { _fail "station_vfo_page.js failed: $(cat "$TEST_TMP/p.err")"; return; }
+  assert_eq "$(jq -r '.nocat' <<< "$j")" "true"
+  assert_eq "$(jq -r '.hasDial' <<< "$j")" "false"
+  assert_eq "$(jq -r '.sectionTitles | length' <<< "$j")" "0"
+  assert_eq "$(jq -r '.stopCount' <<< "$j")" "1"
+  j=$(svf_page missing 2> "$TEST_TMP/p.err") || { _fail "station_vfo_page.js failed: $(cat "$TEST_TMP/p.err")"; return; }
+  assert_eq "$(jq -r '.missing' <<< "$j")" "true"
+  assert_eq "$(jq -r '.stopCount' <<< "$j")" "0"
 }

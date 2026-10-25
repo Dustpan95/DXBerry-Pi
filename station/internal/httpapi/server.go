@@ -90,6 +90,7 @@ func New(cfg Config) *http.Server {
 	s.mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"version": cfg.Version})
 	})
+	s.registerPages(s.mux)
 	if cfg.Routes != nil {
 		cfg.Routes(s.mux)
 	}
@@ -110,6 +111,16 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The gate tests this path and the mux routes it; a path that cleans to something else could
 	// be read two ways, so only a canonical one gets past here.
 	if p != "" && path.Clean(p) != p {
+		// a page address that is unclean only for a trailing slash goes to its clean form
+		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && !strings.HasPrefix(p, "/api/") &&
+			len(p) > 1 && path.Clean(p)+"/" == p {
+			to := path.Clean(p)
+			if r.URL.RawQuery != "" {
+				to += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, to, http.StatusMovedPermanently)
+			return
+		}
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
@@ -143,6 +154,10 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	if _, pat := s.mux.Handler(r); pat != "" {
+		s.mux.ServeHTTP(w, r)
+		return
+	}
 	s.static(w, r)
 }
 
@@ -159,6 +174,11 @@ func (s *server) static(w http.ResponseWriter, r *http.Request) {
 			name = "index.html"
 		}
 	}
+	s.serveFile(w, r, name)
+}
+
+// serveFile answers with one file of the embedded tree, or a JSON 404.
+func (s *server) serveFile(w http.ResponseWriter, r *http.Request, name string) {
 	info, err := fs.Stat(s.cfg.Web, name)
 	if err != nil || info.IsDir() {
 		writeError(w, http.StatusNotFound, "not found")

@@ -18,7 +18,62 @@ const DASH_LOGBOOKS = { wavelog: "Wavelog", cloudlog: "Cloudlog" };
 // Pi's next second, then one 1 s interval, made once and kept across redraws (it ticks whichever
 // clock elements are current); utc/local: those elements; switching: the radio the Switch program
 // dialog is open for.
-const dashboard = { skew: 0, generated: null, timer: null, utc: null, local: null, switching: null };
+// rig: radio -> the last live state from a rig event; owners: radio -> the owner from the radio API
+// (null: nobody); watched: the radios this socket has been told to watch at the dashboard level.
+const dashboard = { skew: 0, generated: null, timer: null, utc: null, local: null, switching: null, rig: {}, owners: {}, watched: new Set(), ownersAt: 0 };
+
+// ---- the live frequency and the owner line ----------------------------------------------------
+// dashLiveFreq N FALLBACK: the radio's frequency and mode as the last rig event has them
+function dashLiveFreq(n, fallback) {
+  const st = dashboard.rig[n];
+  if (!st || !st.connected || !(st.freq > 0)) return fallback;
+  return `${window.dxbVFO.formatFreq(st.freq)} Hz${st.mode ? " " + st.mode : ""}`;
+}
+
+function dashOwnerText(n) {
+  return n in dashboard.owners ? window.dxbVFO.ownerLine(dashboard.owners[n]) : DASH;
+}
+
+// a rig event changes the text of the card in place; nothing is redrawn
+function dashOnRig(m) {
+  if (!m || !m.data || typeof m.radio !== "string") return;
+  dashboard.rig[m.radio] = m.data;
+  for (const e of document.querySelectorAll("[data-live-freq]")) {
+    if (e.dataset.liveFreq === m.radio) e.textContent = dashLiveFreq(m.radio, e.dataset.was || DASH);
+  }
+}
+
+// dashWatch: ask the station for dashboard-level rig events for every listed radio. On a radio's
+// own page that page asks for more, so the dashboard asks for nothing there.
+function dashWatch(names) {
+  if (!dxb.events || !dxb.events.send || (window.dxbVFO && window.dxbVFO.onRadioPage())) return;
+  for (const n of names) {
+    if (dashboard.watched.has(n) || !DASH_RADIO_RE.test(n)) continue;
+    if (dxb.events.send({ type: "watch", radio: n, level: "dashboard" })) dashboard.watched.add(n);
+  }
+}
+
+function dashLoadOwners(names, force) {
+  if (!dxb.api || (window.dxbVFO && window.dxbVFO.onRadioPage())) return;
+  // a status report arrives every few seconds; the owners are asked for at most every 8 s
+  if (!force && Date.now() - dashboard.ownersAt < 8000) return;
+  dashboard.ownersAt = Date.now();
+  for (const n of names) {
+    if (!DASH_RADIO_RE.test(n)) continue;
+    dxb.api("GET", `/api/radio/${n}`).then(j => {
+      if (!j || j.ok === false) return;
+      const was = JSON.stringify(dashboard.owners[n]);
+      dashboard.owners[n] = j.owner || null;
+      if (JSON.stringify(dashboard.owners[n]) !== was) {
+        for (const e of document.querySelectorAll("[data-live-owner]")) if (e.dataset.liveOwner === n) e.textContent = dashOwnerText(n);
+      }
+    });
+  }
+}
+
+// the radio names the station accepts on /api/radio (wider than NAME_RE, which names programs' radios)
+const DASH_RADIO_RE = /^[a-z][a-z0-9-]{0,31}$/;
+
 
 // ---- reading the report ---------------------------------------------------------------------
 function dashPrograms(s) {
@@ -160,12 +215,17 @@ function dashRadioCard(s, n, x) {
   const state = dashState(s, n, x);
   const [stText, stKind] = DASH_STATES[state] || [state || DASH, "muted"];
   const rows = [["Connected through", parts(x)]];
-  if (x.cat) rows.push(["Frequency", freq(x.freq, x.mode)]);
+  if (x.cat) {
+    const was = freq(x.freq, x.mode);
+    rows.push(["Frequency", el("span", { "data-live-freq": n, "data-was": was }, dashLiveFreq(n, was))]);
+    rows.push(["Transmitter", el("span", { "data-live-owner": n }, dashOwnerText(n))]);
+  }
   rows.push(["Program", x.owner ? [label, " ", badge(stText, stKind)] : "No program"]);
   if (x.owner === "graywolf") rows.push(["APRS", dashGraywolfLine(s.graywolf, n)]);
   const acts = [];
   // no Open while a job installs, updates or removes the program
   if (x.owner && state === "running" && !job) acts.push(dashOpenLink(s, n, x, label));
+  if (x.cat && DASH_RADIO_RE.test(n)) acts.push(el("a", { class: "btn small", href: `/radio/${n}`, "data-key": `dash:${n}:vfo`, "aria-label": `Open the VFO page of ${n}` }, "Open"));
   const flrig = dashProgram(s, "flrig");
   if (x.rig && x.rig.control === "flrig" && flrig && flrig.installed && NAME_RE.test(n)) {
     acts.push(el("a", { class: "btn small", href: DASH_SCREEN + `flrig-${n}`, target: "_blank", rel: "noopener", "data-key": `dash:${n}:flrig` }, "Open flrig"));
@@ -324,6 +384,8 @@ function dashRender(s) {
       : el("p", { class: "card muted" }, s.radios && s.radios.ok ? "No radios set up yet: add one under Radios below." : "The radios could not be read; see the Radios card below."),
     el("div", { class: "dash-bottom" }, dashRecent(s), dashStationBox(s)));
   dashTick();
+  dashWatch(names);
+  dashLoadOwners(names);
   if (dashboard.timer === null) {
     // the first tick lands on the Pi's next whole second, then one tick a second
     dashboard.timer = setTimeout(() => {
@@ -342,6 +404,20 @@ function dashInit() {
   document.getElementById("switch-cancel").addEventListener("click", () => { dashboard.switching = null; document.getElementById("switch-dialog").close(); });
   // a job starting or ending changes which radios wait for it
   updWatchers.push(() => { if (last) dashRender(last); });
+  if (dxb.events && dxb.events.on) {
+    dxb.events.on("rig", dashOnRig);
+    // a new socket starts with no watches: ask again, and read the owners afresh
+    dxb.events.onOpen(() => {
+      dashboard.watched.clear();
+      const names = last && last.radios && last.radios.ok ? Object.keys(last.radios.radios || {}) : [];
+      dashWatch(names);
+      dashLoadOwners(names, true);
+    });
+  }
+  setInterval(() => {
+    if (dxb.hidden || !last || !last.radios || !last.radios.ok) return;
+    dashLoadOwners(Object.keys(last.radios.radios || {}));
+  }, 10000);
 }
 
 dashInit();

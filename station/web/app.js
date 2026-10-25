@@ -53,6 +53,43 @@
       (e) => Promise.reject(fail(String((e && e.message) || e), null, "unreachable")));
   }
 
+  // ---- the radio API and the tab token ------------------------------------------------------
+  // One random token per tab. It goes on every radio request as X-DXB-Tab and on the events
+  // socket as ?tab=, so the station can tell this tab's claim from another's and drop it when
+  // the socket closes.
+  let tabToken = null;
+
+  function tab() {
+    if (tabToken === null) {
+      if (typeof crypto !== "undefined" && crypto.randomUUID) tabToken = crypto.randomUUID();
+      else tabToken = Date.now().toString(36) + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);
+    }
+    return tabToken;
+  }
+
+  // api METHOD PATH [BODY]: a call to the station's own API. It resolves with the answer's JSON;
+  // an intent answers {ok:true} or {ok:false, reason, fix}, and anything that went wrong on the
+  // way (HTTP error, unreadable answer, no network) is turned into that same shape.
+  function api(method, path, body) {
+    const headers = {};
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (path.startsWith("/api/radio/")) headers["X-DXB-Tab"] = tab();
+    return fetch(path, { method, headers, credentials: "same-origin", body: body === undefined ? undefined : JSON.stringify(body) }).then(
+      (r) => {
+        if (r.status === 401) {
+          toLogin();
+          return new Promise(() => {});
+        }
+        return r.json().then(
+          (j) => {
+            if (r.status === 200 || (j && typeof j.ok === "boolean")) return j;
+            return { ok: false, reason: String((j && j.error) || `The station answered HTTP ${r.status}.`), fix: "reload the page and try again" };
+          },
+          () => ({ ok: false, reason: "The station's answer could not be read.", fix: "reload the page and try again" }));
+      },
+      () => ({ ok: false, reason: "The station could not be reached.", fix: "check the connection and try again" }));
+  }
+
   // ---- the log panel ----------------------------------------------------------------------
   let logUnit = null;
 
@@ -105,6 +142,9 @@
   let evTimer = null;
   let evDelay = EV_MIN;
   let evOnStatus = null;
+  const evHandlers = {};   // message type -> functions, for the types besides "status"
+  const evOpenFns = [];    // called each time the socket opens
+  const evCloseFns = [];   // called each time it closes
 
   function showLink(down) {
     const chip = byId("link");
@@ -120,24 +160,30 @@
   function evConnect() {
     if (!evWant || evSock) return;
     let s;
-    try { s = dxb.ws("/api/events"); } catch (e) { showLink(true); evSchedule(); return; }
+    // On a radio page the socket carries the tab token, so the station can release this tab's
+    // claim when the socket closes.
+    const q = /^\/radio\//.test(location.pathname) ? "?tab=" + encodeURIComponent(tab()) : "";
+    try { s = dxb.ws("/api/events" + q); } catch (e) { showLink(true); evSchedule(); return; }
     evSock = s;
     s.onopen = () => {
       if (evSock !== s) return;
       evOpen = true;
       evDelay = EV_MIN;
       showLink(false);
+      for (const f of evOpenFns) f();
     };
     s.onmessage = (e) => {
       if (evSock !== s) return;
       let m = null;
       try { m = JSON.parse(e.data); } catch (x) { m = null; }
       if (m && m.type === "status" && m.data && evOnStatus) evOnStatus(m.data);
+      else if (m && typeof m.type === "string" && evHandlers[m.type]) for (const f of evHandlers[m.type]) f(m);
     };
     s.onclose = () => {
       if (evSock !== s) return;
       evSock = null;
       evOpen = false;
+      for (const f of evCloseFns) f();
       if (!evWant) return;
       showLink(true);
       evSchedule();
@@ -152,6 +198,16 @@
 
   const events = {
     get open() { return evOpen; },
+    // on TYPE FN: FN(message) for every message of that type (rig, radios, ...)
+    on(type, fn) { (evHandlers[type] = evHandlers[type] || []).push(fn); },
+    onOpen(fn) { evOpenFns.push(fn); },
+    onClose(fn) { evCloseFns.push(fn); },
+    // send OBJ: a message to the station; false when the socket is not open (the caller sends
+    // again from onOpen)
+    send(obj) {
+      if (!evSock || !evOpen) return false;
+      try { evSock.send(JSON.stringify(obj)); return true; } catch (e) { return false; }
+    },
     start(onStatus) {
       evOnStatus = onStatus;
       evWant = true;
@@ -181,6 +237,8 @@
     },
     openLog,
     toLogin,
+    api,
+    tab,
     events,
   };
   window.dxb = dxb;
