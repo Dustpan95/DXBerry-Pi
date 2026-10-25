@@ -38,7 +38,7 @@ function progStart(verb, p) {
   const what = { install: "Installing", remove: "Removing", update: "Updating" }[verb];
   programs.starting = true;
   progRender(last);
-  run(args).then(() => {
+  dxb.run(args).then(() => {
     programs.starting = false;
     notice(`${what} ${p.label}… Its progress shows under Updates.`, "good");
     updLoadJob();
@@ -223,7 +223,7 @@ function progLogbookTest() {
   progSetError("");
   progSetResult("Asking the logbook…");
   const done = () => { f.testing = false; if (programs.form === f) progSetTesting(false); };
-  run([PROG_LOGBOOK, "test", "--json"], progLogbookStdin()).then(out => {
+  dxb.run([PROG_LOGBOOK, "test", "--json"], progLogbookStdin()).then(out => {
     let j = null;
     try { j = JSON.parse(out); } catch (e) { j = null; }
     done();
@@ -247,7 +247,7 @@ function progLogbookSave(e) {
   progSetError("");
   progSetResult("");
   progSetSaving(true);
-  run([PROG_LOGBOOK, "set", "--json"], progLogbookStdin()).then(out => {
+  dxb.run([PROG_LOGBOOK, "set", "--json"], progLogbookStdin()).then(out => {
     f.saving = false;
     if (programs.form === f) { progSetSaving(false); programs.form = null; if (d.open) d.close(); }
     let j = {};
@@ -265,7 +265,7 @@ function progLogbookSave(e) {
 
 function progLogbookForget() {
   confirmThen("Forget the logbook?", "DXBerry stops sending contacts to it. Contacts not sent yet stay on the Pi until a logbook is set again.", "Forget",
-    () => run([PROG_LOGBOOK, "set", "--json"], JSON.stringify({ clear: true })).then(() => {
+    () => dxb.run([PROG_LOGBOOK, "set", "--json"], JSON.stringify({ clear: true })).then(() => {
       notice("Logbook forgotten.", "good");
       refresh(true);
     }, ex => failure("Forgetting the logbook", ex, PROG_LOGBOOK_EXITS)));

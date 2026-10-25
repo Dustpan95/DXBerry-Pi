@@ -386,7 +386,7 @@ Promise.resolve().then(() => {
 }
 
 # pg_config_fields: "COMMAND:PATH" entries settings.js declares it reads from dxberry-config.
-pg_config_fields() { sed -n '/\/\* config-fields-begin/,/\/\* config-fields-end/p' "$PG_DIR/settings.js" | grep -oE '"[a-z]+:[A-Za-z0-9_.*]+"' | tr -d '"'; }
+pg_config_fields() { sed -n '/\/\* config-fields-begin/,/\/\* config-fields-end/p' "$PG_WEB/settings.js" | grep -oE '"[a-z]+:[A-Za-z0-9_.*]+"' | tr -d '"'; }
 
 test_page_reads_only_fields_that_dxberry_config_produces() {
   local f n=0
@@ -407,7 +407,7 @@ test_page_reads_only_fields_that_dxberry_config_produces() {
 # settings.js shares dxberry.js's global scope: its own top-level names start with cfg / CONFIG
 # (plus the one state object "settings"), so the two files can never clash.
 test_page_settings_script_keeps_to_its_own_names() {
-  local js=$PG_DIR/settings.js bad
+  local js=$PG_WEB/settings.js bad
   bad=$(grep -oE '^(function|const|let|var) [A-Za-z_][A-Za-z0-9_]*' "$js" | awk '{print $2}' | grep -vE '^(cfg|CONFIG)|^settings$' || true)
   assert_eq "$bad" ""
   assert_file_not_contains "$js" "innerHTML"
@@ -422,7 +422,7 @@ test_page_settings_script_keeps_to_its_own_names() {
 test_page_settings_form_args() {
   command -v node > /dev/null 2>&1 || return 0
   local fn got
-  fn=$(sed -n '/^function cfgFormArgs(/,/^}/p' "$PG_DIR/settings.js")
+  fn=$(sed -n '/^function cfgFormArgs(/,/^}/p' "$PG_WEB/settings.js")
   got=$(node -e "
 const vals = {'cf-mode': 'static', 'cf-STATIC_IP': '10.0.0.91/24', 'cf-GATEWAY': '10.0.0.1', 'cf-DNS': '', 'cf-WIFI_SSID': 'Shack Net',
   'cf-WIFI_PASSWORD': '', 'cf-WIFI_COUNTRY': 'us'};
@@ -466,7 +466,7 @@ console.log(JSON.stringify(cfgFormArgs()));")
   assert_contains "$(sed -n 9p <<< "$got")" '"error":"A password cannot start or end with a space'
 }
 
-pg_update_fields() { sed -n '/\/\* update-fields-begin/,/\/\* update-fields-end/p' "$PG_DIR/updates.js" | grep -oE '"[a-z]+:[A-Za-z0-9_.*]+"' | tr -d '"'; }
+pg_update_fields() { sed -n '/\/\* update-fields-begin/,/\/\* update-fields-end/p' "$PG_WEB/updates.js" | grep -oE '"[a-z]+:[A-Za-z0-9_.*]+"' | tr -d '"'; }
 
 test_page_reads_only_fields_that_dxberry_update_produces() {
   local f n=0
@@ -484,13 +484,13 @@ test_page_reads_only_fields_that_dxberry_update_produces() {
 }
 
 test_page_updates_script_keeps_to_its_own_names() {
-  local js=$PG_DIR/updates.js bad
+  local js=$PG_WEB/updates.js bad
   bad=$(grep -oE '^(function|const|let|var) [A-Za-z_][A-Za-z0-9_]*' "$js" | awk '{print $2}' | grep -vE '^(upd|UPDATE)|^updates$' || true)
   assert_eq "$bad" ""
   assert_file_not_contains "$js" "innerHTML"
   assert_file_contains "$js" 'const UPDATE = "/opt/dxberry/bin/dxberry-update";'
   command -v node > /dev/null 2>&1 || return 0
-  cat "$PG_WEB/dxberry.js" "$PG_DIR/settings.js" "$js" > "$TEST_TMP/all.js"
+  cat "$PG_WEB/dxberry.js" "$PG_WEB/settings.js" "$js" > "$TEST_TMP/all.js"
   node --check "$TEST_TMP/all.js" 2> "$TEST_TMP/node.err" || _fail "the three scripts do not parse as one: $(cat "$TEST_TMP/node.err")"
 }
 
@@ -563,14 +563,14 @@ test_page_html_puts_the_station_first_and_programs_after_updates() {
 # dash/DASH and prog/PROG (plus their one state object each), and the five scripts parse as one.
 test_page_dashboard_and_programs_keep_to_their_own_names() {
   local bad
-  bad=$(grep -oE '^(function|const|let|var) [A-Za-z_][A-Za-z0-9_]*' "$PG_DIR/dashboard.js" | awk '{print $2}' | grep -vE '^(dash|DASH_)|^dashboard$' || true)
+  bad=$(grep -oE '^(function|const|let|var) [A-Za-z_][A-Za-z0-9_]*' "$PG_WEB/dashboard.js" | awk '{print $2}' | grep -vE '^(dash|DASH_)|^dashboard$' || true)
   assert_eq "$bad" ""
-  bad=$(grep -oE '^(function|const|let|var) [A-Za-z_][A-Za-z0-9_]*' "$PG_DIR/programs.js" | awk '{print $2}' | grep -vE '^(prog|PROG_)|^programs$' || true)
+  bad=$(grep -oE '^(function|const|let|var) [A-Za-z_][A-Za-z0-9_]*' "$PG_WEB/programs.js" | awk '{print $2}' | grep -vE '^(prog|PROG_)|^programs$' || true)
   assert_eq "$bad" ""
-  assert_file_not_contains "$PG_DIR/dashboard.js" "innerHTML"
-  assert_file_not_contains "$PG_DIR/programs.js" "innerHTML"
+  assert_file_not_contains "$PG_WEB/dashboard.js" "innerHTML"
+  assert_file_not_contains "$PG_WEB/programs.js" "innerHTML"
   command -v node > /dev/null 2>&1 || return 0
-  cat "$PG_WEB/dxberry.js" "$PG_DIR/settings.js" "$PG_DIR/updates.js" "$PG_DIR/dashboard.js" "$PG_DIR/programs.js" > "$TEST_TMP/all.js"
+  cat "$PG_WEB/dxberry.js" "$PG_WEB/settings.js" "$PG_WEB/updates.js" "$PG_WEB/dashboard.js" "$PG_WEB/programs.js" > "$TEST_TMP/all.js"
   node --check "$TEST_TMP/all.js" 2> "$TEST_TMP/node.err" || _fail "the five scripts do not parse as one: $(cat "$TEST_TMP/node.err")"
 }
 

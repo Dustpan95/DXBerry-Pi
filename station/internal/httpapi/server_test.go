@@ -3,9 +3,12 @@ package httpapi
 import (
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/Dustpan95/DXBerry-Pi/station/web"
 )
 
 type stubAuth struct{ ok bool }
@@ -176,5 +179,26 @@ func TestSameOriginRejectsForeign(t *testing.T) {
 		if got := SameOrigin(req); got != c.want {
 			t.Errorf("%s: got %v want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// Every script the real index page names must be served (to a logged-in browser) as 200.
+func TestIndexScriptsResolve(t *testing.T) {
+	h := New(Config{Listen: "127.0.0.1:0", Web: web.Files, Auth: stubAuth{ok: true}, Version: "9.9.9"}).Handler
+	idx := do(h, "GET", "/", nil)
+	if idx.Code != 200 {
+		t.Fatalf("index: got %d", idx.Code)
+	}
+	tags := regexp.MustCompile(`<script src="([^"]+)"`).FindAllStringSubmatch(idx.Body.String(), -1)
+	var got []string
+	for _, m := range tags {
+		got = append(got, m[1])
+		if rec := do(h, "GET", m[1], nil); rec.Code != 200 {
+			t.Errorf("%s: got %d", m[1], rec.Code)
+		}
+	}
+	want := "/app.js /dxberry.js /settings.js /updates.js /dashboard.js /programs.js"
+	if strings.Join(got, " ") != want {
+		t.Errorf("script tags %q, want %q", strings.Join(got, " "), want)
 	}
 }

@@ -38,7 +38,7 @@ const CONFIG_FIELDS = [
 const settings = { values: null, job: null, fetchedAt: 0, form: null, poll: null, retry: null, logOpen: false, undoing: false };
 
 function cfgRun(args, input) {
-  return run([CONFIG, ...args, "--json"], input);
+  return dxb.run([CONFIG, ...args, "--json"], input);
 }
 
 function cfgParse(out) {

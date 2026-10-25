@@ -1008,7 +1008,7 @@ const programsPath = sibling("programs.js");
   await redraw();
   ok(r2 && r2.textContent.includes("sound card3 (RADIO2) · CAT ttyUSB2"), "radio2's card says what it is connected through");
   const openW = linkIn(r2, "Open WSJT-X");
-  ok(openW && openW.getAttribute("href") === "/cockpit/@localhost/dxberry/screen.html#wsjtx-radio2" && openW.getAttribute("target") === "_blank"
+  ok(openW && openW.getAttribute("href") === "/screen#wsjtx-radio2" && openW.getAttribute("target") === "_blank"
     && openW.getAttribute("rel").split(" ").includes("noopener"), "Open WSJT-X opens the program tab in a new tab: " + (openW && openW.getAttribute("href")));
   ok(buttonsIn(r2).some(b => b.textContent === "Stop") && buttonsIn(r2).some(b => b.textContent === "Switch program") && buttonsIn(r2).some(b => b.textContent === "Radio settings"),
     "radio2 has Stop, Switch program and Radio settings");
@@ -1016,7 +1016,7 @@ const programsPath = sibling("programs.js");
   const openG = linkIn(r1, "Open Graywolf");
   ok(openG && openG.getAttribute("href") === "http://10.0.0.90:8080/" && openG.getAttribute("target") === "_blank", "Open Graywolf is Graywolf's own page, as the Station card has it");
   const openF = linkIn(r1, "Open flrig");
-  ok(openF && openF.getAttribute("href") === "/cockpit/@localhost/dxberry/screen.html#flrig-radio1", "a radio whose rig control is flrig has Open flrig");
+  ok(openF && openF.getAttribute("href") === "/screen#flrig-radio1", "a radio whose rig control is flrig has Open flrig");
   ok(!linkIn(r2, "Open flrig"), "a Hamlib radio has no Open flrig");
   programsList[5].installed = false;
   await redraw();

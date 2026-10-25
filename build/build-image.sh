@@ -71,7 +71,7 @@ REQUIRED_FILES=(
   provision/bin/dxberry-status provision/lib/status.sh
   provision/lib/console.sh provision/templates/cockpit-listen.conf
   provision/cockpit/dxberry/manifest.json provision/cockpit/dxberry/index.html station/web/dxberry.js station/web/dxberry.css
-  provision/cockpit/dxberry/settings.js provision/cockpit/dxberry/updates.js
+  station/web/settings.js station/web/updates.js
   provision/bin/dxberry-config provision/lib/settings.sh provision/templates/dxberry-config-boot.service
   provision/bin/dxberry-update provision/lib/update.sh
   provision/lib/webproxy.sh provision/lib/apps/pat.sh provision/templates/nginx-dxberry-auth-gate.conf provision/templates/nginx-dxberry-auth-endpoints.conf
@@ -81,7 +81,7 @@ REQUIRED_FILES=(
   provision/bin/dxberry-app provision/lib/screen.sh provision/lib/apps.sh provision/share/apps.tsv
   provision/lib/apps/fldigi.sh provision/lib/apps/flrig.sh provision/lib/apps/js8call.sh provision/lib/apps/qsstv.sh provision/lib/apps/wsjtx.sh
   provision/templates/dxberry-screen@.service provision/templates/dxberry-apps.tmpfiles
-  provision/cockpit/dxberry/dashboard.js provision/cockpit/dxberry/programs.js provision/cockpit/dxberry/screen.html provision/cockpit/dxberry/screen.js
+  station/web/dashboard.js station/web/programs.js provision/cockpit/dxberry/screen.html provision/cockpit/dxberry/screen.js
   provision/cockpit/dxberry/novnc/core/rfb.js
 )
 EXECUTABLE_FILES=(

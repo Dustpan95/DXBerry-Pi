@@ -94,13 +94,13 @@ test_build_ships_the_config_command() {
 test_build_ships_the_settings_page_script() {
   local required
   required=$(sed -n '/^REQUIRED_FILES=(/,/^)/p' "$DXB_ROOT/build/build-image.sh")
-  assert_contains "$required" "provision/cockpit/dxberry/settings.js"
+  assert_contains "$required" "station/web/settings.js"
 }
 
 test_build_ships_the_updates_page_script() {
   local required
   required=$(sed -n '/^REQUIRED_FILES=(/,/^)/p' "$DXB_ROOT/build/build-image.sh")
-  assert_contains "$required" "provision/cockpit/dxberry/updates.js"
+  assert_contains "$required" "station/web/updates.js"
 }
 
 test_build_ships_the_update_command() {

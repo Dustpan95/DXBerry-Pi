@@ -109,3 +109,52 @@ test_station_page_dxberry_js_uses_the_layer() {
   node --check "$js" 2> "$TEST_TMP/node.err" || _fail "dxberry.js does not parse: $(cat "$TEST_TMP/node.err")"
   node --check "$SP_WEB/app.js" 2> "$TEST_TMP/node.err" || _fail "app.js does not parse: $(cat "$TEST_TMP/node.err")"
 }
+
+# ---- the four ported pages (dashboard, settings, updates, programs) ----------------------------
+SP_PAGES="settings updates dashboard programs"
+
+test_station_pages_live_in_the_web_tree() {
+  local f
+  for f in $SP_PAGES; do
+    [[ -f $SP_WEB/$f.js ]] || _fail "station/web/$f.js is missing"
+    [[ ! -e $DXB_ROOT/provision/cockpit/dxberry/$f.js ]] || _fail "provision/cockpit/dxberry/$f.js is still there"
+  done
+}
+
+test_station_pages_have_no_cockpit_left() {
+  local f
+  for f in $SP_PAGES; do
+    [[ -f $SP_WEB/$f.js ]] || _fail "station/web/$f.js is missing"
+    assert_file_not_contains "$SP_WEB/$f.js" "cockpit"
+    assert_file_not_contains "$SP_WEB/$f.js" "cockpit.spawn"
+  done
+}
+
+# dxberry.js no longer defines a global run(); the pages must go through dxb.run.
+test_station_pages_run_through_the_layer() {
+  local f bare
+  for f in $SP_PAGES; do
+    [[ -f $SP_WEB/$f.js ]] || _fail "station/web/$f.js is missing"
+    bare=$(grep -nE '(^|[^.A-Za-z0-9_])run\(\[|(^|[^.A-Za-z0-9_])run\(args' "$SP_WEB/$f.js" || true)
+    assert_eq "$bare" ""
+  done
+  assert_file_contains "$SP_WEB/settings.js" 'dxb.run([CONFIG, ...args, "--json"], input)'
+}
+
+test_station_dashboard_opens_programs_on_the_screen_page() {
+  assert_file_contains "$SP_WEB/dashboard.js" 'const DASH_SCREEN = "/screen#";'
+}
+
+test_station_index_loads_the_page_scripts_in_order() {
+  local got
+  got=$(grep -oE '<script src="[^"]+"' "$SP_WEB/index.html" | grep -oE '/[a-z.]+' | tr '\n' ' ')
+  assert_eq "$got" "/app.js /dxberry.js /settings.js /updates.js /dashboard.js /programs.js "
+}
+
+test_station_pages_parse_together() {
+  command -v node > /dev/null 2>&1 || return 0
+  local f
+  for f in $SP_PAGES; do [[ -f $SP_WEB/$f.js ]] || _fail "station/web/$f.js is missing"; done
+  cat "$SP_WEB/dxberry.js" "$SP_WEB/settings.js" "$SP_WEB/updates.js" "$SP_WEB/dashboard.js" "$SP_WEB/programs.js" > "$TEST_TMP/sp-all.js"
+  node --check "$TEST_TMP/sp-all.js" 2> "$TEST_TMP/sp-node.err" || _fail "the page scripts do not parse as one: $(cat "$TEST_TMP/sp-node.err")"
+}

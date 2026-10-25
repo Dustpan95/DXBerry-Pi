@@ -44,7 +44,7 @@ const updates = { check: null, job: null, jobError: null, poll: null, retry: nul
 const updWatchers = [];
 
 function updRun(args) {
-  return run([UPDATE, ...args, "--json"]);
+  return dxb.run([UPDATE, ...args, "--json"]);
 }
 
 function updParse(out) {

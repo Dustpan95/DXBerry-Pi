@@ -5,7 +5,7 @@
  * dxberry-status report; its actions are dxberry-app start|stop and dxberry.js's claim and release. */
 "use strict";
 
-const DASH_SCREEN = "/cockpit/@localhost/dxberry/screen.html#";
+const DASH_SCREEN = "/screen#";
 // a program's state on a radio, in words, with its badge
 const DASH_STATES = { running: ["Running", "good"], starting: ["Starting", "warn"], stopped: ["Stopped", "warn"], failed: ["Failed", "bad"],
   unplugged: ["Unplugged", "warn"] };
@@ -137,7 +137,7 @@ function dashAppAction(n, verb, label) {
   if (!dashNamesOk(n)) return;
   pending[n] = verb === "stop" ? `Stopping ${label}` : `Starting ${label}`;
   show();
-  run([APP, verb, n, "--json"]).then(() => {
+  dxb.run([APP, verb, n, "--json"]).then(() => {
     delete pending[n];
     notice(verb === "stop" ? `${label} stopped on ${n}.` : `${label} started on ${n}.`, "good");
     refresh(true);
