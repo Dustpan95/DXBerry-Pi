@@ -1,6 +1,7 @@
 package rig
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,7 +24,13 @@ var _ Commander = (*Client)(nil)
 
 // HiddenControl is a control or meter the VFO page does not show, with the
 // plain-words reason shown under "Why isn't X here?".
-type HiddenControl struct{ Name, Why string }
+type HiddenControl struct{ Name, Kind, Why string }
+
+// Kinds of HiddenControl.
+const (
+	KindMeter   = "meter"
+	KindControl = "control"
+)
 
 // FreqRange is one receive range in Hz, inclusive.
 type FreqRange struct{ Lo, Hi int64 }
@@ -34,6 +41,7 @@ type Caps struct {
 	Modes                                          []string
 	VFOs                                           []string
 	CanSetSplit, CanGetSplit, CanSetPTT, CanGetPTT bool
+	CanSetVFO, CanGetVFO                           bool
 	SettableLevels                                 []string
 	SettableFuncs                                  []string
 	ReadableMeters                                 []string
@@ -109,6 +117,10 @@ func parseCaps(lines []string) Caps {
 			c.CanSetSplit = val == "Y"
 		case "Can get Split VFO":
 			c.CanGetSplit = val == "Y"
+		case "Can set VFO":
+			c.CanSetVFO = val == "Y"
+		case "Can get VFO":
+			c.CanGetVFO = val == "Y"
 		case "Can set PTT":
 			c.CanSetPTT = val == "Y"
 		case "Can get PTT":
@@ -120,24 +132,9 @@ func parseCaps(lines []string) Caps {
 		}
 	}
 	slices.SortFunc(c.FreqRanges, func(a, b FreqRange) int {
-		switch {
-		case a.Lo != b.Lo:
-			return cmp64(a.Lo, b.Lo)
-		default:
-			return cmp64(a.Hi, b.Hi)
-		}
+		return cmp.Or(cmp.Compare(a.Lo, b.Lo), cmp.Compare(a.Hi, b.Hi))
 	})
 	return c
-}
-
-func cmp64(a, b int64) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	}
-	return 0
 }
 
 // levelNames turns "AF(0..1/0.1) RF(0..1/0.1)" into [AF RF].
@@ -179,9 +176,9 @@ func Discover(ctx context.Context, c Commander) (Caps, error) {
 
 	if caps.ModelName == "Dummy" {
 		for _, n := range probedLevels {
-			caps.Hidden = append(caps.Hidden, HiddenControl{n, dummyWhy})
+			caps.Hidden = append(caps.Hidden, HiddenControl{n, KindMeter, dummyWhy})
 		}
-		caps.Hidden = append(caps.Hidden, HiddenControl{"SPLIT", dummyWhy}, HiddenControl{"VFO", dummyWhy})
+		caps.Hidden = append(caps.Hidden, HiddenControl{"SPLIT", KindControl, dummyWhy}, HiddenControl{"VFO", KindControl, dummyWhy})
 		return caps, nil
 	}
 
@@ -193,13 +190,13 @@ func Discover(ctx context.Context, c Commander) (Caps, error) {
 			caps.ReadableMeters = append(caps.ReadableMeters, n)
 			continue
 		case err == nil || errors.As(err, &re):
-			caps.Hidden = append(caps.Hidden, HiddenControl{n, fmt.Sprintf("this radio does not report %s over CAT", n)})
+			caps.Hidden = append(caps.Hidden, HiddenControl{n, KindMeter, fmt.Sprintf("this radio does not report %s over CAT", n)})
 		default:
 			return Caps{}, fmt.Errorf("rig: get_level %s: %w", n, err)
 		}
 	}
 	cannot := func(n string) {
-		caps.Hidden = append(caps.Hidden, HiddenControl{n, fmt.Sprintf("this radio cannot set %s over CAT", n)})
+		caps.Hidden = append(caps.Hidden, HiddenControl{n, KindControl, fmt.Sprintf("this radio cannot set %s over CAT", n)})
 	}
 	for _, n := range settableControls {
 		if !slices.Contains(caps.SettableLevels, n) {
@@ -209,8 +206,9 @@ func Discover(ctx context.Context, c Commander) (Caps, error) {
 	if !caps.CanSetSplit {
 		cannot("SPLIT")
 	}
-	// Two real VFOs are needed to pick between them; MEM is not one.
-	if !slices.Contains(caps.VFOs, "VFOA") || !slices.Contains(caps.VFOs, "VFOB") {
+	// Choosing a VFO needs the radio to accept it over CAT and two real VFOs
+	// to choose between; MEM is not one.
+	if !caps.CanSetVFO || !slices.Contains(caps.VFOs, "VFOA") || !slices.Contains(caps.VFOs, "VFOB") {
 		cannot("VFO")
 	}
 	return caps, nil
@@ -220,7 +218,10 @@ const capsMaxAge = 7 * 24 * time.Hour
 
 var modelRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 
-// CapsCache keeps one JSON file per radio model under Dir.
+// CapsCache keeps one JSON file per radio model under Dir. The key is the
+// Hamlib model number as a string ("3073"), stored as caps-<model>.json (the
+// station uses <state dir>/rigcaps/). The caller loads before Discover and
+// stores after.
 type CapsCache struct{ Dir string }
 
 func (cc CapsCache) path(model string) (string, bool) {
@@ -246,7 +247,7 @@ func (cc CapsCache) Load(model string) (Caps, bool) {
 		return Caps{}, false
 	}
 	var c Caps
-	if json.Unmarshal(b, &c) != nil || c.Probed.IsZero() || time.Since(c.Probed) > capsMaxAge {
+	if json.Unmarshal(b, &c) != nil || c.Probed.IsZero() || time.Since(c.Probed) > capsMaxAge || time.Until(c.Probed) > 10*time.Minute {
 		return Caps{}, false
 	}
 	return c, true

@@ -1,6 +1,7 @@
 package rig
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"os"
@@ -57,6 +58,15 @@ func hiddenWhy(c Caps, name string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func hiddenKind(c Caps, name string) string {
+	for _, h := range c.Hidden {
+		if h.Name == name {
+			return h.Kind
+		}
+	}
+	return ""
 }
 
 func allLevels(v string) map[string]Reply {
@@ -116,28 +126,24 @@ func TestCapsParsesIC7300(t *testing.T) {
 }
 
 func TestCapsParseOtherFixtures(t *testing.T) {
-	for _, m := range []string{"1036", "2031"} {
-		c := parseCaps(fixture(t, m))
-		if c.ModelName == "" || len(c.Modes) == 0 || len(c.FreqRanges) == 0 {
-			t.Errorf("model %s: incomplete parse %+v", m, c)
-		}
-		if !slices.IsSortedFunc(c.FreqRanges, func(a, b FreqRange) int {
-			if a.Lo != b.Lo {
-				return int(a.Lo - b.Lo)
-			}
-			return int(a.Hi - b.Hi)
-		}) {
-			t.Errorf("model %s: ranges not sorted", m)
-		}
-		for i := 1; i < len(c.FreqRanges); i++ {
-			if c.FreqRanges[i] == c.FreqRanges[i-1] {
-				t.Errorf("model %s: duplicate range %v", m, c.FreqRanges[i])
-			}
-		}
+	ts := parseCaps(fixture(t, "2031"))
+	if ts.ModelName != "TS-590S" || !ts.Allows("PKTUSB") || !ts.CanSetVFO || !ts.CanSetSplit {
+		t.Errorf("TS-590S parse: %+v", ts)
 	}
-	// The FT-891 has no SWR/ALC level to set and no TX-range pollution in RX.
-	c := parseCaps(fixture(t, "1036"))
-	if !c.InRange(7100000) {
+	if len(ts.FreqRanges) == 0 || !slices.IsSortedFunc(ts.FreqRanges, func(a, b FreqRange) int {
+		return cmp.Or(cmp.Compare(a.Lo, b.Lo), cmp.Compare(a.Hi, b.Hi))
+	}) {
+		t.Errorf("TS-590S ranges: %v", ts.FreqRanges)
+	}
+	ft := parseCaps(fixture(t, "1036"))
+	if ft.ModelName != "FT-891" || !ft.Allows("FMN") || ft.Allows("WFM") || ft.CanSetVFO {
+		t.Errorf("FT-891 parse: %+v", ft)
+	}
+	// RX #1 and #2 are identical in the fixture; the TX ranges must not leak in.
+	if want := []FreqRange{{30000, 470000000}}; !slices.Equal(ft.FreqRanges, want) {
+		t.Errorf("FT-891 ranges = %v, want %v", ft.FreqRanges, want)
+	}
+	if !ft.InRange(7100000) {
 		t.Error("FT-891 should cover 40 m")
 	}
 }
@@ -148,11 +154,22 @@ func TestCapsDummyRigHidesEverythingButPTT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if c.ModelName != "Dummy" {
+		t.Errorf("ModelName = %q", c.ModelName)
+	}
+	if want := parseCaps(fixture(t, "1")).SettableLevels; len(want) == 0 || !slices.Equal(c.SettableLevels, want) {
+		t.Errorf("SettableLevels = %v, want the fixture's %v", c.SettableLevels, want)
+	}
 	const why = "rig control is Hamlib's dummy model: this radio has no CAT"
-	for _, n := range []string{"STRENGTH", "SWR", "ALC", "RFPOWER", "RFPOWER_METER_WATTS", "AF", "RF", "SQL", "SPLIT", "VFO"} {
+	kinds := map[string]string{"STRENGTH": KindMeter, "SWR": KindMeter, "ALC": KindMeter, "RFPOWER": KindMeter,
+		"RFPOWER_METER_WATTS": KindMeter, "AF": KindMeter, "RF": KindMeter, "SQL": KindMeter, "SPLIT": KindControl, "VFO": KindControl}
+	for n, k := range kinds {
 		got, ok := hiddenWhy(c, n)
 		if !ok || got != why {
 			t.Errorf("%s: hidden=%v why=%q", n, ok, got)
+		}
+		if hiddenKind(c, n) != k {
+			t.Errorf("%s: kind %q, want %q", n, hiddenKind(c, n), k)
 		}
 	}
 	if len(c.ReadableMeters) != 0 {
@@ -190,6 +207,9 @@ func TestDiscoverProbesLevels(t *testing.T) {
 	why, ok := hiddenWhy(c, "SWR")
 	if !ok || why != "this radio does not report SWR over CAT" {
 		t.Errorf("SWR hidden=%v why=%q", ok, why)
+	}
+	if hiddenKind(c, "SWR") != KindMeter {
+		t.Errorf("SWR kind = %q", hiddenKind(c, "SWR"))
 	}
 	if _, ok := hiddenWhy(c, "ALC"); !ok {
 		t.Error("ALC with a non-numeric value must be hidden")
@@ -229,9 +249,38 @@ func TestDiscoverHidesControlsTheCapsCannotSet(t *testing.T) {
 		if !ok || why != "this radio cannot set "+n+" over CAT" {
 			t.Errorf("%s hidden=%v why=%q", n, ok, why)
 		}
+		if hiddenKind(c, n) != KindControl {
+			t.Errorf("%s kind = %q", n, hiddenKind(c, n))
+		}
 	}
 	if _, ok := hiddenWhy(c, "AF"); ok {
 		t.Error("AF is settable and must not be hidden")
+	}
+}
+
+func TestDiscoverHidesVFOWhenCannotSetVFO(t *testing.T) {
+	caps := []string{
+		"Model name:\tToy",
+		"Mode list: USB",
+		"VFO list: VFOA VFOB MEM",
+		"Set level: AF(0..1/0.1) RF(0..1/0.1) SQL(0..1/0.1) RFPOWER(0..1/0.1)",
+		"Can set VFO:\tN",
+		"Can set Split VFO:\tY",
+	}
+	c, err := Discover(context.Background(), &fakeRig{caps: caps, levels: allLevels("1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if why, ok := hiddenWhy(c, "VFO"); !ok || why != "this radio cannot set VFO over CAT" {
+		t.Errorf("VFO hidden=%v why=%q", ok, why)
+	}
+	caps[4] = "Can set VFO:\tY"
+	c, err = Discover(context.Background(), &fakeRig{caps: caps, levels: allLevels("1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := hiddenWhy(c, "VFO"); ok {
+		t.Error("VFO with Can set VFO Y and VFOA/VFOB must be shown")
 	}
 }
 
@@ -280,6 +329,13 @@ func TestCapsCacheRoundTripAndAge(t *testing.T) {
 	}
 	if _, ok := cc.Load("3073"); ok {
 		t.Error("Probed older than a week must miss")
+	}
+	c.Probed = time.Now().Add(time.Hour)
+	if err := cc.Store("3073", c); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cc.Load("3073"); ok {
+		t.Error("Probed in the future must miss")
 	}
 	if err := os.WriteFile(p, []byte("{not json"), 0o644); err != nil {
 		t.Fatal(err)
