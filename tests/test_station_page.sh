@@ -233,3 +233,27 @@ test_refresh_uses_events_when_open() {
 test_station_index_has_the_reconnecting_chip() {
   assert_file_contains "$SP_WEB/index.html" '<span id="link" class="chip" hidden>'
 }
+
+# ---- per-radio station settings (Task 7) -------------------------------------------------------
+test_radio_settings_form_values() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j
+  j=$(node "$DXB_ROOT/tests/station_radiosettings.js" "$SP_WEB/radiosettings.js" 2> "$TEST_TMP/rs.err") || { _fail "station_radiosettings.js failed: $(cat "$TEST_TMP/rs.err")"; return; }
+  # the defaults show until the station answers, then the saved values
+  assert_eq "$(jq -r '.initialSwr + " " + .initialPtt' <<< "$j")" "3 180"
+  assert_eq "$(jq -r '.swr + " " + .ptt' <<< "$j")" "2.5 90"
+  assert_eq "$(jq -r '[.swrMin, .swrMax, .swrStep, .pttMin, .pttMax] | join(" ")' <<< "$j")" "1.5 10 0.1 30 600"
+  assert_eq "$(jq -r '.getCall.method + " " + .getCall.url + " " + .getCall.credentials' <<< "$j")" "GET /api/radio/radio1/settings same-origin"
+  # Save posts both numbers as numbers
+  assert_eq "$(jq -r '.saveCall.method + " " + .saveCall.url' <<< "$j")" "POST /api/radio/radio1/settings"
+  assert_eq "$(jq -c '.saveCall.body | fromjson' <<< "$j")" '{"swr_limit":4.2,"ptt_timeout_s":120}'
+  assert_eq "$(jq -r '.savedMsg' <<< "$j")" "Station settings saved."
+  # a refusal shows the reason and the fix
+  assert_contains "$(jq -r '.refusedMsg' <<< "$j")" "between 1.5 and 10"
+  assert_contains "$(jq -r '.refusedMsg' <<< "$j")" "enter a value in that range"
+  assert_eq "$(jq -r '.refusedClass' <<< "$j")" "error"
+  # Re-probe posts to /reprobe and reports both outcomes
+  assert_eq "$(jq -r '.probeCall.method + " " + .probeCall.url' <<< "$j")" "POST /api/radio/radio1/reprobe"
+  assert_contains "$(jq -r '.probeRefused' <<< "$j")" "wait a few seconds"
+  assert_eq "$(jq -r '.probeOk' <<< "$j")" "Capabilities re-read."
+}

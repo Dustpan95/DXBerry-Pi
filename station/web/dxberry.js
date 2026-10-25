@@ -763,6 +763,8 @@ function fillRadioForm(name, cand) {
     // a radio with a CAT port is controlled by Hamlib's rigctld, or by flrig (applications spec 10)
     edit && x.cat ? field("Rig control", "rf-rig-control", choice("rf-rig-control", [["hamlib", "Hamlib"], ["flrig", "flrig"]],
       (x.rig && x.rig.control) || "hamlib"), flrigHint()) : null,
+    // per-radio station settings (SWR limit, PTT timeout, re-probe): radiosettings.js
+    edit && window.dxbRadioSettings ? window.dxbRadioSettings.section(name) : null,
   ].filter(Boolean));
   document.getElementById("rf-ptt").addEventListener("change", syncPttFields);
   syncPttFields();
