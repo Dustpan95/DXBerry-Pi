@@ -78,11 +78,13 @@ var (
 	reSession  = regexp.MustCompile(`^[a-z][a-z0-9]*-[a-z][a-z0-9-]*$`)
 	reValue    = regexp.MustCompile(`^[A-Za-z0-9._:,/= +-]{1,128}$`)
 	reKeyValue = regexp.MustCompile(`^[A-Z][A-Z0-9_]*=[^\x00-\x1f\x7f]{0,256}$`)
-	reOption   = regexp.MustCompile(`^--(audio|cat|hid|ptt-serial|ptt|ptt-type|wiring|label|rig-control|model|baud|gpio-line)$`)
-	reUnit     = regexp.MustCompile(`^(dxberry-[a-z0-9@._-]+|rigctld@[a-z0-9-]+|graywolf[a-z0-9-]*|gpsd|chrony|nginx|php[0-9.]*-fpm|mariadb)\.(service|timer|socket)$`)
-	reNumber   = regexp.MustCompile(`^[1-9][0-9]{0,3}$`)
-	reProg     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
-	reSSHKey   = regexp.MustCompile(`^SSH_PUBKEY=((ssh-(ed25519|rsa|ecdsa-sha2-nistp[0-9]+)|sk-[a-z0-9-]+@openssh\.com) [A-Za-z0-9+/=]+( [A-Za-z0-9._@: -]{0,128})?)?$`)
+	// reLabel is the CLI's own rule for a radio label: printable ASCII, 40 at most, empty allowed.
+	reLabel  = regexp.MustCompile(`^[ -~]{0,40}$`)
+	reOption = regexp.MustCompile(`^--(audio|cat|hid|ptt-serial|ptt|ptt-type|wiring|label|rig-control|model|baud|gpio-line)$`)
+	reUnit   = regexp.MustCompile(`^(dxberry-[a-z0-9@._-]+|dxberryd|rigctld@[a-z0-9-]+|graywolf[a-z0-9-]*|gpsd|chrony|nginx|php[0-9.]*-fpm|mariadb)\.(service|timer|socket)$`)
+	reNumber = regexp.MustCompile(`^[1-9][0-9]{0,3}$`)
+	reProg   = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	reSSHKey = regexp.MustCompile(`^SSH_PUBKEY=((ssh-(ed25519|rsa|ecdsa-sha2-nistp[0-9]+)|sk-[a-z0-9-]+@openssh\.com) [A-Za-z0-9+/=]+( [A-Za-z0-9._@: -]{0,128})?)?$`)
 )
 
 // Tokens: NAME (a radio), PROG (a program), SESSION, VALUE, KEYVALUE, UNIT, N (1-2000), N25 (1-25), OPTVAL (an option
@@ -184,10 +186,13 @@ func (c *CLI) width(tok string, args []string) int {
 	case "N25":
 		return b2i(number(a, 25))
 	case "OPTVAL":
-		if len(args) >= 2 && reOption.MatchString(a) && reValue.MatchString(args[1]) {
-			return 2
+		if len(args) < 2 || !reOption.MatchString(a) {
+			return 0
 		}
-		return 0
+		if a == "--label" { // dxberry-radio refuses only a leading -- and anything but printable ASCII
+			return 2 * b2i(reLabel.MatchString(args[1]) && !strings.HasPrefix(args[1], "--"))
+		}
+		return 2 * b2i(reValue.MatchString(args[1]))
 	}
 	return b2i(a == tok)
 }
@@ -263,6 +268,9 @@ func hint(tok, arg string) string {
 			return " (key " + k + ")"
 		}
 	case "NAME", "PROG", "SESSION", "UNIT", "N", "N25", "OPTVAL":
+		if strings.Contains(arg, "=") { // may be a KEY=value typed into the wrong place
+			return ""
+		}
 		if len(arg) > 40 {
 			return " (too long to show)"
 		}

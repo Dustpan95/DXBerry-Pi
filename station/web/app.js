@@ -6,7 +6,7 @@
 
 (() => {
   // The same pattern the server applies to a unit name before it lets journalctl read it.
-  const UNIT = /^(dxberry-[a-z0-9@._-]+|rigctld@[a-z0-9-]+|graywolf[a-z0-9-]*|gpsd|chrony|nginx|php[0-9.]*-fpm|mariadb)\.(service|timer|socket)$/;
+  const UNIT = /^(dxberry-[a-z0-9@._-]+|dxberryd|rigctld@[a-z0-9-]+|graywolf[a-z0-9-]*|gpsd|chrony|nginx|php[0-9.]*-fpm|mariadb)\.(service|timer|socket)$/;
   const LOG_LINES = "300";
 
   const byId = (id) => document.getElementById(id);
