@@ -5,12 +5,43 @@ on:
 permissions:
   contents: write
 jobs:
+  binary:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: station/go.mod
+      - name: PAM headers
+        run: sudo apt-get update && sudo apt-get install -y libpam0g-dev
+      - name: go vet
+        run: cd station && go vet ./...
+      - name: go test
+        run: cd station && go test -race ./...
+      - name: Build dxberryd
+        run: bash station/build.sh out/dxberryd
+      - name: Show the binary
+        run: file station/out/dxberryd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dxberryd-arm64
+          path: station/out/dxberryd
+          if-no-files-found: error
   build:
+    needs: binary
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: dxberryd-arm64
+          path: dl
+      - name: Place the station binary
+        run: |
+          install -m 755 dl/dxberryd provision/bin/dxberryd
+          file provision/bin/dxberryd
       - name: No real station config in the tree
         run: '! git ls-files | grep -qxE "boot/dxberry\.txt|boot/dietpi-wifi\.txt"'
       - name: No attribution lines committed
@@ -22,9 +53,9 @@ jobs:
           fi
       - name: Syntax
         run: |
-          for f in provision/bin/* provision/lib/*.sh provision/lib/apps/*.sh build/*.sh boot/*.sh tests/*.sh tests/fixtures/*.sh; do bash -n "$f"; done
+          for f in $(grep -lE '^#!/bin/(ba)?sh' provision/bin/*) provision/lib/*.sh provision/lib/apps/*.sh build/*.sh boot/*.sh tests/*.sh tests/fixtures/*.sh; do bash -n "$f"; done
       - name: shellcheck
-        run: shellcheck -x provision/bin/* provision/lib/*.sh provision/lib/apps/*.sh build/build-image.sh build/make-update-tarball.sh boot/*.sh tests/*.sh tests/fixtures/*.sh
+        run: shellcheck -x $(grep -lE '^#!/bin/(ba)?sh' provision/bin/*) provision/lib/*.sh provision/lib/apps/*.sh build/build-image.sh build/make-update-tarball.sh boot/*.sh tests/*.sh tests/fixtures/*.sh
       - name: Unit tests
         run: tests/run.sh
       - name: Build tree check

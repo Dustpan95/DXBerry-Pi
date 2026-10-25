@@ -141,6 +141,20 @@ be reached; fldigi follows the same choice unless you changed it inside fldigi. 
 on the DXBerry page. On the command line: `sudo dxberry-app list`, `sudo dxberry-app install fldigi`,
 and `sudo dxberry-logbook get`.
 
+## Release notes for 0.5.0-rc1
+
+- **The station app replaces Cockpit.** Log in at the same address with the same password. The login
+  requires the `sudo` group (`dietpi` is in it). Every page carried over: the dashboard, radios,
+  settings, updates, the Graywolf and service controls, logs, and the program windows.
+- **One new certificate warning per browser.** Cockpit's certificate is gone; the station app made its
+  own, so each browser asks once more.
+- **The terminal** is part of the page, a real shell for `dietpi`, as over SSH.
+- **Ports 443 and 80 are nginx now**, which forwards to the station app. Bookmarks still work.
+- **Nothing changes for your radios, programs, Graywolf or the logbook.**
+- **Rolling back to 0.4.x** through the Updates page restores Cockpit by its own provisioning. The
+  station certificate stays in `/etc/dxberry/tls`.
+- **Not in this release candidate:** the VFO page, audio and PTT arrive in rc2 and rc3.
+
 ## Release notes for 0.4.0-rc1
 
 - **Recent contacts from a Wavelog logbook can take up to five minutes to show** on the dashboard:
