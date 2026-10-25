@@ -7,11 +7,15 @@ permissions:
 jobs:
   binary:
     runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
-          go-version-file: station/go.mod
+          go-version: stable
       - name: PAM headers
         run: sudo apt-get update && sudo apt-get install -y libpam0g-dev
       - name: go vet
@@ -19,7 +23,7 @@ jobs:
       - name: go test
         run: cd station && go test -race ./...
       - name: Build dxberryd
-        run: bash station/build.sh out/dxberryd
+        run: bash station/build.sh out/dxberryd "${GITHUB_REF_NAME#v}"
       - name: Show the binary
         run: file station/out/dxberryd
       - uses: actions/upload-artifact@v4

@@ -685,6 +685,16 @@ test_provision_apps_picks_up_a_renewed_certificate_once() (
   assert_file_not_contains "$TEST_TMP/calls" "reload nginx"
 )
 
+# an update from a release that has no station certificate yet: provision_station renders the
+# sites once the app has made one, so provision_apps neither warns nor touches nginx
+test_provision_apps_stays_quiet_about_sites_while_there_is_no_station_certificate() (
+  pv_nginx_scene; pv_pat_nginx_dpkg
+  rm -f "$DXB_STATION_TLS"/station.crt "$DXB_STATION_TLS"/station.key
+  provision_apps 2> "$TEST_TMP/stderr"
+  assert_not_contains "$(cat "$TEST_TMP/stderr")" "nginx site could not be rendered"
+  assert_file_not_contains "$TEST_TMP/calls" "nginx"
+)
+
 test_provision_apps_rerenders_a_site_whose_template_changed() (
   pv_nginx_scene; pv_pat_nginx_dpkg
   echo '# old' >> "$DXB_NGINX_DIR/sites-available/dxberry-pat.conf"

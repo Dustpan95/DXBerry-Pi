@@ -657,7 +657,9 @@ provision_apps() {
   else
     dxb_warn "apps: the program catalog could not be read"
   fi
-  if [[ -n $(_dxb_apps_dpkg_version nginx) ]]; then
+  # without the station certificate (an update from before the station app) there is nothing to
+  # render against yet: provision_station renders these sites once the app has made it
+  if [[ -n $(_dxb_apps_dpkg_version nginx) ]] && dxb_webproxy_cert > /dev/null 2>&1; then
     for name in pat wavelog; do
       site=$DXB_NGINX_DIR/sites-enabled/dxberry-$name.conf
       [[ -e $site ]] || continue

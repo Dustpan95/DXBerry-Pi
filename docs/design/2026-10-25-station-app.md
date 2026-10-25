@@ -253,8 +253,10 @@ today. There is no generic "run a command" endpoint.
 `internal/auth` authenticates against the Pi's accounts through PAM (service
 name `dxberry`, a one-line `/etc/pam.d/dxberry` that includes
 `common-auth` and `common-account`). Root is refused by name. A user may log
-in only if PAM accepts the password and the account is a member of the
-`sudo` group; `dietpi` is. Anyone else is refused with "this account cannot
+in only if PAM accepts the password and the user is an administrator: a
+member of group `sudo`, or a user whom `sudo -l -U <user>` reports "may run
+the following commands" (sudoers-based rights, which is how DietPi grants
+`dietpi` root). Anyone else is refused with "this account cannot
 administer the Pi". Every login is an administrator login, because every
 function behind it changes the system; there are no lesser roles in this
 release. This keeps "one password for the Pi" exactly as Cockpit had it and
@@ -676,11 +678,12 @@ Each as: decision — why — cost if wrong.
 5. **`dxberryd` runs as root** — every function already needs it, Cockpit
    gave the same through sudo, a broker is a second service — a request
    handling defect is root; mitigated by the allowlisted CLI set, no client
-   paths, cookie-only API behind TLS. The unit does not use
-   `ProtectSystem` or `ProtectHome`: the terminal's login shell and the
-   settings commands run inside the service's mount namespace and need a
-   writable system (found in the rc1 build; §5.1's sandbox list is read
-   accordingly).
+   paths, cookie-only API behind TLS. The unit runs with no mount-namespace
+   or capability sandbox (no `ProtectSystem`, `ProtectHome`,
+   `ProtectKernel*`, `ProtectControlGroups` or `RestrictRealtime`): the CLIs
+   it runs synchronously (udevadm trigger, modprobe, apt) and the terminal's
+   login shell need the real system. The limits are cgroup limits only
+   (`MemoryMax`, `TasksMax`); §5.1's sandbox list is read accordingly.
 6. **The CLI remains the contract for configuration** — tests, idempotency
    and the hardware-proven paths stay as they are; the Go side stays small —
    a round trip through a bash command for every setting; acceptable, these
@@ -723,8 +726,13 @@ Each as: decision — why — cost if wrong.
 18. **STOP and the SWR guard unkey the radio whoever keyed it** — the guard
     promise is about the radio — a program may key again; the notice names
     Stop <program> as the fix.
-19. **Login requires the `sudo` group** — every login is an administrator —
-    a second, lesser account cannot use the app; none exists on the image.
+19. **Login requires an administrator** — PAM accepts the password AND the
+    user is a member of group `sudo` or `sudo -l -U <user>` reports "may run
+    the following commands"; root is always refused; the provisioner does not
+    change group membership — on a stock DietPi image the `sudo` group is
+    empty (`dietpi` gets root from /etc/sudoers.d/dietpi), so a group-only
+    rule would refuse every login. A second, lesser account cannot use the
+    app; none exists on the image.
 20. **Owner shown by a per-browser device name** — the user name is always
     the same — a label is one more setting to keep.
 

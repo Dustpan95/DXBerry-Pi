@@ -233,6 +233,7 @@ test_station_site_template_shape() {
   # the port the browser used stays in Host, so a WebSocket behind a forwarded port keeps its Origin match
   # shellcheck disable=SC2016
   assert_file_contains "$t" 'proxy_set_header Host $http_host;'
+  # shellcheck disable=SC2016
   assert_file_not_contains "$t" 'proxy_set_header Host $host;'
 }
 
@@ -403,3 +404,14 @@ test_station_fails_when_nothing_listens_on_443_afterwards() {
   assert_contains "$(cat "$TEST_TMP/failed")" "nothing is listening on port 443"
   assert_eq "$(cat "$TEST_TMP/status")" "station: unavailable (see FAILED STEPS)"
 }
+
+# station/build.sh stamps the version it is given (a release build passes the tag with its rc
+# suffix) and otherwise provision/VERSION; go itself is a stand-in that records its arguments
+test_station_build_stamps_the_given_version() (
+  mkdir -p "$TEST_TMP/gobin"
+  printf '#!/bin/bash\necho "$@" > "%s/go-args"\n' "$TEST_TMP" > "$TEST_TMP/gobin/go"; chmod 755 "$TEST_TMP/gobin/go"
+  PATH=$TEST_TMP/gobin:$PATH bash "$DXB_ROOT/station/build.sh" "$TEST_TMP/out" 0.5.0-rc1
+  assert_contains "$(cat "$TEST_TMP/go-args")" "-X main.version=0.5.0-rc1"
+  PATH=$TEST_TMP/gobin:$PATH bash "$DXB_ROOT/station/build.sh" "$TEST_TMP/out"
+  assert_contains "$(cat "$TEST_TMP/go-args")" "-X main.version=$(< "$DXB_ROOT/provision/VERSION")"
+)
