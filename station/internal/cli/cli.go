@@ -46,6 +46,8 @@ type CLI struct {
 	run    Runner
 	// SystemBin overrides the absolute path of the two system commands (tests point it at fakes).
 	SystemBin map[string]string
+	// Timeout bounds one call (60 s by default).
+	Timeout time.Duration
 	// Logf receives one line per call; it defaults to slog.
 	Logf func(format string, args ...any)
 
@@ -62,7 +64,7 @@ func New(binDir string, run Runner) *CLI {
 	if run == nil {
 		run = runExec
 	}
-	return &CLI{binDir: strings.TrimRight(binDir, "/"), run: run, units: map[string]bool{},
+	return &CLI{binDir: strings.TrimRight(binDir, "/"), run: run, units: map[string]bool{}, Timeout: callTimeout,
 		Logf: func(f string, a ...any) { slog.Info(fmt.Sprintf(f, a...)) }}
 }
 
@@ -77,9 +79,11 @@ var (
 	reOption   = regexp.MustCompile(`^--(audio|cat|hid|ptt-serial|ptt|ptt-type|wiring|label|rig-control|model|baud|gpio-line)$`)
 	reUnit     = regexp.MustCompile(`^(dxberry-[a-z0-9@._-]+|rigctld@[a-z0-9-]+|graywolf[a-z0-9-]*|gpsd|chrony|nginx|php[0-9.]*-fpm|mariadb)\.(service|timer|socket)$`)
 	reNumber   = regexp.MustCompile(`^[1-9][0-9]{0,3}$`)
+	reProg     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	reSSHKey   = regexp.MustCompile(`^SSH_PUBKEY=((ssh-(ed25519|rsa|ecdsa-sha2-nistp[0-9]+)|sk-[a-z0-9-]+@openssh\.com) [A-Za-z0-9+/=]+( [A-Za-z0-9._@: -]{0,128})?)?$`)
 )
 
-// Tokens: NAME, SESSION, VALUE, KEYVALUE, UNIT, N (1-2000), N25 (1-25), OPTVAL (an option
+// Tokens: NAME (a radio), PROG (a program), SESSION, VALUE, KEYVALUE, UNIT, N (1-2000), N25 (1-25), OPTVAL (an option
 // flag and its value, two arguments).
 var allow = map[string][][]string{
 	"dxberry-status": {{"--json"}},
@@ -88,6 +92,9 @@ var allow = map[string][][]string{
 		{"status", "--json"},
 		{"status", "NAME", "--json"},
 		{"add", "NAME", "OPTVAL...", "--json"},
+		{"claim", "NAME", "PROG", "--json"},
+		{"release", "NAME", "--json"},
+		{"models", "--json"},
 		{"set", "NAME", "OPTVAL...", "--json"},
 		{"remove", "NAME", "--json"},
 		{"hotplug", "--json"},
@@ -109,12 +116,14 @@ var allow = map[string][][]string{
 		{"system", "--json"},
 		{"rollback", "--json"},
 		{"job", "--json"},
-		{"app", "NAME", "--json"},
+		{"app", "PROG", "--json"},
+		{"prereleases", "on", "--json"},
+		{"prereleases", "off", "--json"},
 	},
 	"dxberry-app": {
 		{"list", "--json"},
-		{"install", "NAME", "--json"},
-		{"remove", "NAME", "--json"},
+		{"install", "PROG", "--json"},
+		{"remove", "PROG", "--json"},
 		{"start", "NAME", "--json"},
 		{"stop", "NAME", "--json"},
 		{"screen", "SESSION", "--json"},
@@ -131,8 +140,8 @@ var allow = map[string][][]string{
 		{"start", "UNIT"},
 		{"stop", "UNIT"},
 		{"restart", "UNIT"},
-		{"reboot"},
-		{"poweroff"},
+		{"--no-block", "start", "reboot.target"},
+		{"--no-block", "start", "poweroff.target"},
 	},
 	"journalctl": {
 		{"-u", "UNIT", "-n", "N", "--no-pager", "-o", "short-iso"},
@@ -153,8 +162,13 @@ func (c *CLI) width(tok string, args []string) int {
 		return b2i(reSession.MatchString(a))
 	case "VALUE":
 		return b2i(reValue.MatchString(a))
+	case "PROG":
+		return b2i(reProg.MatchString(a))
 	case "KEYVALUE":
 		k, _, _ := strings.Cut(a, "=")
+		if k == "SSH_PUBKEY" { // a public key has an @ in its comment and is longer than a value
+			return b2i(len(a) <= 1024 && reSSHKey.MatchString(a))
+		}
 		return b2i(reKeyValue.MatchString(a) && k != "PASSWORD" && k != "WIFI_PASSWORD")
 	case "UNIT":
 		c.mu.Lock()
@@ -229,11 +243,19 @@ func shown(s string) string {
 	return strconv.Quote(s)
 }
 
+// Refusal is why a call was not allowed; Pos is the 1-based argument at fault (0: the command).
+type Refusal struct {
+	Pos int
+	Msg string
+}
+
+func (r *Refusal) Error() string { return r.Msg }
+
 // Validate reports why a call is refused, or nil when it is allowed to run.
 func (c *CLI) Validate(call Call) error {
 	pats, ok := allow[call.Command]
 	if !ok {
-		return fmt.Errorf("command %s is not allowed", shown(call.Command))
+		return &Refusal{0, fmt.Sprintf("command %s is not allowed", shown(call.Command))}
 	}
 	best := 0
 	for _, p := range pats {
@@ -244,9 +266,9 @@ func (c *CLI) Validate(call Call) error {
 		best = max(best, pos)
 	}
 	if best >= len(call.Args) {
-		return fmt.Errorf("%s: arguments incomplete after argument %d", call.Command, best)
+		return &Refusal{best, fmt.Sprintf("%s: arguments incomplete after argument %d", call.Command, best)}
 	}
-	return fmt.Errorf("%s: argument %d is not allowed (%s)", call.Command, best+1, shown(call.Args[best]))
+	return &Refusal{best + 1, fmt.Sprintf("%s: argument %d is not allowed (%s)", call.Command, best+1, shown(call.Args[best]))}
 }
 
 func (c *CLI) path(command string) string {
@@ -265,7 +287,7 @@ func (c *CLI) Run(ctx context.Context, call Call) (Result, error) {
 	if err := c.Validate(call); err != nil {
 		return Result{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	ctx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()
 	res, err := c.run(ctx, c.path(call.Command), call.Args, call.Stdin, append([]string(nil), runEnv...))
 	if err != nil {
@@ -339,6 +361,8 @@ func runExec(ctx context.Context, name string, args []string, stdin string, env 
 	var ee *exec.ExitError
 	switch {
 	case err == nil:
+	case errors.Is(err, exec.ErrWaitDelay): // the command finished; a leftover child held the pipes
+		res.Exit = cmd.ProcessState.ExitCode()
 	case errors.As(err, &ee):
 		res.Exit = ee.ExitCode()
 		if ctx.Err() != nil {

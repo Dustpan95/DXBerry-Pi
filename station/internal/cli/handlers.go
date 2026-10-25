@@ -33,6 +33,11 @@ func (c *CLI) handle(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	res, err := c.Run(r.Context(), call)
 	if err != nil {
+		pos := 0
+		if rf, ok := err.(*Refusal); ok {
+			pos = rf.Pos
+		}
+		c.Logf("cli refused %s pos=%d reason=%s", shown(call.Command), pos, err.Error())
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}

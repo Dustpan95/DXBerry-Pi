@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/httpapi"
 )
@@ -133,12 +134,12 @@ func TestCLIAcceptsEveryCommand(t *testing.T) {
 	c := newTest(t)
 	ok := map[string][][]string{
 		"dxberry-status":  {{"--json"}},
-		"dxberry-radio":   {{"scan", "--json"}, {"status", "--json"}, {"status", "radio1", "--json"}, {"add", "radio1", "--audio", "1", "--cat", "2:1", "--model", "3073", "--label", "IC-7300", "--json"}, {"set", "radio1", "--audio", "none", "--json"}, {"remove", "radio1", "--json"}, {"hotplug", "--json"}},
-		"dxberry-config":  {{"get", "--json"}, {"set", "GPS_BAUD=9600", "POSITION_LOG=on", "--json"}, {"set", "WIFI_COUNTRY=US", "--stdin", "--json"}, {"job", "--json"}, {"confirm", "--json"}, {"revert", "--json"}, {"apply", "--json"}},
-		"dxberry-update":  {{"check", "--json"}, {"check", "--refresh", "--json"}, {"graywolf", "--json"}, {"dxberry", "--json"}, {"system", "--json"}, {"rollback", "--json"}, {"job", "--json"}, {"app", "wsjtx", "--json"}},
+		"dxberry-radio":   {{"scan", "--json"}, {"status", "--json"}, {"status", "radio1", "--json"}, {"add", "radio1", "--audio", "1", "--cat", "2:1", "--model", "3073", "--label", "IC-7300", "--json"}, {"set", "radio1", "--audio", "none", "--json"}, {"remove", "radio1", "--json"}, {"hotplug", "--json"}, {"claim", "radio1", "wsjtx", "--json"}, {"claim", "radio1", "my_prog", "--json"}, {"release", "radio1", "--json"}, {"models", "--json"}},
+		"dxberry-config":  {{"get", "--json"}, {"set", "GPS_BAUD=9600", "POSITION_LOG=on", "--json"}, {"set", "WIFI_COUNTRY=US", "--stdin", "--json"}, {"set", "SSH_PUBKEY=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIabc+/= dietpi@laptop", "--json"}, {"set", "SSH_PUBKEY=", "--json"}, {"job", "--json"}, {"confirm", "--json"}, {"revert", "--json"}, {"apply", "--json"}},
+		"dxberry-update":  {{"check", "--json"}, {"check", "--refresh", "--json"}, {"graywolf", "--json"}, {"dxberry", "--json"}, {"system", "--json"}, {"rollback", "--json"}, {"job", "--json"}, {"app", "wsjtx", "--json"}, {"app", "my_prog", "--json"}, {"prereleases", "on", "--json"}, {"prereleases", "off", "--json"}},
 		"dxberry-app":     {{"list", "--json"}, {"install", "wsjtx", "--json"}, {"remove", "wsjtx", "--json"}, {"start", "radio1", "--json"}, {"stop", "radio1", "--json"}, {"screen", "wsjtx-radio1", "--json"}},
 		"dxberry-logbook": {{"get", "--json"}, {"set", "--json"}, {"test", "--json"}, {"recent", "--json"}, {"recent", "25", "--json"}, {"flush", "--json"}},
-		"systemctl":       {{"start", "gpsd.service"}, {"stop", "dxberry-screen@wsjtx-radio1.service"}, {"restart", "rigctld@radio1.service"}, {"restart", "dxberry-logbook-flush.timer"}, {"reboot"}, {"poweroff"}},
+		"systemctl":       {{"start", "gpsd.service"}, {"stop", "dxberry-screen@wsjtx-radio1.service"}, {"restart", "rigctld@radio1.service"}, {"restart", "dxberry-logbook-flush.timer"}, {"--no-block", "start", "reboot.target"}, {"--no-block", "start", "poweroff.target"}},
 		"journalctl":      {{"-u", "nginx.service", "-n", "200", "--no-pager", "-o", "short-iso"}, {"-b", "-n", "2000", "--no-pager", "-o", "short-iso", "--priority=debug"}},
 	}
 	for cmd, shapes := range ok {
@@ -150,12 +151,12 @@ func TestCLIAcceptsEveryCommand(t *testing.T) {
 	}
 	bad := map[string][][]string{
 		"dxberry-status":  {{}, {"--json", "pi"}},
-		"dxberry-radio":   {{"scan"}, {"apply", "--json"}, {"add", "Bad", "--json"}, {"add", "r", "--bogus", "1", "--json"}, {"add", "r", "--audio", "--json"}},
-		"dxberry-config":  {{"set", "PASSWORD=x", "--json"}, {"set", "wifi=x", "--json"}, {"set", "--json"}},
-		"dxberry-update":  {{"dxberry", "--version", "1.0", "--json"}, {"apply", "system", "--json"}},
+		"dxberry-radio":   {{"scan"}, {"apply", "--json"}, {"claim", "radio1", "Bad", "--json"}, {"claim", "radio1", "--json"}, {"add", "Bad", "--json"}, {"add", "r", "--bogus", "1", "--json"}, {"add", "r", "--audio", "--json"}},
+		"dxberry-config":  {{"set", "PASSWORD=x", "--json"}, {"set", "wifi=x", "--json"}, {"set", "SSH_PUBKEY=ssh-ed25519 AAAA c;rm -rf", "--json"}, {"set", "SSH_PUBKEY=ssh-ed25519 AAAA $(id)", "--json"}, {"set", "SSH_PUBKEY=ssh-ed25519 AAAA " + strings.Repeat("a", 1100), "--json"}, {"set", "SSH_PUBKEY=ssh-dss AAAA", "--json"}, {"set", "--json"}},
+		"dxberry-update":  {{"dxberry", "--version", "1.0", "--json"}, {"apply", "system", "--json"}, {"prereleases", "maybe", "--json"}, {"prereleases", "--json"}},
 		"dxberry-app":     {{"start", "a", "b", "--json"}, {"screen", "nodash", "--json"}},
 		"dxberry-logbook": {{"recent", "26", "--json"}, {"submit", "--json"}, {"recent", "0", "--json"}},
-		"systemctl":       {{"enable", "gpsd.service"}, {"start", "gpsd"}, {"reboot", "now"}},
+		"systemctl":       {{"enable", "gpsd.service"}, {"start", "gpsd"}, {"reboot"}, {"poweroff"}, {"--no-block", "start", "halt.target"}, {"start", "reboot.target"}},
 		"journalctl":      {{"-u", "nginx.service", "-n", "2001", "--no-pager", "-o", "short-iso"}, {"-f"}},
 	}
 	for cmd, shapes := range bad {
@@ -231,6 +232,41 @@ func TestCLIHandlerLogsWithoutStdin(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/cli/dxberry-radio", strings.NewReader(`{"args":["hotplug","--json"],"stdin":"topsecret"}`))
 	mux.ServeHTTP(httptest.NewRecorder(), req)
 	if strings.Contains(sb.String(), "topsecret") || !strings.HasPrefix(sb.String(), "cli dxberry-radio hotplug ") || !strings.Contains(sb.String(), "exit=0 ms=") {
+		t.Fatalf("log %q", sb.String())
+	}
+}
+
+func TestCLITimeoutKillsChild(t *testing.T) {
+	c := New("/x", func(ctx context.Context, name string, args []string, stdin string, env []string) (Result, error) {
+		return runExec(ctx, "/bin/sh", []string{"-c", "exec sleep 5"}, "", env)
+	})
+	c.Timeout = 200 * time.Millisecond
+	start := time.Now()
+	res, err := c.Run(context.Background(), Call{Command: "dxberry-status", Args: []string{"--json"}})
+	if err != nil || res.Exit == 0 || !strings.Contains(res.Stderr, "[timed out]") || time.Since(start) > 3*time.Second {
+		t.Fatalf("got %+v %v after %v", res, err, time.Since(start))
+	}
+}
+
+func TestCLIBackgroundChildKeepsRealExit(t *testing.T) {
+	c := New("/x", func(ctx context.Context, name string, args []string, stdin string, env []string) (Result, error) {
+		return runExec(ctx, "/bin/sh", []string{"-c", "sleep 4 & exit 3"}, "", env)
+	})
+	res, err := c.Run(context.Background(), Call{Command: "dxberry-status", Args: []string{"--json"}})
+	if err != nil || res.Exit != 3 {
+		t.Fatalf("got %+v %v", res, err)
+	}
+}
+
+func TestCLIHandlerLogsRefusal(t *testing.T) {
+	var sb strings.Builder
+	c := newTest(t)
+	c.Logf = func(f string, a ...any) { sb.WriteString(fmt.Sprintf(f, a...)) }
+	mux := http.NewServeMux()
+	c.Register(mux)
+	req := httptest.NewRequest("POST", "/api/cli/dxberry-radio", strings.NewReader(`{"args":["set","x","../../etc"]}`))
+	mux.ServeHTTP(httptest.NewRecorder(), req)
+	if !strings.HasPrefix(sb.String(), "cli refused ") || !strings.Contains(sb.String(), "pos=3") {
 		t.Fatalf("log %q", sb.String())
 	}
 }
