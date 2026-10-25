@@ -1,0 +1,468 @@
+Caps dump for model: 2031
+Model name:	TS-590S
+Mfg name:	Kenwood
+Hamlib version:	Hamlib 4.6.2 2025-02-09T21:03:50Z SHA=870364 64-bit
+Backend version:	20250107.18
+Backend copyright:	LGPL
+Backend status:	Stable
+Rig type:	Other Receiver Transmitter Transceiver 
+PTT type:	None
+DCD type:	Rig capable
+Port type:	RS-232
+Serial speed: 4800..115200 baud, 8N1, ctrl=CTS/RTS
+Write delay: 0ms, timeout 500ms, 3 retry
+Post write delay: 0ms
+Has targetable VFO: Y
+Targetable features: FREQ
+Has async data support: N
+Announce: 0x0
+Max RIT: -9.990kHz/+9.990kHz
+Max XIT: -9.990kHz/+9.990kHz
+Max IF-SHIFT: -0.0kHz/+0.0kHz
+Preamp: 12dB
+Attenuator: 12dB
+AGC levels: 0=OFF 3=SLOW 5=MEDIUM 2=FAST 1=SUPERFAST 8=ON
+CTCSS: 67.0 71.9 74.4 77.0 79.7 82.5 85.4 88.5 91.5 94.8 97.4 100.0 103.5 107.2 110.9 114.8 118.8 123.0 127.3 131.8 136.5 141.3 146.2 151.4 156.7 162.2 167.9 173.8 179.9 186.2 192.8 203.5 210.7 218.1 225.7 233.6 241.8 250.3 Hz, 38 tones
+DCS: None
+Get functions: NB COMP VOX FBKIN NR MON LOCK BC RIT TUNER XIT BC2 
+Set functions: NB COMP VOX FBKIN NR MON LOCK BC RIT TUNER XIT BC2 
+Extra functions:
+	NR2
+		Type: CHECKBUTTON
+		Default: 
+		Label: Noise reduction 2
+		Tooltip: Noise reduction 2
+Get level: PREAMP(0..20/10) ATT(0..12/0) VOXDELAY(0..30/1) AF(0.000000..1.000000/0.003922) RF(0.000000..1.000000/0.003922) SQL(0.000000..1.000000/0.010000) NR(0.000000..1.000000/0.100000) CWPITCH(300..1000/50) RFPOWER(0.050000..1.000000/0.010000) MICGAIN(0.000000..1.000000/0.010000) KEYSPD(4..60/1) COMP(0.000000..1.000000/0.010000) AGC(0..0/0) VOXGAIN(0.000000..1.000000/0.010000) SLOPE_LOW(0..2400/10) SLOPE_HIGH(0..5000/10) BKIN_DLYMS(0..1000/50) SWR(0.000000..5.000000/0.003922) ALC(0.000000..1.000000/0.010000) STRENGTH(0..60/0) RFPOWER_METER(0.000000..1.000000/0.003922) COMP_METER(0.000000..1.000000/0.003922) MONITOR_GAIN(0.000000..1.000000/0.010000) NB(0.000000..1.000000/0.100000) RFPOWER_METER_WATTS(0.000000..100.000000/0.003922) USB_AF(0.000000..1.000000/0.100000) USB_AF_INPUT(0.000000..1.000000/0.100000) 
+Set level: PREAMP(0..20/10) ATT(0..12/0) VOXDELAY(0..30/1) AF(0.000000..1.000000/0.003922) RF(0.000000..1.000000/0.003922) SQL(0.000000..1.000000/0.010000) NR(0.000000..1.000000/0.100000) CWPITCH(300..1000/50) RFPOWER(0.050000..1.000000/0.010000) MICGAIN(0.000000..1.000000/0.010000) KEYSPD(4..60/1) COMP(0.000000..1.000000/0.010000) AGC(0..0/0) METER(0..0/0) VOXGAIN(0.000000..1.000000/0.010000) SLOPE_LOW(0..2400/10) SLOPE_HIGH(0..5000/10) BKIN_DLYMS(0..1000/50) MONITOR_GAIN(0.000000..1.000000/0.010000) NB(0.000000..1.000000/0.100000) USB_AF(0.000000..1.000000/0.100000) USB_AF_INPUT(0.000000..1.000000/0.100000) 
+Extra levels:
+	DSP_RX_EQUALIZER
+		Type: COMBO
+		Default: 
+		Label: DSP RX equalizer
+		Tooltip: DSP RX equalizer type
+		Values: 0="OFF" 1="Hb1" 2="Hb2" 3="FP" 4="bb1" 5="bb2" 6="c" 7="U"
+	DSP_TX_EQUALIZER
+		Type: COMBO
+		Default: 
+		Label: DSP TX equalizer
+		Tooltip: DSP TX equalizer type
+		Values: 0="OFF" 1="Hb1" 2="Hb2" 3="FP" 4="bb1" 5="bb2" 6="flat" 7="U"
+	BEEP_VOLUME
+		Type: NUMERIC
+		Default: 
+		Label: Beep volume
+		Tooltip: Beep volume
+		Range: 0.000000..20.000000/1.000000
+	TX_SIDETONE_VOLUME
+		Type: NUMERIC
+		Default: 
+		Label: TX sidetone volume
+		Tooltip: TX sidetone volume
+		Range: 0.000000..20.000000/1.000000
+	ACC2_AUDIO_INPUT_LEVEL
+		Type: NUMERIC
+		Default: 
+		Label: ACC2 audio input level
+		Tooltip: ACC2 audio input level
+		Range: 0.000000..9.000000/1.000000
+	ACC2_AUDIO_OUTPUT_LEVEL
+		Type: NUMERIC
+		Default: 
+		Label: ACC2 audio output level
+		Tooltip: ACC2 audio output level
+		Range: 0.000000..9.000000/1.000000
+	USB_AUDIO_INPUT_LEVEL
+		Type: NUMERIC
+		Default: 
+		Label: USB audio input level
+		Tooltip: USB audio input level
+		Range: 0.000000..9.000000/1.000000
+	USB_AUDIO_OUTPUT_LEVEL
+		Type: NUMERIC
+		Default: 
+		Label: USB audio output level
+		Tooltip: USB audio output level
+		Range: 0.000000..9.000000/1.000000
+	DSP_TX_SSB_AM_LOW_CUT_FILTER
+		Type: COMBO
+		Default: 
+		Label: DSP TX SSB/AM low-cut
+		Tooltip: DSP TX low-cut filter for SSB and AM
+		Values: 0="10 Hz" 1="100 Hz" 2="200 Hz" 3="300 Hz" 4="400 Hz" 5="500 Hz"
+	DSP_TX_SSB_AM_HIGH_CUT_FILTER
+		Type: COMBO
+		Default: 
+		Label: DSP TX SSB/AM high-cut
+		Tooltip: DSP TX high-cut filter for SSB and AM
+		Values: 0="2500 Hz" 1="2600 Hz" 2="2700 Hz" 3="2800 Hz" 4="2900 Hz" 5="3000 Hz"
+	DSP_TX_SSB_DATA_LOW_CUT_FILTER
+		Type: COMBO
+		Default: 
+		Label: DSP TX SSB data low-cut
+		Tooltip: DSP TX low-cut filter for SSB data
+		Values: 0="10 Hz" 1="100 Hz" 2="200 Hz" 3="300 Hz" 4="400 Hz" 5="500 Hz"
+	DSP_TX_SSB_DATA_HIGH_CUT_FILTER
+		Type: COMBO
+		Default: 
+		Label: DSP TX SSB data high-cut
+		Tooltip: DSP TX high-cut filter for SSB data
+		Values: 0="2500 Hz" 1="2600 Hz" 2="2700 Hz" 3="2800 Hz" 4="2900 Hz" 5="3000 Hz"
+Get parameters: 
+Set parameters: 
+Extra parameters:
+Mode list: AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+VFO list: VFOA VFOB MEM 
+VFO Ops: CPY UP DOWN TUNE 
+Scan Ops: VFO 
+Number of banks:	0
+Memory name desc size:	0
+Memories:
+	0..89:   	MEM
+	  Mem caps: FREQ MODE SPLIT TXFREQ TXMODE SPLIT FUNC FLAG 
+	90..99:   	EDGE
+	  Mem caps: FREQ MODE SPLIT TXFREQ TXMODE SPLIT FUNC FLAG 
+TX ranges #1 for TBD:
+	1810000 Hz - 1850000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	1810000 Hz - 1850000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	3500000 Hz - 3800000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	3500000 Hz - 3800000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	7000000 Hz - 7200000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	7000000 Hz - 7200000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	10100000 Hz - 10150000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	10100000 Hz - 10150000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	14000000 Hz - 14350000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	14000000 Hz - 14350000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	18068000 Hz - 18168000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	18068000 Hz - 18168000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	21000000 Hz - 21450000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	21000000 Hz - 21450000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	24890000 Hz - 24990000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	24890000 Hz - 24990000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	28000000 Hz - 29700000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	28000000 Hz - 29700000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	50000000 Hz - 52000000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	50000000 Hz - 52000000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+RX ranges #1 for TBD:
+	30000 Hz - 59999999 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+		Antenna list: ANT1 ANT2 
+TX ranges #2 for TBD:
+	1800000 Hz - 1999999 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	1800000 Hz - 1999999 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	3500000 Hz - 3999999 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	3500000 Hz - 3999999 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	5250000 Hz - 5450000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	5250000 Hz - 5450000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	7000000 Hz - 7300000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	7000000 Hz - 7300000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	10100000 Hz - 10150000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	10100000 Hz - 10150000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	14000000 Hz - 14350000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	14000000 Hz - 14350000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	18068000 Hz - 18168000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	18068000 Hz - 18168000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	21000000 Hz - 21450000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	21000000 Hz - 21450000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	24890000 Hz - 24990000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	24890000 Hz - 24990000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	28000000 Hz - 29700000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	28000000 Hz - 29700000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+	50000000 Hz - 52000000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list:  CW USB LSB RTTY FM
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 100 W
+	50000000 Hz - 52000000 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM AM-D
+		Antenna list: ANT1 ANT2 
+		Low power: 5 W, High power: 25 W
+RX ranges #2 for TBD:
+	30000 Hz - 59999999 Hz
+		VFO list: VFOA VFOB MEM 
+		Mode list: AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+		Antenna list: ANT1 ANT2 
+TX ranges #3 for TBD:
+RX ranges #3 for TBD:
+TX ranges #4 for TBD:
+RX ranges #4 for TBD:
+TX ranges #5 for TBD:
+RX ranges #5 for TBD:
+TX ranges #1 status for TBD:	OK (0)
+RX ranges #1 status for TBD:	OK (0)
+TX ranges #2 status for TBD:	OK (0)
+RX ranges #2 status for TBD:	OK (0)
+TX ranges #3 status for TBD:	OK (0)
+RX ranges #3 status for TBD:	OK (0)
+TX ranges #4 status for TBD:	OK (0)
+RX ranges #4 status for TBD:	OK (0)
+TX ranges #5 status for TBD:	OK (0)
+RX ranges #5 status for TBD:	OK (0)
+Tuning steps:
+	1.0000 kHz:   	AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+	2.5000 kHz:   	AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+	5.0000 kHz:   	AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+	6.2500 kHz:   	AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+	10.0000 kHz:   	AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+	12.5000 kHz:   	AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+	15.0000 kHz:   	AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+	20.0000 kHz:   	AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+	25.0000 kHz:   	AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+	30.0000 kHz:   	AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+	100.0000 kHz:   	AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+	500.0000 kHz:   	AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+	1.0000000 MHz:   	AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+	ANY:   	AM CW USB LSB RTTY FM CWR RTTYR PKTLSB PKTUSB FM-D AM-D
+Tuning steps status:	OK (0)
+Filters:
+	2.2000 kHz:   	 USB LSB
+	500.0 Hz:   	 CW RTTY CWR RTTYR
+	6.0000 kHz:   	AM
+	12.0000 kHz:   	 FM
+Bandwidths:
+	AM	Normal: 6.0000 kHz,	Narrow: 0.0 Hz,	Wide: 0.0 Hz
+	CW	Normal: 500.0 Hz,	Narrow: 0.0 Hz,	Wide: 0.0 Hz
+	USB	Normal: 2.2000 kHz,	Narrow: 0.0 Hz,	Wide: 0.0 Hz
+	LSB	Normal: 2.2000 kHz,	Narrow: 0.0 Hz,	Wide: 0.0 Hz
+	RTTY	Normal: 500.0 Hz,	Narrow: 0.0 Hz,	Wide: 0.0 Hz
+	FM	Normal: 12.0000 kHz,	Narrow: 0.0 Hz,	Wide: 0.0 Hz
+	CWR	Normal: 500.0 Hz,	Narrow: 0.0 Hz,	Wide: 0.0 Hz
+	RTTYR	Normal: 500.0 Hz,	Narrow: 0.0 Hz,	Wide: 0.0 Hz
+Spectrum scopes: None
+Spectrum modes: 
+Spectrum spans: 
+Spectrum averaging modes: 
+Spectrum attenuator: None
+Has priv data:	Y
+Has Init:	Y
+Has Cleanup:	Y
+Has Open:	Y
+Has Close:	Y
+Can set Conf:	N
+Can get Conf:	N
+Can set Frequency:	Y
+Can get Frequency:	Y
+Can set Mode:	Y
+Can get Mode:	Y
+Can set VFO:	Y
+Can get VFO:	Y
+Can set PTT:	Y
+Can get PTT:	Y
+Can get DCD:	Y
+Can set Repeater Duplex:	N
+Can get Repeater Duplex:	N
+Can set Repeater Offset:	N
+Can get Repeater Offset:	N
+Can set Split Freq:	E
+Can get Split Freq:	E
+Can set Split Mode:	E
+Can get Split Mode:	E
+Can set Split VFO:	Y
+Can get Split VFO:	Y
+Can set Tuning Step:	N
+Can get Tuning Step:	N
+Can set RIT:	Y
+Can get RIT:	Y
+Can set XIT:	Y
+Can get XIT:	Y
+Can set CTCSS:	Y
+Can get CTCSS:	Y
+Can set DCS:	N
+Can get DCS:	N
+Can set CTCSS Squelch:	N
+Can get CTCSS Squelch:	N
+Can set DCS Squelch:	N
+Can get DCS Squelch:	N
+Can set Power Stat:	Y
+Can get Power Stat:	Y
+Can Reset:	Y
+Can get Ant:	Y
+Can set Ant:	Y
+Can set Transceive:	Y
+Can get Transceive:	Y
+Can set Func:	Y
+Can get Func:	Y
+Can set Level:	Y
+Can get Level:	Y
+Can set Param:	N
+Can get Param:	N
+Can send DTMF:	N
+Can recv DTMF:	N
+Can send Morse:	Y
+Can stop Morse:	Y
+Can wait Morse:	Y
+Can send Voice:	N
+Can decode Events:	N
+Can set Bank:	N
+Can set Mem:	Y
+Can get Mem:	Y
+Can set Channel:	E
+Can get Channel:	E
+Can ctl Mem/VFO:	Y
+Can Scan:	Y
+Can get Info:	Y
+Can get power2mW:	N
+Can get mW2power:	N
+
+Overall backend warnings: 0   
