@@ -226,3 +226,10 @@ func (m *Manager) drop(id string) {
 	delete(m.sessions, id)
 	m.mu.Unlock()
 }
+
+// Alive says whether the request's session is still logged in, without renewing its idle timer:
+// a long-lived connection that polls it must not keep an idle session alive.
+func (m *Manager) Alive(r *http.Request) bool {
+	_, ok := m.lookup(r, false)
+	return ok
+}

@@ -341,3 +341,23 @@ func TestLoggedUserIsTruncated(t *testing.T) {
 		t.Fatalf("user not truncated to 64: %s", buf.String())
 	}
 }
+
+func TestAliveDoesNotRenew(t *testing.T) {
+	clk := &clock{t: time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)}
+	m := auth.New(fakeAuth{}, fakeGroups{"dietpi": true}, clk.now)
+	h := httpapi.New(httpapi.Config{Web: fstest.MapFS{"index.html": {Data: []byte("x")}}, Auth: m, Routes: m.Register}).Handler
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(`{"user":"dietpi","password":"right"}`))
+	req.RemoteAddr = "10.0.0.5:1"
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	h.ServeHTTP(rec, req)
+	c := cookieOf(t, rec)
+	probe := httptest.NewRequest("GET", "/", nil)
+	probe.AddCookie(c)
+	for i := 0; i < 3; i++ {
+		clk.t = clk.t.Add(5 * time.Hour)
+		if got := m.Alive(probe); got != (i < 2) {
+			t.Fatalf("alive after %d h idle = %v", 5*(i+1), got)
+		}
+	}
+}

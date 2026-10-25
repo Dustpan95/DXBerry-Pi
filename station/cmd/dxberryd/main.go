@@ -17,6 +17,7 @@ import (
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/auth"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/cli"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/httpapi"
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/term"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/vnc"
 	"github.com/Dustpan95/DXBerry-Pi/station/web"
 )
@@ -42,6 +43,25 @@ func main() {
 	routes := func(mux *http.ServeMux) {
 		mgr.Register(mux)
 		runner.Register(mux)
+		sessionOf := func(r *http.Request) *httpapi.Session {
+			s, _ := mgr.Session(r)
+			return s
+		}
+		mux.Handle("GET /api/term", term.Handler(
+			func(user string) []string { return []string{"/bin/login", "-f", user} },
+			func(r *http.Request) string {
+				if s := sessionOf(r); s != nil {
+					return s.User
+				}
+				return ""
+			},
+			func(r *http.Request) string {
+				if s := sessionOf(r); s != nil {
+					return s.ID
+				}
+				return ""
+			},
+			mgr.Alive))
 		mux.Handle("GET /api/vnc/{session}", vnc.Handler(*screens, func(ctx context.Context, session string) bool {
 			res, err := runner.Run(ctx, cli.Call{Command: "systemctl", Args: []string{"is-active", "dxberry-screen@" + session + ".service"}})
 			return err == nil && res.Exit == 0

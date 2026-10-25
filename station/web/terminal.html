@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DXBerry terminal</title>
+  <link rel="stylesheet" href="/dxberry.css">
+  <link rel="stylesheet" href="/vendor/xterm/xterm.css">
+</head>
+<body class="screen-page">
+  <header class="screenbar">
+    <strong>Terminal</strong>
+    <span id="state" class="muted" aria-live="polite"></span>
+    <button id="close" class="btn" type="button">Close</button>
+    <a id="back" class="muted" href="/">Back to the station</a>
+  </header>
+  <main id="term"></main>
+  <script src="/app.js"></script>
+  <script src="/vendor/xterm/xterm.js"></script>
+  <script src="/vendor/xterm/addon-fit.js"></script>
+  <script src="/terminal.js"></script>
+</body>
+</html>

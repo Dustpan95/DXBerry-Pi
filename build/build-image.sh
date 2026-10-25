@@ -83,6 +83,8 @@ REQUIRED_FILES=(
   provision/templates/dxberry-screen@.service provision/templates/dxberry-apps.tmpfiles
   station/web/dashboard.js station/web/programs.js station/web/screen.html station/web/screen.js
   station/web/vendor/novnc/core/rfb.js
+  station/web/terminal.html station/web/terminal.js station/web/vendor/xterm/xterm.js station/web/vendor/xterm/xterm.css
+  station/web/vendor/xterm/addon-fit.js station/web/vendor/xterm/LICENSE station/web/vendor/xterm/LICENSE.addon-fit station/web/vendor/xterm/VERSION
 )
 EXECUTABLE_FILES=(
   provision/bin/dxberry-preboot provision/bin/dxberry-provision provision/bin/dxberry-netwatch provision/bin/dxberry-radio
