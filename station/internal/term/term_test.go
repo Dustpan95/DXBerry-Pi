@@ -32,17 +32,17 @@ type rigT struct {
 
 // rig serves Handler behind httpapi's gate. The command writes its pid to pidfile, says hello and
 // then echoes its input, so no login binary is needed.
-func rig(t *testing.T, loggedIn bool, pidfile string) rigT {
+func rig(t *testing.T, loggedIn bool, pidfile string, every time.Duration) rigT {
 	t.Helper()
 	alive := &atomic.Bool{}
 	alive.Store(true)
 	cmd := func(string) []string {
 		return []string{"/bin/sh", "-c", "echo $$ > " + pidfile + "; echo hello; cat"}
 	}
-	h := Handler(cmd,
+	h, running := newHandler(cmd,
 		func(r *http.Request) string { return "dietpi" },
 		func(r *http.Request) string { return "s1" },
-		func(r *http.Request) bool { return alive.Load() })
+		func(r *http.Request) bool { return alive.Load() }, every)
 	srv := httpapi.New(httpapi.Config{
 		Web:  fstest.MapFS{"index.html": {Data: []byte("x")}},
 		Auth: stubAuth{ok: loggedIn},
@@ -51,6 +51,7 @@ func rig(t *testing.T, loggedIn bool, pidfile string) rigT {
 		},
 	})
 	ts := httptest.NewServer(srv.Handler)
+	t.Cleanup(running.Wait) // runs last: every handler goroutine is done before the test returns
 	t.Cleanup(ts.Close)
 	return rigT{ts, alive}
 }
@@ -131,7 +132,7 @@ func expectClose(t *testing.T, c *websocket.Conn, want websocket.StatusCode) {
 
 func TestTermEchoes(t *testing.T) {
 	pf := filepath.Join(t.TempDir(), "pid")
-	r := rig(t, true, pf)
+	r := rig(t, true, pf, time.Hour)
 	c := dial(t, r.ts)
 	readUntil(t, c, "hello")
 	if err := c.Write(context.Background(), websocket.MessageBinary, []byte("abc\n")); err != nil {
@@ -142,7 +143,7 @@ func TestTermEchoes(t *testing.T) {
 
 func TestTermResizeAccepted(t *testing.T) {
 	pf := filepath.Join(t.TempDir(), "pid")
-	r := rig(t, true, pf)
+	r := rig(t, true, pf, time.Hour)
 	c := dial(t, r.ts)
 	readUntil(t, c, "hello")
 	ctx := context.Background()
@@ -179,11 +180,8 @@ func ttySize(pid int) string {
 }
 
 func TestTermClosesOnLogout(t *testing.T) {
-	old := pollEvery
-	pollEvery = 50 * time.Millisecond
-	t.Cleanup(func() { pollEvery = old })
 	pf := filepath.Join(t.TempDir(), "pid")
-	r := rig(t, true, pf)
+	r := rig(t, true, pf, 50*time.Millisecond)
 	c := dial(t, r.ts)
 	readUntil(t, c, "hello")
 	pid := readPid(t, pf)
@@ -196,7 +194,7 @@ func TestTermClosesOnLogout(t *testing.T) {
 
 func TestTermSocketCloseEndsProcess(t *testing.T) {
 	pf := filepath.Join(t.TempDir(), "pid")
-	r := rig(t, true, pf)
+	r := rig(t, true, pf, time.Hour)
 	c := dial(t, r.ts)
 	readUntil(t, c, "hello")
 	pid := readPid(t, pf)
@@ -207,7 +205,7 @@ func TestTermSocketCloseEndsProcess(t *testing.T) {
 }
 
 func TestTermRefusesWithoutSession(t *testing.T) {
-	r := rig(t, false, filepath.Join(t.TempDir(), "pid"))
+	r := rig(t, false, filepath.Join(t.TempDir(), "pid"), time.Hour)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(r.ts.URL, "http")+"/api/term", &websocket.DialOptions{
@@ -223,7 +221,7 @@ func TestTermRefusesWithoutSession(t *testing.T) {
 
 func TestTermSecondRequestClosesFirst(t *testing.T) {
 	pf := filepath.Join(t.TempDir(), "pid")
-	r := rig(t, true, pf)
+	r := rig(t, true, pf, time.Hour)
 	c1 := dial(t, r.ts)
 	readUntil(t, c1, "hello")
 	pid1 := readPid(t, pf)

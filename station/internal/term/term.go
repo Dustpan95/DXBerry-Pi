@@ -18,10 +18,9 @@ import (
 	"github.com/creack/pty"
 )
 
-// pollEvery is how often a live terminal re-checks that its session is still logged in.
-var pollEvery = 5 * time.Second
-
 const (
+	pollEvery = 5 * time.Second // how often a live terminal re-checks that its session is still logged in
+
 	chunk     = 32 << 10
 	startCols = 80
 	startRows = 24
@@ -42,10 +41,20 @@ type resizeMsg struct {
 // logged-in user of a request, id names the request's session (one terminal per session; a second
 // request closes the first) and alive re-checks that session, polled while the terminal is open.
 func Handler(cmd func(user string) []string, user, id func(*http.Request) string, alive func(*http.Request) bool) http.Handler {
+	h, _ := newHandler(cmd, user, id, alive, pollEvery)
+	return h
+}
+
+// newHandler is Handler with its own poll interval; the WaitGroup counts the requests still being
+// served, so a test can wait for every handler goroutine to finish.
+func newHandler(cmd func(user string) []string, user, id func(*http.Request) string, alive func(*http.Request) bool, every time.Duration) (http.Handler, *sync.WaitGroup) {
+	var running sync.WaitGroup
 	var mu sync.Mutex
 	type held struct{ close func() }
 	open := map[string]*held{} // session id -> the terminal it holds
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		running.Add(1)
+		defer running.Done()
 		argv := cmd(user(r))
 		if len(argv) == 0 {
 			http.Error(w, "no command", http.StatusInternalServerError)
@@ -131,7 +140,7 @@ func Handler(cmd func(user string) []string, user, id func(*http.Request) string
 		}()
 		go func() { // the session may end while the terminal is open
 			defer wg.Done()
-			t := time.NewTicker(pollEvery)
+			t := time.NewTicker(every)
 			defer t.Stop()
 			for {
 				select {
@@ -153,7 +162,7 @@ func Handler(cmd func(user string) []string, user, id func(*http.Request) string
 			delete(open, key)
 		}
 		mu.Unlock()
-	})
+	}), &running
 }
 
 // resize applies {"resize":{"cols":C,"rows":R}}; anything else, or a size out of bounds, is ignored.
