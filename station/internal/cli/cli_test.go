@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -337,5 +338,50 @@ func TestCLIRefusalDoesNotEchoStrayArguments(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/cli/rm", strings.NewReader(`{"args":[]}`)))
 	if rec.Code != 400 || strings.TrimSpace(rec.Body.String()) != `{"error":"unknown command"}` {
 		t.Fatalf("got %d %s", rec.Code, rec.Body)
+	}
+}
+
+// A browser that goes away mid-call must not kill the command: the child gets SIGTERM at the
+// deadline (so its traps run), not SIGKILL when the request is cancelled.
+func TestCLIClientDisconnectDoesNotKill(t *testing.T) {
+	dir := t.TempDir()
+	started, termed := dir+"/started", dir+"/termed"
+	script := "trap 'echo term > " + termed + "; exit 0' TERM; echo go > " + started + "; while :; do sleep 0.05; done"
+	c := New("/x", func(ctx context.Context, name string, args []string, stdin string, env []string) (Result, error) {
+		return runExec(ctx, "/bin/sh", []string{"-c", script}, "", env)
+	})
+	c.Logf = func(string, ...any) {}
+	c.Timeout = 1500 * time.Millisecond
+	mux := http.NewServeMux()
+	c.Register(mux)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest("POST", "/api/cli/dxberry-status", strings.NewReader(`{"args":["--json"]}`)).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { mux.ServeHTTP(rec, req); close(done) }()
+	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
+	for i := 0; i < 100 && !exists(started); i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !exists(started) {
+		t.Fatal("the command never started")
+	}
+	cancel() // the browser leaves
+	time.Sleep(400 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("the call ended when the request was cancelled")
+	default:
+	}
+	if exists(termed) {
+		t.Fatal("the command was signalled at cancel, not at the deadline")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call outlived its deadline")
+	}
+	if !exists(termed) {
+		t.Fatalf("the command was not given SIGTERM at the deadline (answer %s)", rec.Body)
 	}
 }

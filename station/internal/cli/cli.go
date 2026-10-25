@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -314,13 +315,16 @@ func (c *CLI) path(command string) string {
 	return systemBin[command]
 }
 
-// Run validates the call and runs it under a 60 s deadline. The error is a refusal; a command
+// Run validates the call and runs it under a 60 s deadline, detached from ctx's cancellation
+// (its values stay). The error is a refusal; a command
 // that fails, or cannot start, is a Result with its exit code.
 func (c *CLI) Run(ctx context.Context, call Call) (Result, error) {
 	if err := c.Validate(call); err != nil {
 		return Result{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, c.Timeout)
+	// A command that started runs to its own end or to the deadline: a browser that went away
+	// (a locked phone, a closed tab) must not cut a radio change off half way.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.Timeout)
 	defer cancel()
 	res, err := c.run(ctx, c.path(call.Command), call.Args, call.Stdin, append([]string(nil), runEnv...))
 	if err != nil {
@@ -380,13 +384,15 @@ func (b *capBuffer) String() string {
 
 // runExec is the default Runner: exec of an absolute path, no working directory, a fixed
 // environment, capped output.
-// waitDelay is how long a finished command's leftover children may keep its pipes open.
-var waitDelay = 2 * time.Second
+// waitDelay is how long a command gets after the deadline's SIGTERM before it is killed, and how
+// long a finished command's leftover children may keep its pipes open.
+var waitDelay = 5 * time.Second
 
 func runExec(ctx context.Context, name string, args []string, stdin string, env []string) (Result, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = env
-	cmd.WaitDelay = waitDelay // a background child holding the pipes must not hold the call
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) } // let its traps run; WaitDelay kills
+	cmd.WaitDelay = waitDelay                                                // a background child holding the pipes must not hold the call
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
