@@ -73,8 +73,11 @@ test_build_ships_the_console_step() {
 test_build_ships_the_console_page() {
   local required f
   required=$(sed -n '/^REQUIRED_FILES=(/,/^)/p' "$DXB_ROOT/build/build-image.sh")
-  for f in manifest.json index.html dxberry.js dxberry.css; do
+  for f in manifest.json index.html; do
     assert_contains "$required" "provision/cockpit/dxberry/$f"
+  done
+  for f in dxberry.js dxberry.css; do
+    assert_contains "$required" "station/web/$f"
   done
 }
 

@@ -70,7 +70,7 @@ REQUIRED_FILES=(
   provision/templates/dxberry-audio.conf provision/templates/chrony-dxberry.conf provision/templates/gpsd-default.tmpl
   provision/bin/dxberry-status provision/lib/status.sh
   provision/lib/console.sh provision/templates/cockpit-listen.conf
-  provision/cockpit/dxberry/manifest.json provision/cockpit/dxberry/index.html provision/cockpit/dxberry/dxberry.js provision/cockpit/dxberry/dxberry.css
+  provision/cockpit/dxberry/manifest.json provision/cockpit/dxberry/index.html station/web/dxberry.js station/web/dxberry.css
   provision/cockpit/dxberry/settings.js provision/cockpit/dxberry/updates.js
   provision/bin/dxberry-config provision/lib/settings.sh provision/templates/dxberry-config-boot.service
   provision/bin/dxberry-update provision/lib/update.sh

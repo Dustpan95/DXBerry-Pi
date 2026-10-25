@@ -2,7 +2,7 @@
 // a minimal DOM shaped like index.html and a fake cockpit object whose spawn answers like the Pi's
 // commands - and checks what an operator would see: the cards, the radio actions and their
 // confirmations, and the Add/Edit form. Plain node, no packages.
-// Run: node tests/page_smoke.js provision/cockpit/dxberry/dxberry.js (tests/test_page.sh does when
+// Run: node tests/page_smoke.js station/web/dxberry.js (tests/test_page.sh does when
 // node is installed). Prints one ok/FAIL line per check; exits 1 when a check failed, 2 on a crash.
 "use strict";
 const fs = require("fs");
@@ -313,17 +313,28 @@ const timeouts = [];
 // the intervals that are live: id -> {ms, fn} (cleared ones are gone), so a test can count them
 const intervals = new Map();
 let intervalId = 0;
+// the page's compatibility layer (station/web/app.js), here over the fake cockpit.spawn: the same
+// calls reach the fake, so every check below still sees the commands as the page names them
+const dxb = {
+  run: (args, input) => { const p = cockpit.spawn(args, { superuser: "require", err: "message" }); return input === undefined ? p : p.input(input); },
+  openLog: unit => cockpit.jump("/logs/" + encodeURIComponent(unit)),
+  get hidden() { return cockpit.hidden; },
+  onVisible() {},
+};
 const ctx = {
-  document: doc, cockpit, console, setTimeout: (f, ms) => { timers.push(ms); timeouts.push({ f, ms }); return 0; }, clearTimeout: () => 0,
+  document: doc, cockpit, console, dxb, run: (a, i) => dxb.run(a, i), // the not-yet-moved page files still call a bare run()
+   setTimeout: (f, ms) => { timers.push(ms); timeouts.push({ f, ms }); return 0; }, clearTimeout: () => 0,
   setInterval: (fn, ms) => { intervals.set(++intervalId, { ms, fn }); return intervalId; }, clearInterval: id => { intervals.delete(id); },
   window: { addEventListener() {} }, localStorage: { getItem: () => null }, location: { hostname: "10.0.0.90" }, Node: N,
 };
 vm.createContext(ctx);
 const flush = () => new Promise(r => setImmediate(r));
-const settingsPath = path.replace(/dxberry\.js$/, "settings.js");
-const updatesPath = path.replace(/dxberry\.js$/, "updates.js");
-const dashboardPath = path.replace(/dxberry\.js$/, "dashboard.js");
-const programsPath = path.replace(/dxberry\.js$/, "programs.js");
+// the other page files sit beside dxberry.js once they have moved too; until then, in the old folder
+const sibling = name => { const p = path.replace(/dxberry\.js$/, name); return fs.existsSync(p) ? p : require("path").join(__dirname, "..", "provision", "cockpit", "dxberry", name); };
+const settingsPath = sibling("settings.js");
+const updatesPath = sibling("updates.js");
+const dashboardPath = sibling("dashboard.js");
+const programsPath = sibling("programs.js");
 
 (async () => {
   answer = args => {

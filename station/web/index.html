@@ -1,11 +1,109 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DXBerry</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DXBerry</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/dxberry.css">
 </head>
 <body>
-<p>DXBerry station app</p>
+  <header class="bar">
+    <strong class="brand">DXBerry</strong>
+    <span id="callsign" class="callsign"></span>
+    <span id="utc" class="clock"></span>
+    <button id="menu" class="btn" type="button" aria-expanded="false" aria-controls="menu-list">Menu</button>
+    <button id="logout" class="btn" type="button">Log out</button>
+    <nav id="menu-list" class="menu" aria-label="Sections" hidden>
+      <a href="#dashboard">Dashboard</a>
+      <a href="#cards">Station</a>
+      <a href="#settings">Settings</a>
+      <a href="#updates">Updates</a>
+      <a href="#programs">Programs</a>
+    </nav>
+  </header>
+  <div class="top">
+    <div>
+      <h1>DXBerry-Pi <span id="host" class="host"></span></h1>
+      <p id="updated" class="muted"></p>
+    </div>
+    <button id="refresh" class="btn" type="button">Refresh</button>
+  </div>
+  <div id="notices" aria-live="polite"></div>
+  <section id="dashboard" class="dashboard" aria-labelledby="dashboard-title"></section>
+  <main id="cards" class="cards"><p class="muted">Reading the station&hellip;</p></main>
+  <section id="settings" class="card settings" aria-labelledby="settings-title"></section>
+  <section id="updates" class="card settings" aria-labelledby="updates-title"></section>
+  <section id="programs" class="card settings" aria-labelledby="programs-title"></section>
+  <section id="logs" class="card" aria-labelledby="logs-title" hidden>
+    <div class="top">
+      <h2 id="logs-title"></h2>
+      <div class="actions">
+        <button id="logs-refresh" class="btn" type="button">Refresh</button>
+        <button id="logs-close" class="btn" type="button">Close</button>
+      </div>
+    </div>
+    <p id="logs-error" class="error" hidden></p>
+    <pre id="logs-text" class="log"></pre>
+  </section>
+  <section id="terminal" class="card" aria-label="Terminal" hidden></section>
+  <dialog id="confirm" aria-labelledby="confirm-title">
+    <form method="dialog">
+      <h2 id="confirm-title"></h2>
+      <p></p>
+      <div class="actions">
+        <button class="btn" value="cancel">Cancel</button>
+        <button class="btn danger ok" value="ok">OK</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="radio-dialog" aria-labelledby="radio-dialog-title">
+    <form id="radio-form" novalidate>
+      <h2 id="radio-dialog-title"></h2>
+      <div id="radio-fields" class="form-grid"></div>
+      <p id="radio-form-error" class="error" hidden></p>
+      <div class="actions">
+        <button id="radio-cancel" class="btn" type="button">Cancel</button>
+        <button id="radio-save" class="btn primary" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="settings-dialog" aria-labelledby="settings-dialog-title">
+    <form id="settings-form" novalidate>
+      <h2 id="settings-dialog-title"></h2>
+      <div id="settings-fields" class="form-grid"></div>
+      <p id="settings-form-error" class="error" hidden></p>
+      <div class="actions">
+        <button id="settings-cancel" class="btn" type="button">Cancel</button>
+        <button id="settings-save" class="btn primary" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="switch-dialog" aria-labelledby="switch-dialog-title">
+    <form id="switch-form" novalidate>
+      <h2 id="switch-dialog-title"></h2>
+      <div id="switch-fields" class="form-grid"></div>
+      <div class="actions">
+        <button id="switch-cancel" class="btn" type="button">Cancel</button>
+        <button id="switch-ok" class="btn primary" type="submit">Switch</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="logbook-dialog" aria-labelledby="logbook-dialog-title">
+    <form id="logbook-form" novalidate>
+      <h2 id="logbook-dialog-title"></h2>
+      <div id="logbook-fields" class="form-grid"></div>
+      <p id="logbook-form-error" class="error" hidden></p>
+      <p id="logbook-result" class="muted" aria-live="polite" hidden></p>
+      <div class="actions">
+        <button id="logbook-cancel" class="btn" type="button">Cancel</button>
+        <button id="logbook-test" class="btn" type="button">Test</button>
+        <button id="logbook-save" class="btn primary" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+  <script src="/app.js"></script>
+  <script src="/dxberry.js"></script>
+  <!-- Task 5 adds settings.js, updates.js, dashboard.js and programs.js here, in that order -->
 </body>
 </html>

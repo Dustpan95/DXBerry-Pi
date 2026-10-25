@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC1091,SC2034,SC2317
+# The station app's page scripts: the compatibility layer (app.js) and dxberry.js's text helpers.
+SP_WEB=$DXB_ROOT/station/web
+
+# sp_run SCENARIO: what dxb.run did against the fake fetch, as JSON
+sp_run() { node "$DXB_ROOT/tests/station_page.js" "$SP_WEB/app.js" "$1"; }
+
+test_dxb_run_posts_the_command_and_resolves_with_stdout() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sp_run ok)
+  assert_eq "$(jq -r '.resolved' <<< "$j")" "out"
+  assert_eq "$(jq -r '.calls[0].url' <<< "$j")" "/api/cli/dxberry-status"
+  assert_eq "$(jq -r '.calls[0].method + " " + .calls[0].credentials' <<< "$j")" "POST same-origin"
+  assert_eq "$(jq -c '.calls[0].body | fromjson' <<< "$j")" '{"args":["--json"],"stdin":"secret"}'
+}
+
+test_dxb_run_rejects_like_cockpit() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sp_run exit)
+  assert_eq "$(jq -r '.rejected.exit_status' <<< "$j")" "6"
+  assert_contains "$(jq -r '.rejected.message' <<< "$j")" "bad"
+  assert_contains "$(jq -r '.rejected.text' <<< "$j")" "bad"
+  assert_eq "$(jq -r '.rejected.problem' <<< "$j")" "null"
+}
+
+test_dxb_run_names_a_refused_command() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sp_run refused)
+  assert_eq "$(jq -r '.rejected.problem' <<< "$j")" "refused"
+  assert_eq "$(jq -r '.rejected.message' <<< "$j")" "command not allowed"
+}
+
+test_dxb_run_401_redirects() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sp_run 401)
+  assert_eq "$(jq -r '.assigned[0]' <<< "$j")" "/login?next=%2Fradios%3Fx%3D1"
+  assert_eq "$(jq -r '.settled' <<< "$j")" "false"
+}
+
+test_dxb_run_403_and_network_failure_are_unreachable() {
+  command -v node > /dev/null 2>&1 || return 0
+  local s j
+  for s in 403 net; do
+    j=$(sp_run "$s")
+    assert_eq "$(jq -r '.rejected.problem' <<< "$j")" "unreachable"
+    assert_eq "$(jq -r '.rejected.exit_status' <<< "$j")" "null"
+  done
+}
+
+test_dxb_ws_follows_the_page_scheme() {
+  command -v node > /dev/null 2>&1 || return 0
+  assert_eq "$(jq -r '.ws' <<< "$(sp_run ok)")" "wss://pi.local/api/x"
+}
+
+test_station_page_files_are_plain() {
+  local f
+  for f in app.js dxberry.js index.html; do
+    assert_file_not_contains "$SP_WEB/$f" "innerHTML"
+  done
+  # dxberry.js still names the cockpit.socket unit and the status report's release.cockpit field
+  assert_file_not_contains "$SP_WEB/app.js" "cockpit"
+  assert_file_not_contains "$SP_WEB/index.html" "cockpit"
+  assert_file_not_contains "$SP_WEB/index.html" "style="
+  if grep -qE '<script>|[[:space:]]on[a-z]+=' "$SP_WEB/index.html"; then _fail "index.html has an inline script or event handler"; fi
+  assert_file_contains "$SP_WEB/index.html" '<meta name="viewport" content="width=device-width, initial-scale=1">'
+  assert_file_contains "$SP_WEB/index.html" '<link rel="manifest" href="/manifest.webmanifest">'
+  # app.js first, then dxberry.js; Task 5 adds the other page scripts
+  assert_eq "$(grep -oE 'src="[^"]*"' "$SP_WEB/index.html" | head -2 | tr '\n' ' ')" 'src="/app.js" src="/dxberry.js" '
+}
+
+test_station_page_manifest_and_icons() {
+  local m=$SP_WEB/manifest.webmanifest i
+  assert_eq "$(jq -r '[.name, .short_name, .start_url, .display] | join(",")' "$m")" "DXBerry,DXBerry,/,standalone"
+  for i in 192 512; do
+    assert_eq "$(jq -r --arg s "${i}x${i}" '[.icons[] | select(.sizes == $s) | .src] | first' "$m")" "/icons/icon-$i.png"
+    assert_eq "$(head -c 8 "$SP_WEB/icons/icon-$i.png" | od -An -tx1 | tr -d ' \n')" "89504e470d0a1a0a"
+  done
+}
+
+# Same assertions as test_page.sh's, on the moved dxberry.js.
+test_station_page_error_text_keeps_the_problem_and_drops_progress() {
+  command -v node > /dev/null 2>&1 || return 0
+  local js=$SP_WEB/dxberry.js et pt stderr got
+  et=$(sed -n '/^function errorText(/,/^}/p' "$js")
+  pt=$(sed -n '/^function problemText(/,/^}/p' "$js")
+  stderr=$(printf '%s\n' '2026-10-06 12:00:00 [INFO] radio radio1 now owned by graywolf' \
+    '2026-10-06 12:00:01 [ERROR] invalid radio record:' '  radio1: bad label' 'unknown option: --x')
+  got=$(node -e "$et
+$pt
+console.log(errorText(process.argv[1]));
+console.log(problemText({exit_status: 4, message: process.argv[2]}, {4: 'the device is not plugged in'}));
+console.log(problemText({problem: 'not-found'}));
+console.log(problemText({problem: 'refused', message: 'command not allowed'}));" "$stderr" '2026-10-06 12:00:00 [ERROR] radio radio1 is not plugged in')
+  assert_eq "$(sed -n 1p <<< "$got")" "invalid radio record: radio1: bad label unknown option: --x"
+  assert_eq "$(sed -n 2p <<< "$got")" "Exit 4: the device is not plugged in. radio radio1 is not plugged in"
+  assert_eq "$(sed -n 3p <<< "$got")" "not-found"
+}
+
+test_station_page_dxberry_js_uses_the_layer() {
+  local js=$SP_WEB/dxberry.js
+  assert_file_contains "$js" "dxb.run("
+  assert_file_contains "$js" "dxb.openLog("
+  assert_file_contains "$js" "dxb.hidden"
+  assert_file_contains "$js" "dxb.onVisible("
+  assert_file_not_contains "$js" "const LOGS"
+  if grep -qE 'cockpit\.(spawn|jump|hidden|addEventListener|file|transport)' "$js"; then _fail "dxberry.js still calls the Cockpit API"; fi
+  command -v node > /dev/null 2>&1 || return 0
+  node --check "$js" 2> "$TEST_TMP/node.err" || _fail "dxberry.js does not parse: $(cat "$TEST_TMP/node.err")"
+  node --check "$SP_WEB/app.js" 2> "$TEST_TMP/node.err" || _fail "app.js does not parse: $(cat "$TEST_TMP/node.err")"
+}

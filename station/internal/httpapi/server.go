@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io/fs"
+	"mime"
 	"net/http"
 	"net/url"
 	"path"
@@ -35,10 +36,17 @@ type Config struct {
 	Routes  func(mux *http.ServeMux) // registers the API handlers behind the gate
 }
 
-// ungated paths answer without a session. /api/auth/ is the login itself.
+func init() {
+	// the manifest is served by name, and the system's mime table may not know the extension
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
+}
+
+// ungated paths answer without a session. /api/auth/ is the login itself. The manifest and its
+// icons are open too: a browser fetches the manifest without the session cookie.
 func ungated(p string) bool {
 	switch p {
-	case "/login", "/login.js", "/login.css", "/dxberry.css":
+	case "/login", "/login.js", "/login.css", "/dxberry.css",
+		"/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png":
 		return true
 	}
 	return p == "/station.crt" || p == "/api/version" || strings.HasPrefix(p, "/api/auth/")

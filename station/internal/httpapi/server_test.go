@@ -85,6 +85,24 @@ func TestLoginAssetsAreOpen(t *testing.T) {
 	}
 }
 
+func TestManifestAndIconsAreOpenAndTyped(t *testing.T) {
+	web := fstest.MapFS{
+		"index.html":           {Data: []byte("<title>DXBerry</title>")},
+		"manifest.webmanifest": {Data: []byte("{}")},
+		"icons/icon-192.png":   {Data: []byte("png")},
+		"icons/icon-512.png":   {Data: []byte("png")},
+	}
+	h := New(Config{Web: web, Auth: stubAuth{}}).Handler
+	for _, p := range []string{"/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"} {
+		if rec := do(h, "GET", p, nil); rec.Code != 200 {
+			t.Errorf("%s: got %d", p, rec.Code)
+		}
+	}
+	if ct := do(h, "GET", "/manifest.webmanifest", nil).Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/manifest+json") {
+		t.Errorf("manifest content type %q", ct)
+	}
+}
+
 func TestAPIWithoutSessionIs401(t *testing.T) {
 	rec := do(testServer(false), "GET", "/api/status", map[string]string{"Sec-Fetch-Site": "same-origin"})
 	if rec.Code != 401 || strings.TrimSpace(rec.Body.String()) != `{"error":"login required"}` {

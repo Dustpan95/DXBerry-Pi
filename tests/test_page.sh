@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC1091,SC2034,SC2317
 PG_DIR=$DXB_ROOT/provision/cockpit/dxberry
+# dxberry.js and dxberry.css moved to the station app (the other page files follow in later tasks)
+PG_WEB=$DXB_ROOT/station/web
 
 # pg_fields: the dxberry-status --json paths dxberry.js declares it reads (between its markers).
 # Anchored on the comment's own `/* fields-begin` so it does not also match `radio-fields-begin`.
-pg_fields() { sed -n '/\/\* fields-begin/,/\/\* fields-end/p' "$PG_DIR/dxberry.js" | grep -oE '"[a-z0-9_.*?]+"' | tr -d '"'; }
+pg_fields() { sed -n '/\/\* fields-begin/,/\/\* fields-end/p' "$PG_WEB/dxberry.js" | grep -oE '"[a-z0-9_.*?]+"' | tr -d '"'; }
 # pg_has_path FILE PATH: PATH (dot-separated) exists in FILE's JSON. * = the first element or entry;
 # ? = some element or entry, for a member not every entry has (Graywolf has nothing to open, Pat
 # has a web page).
@@ -51,24 +53,21 @@ test_page_html_loads_only_its_own_files() {
 }
 
 test_page_runs_everything_through_superuser_commands() {
-  local js=$PG_DIR/dxberry.js
-  assert_file_contains "$js" 'superuser: "require"'
+  local js=$PG_WEB/dxberry.js
   assert_file_contains "$js" '"/opt/dxberry/bin/dxberry-status"'
-  assert_file_contains "$js" '"/system/logs/#/?prio=debug&service="'
   assert_file_contains "$js" '"reboot.target"'
   assert_file_contains "$js" '"poweroff.target"'
   assert_file_not_contains "$js" "innerHTML"
   assert_file_not_contains "$js" "cockpit.file"
 }
 
-# Cockpit keeps a visited page's frame alive but hidden, and document.hidden stays false inside
-# it, so the refresh loop must watch cockpit.hidden/cockpit's own visibilitychange, not document's.
+# The refresh loop watches dxb.hidden and dxb.onVisible (app.js), not the document directly.
 # A --no-block power action that fails outright (not just the connection going away) must be
 # reported through failure(), not swallowed as a silent, permanent "restarting" state.
-test_page_watches_cockpit_visibility_and_reports_power_failures() {
-  local js=$PG_DIR/dxberry.js power_body
-  assert_file_contains "$js" "cockpit.hidden"
-  assert_file_contains "$js" 'cockpit.addEventListener("visibilitychange"'
+test_page_watches_visibility_and_reports_power_failures() {
+  local js=$PG_WEB/dxberry.js power_body
+  assert_file_contains "$js" "dxb.hidden"
+  assert_file_contains "$js" "dxb.onVisible("
   assert_file_not_contains "$js" "document.hidden"
   power_body=$(sed -n '/^function power(/,/^}/p' "$js")
   assert_contains "$power_body" "failure("
@@ -80,7 +79,7 @@ test_page_watches_cockpit_visibility_and_reports_power_failures() {
 # they created, setRefreshFailure() tracks it, and a later good refresh removes it. It must never
 # wipe out another notice (e.g. an action's "done") that happens to be showing at the time.
 test_page_clears_the_refresh_failure_notice_once_a_refresh_succeeds() {
-  local js=$PG_DIR/dxberry.js notice_body failure_body set_body refresh_body
+  local js=$PG_WEB/dxberry.js notice_body failure_body set_body refresh_body
   notice_body=$(sed -n '/^function notice(/,/^}/p' "$js")
   assert_contains "$notice_body" "return n"
   assert_contains "$notice_body" ".append(n)"
@@ -99,7 +98,7 @@ test_page_clears_the_refresh_failure_notice_once_a_refresh_succeeds() {
 # when the running one ends, not vanish. And a card that throws must show a notice, not leave the
 # page silently stale.
 test_page_reruns_a_refresh_asked_for_while_busy_and_survives_a_card_that_throws() {
-  local js=$PG_DIR/dxberry.js refresh_body show_body
+  local js=$PG_WEB/dxberry.js refresh_body show_body
   refresh_body=$(sed -n '/^function refresh(/,/^}/p' "$js")
   assert_contains "$refresh_body" "state.again = true"
   assert_contains "$refresh_body" "if (state.again)"
@@ -110,7 +109,7 @@ test_page_reruns_a_refresh_asked_for_while_busy_and_survives_a_card_that_throws(
 
 # The cards are rebuilt every 10 s; a keyboard user's focus must land back on the same button.
 test_page_keeps_keyboard_focus_across_a_refresh() {
-  local js=$PG_DIR/dxberry.js render_body
+  local js=$PG_WEB/dxberry.js render_body
   render_body=$(sed -n '/^function render(/,/^}/p' "$js")
   assert_contains "$render_body" "dataset.key"
   assert_contains "$render_body" ".focus()"
@@ -126,7 +125,7 @@ test_page_keeps_keyboard_focus_across_a_refresh() {
 # meaning of the exit code first.
 test_page_error_text_keeps_the_problem_and_drops_progress() {
   command -v node > /dev/null 2>&1 || return 0
-  local js=$PG_DIR/dxberry.js et pt stderr got
+  local js=$PG_WEB/dxberry.js et pt stderr got
   et=$(sed -n '/^function errorText(/,/^}/p' "$js")
   pt=$(sed -n '/^function problemText(/,/^}/p' "$js")
   stderr=$(printf '%s\n' '2026-10-06 12:00:00 [INFO] radio radio1 now owned by graywolf' \
@@ -144,7 +143,7 @@ console.log(problemText({problem: 'not-found'}));" "$stderr" '2026-10-06 12:00:0
 # Restart of cockpit.socket drops this console's session just like Stop, so it must ask first
 # too, with its own warning text (it reconnects on its own, unlike Stop).
 test_page_confirms_restarting_cockpit_socket_too() {
-  local js=$PG_DIR/dxberry.js unit_action_body
+  local js=$PG_WEB/dxberry.js unit_action_body
   assert_file_contains "$js" "RESTART_WARNINGS"
   # shellcheck disable=SC2016  # checking for the literal, unexpanded `Restart ${unit}?` in the JS
   assert_file_contains "$js" '`Restart ${unit}?`'
@@ -162,13 +161,13 @@ test_page_confirms_restarting_cockpit_socket_too() {
 test_page_smoke_drives_the_page_in_a_fake_browser() {
   command -v node > /dev/null 2>&1 || return 0
   local out
-  out=$(node "$DXB_ROOT/tests/page_smoke.js" "$PG_DIR/dxberry.js" 2>&1) || _fail "tests/page_smoke.js failed:
+  out=$(node "$DXB_ROOT/tests/page_smoke.js" "$PG_WEB/dxberry.js" 2>&1) || _fail "tests/page_smoke.js failed:
 $out"
 }
 
 test_page_script_parses() {
   command -v node > /dev/null 2>&1 || return 0   # node is optional locally; CI's runner has it
-  node --check "$PG_DIR/dxberry.js" 2> "$TEST_TMP/node.err" || _fail "dxberry.js does not parse: $(cat "$TEST_TMP/node.err")"
+  node --check "$PG_WEB/dxberry.js" 2> "$TEST_TMP/node.err" || _fail "dxberry.js does not parse: $(cat "$TEST_TMP/node.err")"
 }
 
 # Every field the page reads must exist in the real command's output, so a change to dxberry-status
@@ -213,7 +212,7 @@ test_page_reads_only_fields_that_dxberry_status_produces() {
 }
 
 # pg_radio_fields: "COMMAND:PATH" entries dxberry.js declares it reads from dxberry-radio's own answers.
-pg_radio_fields() { sed -n '/radio-fields-begin/,/radio-fields-end/p' "$PG_DIR/dxberry.js" | grep -oE '"[a-z]+:[a-z0-9_.*]+"' | tr -d '"'; }
+pg_radio_fields() { sed -n '/radio-fields-begin/,/radio-fields-end/p' "$PG_WEB/dxberry.js" | grep -oE '"[a-z]+:[a-z0-9_.*]+"' | tr -d '"'; }
 
 test_page_reads_only_fields_that_dxberry_radio_produces() {
   local DXB_RIGCTL=cli_rigctl f n=0
@@ -232,7 +231,7 @@ test_page_reads_only_fields_that_dxberry_radio_produces() {
 }
 
 test_page_drives_radios_through_dxberry_radio() {
-  local js=$PG_DIR/dxberry.js
+  local js=$PG_WEB/dxberry.js
   assert_file_contains "$js" 'const RADIO = "/opt/dxberry/bin/dxberry-radio";'
   assert_file_contains "$js" '["claim", name, app.name]'
   assert_file_contains "$js" '["release", name]'
@@ -247,7 +246,7 @@ test_page_drives_radios_through_dxberry_radio() {
 test_page_flags_graywolf_channels_made_by_hand() {
   command -v node > /dev/null 2>&1 || return 0
   local fn got
-  fn=$(sed -n '/^function handMadeChannels(/,/^}/p' "$PG_DIR/dxberry.js")
+  fn=$(sed -n '/^function handMadeChannels(/,/^}/p' "$PG_WEB/dxberry.js")
   got=$(node -e "let last = {graywolf: {ok: true, api_ok: true, channels: [{name: 'VHF APRS'}, {name: 'radio1'}, {name: 'constructor'}]}, radios: {radios: {radio1: {}}}};
 $fn
 console.log(JSON.stringify(handMadeChannels()));
@@ -262,7 +261,7 @@ console.log(JSON.stringify(handMadeChannels()));")
 test_page_says_when_the_owner_will_stop() {
   command -v node > /dev/null 2>&1 || return 0
   local fn got
-  fn=$(sed -n '/^function ownsOthers(/,/^}/p' "$PG_DIR/dxberry.js")
+  fn=$(sed -n '/^function ownsOthers(/,/^}/p' "$PG_WEB/dxberry.js")
   got=$(node -e "let last = {radios: {radios: {radio1: {owner: 'graywolf'}, radio2: {owner: ''}}}};
 $fn
 console.log(ownsOthers('graywolf', 'radio1'));
@@ -272,7 +271,7 @@ console.log(ownsOthers('graywolf', 'radio1'));")
 }
 
 test_page_has_the_radio_form_dialog() {
-  local html=$PG_DIR/index.html js=$PG_DIR/dxberry.js
+  local html=$PG_DIR/index.html js=$PG_WEB/dxberry.js
   assert_file_contains "$html" '<dialog id="radio-dialog" aria-labelledby="radio-dialog-title">'
   assert_file_contains "$html" '<form id="radio-form" novalidate>'
   assert_file_contains "$html" 'id="radio-fields"'
@@ -285,7 +284,7 @@ test_page_has_the_radio_form_dialog() {
 # The form pins by port path, sends add every field, and sends set only what changed.
 test_page_radio_form_sends_only_what_changed() {
   command -v node > /dev/null 2>&1 || return 0
-  local js=$PG_DIR/dxberry.js fn re got
+  local js=$PG_WEB/dxberry.js fn re got
   fn=$(sed -n '/^function radioFormArgs(/,/^}/p' "$js")
   re=$(grep -m1 '^const NAME_RE' "$js")
   got=$(node -e "$re
@@ -328,7 +327,7 @@ console.log(JSON.stringify(radioFormArgs()));")
 # A failed Hamlib list fetch must not be cached forever: opening the form retries it, so the
 # searchable list still appears once the command works.
 test_page_retries_a_failed_model_list_from_the_form() {
-  local js=$PG_DIR/dxberry.js load_body cards_body got
+  local js=$PG_WEB/dxberry.js load_body cards_body got
   load_body=$(sed -n '/^function loadModels(/,/^}/p' "$js")
   assert_contains "$load_body" "modelsLoading = null"
   cards_body=$(sed -n '/^function radiosCard(/,/^}/p' "$js")
@@ -339,6 +338,7 @@ test_page_retries_a_failed_model_list_from_the_form() {
 let models = null, modelsLoading = null;
 const answers = ['rigctl: not a listing', '[{\"model\":1}]'];
 function run() { return Promise.resolve(answers.shift()); }
+const dxb = { run };
 $load_body
 loadModels().then(() => console.log('parsed garbage'), () => {
   console.log('cleared ' + (modelsLoading === null));
@@ -352,7 +352,7 @@ loadModels().then(() => console.log('parsed garbage'), () => {
 # way; re-enabling Save and closing the dialog are for the form that is still open.
 test_page_a_stale_save_leaves_a_newer_form_alone() {
   command -v node > /dev/null 2>&1 || return 0
-  local js=$PG_DIR/dxberry.js fn got
+  local js=$PG_WEB/dxberry.js fn got
   fn=$(sed -n '/^function saveRadioForm(/,/^}/p' "$js")
   got=$(node -e "
 const RADIO = '/opt/dxberry/bin/dxberry-radio';
@@ -372,6 +372,7 @@ function problemText() { return 'problem'; }
 function radioFormArgs() { return { args: ['set', 'radio1', '--label', 'TM-V71'], name: 'radio1' }; }
 let resolveRun;
 function run() { return new Promise(res => { resolveRun = res; }); }
+const dxb = { run };
 let form = { edit: true, name: 'radio1', saving: false };
 $fn
 saveRadioForm({ preventDefault() {} });
@@ -413,7 +414,7 @@ test_page_settings_script_keeps_to_its_own_names() {
   assert_file_contains "$js" 'const CONFIG = "/opt/dxberry/bin/dxberry-config";'
   assert_file_contains "$js" '"--stdin"'
   command -v node > /dev/null 2>&1 || return 0
-  cat "$PG_DIR/dxberry.js" "$js" > "$TEST_TMP/both.js"
+  cat "$PG_WEB/dxberry.js" "$js" > "$TEST_TMP/both.js"
   node --check "$TEST_TMP/both.js" 2> "$TEST_TMP/node.err" || _fail "dxberry.js + settings.js do not parse as one script: $(cat "$TEST_TMP/node.err")"
 }
 
@@ -489,14 +490,14 @@ test_page_updates_script_keeps_to_its_own_names() {
   assert_file_not_contains "$js" "innerHTML"
   assert_file_contains "$js" 'const UPDATE = "/opt/dxberry/bin/dxberry-update";'
   command -v node > /dev/null 2>&1 || return 0
-  cat "$PG_DIR/dxberry.js" "$PG_DIR/settings.js" "$js" > "$TEST_TMP/all.js"
+  cat "$PG_WEB/dxberry.js" "$PG_DIR/settings.js" "$js" > "$TEST_TMP/all.js"
   node --check "$TEST_TMP/all.js" 2> "$TEST_TMP/node.err" || _fail "the three scripts do not parse as one: $(cat "$TEST_TMP/node.err")"
 }
 
 # Services is a wide card (all grid columns) and its unit names and buttons may wrap: on a computer
 # its table must never need a sideways scroll inside a 340 px column.
 test_page_services_card_spans_the_row_and_wraps() {
-  local css=$DXB_ROOT/provision/cockpit/dxberry/dxberry.css
+  local css=$PG_WEB/dxberry.css
   assert_ok grep -qE '^\.card\.wide \{[^}]*grid-column: 1 / -1' "$css"
   assert_ok grep -qE '^\.card\.wide (td|th)[^{]*\{[^}]*white-space: normal' "$css"
   assert_ok grep -qE '^\.row-actions \{[^}]*flex-wrap: wrap' "$css"
@@ -569,7 +570,7 @@ test_page_dashboard_and_programs_keep_to_their_own_names() {
   assert_file_not_contains "$PG_DIR/dashboard.js" "innerHTML"
   assert_file_not_contains "$PG_DIR/programs.js" "innerHTML"
   command -v node > /dev/null 2>&1 || return 0
-  cat "$PG_DIR/dxberry.js" "$PG_DIR/settings.js" "$PG_DIR/updates.js" "$PG_DIR/dashboard.js" "$PG_DIR/programs.js" > "$TEST_TMP/all.js"
+  cat "$PG_WEB/dxberry.js" "$PG_DIR/settings.js" "$PG_DIR/updates.js" "$PG_DIR/dashboard.js" "$PG_DIR/programs.js" > "$TEST_TMP/all.js"
   node --check "$TEST_TMP/all.js" 2> "$TEST_TMP/node.err" || _fail "the five scripts do not parse as one: $(cat "$TEST_TMP/node.err")"
 }
 

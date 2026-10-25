@@ -1,11 +1,10 @@
-/* DXBerry page for Cockpit (console spec sections 6, 7 and 9): station status, services and power.
- * Every reading and every action is a command run as superuser through cockpit.spawn; this file only
+/* DXBerry page (console spec sections 6, 7 and 9): station status, services and power.
+ * Every reading and every action is a command run through dxb.run (app.js); this file only
  * shows what those commands return and never reads or writes a file itself. Text from the Pi goes on
  * the page as text nodes, never as HTML. */
 "use strict";
 
 const STATUS = "/opt/dxberry/bin/dxberry-status";
-const LOGS = "/system/logs/#/?prio=debug&service=";
 const REFRESH_MS = 10000;
 const DASH = "—";
 const RADIO = "/opt/dxberry/bin/dxberry-radio";
@@ -250,7 +249,7 @@ function stationCard(g) {
   }
   return card("Station", g, body, [
     el("a", { class: "btn primary", href: `http://${location.hostname}:${g.web_port || 8080}/`, target: "_blank", rel: "noopener noreferrer", "data-key": "gw:open" }, "Open Graywolf"),
-    btn("Graywolf log", () => openLog("graywolf.service"), { key: "gw:log" }),
+    btn("Graywolf log", () => dxb.openLog("graywolf.service"), { key: "gw:log" }),
     btn("Restart Graywolf", () => unitAction("restart", "graywolf.service"), { key: "gw:restart" }),
   ]);
 }
@@ -260,7 +259,7 @@ function stationCard(g) {
 // Any failure - the command's, or an answer that does not parse - is forgotten, so the next ask retries.
 function loadModels() {
   if (!modelsLoading) {
-    modelsLoading = run([RADIO, "models", "--json"]).then(out => (models = JSON.parse(out)))
+    modelsLoading = dxb.run([RADIO, "models", "--json"]).then(out => (models = JSON.parse(out)))
       .then(null, ex => { modelsLoading = null; throw ex; });
   }
   return modelsLoading;
@@ -388,7 +387,7 @@ function radiosCard(r) {
 function radioAction(name, t, args) {
   pending[name] = t.busy;
   show();
-  return run([RADIO, ...args, "--json"]).then(out => {
+  return dxb.run([RADIO, ...args, "--json"]).then(out => {
     delete pending[name];
     notice(t.done, "good");
     for (const w of warningsOf(out)) notice(`${name}: ${w}`, "warn");
@@ -531,7 +530,7 @@ function servicesCard(s) {
         btn("Restart", () => unitAction("restart", u.unit), { key: `unit:${u.unit}:restart`, aria: `Restart ${u.unit}` })]
       : [btn("Start", () => unitAction("start", u.unit), { key: `unit:${u.unit}:start`, aria: `Start ${u.unit}` })];
     return [u.unit, unitState(u), el("span", { class: "row-actions" }, acts),
-      btn("Log", () => openLog(u.unit), { cls: "link", key: `unit:${u.unit}:log`, aria: `Log of ${u.unit}` })];
+      btn("Log", () => dxb.openLog(u.unit), { cls: "link", key: `unit:${u.unit}:log`, aria: `Log of ${u.unit}` })];
   });
   // wide: it spans the whole row of cards, so unit names and their buttons are not squeezed
   return card("Services", s, [table(["Unit", "State", srOnly("Actions"), srOnly("Log")], rows)], null, "wide");
@@ -546,17 +545,8 @@ function powerCard() {
 }
 
 // ---- actions ------------------------------------------------------------------------------
-// run ARGS [INPUT]: the command as superuser; INPUT (passwords, for one) goes to its standard input,
-// never into ARGS. Cockpit's spawn promise sends it with input() and then closes stdin.
-function run(args, input) {
-  const p = cockpit.spawn(args, { superuser: "require", err: "message" });
-  return input === undefined ? p : p.input(input);
-}
-
-function openLog(unit) {
-  cockpit.jump(LOGS + encodeURIComponent(unit));
-}
-
+// dxb.run ARGS [INPUT] (app.js) runs the command; INPUT (passwords, for one) goes to its standard
+// input, never into ARGS.
 function notice(text, kind, sticky) {
   const n = el("div", { class: "notice " + kind }, el("span", {}, text));
   if (!sticky) n.append(el("button", { class: "close", type: "button", "aria-label": "Dismiss", onclick: () => n.remove() }, "×"));
@@ -605,7 +595,7 @@ function confirmThen(title, text, label, action) {
 }
 
 function unitAction(verb, unit) {
-  const go = () => run(["systemctl", verb, unit]).then(
+  const go = () => dxb.run(["systemctl", verb, unit]).then(
     () => { notice(`${unit}: ${verb} done.`, "good"); refresh(true); },
     ex => failure(`systemctl ${verb} ${unit}`, ex));
   if (verb === "stop" && STOP_WARNINGS[unit]) confirmThen(`Stop ${unit}?`, STOP_WARNINGS[unit], "Stop", go);
@@ -624,7 +614,7 @@ function power(target) {
     () => {
       state.stopped = true;
       notice(reboot ? "Pi restarting, reconnecting…" : "Pi shutting down…", "warn", true);
-      run(["systemctl", "--no-block", "start", target]).then(null, ex => {
+      dxb.run(["systemctl", "--no-block", "start", target]).then(null, ex => {
         // "disconnected"/"terminated": the connection going away as the Pi goes down, not a failure.
         if (ex && (ex.problem === "disconnected" || ex.problem === "terminated")) return;
         state.stopped = false;
@@ -834,7 +824,7 @@ function saveRadioForm(e) {
   f.saving = true;
   setFormError("");
   setSaving(true);
-  run([RADIO, ...r.args, "--json"]).then(out => {
+  dxb.run([RADIO, ...r.args, "--json"]).then(out => {
     f.saving = false;
     // a cancelled-then-reopened form is not this one any more: only the dialog that is still
     // this form's own gets re-enabled and closed; the notice and refresh happen regardless
@@ -895,7 +885,7 @@ function setRefreshFailure(n) {
 }
 
 function refresh(force) {
-  if (state.stopped || (cockpit.hidden && force !== true)) return;
+  if (state.stopped || (dxb.hidden && force !== true)) return;
   // an action's refresh asked for while the timer's one runs must still happen once that ends
   if (state.busy) { if (force === true) state.again = true; return; }
   state.busy = true;
@@ -903,7 +893,7 @@ function refresh(force) {
     state.busy = false;
     if (state.again) { state.again = false; refresh(true); }
   };
-  run([STATUS, "--json"]).then(out => {
+  dxb.run([STATUS, "--json"]).then(out => {
     let s = null;
     try { s = JSON.parse(out); } catch (e) { s = null; }
     if (s) {
@@ -930,7 +920,7 @@ function init() {
   applyTheme();
   window.addEventListener("storage", applyTheme);
   document.getElementById("refresh").addEventListener("click", () => refresh(true));
-  cockpit.addEventListener("visibilitychange", () => { if (!cockpit.hidden) refresh(true); });
+  dxb.onVisible(() => refresh(true));
   document.getElementById("radio-form").addEventListener("submit", saveRadioForm);
   document.getElementById("radio-cancel").addEventListener("click", () => { form = null; document.getElementById("radio-dialog").close(); });
   refresh(true);
