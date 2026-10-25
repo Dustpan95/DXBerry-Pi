@@ -6,8 +6,30 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/radios"
 	"github.com/coder/websocket"
 )
+
+// RadioSource is the radio records watcher as the events socket sees it.
+type RadioSource interface {
+	List() []radios.Radio
+	Subscribe() <-chan []radios.Radio
+	Unsubscribe(<-chan []radios.Radio)
+}
+
+// SetRadios makes events sockets also carry the radios part. Call it before serving.
+func (s *Status) SetRadios(src RadioSource) { s.radios = src }
+
+func radiosMessage(list []radios.Radio) []byte {
+	if list == nil {
+		list = []radios.Radio{}
+	}
+	b, _ := json.Marshal(struct {
+		Type string         `json:"type"`
+		Data []radios.Radio `json:"data"`
+	}{"radios", list})
+	return b
+}
 
 var (
 	pingEvery    = 30 * time.Second
@@ -78,6 +100,14 @@ func (s *Status) events(w http.ResponseWriter, r *http.Request, alive func(*http
 	if !send(s.message()) {
 		return
 	}
+	var radioUpdates <-chan []radios.Radio // nil (never ready) when no source is set
+	if s.radios != nil {
+		radioUpdates = s.radios.Subscribe()
+		defer s.radios.Unsubscribe(radioUpdates)
+		if !send(radiosMessage(s.radios.List())) {
+			return
+		}
+	}
 	ping := time.NewTicker(pingEvery)
 	defer ping.Stop()
 	check := time.NewTicker(every)
@@ -89,6 +119,10 @@ func (s *Status) events(w http.ResponseWriter, r *http.Request, alive func(*http
 			return
 		case <-updates:
 			if !send(s.message()) {
+				return
+			}
+		case l := <-radioUpdates:
+			if !send(radiosMessage(l)) {
 				return
 			}
 		case <-check.C:

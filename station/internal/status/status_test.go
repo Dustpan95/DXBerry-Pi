@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/httpapi"
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/radios"
 )
 
 // fakeClock only moves when a test advances it; At fires when the clock reaches the deadline.
@@ -461,4 +463,45 @@ func TestEventsCloseOnLogout(t *testing.T) {
 		t.Fatalf("closed with %d (%v), want policy violation", got, err)
 	}
 	eventually(t, "the listener gone", func() bool { return r.st.Listeners() == 0 })
+}
+
+func TestEventsCarriesRadios(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/radios.json"
+	rec := func(label string) string {
+		return `{"radios":{"a":{"label":"` + label + `","rigctld_port":4532,"owner":"station","ptt":{"method":"cat"},"rig":{"model":1,"control":"usb"},"cat":null}}}`
+	}
+	if err := os.WriteFile(path, []byte(rec("One")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := radios.New(path, 10*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+	r := newRig(t)
+	r.st.SetRadios(w)
+	ts := serve(t, r.st, true)
+	c, err := dial(t, ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := readMsg(t, c); string(m["type"]) != `"status"` {
+		t.Fatalf("first message %s", m["type"])
+	}
+	m := readMsg(t, c)
+	if string(m["type"]) != `"radios"` || !strings.Contains(string(m["data"]), `"One"`) {
+		t.Fatalf("radios message %v", m)
+	}
+	if err := os.WriteFile(path, []byte(rec("Two")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		m = readMsg(t, c)
+		if string(m["type"]) == `"radios"` {
+			break
+		}
+	}
+	if !strings.Contains(string(m["data"]), `"Two"`) {
+		t.Fatalf("change not published: %s", m["data"])
+	}
 }

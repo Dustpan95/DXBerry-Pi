@@ -33,8 +33,9 @@ func (realClock) At(t time.Time) <-chan time.Time {
 
 // Status is the cache and the refresh loop.
 type Status struct {
-	run   func(ctx context.Context) (string, error)
-	clock Clock
+	run    func(ctx context.Context) (string, error)
+	clock  Clock
+	radios RadioSource // nil until SetRadios
 
 	mu      sync.Mutex
 	raw     json.RawMessage // the last answer that parsed; nil before the first

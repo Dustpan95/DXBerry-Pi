@@ -19,6 +19,7 @@ import (
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/auth"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/cli"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/httpapi"
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/radios"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/status"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/term"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/tlscert"
@@ -35,6 +36,7 @@ func main() {
 	bin := flag.String("bin", "/opt/dxberry/bin", "directory of the dxberry-* commands")
 	tlsDir := flag.String("tls", "/etc/dxberry/tls", "directory of station.crt and station.key")
 	screens := flag.String("screens", "/run/dxberry/screens", "directory of the program windows' unix sockets")
+	radiosPath := flag.String("radios", "/var/lib/dxberry/radios.json", "radio records file")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -52,6 +54,8 @@ func main() {
 		}
 		return res.Stdout, err
 	}, nil)
+	rw := radios.New(*radiosPath, 0)
+	st.SetRadios(rw)
 	runner.OnCall = func(cmd string, args []string) {
 		if status.ChangesState(cmd, args) {
 			st.Poke()
@@ -92,6 +96,7 @@ func main() {
 	statusCtx, stopStatus := context.WithCancel(context.Background())
 	defer stopStatus()
 	go st.Run(statusCtx)
+	go rw.Run(statusCtx)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
