@@ -361,3 +361,71 @@ func TestAliveDoesNotRenew(t *testing.T) {
 		}
 	}
 }
+
+// fakeSudo writes a script standing in for sudo and returns its path.
+func fakeSudo(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "sudo")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestSudoersProbe(t *testing.T) {
+	d := t.TempDir()
+	grp, pw := filepath.Join(d, "group"), filepath.Join(d, "passwd")
+	os.WriteFile(grp, []byte("root:x:0:\nsudo:x:27:alice\n"), 0o644)
+	os.WriteFile(pw, []byte("alice:x:1000:1000::/h:/bin/sh\ndietpi:x:1001:1001::/h:/bin/sh\n"), 0o644)
+	for _, c := range []struct {
+		name, script, user string
+		want               bool
+	}{
+		{"allowed", `echo "Matching Defaults entries for dietpi on box:"; echo "User dietpi may run the following commands on box:"; echo "    (ALL : ALL) NOPASSWD: ALL"`, "dietpi", true},
+		{"not allowed, exit 0", `echo "User dietpi is not allowed to run sudo on box."`, "dietpi", false},
+		{"missing user, exit 1", `echo "sudo: unknown user dietpi" >&2; exit 1`, "dietpi", false},
+		{"allowed text but exit 1", `echo "User dietpi may run the following commands on box:"; exit 1`, "dietpi", false},
+		{"someone else's line", `echo "User other may run the following commands on box:"`, "dietpi", false},
+		{"option-like name", `echo "User -x may run the following commands on box:"`, "-x", false},
+	} {
+		g := auth.FileGroups{Group: grp, Passwd: pw, Sudo: fakeSudo(t, c.script)}
+		if got, err := g.IsAdmin(c.user); err != nil || got != c.want {
+			t.Errorf("%s: got %v %v, want %v", c.name, got, err, c.want)
+		}
+	}
+	// the group path never needs the probe
+	g := auth.FileGroups{Group: grp, Passwd: pw, Sudo: fakeSudo(t, "exit 1")}
+	if got, _ := g.IsAdmin("alice"); !got {
+		t.Error("group member refused")
+	}
+	// a probe that hangs is cut off at the timeout
+	g = auth.FileGroups{Group: grp, Passwd: pw, Sudo: fakeSudo(t, "exec sleep 30"), ProbeTimeout: 200 * time.Millisecond}
+	start := time.Now()
+	if got, _ := g.IsAdmin("dietpi"); got || time.Since(start) > 5*time.Second {
+		t.Errorf("hanging probe: got %v after %v", got, time.Since(start))
+	}
+}
+
+func TestLoginAcceptsSudoersAdmin(t *testing.T) {
+	d := t.TempDir()
+	grp, pw := filepath.Join(d, "group"), filepath.Join(d, "passwd")
+	os.WriteFile(grp, []byte("sudo:x:27:\n"), 0o644)
+	os.WriteFile(pw, []byte("dietpi:x:1001:1001::/h:/bin/sh\nbob:x:1002:1002::/h:/bin/sh\n"), 0o644)
+	sudo := fakeSudo(t, `if [ "$4" = dietpi ]; then echo "User dietpi may run the following commands on box:"; else echo "User $4 is not allowed to run sudo on box."; fi`)
+	m := auth.New(fakeAuth{}, auth.FileGroups{Group: grp, Passwd: pw, Sudo: sudo}, nil)
+	h := httpapi.New(httpapi.Config{Web: fstest.MapFS{"index.html": {Data: []byte("x")}}, Auth: m, Routes: m.Register}).Handler
+	login := func(user string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(`{"user":"`+user+`","password":"right"}`))
+		req.RemoteAddr = "10.0.0.5:1"
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := login("dietpi"); rec.Code != 200 {
+		t.Fatalf("dietpi: %d %s", rec.Code, rec.Body)
+	}
+	if rec := login("bob"); rec.Code != 403 || !strings.Contains(rec.Body.String(), "this account cannot administer the Pi") {
+		t.Fatalf("bob: %d %s", rec.Code, rec.Body)
+	}
+}

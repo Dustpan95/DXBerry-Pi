@@ -4,11 +4,16 @@ package auth
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -29,13 +34,55 @@ type GroupLookup interface {
 	IsAdmin(user string) (bool, error)
 }
 
-// FileGroups reads membership of the sudo group from /etc/group and /etc/passwd.
+// FileGroups reads membership of the sudo group from /etc/group and /etc/passwd. An account
+// outside that group is still an administrator when sudo itself says it may run commands (a stock
+// DietPi grants dietpi root through /etc/sudoers.d, not through the group).
 type FileGroups struct {
 	Group, Passwd string
+	// Sudo is the sudo binary the sudoers probe runs; empty turns the probe off.
+	Sudo string
+	// ProbeTimeout bounds the probe (5 s when zero).
+	ProbeTimeout time.Duration
 }
 
-// DefaultGroups reads the system files.
-func DefaultGroups() FileGroups { return FileGroups{Group: "/etc/group", Passwd: "/etc/passwd"} }
+// DefaultGroups reads the system files and probes /usr/bin/sudo.
+func DefaultGroups() FileGroups {
+	return FileGroups{Group: "/etc/group", Passwd: "/etc/passwd", Sudo: "/usr/bin/sudo"}
+}
+
+var reAccount = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
+// sudoersAllows runs `sudo -n -l -U user` and reports whether it printed that the user may run
+// commands. sudo exits 0 for a user who is not allowed, so the text is the signal, not the code.
+func (g FileGroups) sudoersAllows(user string) bool {
+	if g.Sudo == "" || !reAccount.MatchString(user) { // a name that starts with - would be a sudo option
+		return false
+	}
+	d := g.ProbeTimeout
+	if d == 0 {
+		d = 5 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, g.Sudo, "-n", "-l", "-U", user)
+	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8"}
+	cmd.WaitDelay = time.Second
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+	ok := err == nil && hasLine(out.Bytes(), "User "+user+" may run the following commands")
+	slog.Debug("sudoers probe", "user", user, "allowed", ok)
+	return ok
+}
+
+func hasLine(b []byte, prefix string) bool {
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, prefix) {
+			return true
+		}
+	}
+	return false
+}
 
 func readColonFile(path string, fn func(f []string)) error {
 	fh, err := os.Open(path)
@@ -67,15 +114,16 @@ func (g FileGroups) IsAdmin(user string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if admin || !found {
-		return admin, nil
-	}
-	err = readColonFile(g.Passwd, func(f []string) {
-		if len(f) >= 4 && f[0] == user && f[3] == gid {
-			admin = true
+	if !admin && found {
+		if err = readColonFile(g.Passwd, func(f []string) {
+			if len(f) >= 4 && f[0] == user && f[3] == gid {
+				admin = true
+			}
+		}); err != nil {
+			return false, err
 		}
-	})
-	return admin, err
+	}
+	return admin || g.sudoersAllows(user), nil
 }
 
 const (
