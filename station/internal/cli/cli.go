@@ -140,6 +140,7 @@ var allow = map[string][][]string{
 		{"start", "UNIT"},
 		{"stop", "UNIT"},
 		{"restart", "UNIT"},
+		{"is-active", "UNIT"},
 		{"--no-block", "start", "reboot.target"},
 		{"--no-block", "start", "poweroff.target"},
 	},

@@ -157,7 +157,7 @@ test_build_ships_every_program_file() {
     f=${f#"$DXB_ROOT"/}
     [[ $required == *" $f "* ]] || _fail "$f is not in REQUIRED_FILES"
   done
-  d=provision/cockpit/dxberry/novnc
+  d=station/web/vendor/novnc
   [[ -f $DXB_ROOT/$d/core/rfb.js ]] || _fail "$d/core/rfb.js is missing from the tree"
   grep -qF "$d/core/rfb.js" "$DXB_ROOT/build/build-image.sh" || _fail "build-image.sh does not check $d/core/rfb.js"
   assert_contains "$required" "provision/bin/dxberry-app"

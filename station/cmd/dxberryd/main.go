@@ -17,6 +17,7 @@ import (
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/auth"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/cli"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/httpapi"
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/vnc"
 	"github.com/Dustpan95/DXBerry-Pi/station/web"
 )
 
@@ -27,6 +28,7 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8090", "address nginx proxies to")
 	state := flag.String("state", "/var/lib/dxberry/station", "state directory")
 	bin := flag.String("bin", "/opt/dxberry/bin", "directory of the dxberry-* commands")
+	screens := flag.String("screens", "/run/dxberry/screens", "directory of the program windows' unix sockets")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -40,6 +42,10 @@ func main() {
 	routes := func(mux *http.ServeMux) {
 		mgr.Register(mux)
 		runner.Register(mux)
+		mux.Handle("GET /api/vnc/{session}", vnc.Handler(*screens, func(ctx context.Context, session string) bool {
+			res, err := runner.Run(ctx, cli.Call{Command: "systemctl", Args: []string{"is-active", "dxberry-screen@" + session + ".service"}})
+			return err == nil && res.Exit == 0
+		}))
 	}
 	srv := httpapi.New(httpapi.Config{Listen: *listen, Web: web.Files, Auth: mgr, Version: version, Routes: routes})
 	log.Printf("dxberryd %s listening on %s (state %s, bin %s)", version, *listen, *state, *bin)

@@ -503,52 +503,9 @@ test_page_services_card_spans_the_row_and_wraps() {
   assert_ok grep -qE '^\.row-actions \{[^}]*flex-wrap: wrap' "$css"
 }
 
-test_page_screen_html_loads_only_its_own_files() {
-  local h=$PG_DIR/screen.html
-  assert_eq "$(grep -oE 'src="[^"]*"' "$h" | sort | tr '\n' ' ')" 'src="../base1/cockpit.js" src="screen.js" '
-  assert_file_contains "$h" 'type="module"'
-  assert_file_not_contains "$h" "style="
-  if grep -qE '<script>|[[:space:]]on[a-z]+=' "$h"; then _fail "screen.html has an inline script or handler"; fi
-}
-test_page_screen_js_uses_the_external_channel_without_superuser() {
-  local js=$PG_DIR/screen.js
-  assert_file_contains "$js" '"/opt/dxberry/bin/dxberry-app"'
-  assert_file_contains "$js" '/cockpit/channel/'
-  assert_file_contains "$js" 'payload: "stream"'
-  assert_file_not_contains "$js" 'superuser'
-  assert_file_not_contains "$js" 'innerHTML'
-  assert_file_contains "$js" 'from "./novnc/core/rfb.js"'
-}
-test_page_novnc_is_vendored_with_its_licence() {
-  [[ -f $PG_DIR/novnc/core/rfb.js && -f $PG_DIR/novnc/LICENSE.txt && -f $PG_DIR/novnc/VERSION ]] || _fail "noVNC is not vendored"
-  assert_file_contains "$PG_DIR/novnc/core/rfb.js" "MPL"
-}
 test_page_manifest_allows_secure_websockets_to_itself() {
   assert_contains "$(jq -r '."content-security-policy"' "$PG_DIR/manifest.json")" "connect-src 'self' wss:"
 }
-# every relative import inside the vendored noVNC tree resolves to a file inside it
-test_page_novnc_imports_resolve_inside_the_tree() {
-  local f dir spec target bad=''
-  while IFS= read -r f; do
-    dir=$(dirname "$f")
-    while IFS= read -r spec; do
-      target=$(realpath -m "$dir/$spec")
-      [[ $target == "$PG_DIR/novnc/"* && -f $target ]] || bad+=" $f->$spec"
-    done < <(grep -hoE "(from|import) +['\"]\.[^'\"]+['\"]" "$f" | grep -oE "\.[^'\"]+")
-  done < <(find "$PG_DIR/novnc" -name '*.js')
-  assert_eq "$bad" ""
-}
-test_page_novnc_has_no_attribution_text() {
-  if grep -rIqiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic' "$PG_DIR/novnc"; then _fail "vendored noVNC matches the attribution grep"; fi
-}
-# the program tab in the fake browser: stopped, running over the channel, and a bad address
-test_page_screen_smoke_drives_the_program_tab() {
-  command -v node > /dev/null 2>&1 || return 0
-  local out
-  out=$(node "$DXB_ROOT/tests/page_smoke.js" --screen "$PG_DIR/screen.js" 2>&1) || _fail "page_smoke.js --screen failed:
-$out"
-}
-
 # The dashboard, then the cards; Programs after Updates; the two new dialogs.
 test_page_html_puts_the_station_first_and_programs_after_updates() {
   local html=$PG_DIR/index.html ids

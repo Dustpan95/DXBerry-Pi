@@ -1,11 +1,10 @@
 // screen.js: the program tab. Opens one program's window (a VNC screen that listens only on a unix
-// socket) with noVNC over Cockpit's own authenticated external channel. Runs as the logged-in user,
-// without administrative access: dxberry-app screen only reads unit state and a group-readable file.
-import RFB from "./novnc/core/rfb.js";
+// socket) with noVNC over the station's own authenticated WebSocket relay (/api/vnc/SESSION).
+import RFB from "./vendor/novnc/core/rfb.js";
 
 const SCR_APP = "/opt/dxberry/bin/dxberry-app";
 const SCR_SESSION = /^[a-z][a-z0-9_]{0,15}-[a-z][a-z0-9]{0,11}$/;
-const SCR_STATION = "/cockpit/@localhost/dxberry/index.html";
+const SCR_STATION = "/";
 const SCR_NO_ACCESS = "This login cannot open the program's screen yet. Log out of the console and back in once, then reload this tab.";
 const SCR_CLOSED = "The program window closed. Reconnect?";
 
@@ -32,31 +31,25 @@ function scrDrop() {
   }
 }
 
-function scrTransportReady() {
-  return new Promise(resolve => cockpit.transport.wait(resolve));
+function scrChannel() {
+  if (!SCR_SESSION.test(scr.session)) throw new Error("not a program window");
+  return dxb.ws("/api/vnc/" + scr.session);
 }
 
-function scrUrl(socket) {
-  const query = btoa(JSON.stringify({ payload: "stream", binary: "raw", unix: socket }));
-  return "wss://" + location.host + "/cockpit/channel/" + cockpit.transport.csrf_token + "?" + query;
-}
-
-function scrConnect(socket, run) {
+function scrConnect(run) {
   scrEl("state").textContent = "Connecting";
-  scrTransportReady().then(() => {
+  if (run !== scr.run) return;
+  let connected = false;
+  const rfb = new RFB(scrEl("screen"), scrChannel(), { shared: true });
+  rfb.scaleViewport = false;
+  rfb.resizeSession = true;
+  scr.rfb = rfb;
+  rfb.addEventListener("connect", () => { connected = true; scrEl("state").textContent = "Connected"; });
+  rfb.addEventListener("credentialsrequired", () => { scrEl("state").textContent = "Disconnected"; scrSay("The program's screen asked for a password, which this page cannot give."); });
+  rfb.addEventListener("disconnect", () => {
     if (run !== scr.run) return;
-    let connected = false;
-    const rfb = new RFB(scrEl("screen"), scrUrl(socket), { shared: true });
-    rfb.scaleViewport = false;
-    rfb.resizeSession = true;
-    scr.rfb = rfb;
-    rfb.addEventListener("connect", () => { connected = true; scrEl("state").textContent = "Connected"; });
-    rfb.addEventListener("credentialsrequired", () => { scrEl("state").textContent = "Disconnected"; scrSay("The program's screen asked for a password, which this page cannot give."); });
-    rfb.addEventListener("disconnect", () => {
-      if (run !== scr.run) return;
-      scrEl("state").textContent = "Disconnected";
-      if (!connected) scrRecheck(run);
-    });
+    scrEl("state").textContent = "Disconnected";
+    if (!connected) scrRecheck(run);
   });
 }
 
@@ -64,7 +57,7 @@ function scrConnect(socket, run) {
 // screens is told to log out and in; otherwise the window simply closed (the program ended, or the
 // screen was not ready yet).
 function scrRecheck(run) {
-  cockpit.spawn([SCR_APP, "screen", scr.session, "--json"], { err: "message" }).then(text => {
+  dxb.run([SCR_APP, "screen", scr.session, "--json"]).then(text => {
     if (run !== scr.run) return;
     let info = null;
     try { info = JSON.parse(text); } catch (e) { info = null; }
@@ -83,7 +76,7 @@ function scrShow(info, run) {
   document.title = label + " · " + radio;
   if (info.state === "running" && info.socket) {
     scrEl("screen").replaceChildren();
-    scrConnect(info.socket, run);
+    scrConnect(run);
     return;
   }
   scrEl("state").textContent = info.state === "running" ? "No screen" : info.state;
@@ -99,7 +92,7 @@ function scrStart() {
   const run = scr.run;
   scrDrop();
   scrEl("state").textContent = "Reading";
-  cockpit.spawn([SCR_APP, "screen", scr.session, "--json"], { err: "message" }).then(text => {
+  dxb.run([SCR_APP, "screen", scr.session, "--json"]).then(text => {
     if (run !== scr.run) return;
     let info;
     try { info = JSON.parse(text); } catch (e) { scrEl("state").textContent = "Error"; scrSay("The station gave an answer this page cannot read."); return; }

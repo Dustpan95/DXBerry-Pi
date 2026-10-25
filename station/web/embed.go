@@ -5,5 +5,5 @@ import "embed"
 
 // Files is the web tree. Add a pattern here when a page or folder joins it.
 //
-//go:embed *.html *.js *.css *.webmanifest icons
+//go:embed *.html *.js *.css *.webmanifest icons vendor/novnc
 var Files embed.FS

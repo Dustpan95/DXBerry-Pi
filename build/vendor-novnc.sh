@@ -1,12 +1,12 @@
 #!/bin/bash
 # vendor-novnc.sh [DEST]: vendor noVNC's newest release (core/, vendor/pako/, LICENSE.txt) into DEST
-# (default provision/cockpit/dxberry/novnc) for the console's program tab. Re-running it is how
+# (default station/web/vendor/novnc) for the console's program tab. Re-running it is how
 # noVNC is updated. Writes DEST/VERSION (the release tag) and DEST/README. Fails, leaving DEST
 # untouched, when the repository's attribution grep matches any copied file.
 set -uo pipefail
 die() { echo "vendor-novnc: $*" >&2; exit 1; }
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || die "cannot find the repository"
-dest=${1:-$root/provision/cockpit/dxberry/novnc}
+dest=${1:-$root/station/web/vendor/novnc}
 api=${DXB_NOVNC_API:-https://api.github.com/repos/novnc/noVNC/releases/latest}
 work=$(mktemp -d) || die "no temporary directory"
 trap 'rm -rf "$work"' EXIT
@@ -25,7 +25,7 @@ cp -r "$work/src/vendor/pako" "$work/out/vendor/pako" || die "copy failed"
 cp "$work/src/LICENSE.txt" "$work/out/LICENSE.txt" || die "copy failed"
 printf '%s\n' "$tag" > "$work/out/VERSION"
 cat > "$work/out/README" <<'TXT'
-This is noVNC, an HTML5 VNC client (https://github.com/novnc/noVNC), vendored unmodified: core/, vendor/pako/ and LICENSE.txt from the release named in VERSION. It is licensed under the MPL-2.0 (see LICENSE.txt; file headers are kept). The program tab (../screen.js) imports core/rfb.js. To update, run build/vendor-novnc.sh from the repository root: it fetches the newest release and replaces this directory.
+This is noVNC, an HTML5 VNC client (https://github.com/novnc/noVNC), vendored unmodified: core/, vendor/pako/ and LICENSE.txt from the release named in VERSION. It is licensed under the MPL-2.0 (see LICENSE.txt; file headers are kept). The program tab (../../screen.js) imports core/rfb.js. To update, run build/vendor-novnc.sh from the repository root: it fetches the newest release and replaces this directory.
 TXT
 if grep -rIlE -i 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic' "$work/out" > "$work/hits"; then
   die "attribution grep matched: $(tr '\n' ' ' < "$work/hits")"

@@ -158,3 +158,51 @@ test_station_pages_parse_together() {
   cat "$SP_WEB/dxberry.js" "$SP_WEB/settings.js" "$SP_WEB/updates.js" "$SP_WEB/dashboard.js" "$SP_WEB/programs.js" > "$TEST_TMP/sp-all.js"
   node --check "$TEST_TMP/sp-all.js" 2> "$TEST_TMP/sp-node.err" || _fail "the page scripts do not parse as one: $(cat "$TEST_TMP/sp-node.err")"
 }
+
+# ---- the program window: screen.html, screen.js and the vendored noVNC (moved from test_page.sh) ----
+test_station_screen_html_loads_only_its_own_files() {
+  local h=$SP_WEB/screen.html
+  assert_eq "$(grep -oE 'src="[^"]*"' "$h" | sort | tr '\n' ' ')" 'src="/app.js" src="/screen.js" '
+  assert_file_contains "$h" 'type="module"'
+  assert_file_not_contains "$h" "style="
+  if grep -qE '<script>|[[:space:]]on[a-z]+=' "$h"; then _fail "screen.html has an inline script or handler"; fi
+}
+test_station_screen_js_uses_the_relay_without_cockpit() {
+  local js=$SP_WEB/screen.js
+  assert_file_contains "$js" '"/opt/dxberry/bin/dxberry-app"'
+  assert_file_contains "$js" 'dxb.ws("/api/vnc/" + scr.session)'
+  assert_file_not_contains "$js" 'cockpit'
+  assert_file_not_contains "$js" 'superuser'
+  assert_file_not_contains "$js" 'innerHTML'
+  assert_file_contains "$js" 'from "./vendor/novnc/core/rfb.js"'
+}
+test_station_novnc_is_vendored_with_its_licence() {
+  local d=$SP_WEB/vendor/novnc
+  [[ -f $d/core/rfb.js && -f $d/LICENSE.txt && -f $d/VERSION ]] || _fail "noVNC is not vendored"
+  assert_file_contains "$d/core/rfb.js" "MPL"
+}
+# every relative import inside the vendored noVNC tree resolves to a file inside it
+test_station_novnc_imports_resolve_inside_the_tree() {
+  local d=$SP_WEB/vendor/novnc f dir spec target bad=''
+  while IFS= read -r f; do
+    dir=$(dirname "$f")
+    while IFS= read -r spec; do
+      target=$(realpath -m "$dir/$spec")
+      [[ $target == "$d/"* && -f $target ]] || bad+=" $f->$spec"
+    done < <(grep -hoE "(from|import) +['\"]\.[^'\"]+['\"]" "$f" | grep -oE "\.[^'\"]+")
+  done < <(find "$d" -name '*.js')
+  assert_eq "$bad" ""
+}
+test_station_novnc_has_no_attribution_text() {
+  if grep -rIqiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic' "$SP_WEB/vendor/novnc"; then _fail "vendored noVNC matches the attribution grep"; fi
+}
+test_station_embed_carries_the_vendored_novnc() {
+  assert_file_contains "$SP_WEB/embed.go" 'vendor/novnc'
+}
+# the program window in the fake browser: stopped, running over the relay, and a bad address
+test_station_screen_smoke_drives_the_program_window() {
+  command -v node > /dev/null 2>&1 || return 0
+  local out
+  out=$(node "$DXB_ROOT/tests/station_screen.js" "$SP_WEB/screen.js" 2>&1) || _fail "station_screen.js failed:
+$out"
+}
