@@ -22,7 +22,6 @@ import (
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/radios"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/rig"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/session"
-	"github.com/Dustpan95/DXBerry-Pi/station/internal/settings"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/status"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/term"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/tlscert"
@@ -79,8 +78,6 @@ func main() {
 		p, ok := rigs.Radio(radio)
 		return ok && p.State().PTT
 	})
-	radioSettings := &httpapi.RadioSettingsAPI{Radios: rw, Settings: &settings.Store{Dir: filepath.Join(*state, "radios")},
-		Probe: httpapi.ManagerProbe(rigs, rig.CapsCache{Dir: *rigCaps})}
 	radioAPI := &httpapi.RadioAPI{Auth: mgr, Radios: rw, Rigs: httpapi.ManagerRigs(rigs), Owners: owners}
 	// a tab's claim ends with its events socket (the page opens it with ?tab=<its token>)
 	st.OnSocket(func(r *http.Request) func() {
@@ -104,7 +101,6 @@ func main() {
 		runner.Register(mux)
 		st.Register(mux, mgr.Alive)
 		radioAPI.Register(mux)
-		radioSettings.Register(mux)
 		sessionOf := func(r *http.Request) *httpapi.Session {
 			s, _ := mgr.Session(r)
 			return s
