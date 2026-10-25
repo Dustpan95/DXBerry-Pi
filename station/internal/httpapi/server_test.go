@@ -220,3 +220,18 @@ func TestServesStationCertificateWithoutSession(t *testing.T) {
 		t.Fatalf("missing cert: %d", rec.Code)
 	}
 }
+
+func TestNonCanonicalPathsAre404(t *testing.T) {
+	for _, loggedIn := range []bool{false, true} {
+		h := testServer(loggedIn)
+		for _, p := range []string{"/api/auth/../cli/x", "/api//version", "/api/./version", "//api/version", "/app.js/../x", "/api/version/"} {
+			hdr := map[string]string{"Sec-Fetch-Site": "same-origin"}
+			if rec := do(h, "GET", p, hdr); rec.Code != 404 {
+				t.Errorf("logged in %v, %s: got %d", loggedIn, p, rec.Code)
+			}
+		}
+	}
+	if rec := do(testServer(false), "GET", "/api/version", nil); rec.Code != 200 {
+		t.Fatalf("the canonical path: got %d", rec.Code)
+	}
+}

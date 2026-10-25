@@ -107,6 +107,12 @@ func isPageRequest(r *http.Request) bool {
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// The gate tests this path and the mux routes it; a path that cleans to something else could
+	// be read two ways, so only a canonical one gets past here.
+	if p != "" && path.Clean(p) != p {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
 	isAPI := strings.HasPrefix(p, "/api/")
 	if isAPI && !(r.Method == http.MethodGet && (p == "/api/version" || p == "/api/auth/check")) && !SameOrigin(r) {
 		writeError(w, http.StatusForbidden, "cross-site request refused")

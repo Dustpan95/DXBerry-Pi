@@ -21,7 +21,8 @@ import (
 const (
 	pollEvery = 5 * time.Second // how often a live terminal re-checks that its session is still logged in
 
-	chunk     = 32 << 10
+	chunk     = 32 << 10 // the most read from the shell at once
+	readLimit = 1 << 20  // the most one browser message may carry (a paste arrives as one)
 	startCols = 80
 	startRows = 24
 	maxCols   = 500
@@ -55,7 +56,12 @@ func newHandler(cmd func(user string) []string, user, id func(*http.Request) str
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		running.Add(1)
 		defer running.Done()
-		argv := cmd(user(r))
+		u := user(r)
+		if u == "" { // the session ended between the gate and here: never `login -f ""`
+			http.Error(w, "login required", http.StatusUnauthorized)
+			return
+		}
+		argv := cmd(u)
 		if len(argv) == 0 {
 			http.Error(w, "no command", http.StatusInternalServerError)
 			return
@@ -64,7 +70,7 @@ func newHandler(cmd func(user string) []string, user, id func(*http.Request) str
 		if err != nil {
 			return
 		}
-		ws.SetReadLimit(chunk)
+		ws.SetReadLimit(readLimit)
 		c := exec.Command(argv[0], argv[1:]...)
 		c.Env = []string{"TERM=xterm-256color", "PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
 		tty, err := pty.StartWithSize(c, &pty.Winsize{Rows: startRows, Cols: startCols}) // own session and process group

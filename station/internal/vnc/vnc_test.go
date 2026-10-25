@@ -135,6 +135,10 @@ func TestVNCRefusesBadName(t *testing.T) {
 	dir := sockDir(t)
 	ts := rig(t, dir, true, true)
 	for _, s := range []string{"..%2Fx", "x", "Wsjtx-radio2", "wsjtx-radio2.sock", "a-b%2F..%2F..%2Fetc", strings.Repeat("a", 40) + "-r"} {
+		if strings.Contains(s, "%2F") { // decodes to a path with .. in it: the server refuses it before routing
+			refusal(t, ts, s, nil, 404, `{"error":"not found"}`)
+			continue
+		}
 		refusal(t, ts, s, nil, 400, `{"error":"bad session name"}`)
 	}
 }

@@ -233,3 +233,29 @@ func TestTermSecondRequestClosesFirst(t *testing.T) {
 	}
 	readUntil(t, c2, "hello")
 }
+
+func TestTermAcceptsLargePaste(t *testing.T) {
+	r := rig(t, true, filepath.Join(t.TempDir(), "pid"), time.Hour)
+	c := dial(t, r.ts)
+	readUntil(t, c, "hello")
+	// 200 KiB in one message, with no newline for the tty to answer: the socket must stay open
+	if err := c.Write(context.Background(), websocket.MessageBinary, []byte(strings.Repeat("a", 200<<10))); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Write(context.Background(), websocket.MessageBinary, []byte("\nzzz\n")); err != nil {
+		t.Fatal(err)
+	}
+	readUntil(t, c, "zzz")
+}
+
+func TestTermRefusesEmptyUser(t *testing.T) {
+	h, running := newHandler(func(u string) []string { return []string{"/bin/sh", "-c", "echo ran > " + t.TempDir() + "/x"} },
+		func(*http.Request) string { return "" }, func(*http.Request) string { return "s1" },
+		func(*http.Request) bool { return true }, time.Hour)
+	defer running.Wait()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/term", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("got %d, want 401", rec.Code)
+	}
+}
