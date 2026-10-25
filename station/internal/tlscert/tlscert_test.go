@@ -48,7 +48,7 @@ func TestEnsureWritesCertOnce(t *testing.T) {
 	if cert.PublicKeyAlgorithm != x509.ECDSA {
 		t.Fatalf("algorithm %v", cert.PublicKeyAlgorithm)
 	}
-	if d := cert.NotAfter.Sub(time.Now()); d < 9*365*24*time.Hour {
+	if d := time.Until(cert.NotAfter); d < 9*365*24*time.Hour {
 		t.Fatalf("validity %v", d)
 	}
 	changed, err = Ensure(dir, []string{"other"})
