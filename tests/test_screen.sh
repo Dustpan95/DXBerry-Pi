@@ -442,6 +442,7 @@ test_screen_install_and_remove_start_update_jobs() {
   assert_ok sc_app install wsjtx --json > "$TEST_TMP/out"
   assert_eq "$(jq -r '.kind, .name' "$TEST_TMP/out" | tr '\n' ' ')" "app-install wsjtx "
   assert_eq "$(jq -r '.kind, .name' "$DXB_UPDATE_JOB_FILE" | tr '\n' ' ')" "app-install wsjtx "
+  assert_eq "$(jq -r '.job' "$TEST_TMP/out")" "$(jq -r .unit "$DXB_UPDATE_JOB_FILE")"
   assert_contains "$(cat "$TEST_TMP/calls")" "--description=DXBerry update (app-install wsjtx) /opt/dxberry/bin/dxberry-update apply app-install wsjtx"
   assert_contains "$(jq -r .unit "$DXB_UPDATE_JOB_FILE")" "dxberry-job-update-app-install-wsjtx-"
   assert_ok sc_app remove gamma > /dev/null

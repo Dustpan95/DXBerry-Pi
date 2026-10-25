@@ -3,6 +3,9 @@
 #   get                          every console setting (passwords only as set / not set) and whether dxberry.txt validates
 #   set KEY=VALUE... [--stdin]   change settings; --stdin also reads PASSWORD=... / WIFI_PASSWORD=... lines from standard input
 #   job                          the last settings change: running or finished, its exit and output; a network change waiting
+#                                --json: {now, pending, revert_at, reverted_at, reboot_required, job: null | {unit, kind: "config", name: null,
+#                                state: running|finished|ended, status: running|done|failed, exit, lines, started, finished, changed, network}}
+#   set --json answers {ok, changed, job: UNIT|null, network}
 #   confirm                      keep the last network change (stops its two-minute undo)
 #   revert                       undo the last network change now (its timer runs this too; --boot: files only)
 #   apply                        the settings job itself, started by set
@@ -18,7 +21,7 @@ done
 : "${DXB_PROVISION_CMD:=/opt/dxberry/bin/dxberry-provision}"
 : "${DXB_CONFIG_LOCK_WAIT:=30}"
 
-usage() { sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 JSON=0
 STDIN=0
 BOOT=0
@@ -215,7 +218,8 @@ cmd_job() {
     lines=$(journalctl -u "$unit" -o cat --no-pager -n 400 2> /dev/null \
       | jq -Rsc 'split("\n") | map(select(length > 0 and (test(": Failed to open /run/systemd/transient/") | not)))')
     j=$(jq -c --arg s "$state" --argjson r "$result" --argjson l "${lines:-[]}" \
-      '. + {state: $s, exit: ($r.exit // null), finished: ($r.finished // null), lines: $l}' "$DXB_CONFIG_JOB_FILE")
+      '{kind: "config", name: null} + . + {state: $s, exit: ($r.exit // null), finished: ($r.finished // null), lines: $l}
+      | . + {status: (if .state == "running" then "running" elif .exit == 0 then "done" else "failed" end)}' "$DXB_CONFIG_JOB_FILE")
   else
     j=null
   fi

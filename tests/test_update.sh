@@ -976,6 +976,39 @@ test_update_cli_job_reports() {
   assert_eq "$(jq -r '.job.state, .job.exit' "$TEST_TMP/out" | tr '\n' ' ')" "finished 0 "
 }
 
+# Task 10: every start answers with its unit under a top-level "job"; "job --json" has one shape
+# (now, job: null | {unit, kind, name, state, status, exit, lines}) whatever the job.
+test_update_cli_every_start_answers_with_its_unit() {
+  local k unit
+  up_cli_env
+  # dxberry and rollback run from a copy of the installed tree
+  up_tree "$DXB_OPT" 0.3.0-rc4
+  for k in graywolf dxberry rollback system "app wsjtx"; do
+    : > "$TEST_TMP/active"; rm -f "$DXB_UPDATE_RESULT"
+    # shellcheck disable=SC2086  # "app NAME" is two words
+    assert_ok up_cli $k --json
+    unit=$(jq -r '.job' "$TEST_TMP/out")
+    assert_contains "$unit" "dxberry-job-update-"
+    assert_eq "$(jq -r '.kind' "$TEST_TMP/out")" "${k%% *}"
+  done
+  # the same unit is what job --json follows
+  echo "$unit" > "$TEST_TMP/active"
+  assert_ok up_cli job --json
+  assert_eq "$(jq -r '.job.unit' "$TEST_TMP/out")" "$unit"
+  assert_eq "$(jq -c '[.job | (.unit|type), (.kind|type), .name, .state, .status, .exit, (.lines|type)] + [(.now|type)]' "$TEST_TMP/out")" \
+    "[\"string\",\"string\",\"wsjtx\",\"running\",\"running\",null,\"array\",\"number\"]"
+  : > "$TEST_TMP/active"; echo '{"exit":0,"finished":1700000000}' > "$DXB_UPDATE_RESULT"
+  up_cli job --json; assert_eq "$(jq -r '.job.status' "$TEST_TMP/out")" "done"
+  echo '{"exit":8,"finished":1700000000}' > "$DXB_UPDATE_RESULT"
+  up_cli job --json; assert_eq "$(jq -r '.job.status' "$TEST_TMP/out")" "failed"
+  # a job with no name still has the key
+  printf '{"unit":"dxberry-job-update-system-1","kind":"system","started":1}\n' > "$DXB_UPDATE_JOB_FILE"
+  up_cli job --json; assert_eq "$(jq -c '.job | has("name")' "$TEST_TMP/out")" "true"
+  # nothing started: no job
+  rm -f "$DXB_UPDATE_JOB_FILE"
+  up_cli job --json; assert_eq "$(jq -c '[.job, (.now|type)]' "$TEST_TMP/out")" '[null,"number"]'
+}
+
 test_update_cli_prereleases_and_usage() {
   up_cli_env
   echo '{"checked_at":1}' > "$DXB_UPDATE_CACHE"

@@ -7,6 +7,9 @@
 #   system                     apt-get upgrade, never asking
 #   app NAME                   update one program (its running windows are stopped and started again)
 #   job                        the last update: running or finished, its exit and output
+#                              --json: {now, reboot_required, job: null | {unit, kind, name, state: running|finished|ended,
+#                              status: running|done|failed, exit, lines, started, finished}}
+#   graywolf|dxberry|rollback|system|app NAME --json answer {ok, job: UNIT, kind[, name]}
 #   prereleases on|off         whether DXBerry pre-releases are offered
 #   apply KIND [NAME]          an update job itself, started by the commands above or dxberry-app
 # --json on any subcommand. Exit: 0 ok, 1 not root, 2 usage, 5 busy, 6 failed (nothing changed), 8 changed with a failed later step.
@@ -19,7 +22,7 @@ for _m in common config graywolf settings update gps radio inifile apps webproxy
   source "$DXB_LIB/$_m.sh"
 done
 
-usage() { sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 JSON=0
 REFRESH=0
 
@@ -85,7 +88,8 @@ cmd_job() {
     lines=$(journalctl -u "$unit" -o cat --no-pager -n 400 2> /dev/null \
       | jq -Rsc 'split("\n") | map(select(length > 0 and (test(": Failed to open /run/systemd/transient/") | not)))')
     j=$(jq -c --arg s "$state" --argjson r "$result" --argjson l "${lines:-[]}" \
-      '. + {state: $s, exit: ($r.exit // null), finished: ($r.finished // null), lines: $l}' "$DXB_UPDATE_JOB_FILE" 2> /dev/null)
+      '{name: null} + . + {state: $s, exit: ($r.exit // null), finished: ($r.finished // null), lines: $l}
+      | . + {status: (if .state == "running" then "running" elif .exit == 0 then "done" else "failed" end)}' "$DXB_UPDATE_JOB_FILE" 2> /dev/null)
     [[ -n $j ]] || j=null
   fi
   j=$(jq -cn --argjson j "$j" --argjson now "$(date +%s)" --argjson rb "$([[ -e $DXB_REBOOT_FLAG ]] && echo true || echo false)" \

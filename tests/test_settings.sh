@@ -585,6 +585,25 @@ test_config_job_reports_state_lines_and_the_undo() {
   assert_eq "$(jq -r '.job.state' "$TEST_TMP/out")" "ended"
 }
 
+# Task 10: set answers with the unit under "job" (null when nothing started); job --json is uniform.
+test_config_job_answers_are_uniform() {
+  local unit
+  se_cli_env
+  se_cli set HOSTNAME=shackpi --json
+  assert_eq "$(jq -c '.job' "$TEST_TMP/out")" "null"
+  se_cli set HOSTNAME=uniformpi --json
+  unit=$(jq -r '.job' "$TEST_TMP/out")
+  assert_contains "$unit" "dxberry-job-config-"
+  echo "$unit" > "$TEST_TMP/active"
+  se_cli job --json
+  assert_eq "$(jq -c '[.job.unit == "'"$unit"'", .job.kind, .job.name, .job.state, .job.status, .job.exit, (.job.lines|type), (.now|type)]' "$TEST_TMP/out")" \
+    '[true,"config",null,"running","running",null,"array","number"]'
+  : > "$TEST_TMP/active"; echo '{"exit":0,"finished":1700000300}' > "$DXB_CONFIG_RESULT"
+  se_cli job --json; assert_eq "$(jq -r '.job.status' "$TEST_TMP/out")" "done"
+  echo '{"exit":8,"finished":1700000300}' > "$DXB_CONFIG_RESULT"
+  se_cli job --json; assert_eq "$(jq -r '.job.status' "$TEST_TMP/out")" "failed"
+}
+
 test_config_confirm_and_revert() {
   se_cli_env
   printf 'WIFI_PASSWORD=newwifipass\n' | se_cli set WIFI_SSID=Other --stdin --json
