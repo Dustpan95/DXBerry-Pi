@@ -15,7 +15,9 @@ import (
 
 // Session is one logged-in browser session.
 type Session struct {
-	User string
+	ID, User, Device  string
+	Created, LastUsed time.Time
+	Addr              string
 }
 
 // AuthChecker resolves the session a request carries.
@@ -30,6 +32,7 @@ type Config struct {
 	Auth    AuthChecker
 	Dev     bool // pages are served uncached
 	Version string
+	Routes  func(mux *http.ServeMux) // registers the API handlers behind the gate
 }
 
 // ungated paths answer without a session. /api/auth/ is the login itself.
@@ -77,6 +80,9 @@ func New(cfg Config) *http.Server {
 	s.mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"version": cfg.Version})
 	})
+	if cfg.Routes != nil {
+		cfg.Routes(s.mux)
+	}
 	return &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           s,

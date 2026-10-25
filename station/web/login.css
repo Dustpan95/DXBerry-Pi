@@ -1,0 +1,9 @@
+body { font-family: system-ui, sans-serif; margin: 0; background: #14181c; color: #e6e9ec; }
+main { max-width: 22rem; margin: 12vh auto 0; padding: 0 1rem; }
+h1 { font-size: 1.5rem; }
+label { display: block; margin-top: 1rem; }
+input { width: 100%; box-sizing: border-box; padding: 0.6rem; font-size: 1rem; margin-top: 0.25rem; }
+button { margin-top: 1.25rem; padding: 0.6rem 1.2rem; font-size: 1rem; }
+#error { color: #ff8a80; min-height: 1.4em; }
+.note { font-size: 0.85rem; color: #aab; margin-top: 2rem; }
+a { color: #8ab4f8; }

@@ -7,23 +7,20 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/auth"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/httpapi"
 	"github.com/Dustpan95/DXBerry-Pi/station/web"
 )
 
 // version is set at build time (-X main.version=...).
 var version = "dev"
-
-// noAuth refuses every session until the real login arrives.
-type noAuth struct{}
-
-func (noAuth) Session(*http.Request) (*httpapi.Session, bool) { return nil, false }
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8090", "address nginx proxies to")
@@ -36,7 +33,9 @@ func main() {
 		return
 	}
 
-	srv := httpapi.New(httpapi.Config{Listen: *listen, Web: web.Files, Auth: noAuth{}, Version: version})
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	mgr := auth.New(auth.PAM{Service: "dxberry"}, auth.DefaultGroups(), time.Now)
+	srv := httpapi.New(httpapi.Config{Listen: *listen, Web: web.Files, Auth: mgr, Version: version, Routes: mgr.Register})
 	log.Printf("dxberryd %s listening on %s (state %s, bin %s)", version, *listen, *state, *bin)
 
 	stop := make(chan os.Signal, 1)

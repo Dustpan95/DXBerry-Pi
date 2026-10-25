@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DXBerry login</title>
+<link rel="stylesheet" href="/login.css">
+</head>
+<body>
+<main>
+<h1>DXBerry</h1>
+<form id="login" method="post" action="/login">
+<label for="user">User</label>
+<input id="user" name="user" type="text" value="dietpi" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+<label for="password">Password</label>
+<input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+<button type="submit">Log in</button>
+<p id="error" role="alert"></p>
+</form>
+<p class="note">Your browser warns about this Pi's certificate because the Pi signs it itself. <a href="/station.crt">Download the certificate</a></p>
+</main>
+<script src="/login.js"></script>
+</body>
+</html>
