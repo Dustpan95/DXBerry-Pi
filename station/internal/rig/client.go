@@ -24,6 +24,7 @@ const (
 	backoffStart      = time.Second
 	backoffMax        = 30 * time.Second
 	queueSize         = 256
+	maxLine           = 64 << 10
 )
 
 var (
@@ -68,6 +69,9 @@ type options struct {
 	cmdTimeout time.Duration
 	sleep      func(ctx context.Context, d time.Duration) error
 	hold       bool // do not connect until release() (tests)
+	// beforeEnqueue, if set, runs in Do between the connected check and the
+	// enqueue (tests widen that window with it).
+	beforeEnqueue func(cmd string)
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -82,10 +86,11 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 }
 
 type request struct {
-	ctx  context.Context
-	line string
-	cmd  string
-	res  chan result
+	ctx   context.Context
+	epoch uint64
+	line  string
+	cmd   string
+	res   chan result
 }
 
 type result struct {
@@ -107,6 +112,7 @@ type Client struct {
 
 	mu        sync.Mutex
 	connected bool
+	epoch     uint64 // bumped on every successful connect
 	callbacks []func(bool)
 	events    []bool
 	wake      chan struct{}
@@ -160,7 +166,9 @@ func (c *Client) Connected() bool {
 
 // OnState registers fn to be called, on a separate goroutine and in order,
 // each time the connection comes up (true) or goes down (false). It is not
-// called for a state that predates the registration.
+// called for a state that predates the registration, so register first and
+// then read Connected(). Close delivers the final false event (if the
+// connection was up) asynchronously.
 func (c *Client) OnState(fn func(connected bool)) {
 	c.mu.Lock()
 	c.callbacks = append(c.callbacks, fn)
@@ -174,6 +182,9 @@ func (c *Client) setState(up bool) {
 		return
 	}
 	c.connected = up
+	if up {
+		c.epoch++
+	}
 	c.events = append(c.events, up)
 	c.mu.Unlock()
 	if up {
@@ -189,9 +200,10 @@ func (c *Client) setState(up bool) {
 
 func (c *Client) dispatch() {
 	for {
+		stop := false
 		select {
-		case <-c.ctx.Done():
-			return
+		case <-c.done:
+			stop = true // run has finished: flush what is left, then exit
 		case <-c.wake:
 		}
 		for {
@@ -207,6 +219,9 @@ func (c *Client) dispatch() {
 			for _, fn := range cbs {
 				fn(ev)
 			}
+		}
+		if stop {
+			return
 		}
 	}
 }
@@ -228,14 +243,20 @@ func (c *Client) Do(ctx context.Context, cmd string, args ...string) (Reply, err
 	if c.ctx.Err() != nil {
 		return Reply{}, ErrClosed
 	}
-	if !c.Connected() {
+	c.mu.Lock()
+	up, epoch := c.connected, c.epoch
+	c.mu.Unlock()
+	if !up {
 		return Reply{}, ErrNotConnected
+	}
+	if h := c.opt.beforeEnqueue; h != nil {
+		h(cmd)
 	}
 	line := `+\` + cmd
 	if len(args) > 0 {
 		line += " " + strings.Join(args, " ")
 	}
-	req := &request{ctx: ctx, line: line, cmd: cmd, res: make(chan result, 1)}
+	req := &request{ctx: ctx, epoch: epoch, line: line, cmd: cmd, res: make(chan result, 1)}
 	select {
 	case c.reqs <- req:
 	case <-ctx.Done():
@@ -276,36 +297,48 @@ func (c *Client) run() {
 			continue
 		}
 		backoff = backoffStart
+		stopClose := context.AfterFunc(c.ctx, func() { conn.Close() })
 		c.setState(true)
 		c.serve(conn)
+		stopClose()
 		conn.Close()
 		c.setState(false)
-		c.drain()
 		if c.ctx.Err() != nil {
 			return
 		}
-		if c.opt.sleep(c.ctx, backoff) != nil {
+		if c.sleepDraining(backoff) != nil {
 			return
 		}
 		backoff = min(backoff*2, backoffMax)
 	}
 }
 
-// drain fails everything queued on a dead connection.
-func (c *Client) drain() {
-	for {
-		select {
-		case r := <-c.reqs:
-			r.res <- result{err: ErrNotConnected}
-		default:
-			return
+// sleepDraining sleeps through the backoff while failing every request that
+// reaches the queue, so nobody waits out the backoff and nothing stale
+// survives into the next connection.
+func (c *Client) sleepDraining(d time.Duration) error {
+	stop := make(chan struct{})
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for {
+			select {
+			case r := <-c.reqs:
+				r.res <- result{err: ErrNotConnected}
+			case <-stop:
+				return
+			}
 		}
-	}
+	}()
+	err := c.opt.sleep(c.ctx, d)
+	close(stop)
+	<-drained
+	return err
 }
 
 // serve runs queued commands on conn until it breaks or the client closes.
 func (c *Client) serve(conn net.Conn) {
-	br := bufio.NewReaderSize(conn, 64<<10)
+	br := bufio.NewReaderSize(conn, maxLine)
 	for {
 		select {
 		case <-c.ctx.Done():
@@ -313,6 +346,13 @@ func (c *Client) serve(conn net.Conn) {
 		case r := <-c.reqs:
 			if r.ctx.Err() != nil {
 				continue // caller gave up while queued
+			}
+			c.mu.Lock()
+			stale := r.epoch != c.epoch
+			c.mu.Unlock()
+			if stale {
+				r.res <- result{err: ErrNotConnected} // queued for an earlier connection
+				continue
 			}
 			reply, err := c.exec(conn, br, r)
 			r.res <- result{reply, err}
@@ -337,27 +377,26 @@ func (c *Client) exec(conn net.Conn, br *bufio.Reader, r *request) (Reply, error
 	}
 	var lines []string
 	for i := 0; ; i++ {
-		l, err := br.ReadString('\n')
+		raw, err := br.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			return Reply{}, fmt.Errorf("%w: line longer than %d bytes", ErrProtocol, maxLine)
+		}
 		if err != nil {
 			e := wrapIO(err)
-			if errors.Is(e, ErrDeadline) && (i > 0 || len(l) > 0) {
+			if errors.Is(e, ErrDeadline) && (i > 0 || len(raw) > 0) {
 				// Some reply arrived but never reached its RPRT line.
-				return Reply{}, fmt.Errorf("%w: no RPRT line before the deadline", ErrProtocol)
+				return Reply{}, fmt.Errorf("%w: no RPRT line before the deadline", errors.Join(ErrProtocol, ErrDeadline))
 			}
 			return Reply{}, e
 		}
-		l = strings.TrimRight(l, "\r\n")
+		l := strings.TrimRight(string(raw), "\r\n")
 		if i == 0 {
 			if !strings.HasPrefix(l, r.cmd+":") {
 				return Reply{}, fmt.Errorf("%w: echo %q for %q", ErrProtocol, l, r.cmd)
 			}
 			continue
 		}
-		if strings.HasPrefix(l, "RPRT ") {
-			n, ok := parseRPRT(l)
-			if !ok {
-				return Reply{}, fmt.Errorf("%w: bad status line %q", ErrProtocol, l)
-			}
+		if n, ok := parseRPRT(l); ok {
 			rep := Reply{Lines: lines, RPRT: n}
 			if n != 0 {
 				return rep, &RigError{Code: n}

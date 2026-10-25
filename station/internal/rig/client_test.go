@@ -24,11 +24,17 @@ type fakeServer struct {
 	handler  func(n int, line string, w net.Conn) bool // false = close conn
 	inFlight int
 	maxSeen  int
+	// before, if set, runs after a line is read and before the handler.
+	before func(r *bufio.Reader, c net.Conn)
 }
 
 func newFake(t *testing.T, h func(n int, line string, w net.Conn) bool) *fakeServer {
+	return newFakeAt(t, "127.0.0.1:0", h)
+}
+
+func newFakeAt(t *testing.T, addr string, h func(n int, line string, w net.Conn) bool) *fakeServer {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,6 +66,9 @@ func newFake(t *testing.T, h func(n int, line string, w net.Conn) bool) *fakeSer
 						f.maxSeen = f.inFlight
 					}
 					f.mu.Unlock()
+					if f.before != nil {
+						f.before(r, c)
+					}
 					ok := f.handler(n, line, c)
 					f.mu.Lock()
 					f.inFlight--
@@ -171,11 +180,21 @@ func TestClientRejectsInjection(t *testing.T) {
 }
 
 func TestClientSerializesCommands(t *testing.T) {
+	var pipelined sync.Map
 	f := newFake(t, func(n int, line string, w net.Conn) bool {
-		time.Sleep(40 * time.Millisecond)
 		w.Write([]byte("get_freq:\nFrequency: 1\nRPRT 0\n"))
 		return true
 	})
+	// While the server holds a command, a pipelining client would already
+	// have written the next one: look for bytes before replying.
+	f.before = func(r *bufio.Reader, c net.Conn) {
+		time.Sleep(40 * time.Millisecond)
+		c.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+		if _, err := r.Peek(1); err == nil {
+			pipelined.Store("yes", true)
+		}
+		c.SetReadDeadline(time.Time{})
+	}
 	c := fastClient(t, f.addr())
 	waitConnected(t, c)
 	var wg sync.WaitGroup
@@ -189,10 +208,13 @@ func TestClientSerializesCommands(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	if _, bad := pipelined.Load("yes"); bad {
+		t.Fatal("client sent a command before the previous reply arrived")
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(f.cmds) != 4 || f.maxSeen != 1 {
-		t.Fatalf("cmds=%d maxInFlight=%d", len(f.cmds), f.maxSeen)
+	if len(f.cmds) != 4 {
+		t.Fatalf("cmds=%d", len(f.cmds))
 	}
 }
 
@@ -249,16 +271,12 @@ func TestClientDeadlineResetsConnection(t *testing.T) {
 func TestClientMalformedReplyReconnects(t *testing.T) {
 	cases := map[string]string{
 		"echo mismatch": "set_mode:\nFrequency: 1\nRPRT 0\n",
-		"garbage rprt":  "get_freq:\nFrequency: 1\nRPRT zero\n",
 	}
 	for name, bad := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t, func(n int, line string, w net.Conn) bool {
 				if n == 1 {
 					w.Write([]byte(bad))
-					if name == "garbage rprt" {
-						return false // then hang up: no valid RPRT will ever come
-					}
 					return true
 				}
 				return freqHandler(n, line, w)
@@ -365,19 +383,26 @@ func TestClientReconnectBackoff(t *testing.T) {
 }
 
 func TestClientBackoffResetsAfterConnect(t *testing.T) {
-	f := newFake(t, func(n int, line string, w net.Conn) bool {
-		if n == 1 {
-			return false
-		}
-		return freqHandler(n, line, w)
-	})
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := ln.Addr().String()
+	ln.Close()
+	var f *fakeServer
 	var mu sync.Mutex
 	var got []time.Duration
-	c := dial(f.addr(), nil, options{
+	c := dial(addr, nil, options{
 		cmdTimeout: 300 * time.Millisecond,
 		sleep: func(ctx context.Context, d time.Duration) error {
 			mu.Lock()
 			got = append(got, d)
+			if d == 4*time.Second && f == nil {
+				// third failed dial: bring the server up before the retry
+				f = newFakeAt(t, addr, func(n int, line string, w net.Conn) bool {
+					if n == 1 {
+						return false // hang up on the first command
+					}
+					return freqHandler(n, line, w)
+				})
+			}
 			mu.Unlock()
 			return nil
 		},
@@ -385,13 +410,166 @@ func TestClientBackoffResetsAfterConnect(t *testing.T) {
 	defer c.Close()
 	waitConnected(t, c)
 	c.Do(ctx5(t), "get_freq") // server hangs up: connection resets
-	for i := 0; i < 400 && f.connCount() < 2; i++ {
+	for i := 0; i < 400; i++ {
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if n >= 4 {
+			break
+		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(got) == 0 || got[len(got)-1] != time.Second {
-		t.Fatalf("sleeps = %v, want the last to be 1s", got)
+	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, time.Second}
+	if len(got) < 4 {
+		t.Fatalf("sleeps = %v", got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Fatalf("sleeps = %v, want prefix %v", got, want)
+		}
+	}
+}
+
+func TestClientNoStaleCommandAfterReconnect(t *testing.T) {
+	f := newFake(t, func(n int, line string, w net.Conn) bool {
+		if n == 1 {
+			return false // hang up on the first command
+		}
+		return freqHandler(n, line, w)
+	})
+	parked := make(chan struct{})
+	enqueue := make(chan struct{})
+	gate := make(chan struct{})
+	c := dial(f.addr(), nil, options{
+		cmdTimeout: 300 * time.Millisecond,
+		sleep: func(ctx context.Context, d time.Duration) error {
+			select { // hold the backoff until released
+			case <-gate:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+		beforeEnqueue: func(cmd string) {
+			if cmd == "set_freq" {
+				close(parked)
+				<-enqueue
+			}
+		},
+	})
+	defer c.Close()
+	waitConnected(t, c)
+
+	stale := make(chan error, 1)
+	go func() { _, err := c.Do(ctx5(t), "set_freq", "7074000"); stale <- err }()
+	<-parked // passed the connected check, not yet queued
+
+	if _, err := c.Do(ctx5(t), "get_freq"); err == nil { // server hangs up
+		t.Fatal("expected the dropped connection to fail the command")
+	}
+	for i := 0; i < 400 && c.Connected(); i++ {
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(enqueue) // the stale command now reaches the queue, mid-backoff
+	select {
+	case err := <-stale:
+		if !errors.Is(err, ErrNotConnected) {
+			t.Fatalf("stale err = %v, want ErrNotConnected", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale caller still waiting on the backoff")
+	}
+	close(gate) // let the client reconnect
+	waitConnected(t, c)
+	if _, err := c.Do(ctx5(t), "get_freq"); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, l := range f.cmds {
+		if strings.Contains(l, "set_freq") {
+			t.Fatalf("stale command reached the rig: %v", f.cmds)
+		}
+	}
+}
+
+func TestClientValueLineStartingRPRT(t *testing.T) {
+	f := newFake(t, func(n int, line string, w net.Conn) bool {
+		w.Write([]byte("get_info:\nRPRT zero is a value\nRPRT 0\n"))
+		return true
+	})
+	c := fastClient(t, f.addr())
+	waitConnected(t, c)
+	r, err := c.Do(ctx5(t), "get_info")
+	if err != nil || len(r.Lines) != 1 || r.Lines[0] != "RPRT zero is a value" {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if f.connCount() != 1 {
+		t.Fatal("connection was reset")
+	}
+}
+
+func TestClientPartialReplyIsBothErrors(t *testing.T) {
+	f := newFake(t, func(n int, line string, w net.Conn) bool {
+		if n == 1 {
+			w.Write([]byte("get_freq:\nFrequency: 1\n")) // never finishes
+			time.Sleep(time.Second)
+			return false
+		}
+		return freqHandler(n, line, w)
+	})
+	c := fastClient(t, f.addr())
+	waitConnected(t, c)
+	_, err := c.Do(ctx5(t), "get_freq")
+	if !errors.Is(err, ErrProtocol) || !errors.Is(err, ErrDeadline) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestClientLongLineIsProtocolError(t *testing.T) {
+	f := newFake(t, func(n int, line string, w net.Conn) bool {
+		if n == 1 {
+			w.Write([]byte("get_freq:\n" + strings.Repeat("x", 100<<10) + "\n"))
+			return true
+		}
+		return freqHandler(n, line, w)
+	})
+	c := fastClient(t, f.addr())
+	waitConnected(t, c)
+	if _, err := c.Do(ctx5(t), "get_freq"); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestClientCloseIsPromptAndReportsDown(t *testing.T) {
+	f := newFake(t, func(n int, line string, w net.Conn) bool {
+		time.Sleep(3 * time.Second) // stall
+		return false
+	})
+	states := make(chan bool, 4)
+	c := dial(f.addr(), nil, options{cmdTimeout: 10 * time.Second, hold: true})
+	c.OnState(func(b bool) { states <- b })
+	c.release()
+	waitConnected(t, c)
+	go c.Do(context.Background(), "get_freq")
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	c.Close()
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("Close took %v", d)
+	}
+	if !<-states {
+		t.Fatal("want up first")
+	}
+	select {
+	case v := <-states:
+		if v {
+			t.Fatal("want down")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no final down event")
 	}
 }
 
