@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/auth"
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/cli"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/httpapi"
 	"github.com/Dustpan95/DXBerry-Pi/station/web"
 )
@@ -35,7 +36,12 @@ func main() {
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	mgr := auth.New(auth.PAM{Service: "dxberry"}, auth.DefaultGroups(), time.Now)
-	srv := httpapi.New(httpapi.Config{Listen: *listen, Web: web.Files, Auth: mgr, Version: version, Routes: mgr.Register})
+	runner := cli.New(*bin, nil)
+	routes := func(mux *http.ServeMux) {
+		mgr.Register(mux)
+		runner.Register(mux)
+	}
+	srv := httpapi.New(httpapi.Config{Listen: *listen, Web: web.Files, Auth: mgr, Version: version, Routes: routes})
 	log.Printf("dxberryd %s listening on %s (state %s, bin %s)", version, *listen, *state, *bin)
 
 	stop := make(chan os.Signal, 1)

@@ -1,0 +1,3 @@
+#!/bin/bash
+# Test double: a status report with a services list.
+echo '{"ok":true,"services":{"units":[{"unit":"cockpit.socket"},{"unit":"ssh.service"}]}}'

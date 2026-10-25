@@ -1,0 +1,3 @@
+#!/bin/bash
+# Test double for /usr/bin/journalctl.
+echo "journalctl $*"
