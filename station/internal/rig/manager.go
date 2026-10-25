@@ -208,6 +208,7 @@ func (m *Manager) discover(ctx context.Context, e *entry, model string) {
 			}
 			continue
 		}
+		t0 := m.clock.Now() // before the attempt: the retry time must not depend on how long it took
 		dctx, cancel := context.WithTimeout(ctx, discoverTimeout)
 		caps, err := Discover(dctx, e.conn)
 		cancel()
@@ -225,7 +226,7 @@ func (m *Manager) discover(ctx context.Context, e *entry, model string) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-m.clock.At(m.clock.Now().Add(backoff)):
+		case <-m.clock.At(t0.Add(backoff)):
 		}
 		if backoff *= 2; backoff > discoverBackoffMax {
 			backoff = discoverBackoffMax
@@ -253,7 +254,11 @@ func (m *Manager) forward(ctx context.Context, name string, p *Poller) {
 // encodeState is the wire form: the capabilities travel separately.
 func encodeState(st State) []byte {
 	st.Caps = nil
-	b, _ := json.Marshal(st)
+	b, err := json.Marshal(st)
+	if err != nil {
+		slog.Default().Error("rig state cannot be encoded", "error", err)
+		return []byte("{}")
+	}
 	return b
 }
 

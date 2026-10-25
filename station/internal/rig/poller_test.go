@@ -66,10 +66,13 @@ type plLink struct {
 	calls []string
 	reply map[string][]string
 	errs  map[string]error
+	block map[string]chan struct{} // a call with this key waits for the channel to close
+	enter chan string              // receives the key of a blocked call when it starts waiting
 }
 
 func newPlLink() *plLink {
-	l := &plLink{up: true, reply: map[string][]string{}, errs: map[string]error{}}
+	l := &plLink{up: true, reply: map[string][]string{}, errs: map[string]error{},
+		block: map[string]chan struct{}{}, enter: make(chan string, 64)}
 	l.reply["get_freq"] = []string{"Frequency: 14074000"}
 	l.reply["get_mode"] = []string{"Mode: USB", "Passband: 2400"}
 	l.reply["get_vfo"] = []string{"VFO: VFOA"}
@@ -81,8 +84,15 @@ func newPlLink() *plLink {
 func (l *plLink) Do(ctx context.Context, cmd string, args ...string) (Reply, error) {
 	key := strings.TrimSpace(cmd + " " + strings.Join(args, " "))
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.calls = append(l.calls, key)
+	gate := l.block[key]
+	l.mu.Unlock()
+	if gate != nil {
+		l.enter <- key
+		<-gate
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if !l.up {
 		return Reply{}, ErrNotConnected
 	}
@@ -94,6 +104,39 @@ func (l *plLink) Do(ctx context.Context, cmd string, args ...string) (Reply, err
 		return Reply{}, &RigError{Code: -1}
 	}
 	return Reply{Lines: r}, nil
+}
+
+// blockOn makes calls with key wait until the returned func is called.
+func (l *plLink) blockOn(key string) (release func()) {
+	g := make(chan struct{})
+	l.mu.Lock()
+	l.block[key] = g
+	l.mu.Unlock()
+	var once sync.Once
+	return func() {
+		l.mu.Lock()
+		delete(l.block, key)
+		l.mu.Unlock()
+		once.Do(func() { close(g) })
+	}
+}
+
+func (l *plLink) waitEntered(t *testing.T, key string) {
+	t.Helper()
+	select {
+	case k := <-l.enter:
+		if k != key {
+			t.Fatalf("blocked on %q, want %q", k, key)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("no call to %q", key)
+	}
+}
+
+func (l *plLink) callLog() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string{}, l.calls...)
 }
 
 func (l *plLink) Connected() bool {
@@ -191,14 +234,15 @@ func TestPollerRatesFollowInterest(t *testing.T) {
 	if n := l.count("get_freq"); n != 4 {
 		t.Fatalf("Page read before 250 ms: %d", n)
 	}
-	st := p.State()
-	if st.Freq != 14074000 || st.Mode != "USB" || st.Passband != "2400" || st.VFO != "VFOA" || !st.Connected {
-		t.Fatalf("state: %+v", st)
-	}
+	plEventually(t, "state", func() bool {
+		st := p.State()
+		return st.Freq == 14074000 && st.Mode == "USB" && st.Passband == "2400" && st.VFO == "VFOA" && st.Connected
+	})
 }
 
 func meterCaps() Caps {
 	return Caps{
+		ModelName: "Test", Probed: time.Now(), CanGetVFO: true, CanGetPTT: true, CanGetSplit: true,
 		ReadableMeters: []string{"STRENGTH", "SWR", "ALC", "RFPOWER"},
 		SettableLevels: []string{"RFPOWER"},
 	}
@@ -220,27 +264,60 @@ func TestPollerMetersOnlyOnPage(t *testing.T) {
 	}
 	p.SetInterest(Page)
 	clk.Advance(250 * time.Millisecond)
-	plEventually(t, "meter read", func() bool { return l.count("get_level STRENGTH") == 1 })
-	st := p.State()
-	if st.Meters["STRENGTH"] != -12 || st.Levels["RFPOWER"] != 0.5 {
-		t.Fatalf("meters %v levels %v", st.Meters, st.Levels)
-	}
+	plEventually(t, "meter state", func() bool {
+		st := p.State()
+		return st.Meters["STRENGTH"] == -12 && st.Levels["RFPOWER"] == 0.5
+	})
 	if l.count("get_level SWR") != 0 || l.count("get_level ALC") != 0 {
 		t.Fatal("SWR/ALC read while PTT is off")
 	}
 }
 
-func TestPollerSWRAndALCOnlyWhilePTT(t *testing.T) {
+func txLink() *plLink {
 	l := newPlLink()
 	l.set("get_level STRENGTH", "Level Value: -12")
 	l.set("get_level RFPOWER", "Level Value: 0.5")
 	l.set("get_level SWR", "Level Value: 1.5")
 	l.set("get_level ALC", "Level Value: 0.2")
+	return l
+}
+
+// transmitting brings a Page poller to the state of a key-down with SWR/ALC read once.
+func transmitting(t *testing.T, l *plLink) (*Poller, *plClock) {
+	t.Helper()
 	p, clk := startPoller(t, l, meterCaps())
 	p.SetInterest(Page)
-	plEventually(t, "first read", func() bool { return l.count("get_freq") == 1 })
+	plEventually(t, "first read", func() bool { return p.State().Freq == 14074000 })
+	l.set("get_ptt", "PTT: 1")
 	clk.Advance(250 * time.Millisecond)
-	plEventually(t, "second read", func() bool { return l.count("get_freq") == 2 })
+	plEventually(t, "PTT seen", func() bool { return p.State().PTT })
+	clk.Advance(200 * time.Millisecond)
+	plEventually(t, "SWR and ALC", func() bool {
+		st := p.State()
+		return st.Meters["SWR"] == 1.5 && st.Meters["ALC"] == 0.2
+	})
+	return p, clk
+}
+
+func TestPollerSWRAndALCOnlyWhilePTT(t *testing.T) {
+	l := txLink()
+	p, clk := startPoller(t, l, meterCaps())
+	p.SetInterest(Page)
+	var hist struct {
+		sync.Mutex
+		states []State
+	}
+	ch := p.Subscribe()
+	go func() {
+		for st := range ch {
+			hist.Lock()
+			hist.states = append(hist.states, st)
+			hist.Unlock()
+		}
+	}()
+	plEventually(t, "first read", func() bool { return p.State().Freq == 14074000 })
+	clk.Advance(250 * time.Millisecond)
+	settle()
 	if l.count("get_level SWR") != 0 {
 		t.Fatal("SWR read with PTT off")
 	}
@@ -248,41 +325,159 @@ func TestPollerSWRAndALCOnlyWhilePTT(t *testing.T) {
 	l.set("get_ptt", "PTT: 1")
 	clk.Advance(250 * time.Millisecond)
 	plEventually(t, "PTT seen", func() bool { return p.State().PTT })
-	clk.Advance(200 * time.Millisecond)
-	plEventually(t, "SWR and ALC read", func() bool {
-		return l.count("get_level SWR") >= 1 && l.count("get_level ALC") >= 1
-	})
-	if st := p.State(); st.Meters["SWR"] != 1.5 || st.Meters["ALC"] != 0.2 {
-		t.Fatalf("meters %v", st.Meters)
+	base := l.count("get_level SWR")
+	for i := 1; i <= 5; i++ { // one simulated second at the 200 ms cadence
+		clk.Advance(200 * time.Millisecond)
+		want := base + i
+		plEventually(t, "SWR read", func() bool { return l.count("get_level SWR") >= want })
 	}
+	settle()
+	if n := l.count("get_level SWR"); n != base+5 {
+		t.Fatalf("SWR read %d times in 1 s, want 5", n-base)
+	}
+	if l.count("get_level ALC") != l.count("get_level SWR") {
+		t.Fatal("ALC and SWR counts differ")
+	}
+	plEventually(t, "meters", func() bool { st := p.State(); return st.Meters["SWR"] == 1.5 && st.Meters["ALC"] == 0.2 })
 
 	l.set("get_ptt", "PTT: 0")
-	clk.Advance(250 * time.Millisecond)
-	plEventually(t, "zero frame", func() bool {
+	clk.Advance(200 * time.Millisecond)
+	plEventually(t, "zero state", func() bool {
 		st := p.State()
-		v, ok := st.Meters["SWR"]
-		return !st.PTT && ok && v == 0 && st.Meters["ALC"] == 0
+		return !st.PTT && st.Meters["SWR"] == 0 && st.Meters["ALC"] == 0
 	})
+	// the zero frame was published as a State, after a transmitting one
+	hist.Lock()
+	sawTx, sawZero := false, false
+	for _, st := range hist.states {
+		if st.Meters["SWR"] == 1.5 {
+			sawTx = true
+		}
+		if sawTx && !st.PTT && st.Meters["SWR"] == 0 && st.Meters["ALC"] == 0 {
+			sawZero = true
+		}
+	}
+	hist.Unlock()
+	if !sawTx || !sawZero {
+		t.Fatalf("published states lack the transmit frame or the zero frame (tx %v zero %v)", sawTx, sawZero)
+	}
 	n := l.count("get_level SWR")
-	clk.Advance(time.Second)
-	settle()
-	clk.Advance(time.Second)
-	settle()
+	for i := 0; i < 3; i++ {
+		clk.Advance(time.Second)
+		settle()
+	}
 	if l.count("get_level SWR") != n {
 		t.Fatal("SWR kept being read after PTT dropped")
 	}
 }
 
-func TestPollerCorrectsOptimisticValue(t *testing.T) {
+// An unkey from the page races an in-flight SWR read: the read is discarded,
+// yet the next PTT reading must still zero the meters.
+func TestPollerZeroesMetersAfterUnkeyRacingARead(t *testing.T) {
+	l := txLink()
+	p, clk := transmitting(t, l)
+	release := l.blockOn("get_level SWR")
+	defer release()
+	clk.Advance(200 * time.Millisecond)
+	l.waitEntered(t, "get_level SWR")
+	l.set("get_ptt", "PTT: 0")
+	wrote := make(chan error, 1)
+	go func() {
+		wrote <- p.Write(context.Background(), func(*Client) error { return nil }, func(s *State) { s.PTT = false })
+	}()
+	plEventually(t, "write started", func() bool { return !p.State().PTT })
+	release()
+	if err := <-wrote; err != nil {
+		t.Fatal(err)
+	}
+	plEventually(t, "meters zeroed", func() bool {
+		st := p.State()
+		return st.Meters["SWR"] == 0 && st.Meters["ALC"] == 0 && !st.PTT && !st.Optimistic["ptt"]
+	})
+}
+
+func TestPollerZeroesMetersWhenDashboardReadsPTTOff(t *testing.T) {
+	l := txLink()
+	p, clk := transmitting(t, l)
+	p.SetInterest(Dashboard) // the page closed while transmitting
+	l.set("get_ptt", "PTT: 0")
+	clk.Advance(2 * time.Second)
+	plEventually(t, "meters zeroed", func() bool {
+		st := p.State()
+		return !st.PTT && st.Meters["SWR"] == 0 && st.Meters["ALC"] == 0
+	})
+}
+
+func TestPollerSkipsNonFiniteMeters(t *testing.T) {
+	l := txLink()
+	l.set("get_level STRENGTH", "Level Value: nan")
+	l.set("get_level RFPOWER", "Level Value: +Inf")
+	p, _ := startPoller(t, l, meterCaps())
+	p.SetInterest(Page)
+	plEventually(t, "meters read", func() bool { return l.count("get_level RFPOWER") >= 1 && p.State().Freq != 0 })
+	settle()
+	st := p.State()
+	if _, ok := st.Meters["STRENGTH"]; ok {
+		t.Fatal("NaN stored")
+	}
+	if _, ok := st.Levels["RFPOWER"]; ok {
+		t.Fatal("Inf stored")
+	}
+	if b := encodeState(st); !strings.Contains(string(b), `"freq":14074000`) {
+		t.Fatalf("frame blanked: %s", b)
+	}
+}
+
+func TestPollerGatesReadsOnKnownCaps(t *testing.T) {
 	l := newPlLink()
-	l.set("get_freq", "Frequency: 7074100")
+	startPoller(t, l, Caps{ModelName: "Test", Probed: time.Now()}) // can get nothing optional
+	plEventually(t, "first read", func() bool { return l.count("get_freq") == 1 && l.count("get_mode") == 1 })
+	settle()
+	for _, c := range []string{"get_vfo", "get_ptt", "get_split_vfo"} {
+		if l.count(c) != 0 {
+			t.Errorf("%s read though the caps say it cannot be", c)
+		}
+	}
+	l2 := newPlLink()
+	startPoller(t, l2, meterCaps()) // can get all
+	plEventually(t, "all reads", func() bool {
+		return l2.count("get_vfo") == 1 && l2.count("get_ptt") == 1 && l2.count("get_split_vfo") == 1
+	})
+	l3 := newPlLink()
+	startPoller(t, l3, Caps{}) // unknown: everything is tried
+	plEventually(t, "unknown caps", func() bool {
+		return l3.count("get_vfo") == 1 && l3.count("get_ptt") == 1 && l3.count("get_split_vfo") == 1
+	})
+}
+
+func TestPollerClearsOptimisticFlagOfUnreadableField(t *testing.T) {
+	l := newPlLink()
+	p, _ := startPoller(t, l, Caps{ModelName: "Test", Probed: time.Now()})
+	plEventually(t, "first read", func() bool { return p.State().Freq == 14074000 })
+	if err := p.Write(context.Background(), func(*Client) error { return nil }, func(s *State) { s.PTT, s.Freq = true, 1 }); err != nil {
+		t.Fatal(err)
+	}
+	st := p.State()
+	if st.Optimistic["ptt"] {
+		t.Fatal("flag kept for a field no read can confirm")
+	}
+	if !st.PTT {
+		t.Fatal("value dropped")
+	}
+	if !st.Optimistic["freq"] && st.Freq == 1 {
+		t.Fatal("freq is readable: its flag stays until a read")
+	}
+}
+
+func TestPollerCorrectsOptimisticValue(t *testing.T) {
+	l := newPlLink() // the rig starts at 14074000
 	p, clk := startPoller(t, l, Caps{})
 	p.SetInterest(Page)
-	plEventually(t, "first read", func() bool { return p.State().Freq == 7074100 })
-	l.set("get_freq", "Frequency: 7074100")
+	plEventually(t, "first read", func() bool { return p.State().Freq == 14074000 })
 	var seen State
 	err := p.Write(context.Background(), func(*Client) error {
 		seen = p.State()
+		l.set("get_freq", "Frequency: 7074100") // the rig lands slightly off
 		return nil
 	}, func(s *State) { s.Freq = 7074000 })
 	if err != nil {
@@ -296,6 +491,39 @@ func TestPollerCorrectsOptimisticValue(t *testing.T) {
 		st := p.State()
 		return st.Freq == 7074100 && !st.Optimistic["freq"]
 	})
+}
+
+// A write issued while a read is in flight runs before the poller's next read.
+func TestPollerWriteGoesAheadOfQueuedReads(t *testing.T) {
+	l := newPlLink()
+	p, clk := startPoller(t, l, Caps{})
+	p.SetInterest(Page)
+	plEventually(t, "first read", func() bool { return p.State().Freq == 14074000 })
+	settle()
+	release := l.blockOn("get_mode")
+	defer release()
+	clk.Advance(250 * time.Millisecond)
+	l.waitEntered(t, "get_mode")
+	blocked := len(l.callLog()) // index the next call will take
+	wrote := make(chan error, 1)
+	go func() {
+		wrote <- p.Write(context.Background(), func(*Client) error {
+			l.mu.Lock()
+			l.calls = append(l.calls, "WRITE")
+			l.mu.Unlock()
+			return nil
+		}, nil)
+	}()
+	plEventually(t, "write ran", func() bool { return l.count("WRITE") == 1 })
+	release()
+	if err := <-wrote; err != nil {
+		t.Fatal(err)
+	}
+	plEventually(t, "reads resume", func() bool { return l.count("get_freq") >= 3 })
+	log := l.callLog()
+	if log[blocked-1] != "get_mode" || log[blocked] != "WRITE" {
+		t.Fatalf("a read ran between the in-flight read and the write: %v", log[blocked-1:])
+	}
 }
 
 func TestPollerWriteRevertsOnFailure(t *testing.T) {
@@ -349,17 +577,14 @@ func TestPollerDisconnectedState(t *testing.T) {
 	clk.Advance(time.Second)
 	l.setUp(false)
 	plEventually(t, "disconnected", func() bool { return !p.State().Connected })
-	n := len(l.calls)
+	n := len(l.callLog())
 	clk.Advance(30 * time.Second)
 	settle()
 	st := p.State()
 	if st.Freq != 14074000 || st.Mode != "USB" || !st.UpdatedAt.Equal(frozen) {
 		t.Fatalf("values or UpdatedAt changed while down: %+v", st)
 	}
-	l.mu.Lock()
-	got := len(l.calls)
-	l.mu.Unlock()
-	if got != n {
+	if got := len(l.callLog()); got != n {
 		t.Fatalf("reads attempted while disconnected: %d -> %d", n, got)
 	}
 	l.setUp(true)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -104,7 +105,10 @@ type Poller struct {
 	force   atomic.Bool  // run a full cycle at once
 	wake    chan struct{}
 
+	wmu sync.Mutex // serializes writes against each other
+
 	mu       sync.Mutex
+	readPTTv bool // the last PTT value a READ reported (st.PTT may hold an optimistic one)
 	st       State
 	caps     Caps
 	interest Interest
@@ -283,7 +287,7 @@ func (p *Poller) Run(ctx context.Context) {
 			continue
 		}
 		lastStart = now
-		if p.mainCycle(ctx, in) && in == Page && p.State().PTT && !txActive {
+		if p.mainCycle(ctx, in) && in == Page && p.lastReadPTT() && !txActive {
 			txActive, lastTx = true, now
 		}
 	}
@@ -293,10 +297,10 @@ func (p *Poller) Run(ctx context.Context) {
 // should stop (write pending, transport failure); a rigctld error just means
 // this field has nothing to report.
 func (p *Poller) read(ctx context.Context, cmd string, args ...string) (rep Reply, got, ok bool) {
+	g := p.gen.Load()
 	if p.pending.Load() > 0 || ctx.Err() != nil {
 		return Reply{}, false, false
 	}
-	g := p.gen.Load()
 	r, err := p.link.Do(ctx, cmd, args...)
 	if p.gen.Load() != g {
 		return Reply{}, false, false // a write began meanwhile: this answer may predate it
@@ -333,7 +337,7 @@ func number(r Reply) (float64, bool) {
 		if i := strings.LastIndex(l, ":"); i >= 0 {
 			l = l[i+1:]
 		}
-		if f, err := strconv.ParseFloat(strings.TrimSpace(l), 64); err == nil {
+		if f, err := strconv.ParseFloat(strings.TrimSpace(l), 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
 			return f, true
 		}
 	}
@@ -379,24 +383,43 @@ func (c *cycle) done() {
 
 func isTxMeter(n string) bool { return n == "SWR" || n == "ALC" }
 
-func (p *Poller) readPTT(ctx context.Context, c *cycle) (ok bool) {
+func (p *Poller) lastReadPTT() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.readPTTv
+}
+
+// readPTT reads the key state. Whenever a read reports PTT off, SWR and ALC
+// are zeroed in the same update, at any interest and whatever raced it: the
+// zero depends on the reading, not on the cadence that happened to run.
+func (p *Poller) readPTT(ctx context.Context, c *cycle) (on, ok bool) {
 	r, got, ok := p.read(ctx, "get_ptt")
 	if !got {
-		return ok
+		return false, ok
 	}
 	v, found := field(r, "PTT", 0)
 	if !found {
-		return true
+		return false, true
 	}
-	on := v != "0"
+	on = v != "0"
 	c.set(func(s *State) bool {
+		p.readPTTv = on
 		d := confirm(s, "ptt")
 		if s.PTT != on {
 			s.PTT, d = on, true
 		}
+		if !on {
+			for _, n := range p.caps.ReadableMeters {
+				if isTxMeter(n) {
+					if old, has := s.Meters[n]; has && old != 0 {
+						s.Meters[n], d = 0, true
+					}
+				}
+			}
+		}
 		return d
 	})
-	return true
+	return on, true
 }
 
 // store files a level reading under Levels (settable) or Meters (read-only).
@@ -427,7 +450,7 @@ func (p *Poller) mainCycle(ctx context.Context, in Interest) bool {
 	defer c.done()
 	p.mu.Lock()
 	caps := p.caps
-	wasPTT := p.st.PTT
+	known := p.st.Caps != nil
 	p.mu.Unlock()
 
 	if r, got, ok := p.read(ctx, "get_freq"); !ok {
@@ -460,23 +483,27 @@ func (p *Poller) mainCycle(ctx context.Context, in Interest) bool {
 			})
 		}
 	}
-	if r, got, ok := p.read(ctx, "get_vfo"); !ok {
-		return false
-	} else if got {
-		if v, found := field(r, "VFO", 0); found {
-			c.set(func(s *State) bool {
-				d := confirm(s, "vfo")
-				if s.VFO != v {
-					s.VFO, d = v, true
-				}
-				return d
-			})
+	if !known || caps.CanGetVFO {
+		if r, got, ok := p.read(ctx, "get_vfo"); !ok {
+			return false
+		} else if got {
+			if v, found := field(r, "VFO", 0); found {
+				c.set(func(s *State) bool {
+					d := confirm(s, "vfo")
+					if s.VFO != v {
+						s.VFO, d = v, true
+					}
+					return d
+				})
+			}
 		}
 	}
-	if !p.readPTT(ctx, c) {
-		return false
+	if !known || caps.CanGetPTT {
+		if _, ok := p.readPTT(ctx, c); !ok {
+			return false
+		}
 	}
-	if caps.CanGetSplit {
+	if !known || caps.CanGetSplit {
 		if r, got, ok := p.read(ctx, "get_split_vfo"); !ok {
 			return false
 		} else if got {
@@ -507,27 +534,8 @@ func (p *Poller) mainCycle(ctx context.Context, in Interest) bool {
 				}
 			}
 		}
-		p.mu.Lock()
-		nowPTT := p.st.PTT
-		p.mu.Unlock()
-		if wasPTT && !nowPTT {
-			p.zeroTx(c)
-		}
 	}
 	return true
-}
-
-// zeroTx publishes the one zero frame after PTT drops.
-func (p *Poller) zeroTx(c *cycle) {
-	c.set(func(s *State) bool {
-		d := false
-		for _, n := range []string{"SWR", "ALC"} {
-			if v, ok := s.Meters[n]; !ok || v != 0 {
-				s.Meters[n], d = 0, true
-			}
-		}
-		return d
-	})
 }
 
 // txCycle reads PTT and, while it is on, SWR and ALC. It reports whether the
@@ -538,14 +546,8 @@ func (p *Poller) txCycle(ctx context.Context) bool {
 	p.mu.Lock()
 	caps := p.caps
 	p.mu.Unlock()
-	if !p.readPTT(ctx, c) {
-		return false
-	}
-	p.mu.Lock()
-	on := p.st.PTT
-	p.mu.Unlock()
-	if !on {
-		p.zeroTx(c)
+	on, ok := p.readPTT(ctx, c)
+	if !ok || !on {
 		return false
 	}
 	for _, n := range caps.ReadableMeters {
@@ -566,9 +568,14 @@ func (p *Poller) txCycle(ctx context.Context) bool {
 }
 
 // Write applies optimistic to the state, runs fn ahead of any read, and
-// leaves the next read of each changed field to confirm or correct it. When fn
-// fails the optimistic change is undone.
+// leaves the next read of each changed field to confirm or correct it. The
+// optimistic callback runs under the poller's lock: it must only edit the
+// State it is given. Writes run one at a time. When fn fails the optimistic
+// change is undone; when it succeeds, fields no read can ever confirm (the
+// capabilities say the radio cannot report them) lose their flag at once.
 func (p *Poller) Write(ctx context.Context, fn func(*Client) error, optimistic func(*State)) error {
+	p.wmu.Lock()
+	defer p.wmu.Unlock()
 	p.pending.Add(1)
 	defer func() {
 		p.force.Store(true)
@@ -592,13 +599,46 @@ func (p *Poller) Write(ctx context.Context, fn func(*Client) error, optimistic f
 
 	err := fn(p.client)
 	p.gen.Add(1)
-	if err != nil && len(fields) > 0 {
-		p.mu.Lock()
-		revert(&p.st, before, fields)
-		p.publishLocked()
-		p.mu.Unlock()
+	if len(fields) == 0 {
+		return err
 	}
+	p.mu.Lock()
+	if err != nil {
+		revert(&p.st, before, fields)
+	} else {
+		for _, f := range fields {
+			if !p.readableLocked(f) {
+				delete(p.st.Optimistic, f)
+			}
+		}
+	}
+	p.publishLocked()
+	p.mu.Unlock()
 	return err
+}
+
+// readableLocked reports whether the poller's reads can ever report field f.
+func (p *Poller) readableLocked(f string) bool {
+	if p.st.Caps == nil {
+		return true // capabilities unknown: every read is tried
+	}
+	c := p.caps
+	switch f {
+	case "freq", "mode":
+		return true
+	case "ptt":
+		return c.CanGetPTT
+	case "vfo":
+		return c.CanGetVFO
+	case "split":
+		return c.CanGetSplit
+	}
+	for _, n := range c.ReadableMeters {
+		if n == f {
+			return true
+		}
+	}
+	return false
 }
 
 func diffFields(a, b State) []string {

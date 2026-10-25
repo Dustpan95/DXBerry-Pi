@@ -170,9 +170,7 @@ func TestManagerRemovalClosesPollerAndClient(t *testing.T) {
 	plEventually(t, "poller", func() bool { _, ok := r.m.Radio("hf"); return ok })
 	r.lst.push()
 	plEventually(t, "removed", func() bool { _, ok := r.m.Radio("hf"); return !ok })
-	if !r.all()[0].isClosed() {
-		t.Fatal("client not closed")
-	}
+	plEventually(t, "client closed", func() bool { return r.all()[0].isClosed() })
 }
 
 func TestManagerRecreatesOnPortOrModelChange(t *testing.T) {
@@ -191,9 +189,7 @@ func TestManagerRecreatesOnPortOrModelChange(t *testing.T) {
 
 	r.lst.push(radio("hf", 4600, 3073))
 	plEventually(t, "new port", func() bool { c := r.all(); return len(c) == 2 && c[1].addr == "127.0.0.1:4600" })
-	if !r.all()[0].isClosed() {
-		t.Fatal("old client left open")
-	}
+	plEventually(t, "old client closed", func() bool { return r.all()[0].isClosed() })
 	r.lst.push(radio("hf", 4600, 1036))
 	plEventually(t, "new model", func() bool { return len(r.all()) == 3 })
 	if p, _ := r.m.Radio("hf"); p == first {
