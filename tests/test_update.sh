@@ -551,6 +551,46 @@ test_update_apply_dxberry_reports_8_when_the_release_file_does_not_take() {
   fi
 }
 
+# up_station_env: stand-ins for the station teardown: systemctl and nginx record to calls, a
+# station unit and site exist, and nginx is active.
+up_station_env() {
+  export DXB_SYSTEMCTL=up_sc DXB_NGINX=up_nginx DXB_NGINX_DIR=$TEST_TMP/nginx DXB_SYSTEMD_DIR=$TEST_TMP/systemd
+  mkdir -p "$DXB_NGINX_DIR/sites-enabled" "$DXB_NGINX_DIR/sites-available" "$DXB_SYSTEMD_DIR"
+  : > "$DXB_SYSTEMD_DIR/dxberryd.service"
+  : > "$DXB_NGINX_DIR/sites-available/dxberry-dxberry.conf"
+  ln -s "$DXB_NGINX_DIR/sites-available/dxberry-dxberry.conf" "$DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf"
+  : > "$DXB_NGINX_DIR/sites-available/dxberry-pat.conf"
+  : > "$TEST_TMP/calls"
+}
+up_sc() { echo "systemctl $*" >> "$TEST_TMP/calls"; return 0; }
+up_nginx() { echo "nginx $*" >> "$TEST_TMP/calls"; return 0; }
+
+test_update_rollback_to_a_tree_without_the_station_tears_it_down() {
+  up_env; up_provision_stub; up_station_env
+  up_tree "$DXB_OPT" 0.5.0-rc1
+  up_tree "$DXB_OPT.prev" 0.4.0
+  rm -f "$DXB_OPT.prev/bin/dxberryd"
+  assert_ok dxb_update_apply_rollback > /dev/null 2>&1
+  assert_eq "$(grep -E '^(systemctl|nginx)' "$TEST_TMP/calls" | tr '\n' '|')" \
+    "systemctl disable --now dxberryd.service|systemctl daemon-reload|systemctl is-active --quiet nginx|nginx -t|systemctl reload nginx|"
+  [[ ! -e $DXB_SYSTEMD_DIR/dxberryd.service ]] || _fail "the unit file is still there"
+  [[ ! -e $DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf && ! -L $DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf ]] || _fail "the enabled site is still there"
+  [[ ! -e $DXB_NGINX_DIR/sites-available/dxberry-dxberry.conf ]] || _fail "the available site is still there"
+  [[ -e $DXB_NGINX_DIR/sites-available/dxberry-pat.conf ]] || _fail "another site was removed"
+  # before the restored tree's setup ran
+  assert_contains "$(cat "$TEST_TMP/provision-ran")" "LIB=$DXB_OPT/lib"
+}
+
+test_update_rollback_to_a_tree_with_the_station_leaves_it_alone() {
+  up_env; up_provision_stub; up_station_env
+  up_tree "$DXB_OPT" 0.5.0-rc2
+  up_tree "$DXB_OPT.prev" 0.5.0-rc1
+  : > "$DXB_OPT.prev/bin/dxberryd"
+  assert_ok dxb_update_apply_rollback > /dev/null 2>&1
+  assert_eq "$(grep -cE '^(systemctl|nginx)' "$TEST_TMP/calls")" "0"
+  [[ -e $DXB_SYSTEMD_DIR/dxberryd.service && -L $DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf ]] || _fail "the station was torn down"
+}
+
 test_update_rollback_swaps_back_and_forth() {
   up_env; up_provision_stub
   up_tree "$DXB_OPT" 0.3.0-rc4

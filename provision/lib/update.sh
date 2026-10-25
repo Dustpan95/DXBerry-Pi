@@ -366,6 +366,27 @@ dxb_update_apply_dxberry() {
   return 0
 }
 
+# dxb_update_station_teardown: a tree that predates the station app (no bin/dxberryd) has no web
+# page of its own to put on 443 and 80, and the station would keep them: stop and remove the
+# dxberryd unit and the station's nginx site so the restored tree's setup (Cockpit's, in 0.4.x)
+# can take the ports. Every step is best effort; a missing unit or site is not a problem.
+: "${DXB_SYSTEMCTL:=systemctl}"
+: "${DXB_NGINX:=nginx}"
+: "${DXB_NGINX_DIR:=/etc/nginx}"
+: "${DXB_SYSTEMD_DIR:=/etc/systemd/system}"
+: "${DXB_STATION_UNIT:=dxberryd.service}"
+dxb_update_station_teardown() {
+  "$DXB_SYSTEMCTL" disable --now "$DXB_STATION_UNIT" > /dev/null 2>&1
+  rm -f "$DXB_SYSTEMD_DIR/$DXB_STATION_UNIT"
+  "$DXB_SYSTEMCTL" daemon-reload > /dev/null 2>&1
+  rm -f "$DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf" "$DXB_NGINX_DIR/sites-available/dxberry-dxberry.conf"
+  if "$DXB_SYSTEMCTL" is-active --quiet nginx > /dev/null 2>&1; then
+    if "$DXB_NGINX" -t > /dev/null 2>&1; then "$DXB_SYSTEMCTL" reload nginx > /dev/null 2>&1 || dxb_warn "nginx could not reload after the station site was removed"
+    else dxb_warn "nginx -t rejected the configuration after the station site was removed"; fi
+  fi
+  return 0
+}
+
 dxb_update_apply_rollback() {
   local prev=$DXB_OPT.prev next=$DXB_OPT.next
   if [[ ! -x $prev/bin/dxberry-provision || ! -f $prev/lib/common.sh || ! -f $prev/VERSION ]]; then
@@ -392,6 +413,10 @@ dxb_update_apply_rollback() {
   if [[ $(sed -n 's/^DXBERRY_VERSION=//p' "$DXB_RELEASE_FILE" 2> /dev/null | head -1) != "$(head -1 "$DXB_OPT/VERSION" 2> /dev/null)" ]]; then
     echo "$DXB_RELEASE_FILE does not show the restored version; treating the rollback as failed" >&2
     return 8
+  fi
+  if [[ ! -e $DXB_OPT/bin/dxberryd ]]; then
+    echo "the earlier DXBerry has no station app; removing it so the earlier web page can take over"
+    dxb_update_station_teardown
   fi
   echo "DXBerry back to $(head -1 "$DXB_OPT/VERSION"); running the setup"
   dxb_update_run_provision || { echo "the setup run reported failed steps" >&2; return 8; }
