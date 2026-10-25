@@ -6,7 +6,7 @@
 set -uo pipefail
 
 DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
-for _m in common config system network storage graywolf radio radio_udev rigctld gps settings update inifile apps screen webproxy logbook console scrub; do
+for _m in common config system network storage graywolf radio radio_udev rigctld gps settings update inifile apps screen webproxy logbook station scrub; do
   # shellcheck disable=SC1090
   source "$DXB_LIB/$_m.sh"
 done
@@ -133,7 +133,7 @@ main() {
   fi
   provision_radio
   provision_apps
-  provision_console
+  provision_station
   provision_scrub
 
   # Runs before the status files are written so the operator - whose DietPi session is still up -

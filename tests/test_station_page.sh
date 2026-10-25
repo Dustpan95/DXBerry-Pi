@@ -58,7 +58,6 @@ test_station_page_files_are_plain() {
   for f in app.js dxberry.js index.html; do
     assert_file_not_contains "$SP_WEB/$f" "innerHTML"
   done
-  # dxberry.js still names the cockpit.socket unit and the status report's release.cockpit field
   assert_file_not_contains "$SP_WEB/app.js" "cockpit"
   assert_file_not_contains "$SP_WEB/index.html" "cockpit"
   assert_file_not_contains "$SP_WEB/index.html" "style="

@@ -147,9 +147,9 @@ test_pat_failing_jq_leaves_the_config_byte_identical() {
 test_pat_install_extra_places_ardop_and_sets_up_the_proxy() {
   pt_env
   export DXB_NGINX_DIR=$TEST_TMP/etc/nginx DXB_POLICY_RC=$TEST_TMP/usr/sbin/policy-rc.d DXB_NGINX=pt_nginx \
-    DXB_COCKPIT_CERTS=$TEST_TMP/etc/cockpit/ws-certs.d
-  mkdir -p "$DXB_NGINX_DIR/sites-enabled" "$DXB_NGINX_DIR/sites-available" "${DXB_POLICY_RC%/*}" "$DXB_COCKPIT_CERTS"
-  : > "$DXB_COCKPIT_CERTS/0-self-signed.cert"; : > "$DXB_COCKPIT_CERTS/0-self-signed.key"
+    DXB_STATION_TLS=$TEST_TMP/etc/dxberry/tls
+  mkdir -p "$DXB_NGINX_DIR/sites-enabled" "$DXB_NGINX_DIR/sites-available" "${DXB_POLICY_RC%/*}" "$DXB_STATION_TLS"
+  : > "$DXB_STATION_TLS/station.crt"; : > "$DXB_STATION_TLS/station.key"
   pt_nginx() { echo "nginx $*" >> "$TEST_TMP/calls"; }
   printf 'ardop-bytes' > "$TEST_TMP/http/ardopcf_arm_Linux_64"
   ap_release pflarue/ardop v1.0.4.1.3 ardopcf_arm_Linux_64

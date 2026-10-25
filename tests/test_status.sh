@@ -31,8 +31,9 @@ st_env() {
   printf 'DXBERRY_VERSION=0.3.0-rc1\nDXBERRY_COMMIT=abc1234\n' > "$DXB_RELEASE_FILE"
   ( umask 077; printf 'USER=admin\nPASSWORD=gwsecret1\n' > "$DXB_GW_SECRET_FILE" )
   printf 'LoadState=loaded\nActiveState=active\nSubState=running\nResult=success\nType=simple\nUnitFileState=enabled\n' > "$TEST_TMP/units/graywolf.service"
-  printf 'LoadState=loaded\nActiveState=active\nSubState=listening\nResult=success\nUnitFileState=enabled\n' > "$TEST_TMP/units/cockpit.socket"
+  printf 'LoadState=loaded\nActiveState=active\nSubState=running\nResult=success\nType=simple\nUnitFileState=enabled\n' > "$TEST_TMP/units/dxberryd.service"
   printf 'LoadState=loaded\nActiveState=inactive\nSubState=dead\nResult=success\nType=oneshot\nUnitFileState=enabled\n' > "$TEST_TMP/units/dxberry-radio-hotplug.service"
+  printf '#!/bin/sh\necho 0.5.0-rc1\n' > "$TEST_TMP/dxberryd"; chmod 755 "$TEST_TMP/dxberryd"; export DXB_STATION_CMD=$TEST_TMP/dxberryd
   : > "$TEST_TMP/calls"; : > "$TEST_TMP/argv"
 }
 
@@ -149,7 +150,7 @@ st_stubs() {
     esac
   }
   df() { printf 'Filesystem 1-blocks Used Available Capacity Mounted on\n/dev/sda2 30000000000 3000000000 27000000000 10%% /\n'; }
-  dpkg-query() { case ${*: -1} in graywolf) echo 'installed 0.14.13' ;; cockpit-ws) echo 'installed 337-1+deb13u2' ;; *) return 1 ;; esac; }
+  dpkg-query() { case ${*: -1} in graywolf) echo 'installed 0.14.13' ;; *) return 1 ;; esac; }
   hostname() { echo dxberry-pi; }
 }
 st_run() { ( st_stubs; "$@" ); }
@@ -197,8 +198,17 @@ test_status_time_reports_sync_source_and_offset() {
 
 test_status_release_reads_the_installed_versions() {
   st_env
-  assert_eq "$(st_run dxb_status_release | jq -c '[.dxberry, .dxberry_commit, .graywolf, .cockpit, .update]')" \
-    '["0.3.0-rc1","abc1234","0.14.13","337-1+deb13u2",null]'
+  assert_eq "$(st_run dxb_status_release | jq -c '[.dxberry, .dxberry_commit, .graywolf, .dxberryd, .update]')" \
+    '["0.3.0-rc1","abc1234","0.14.13","0.5.0-rc1",null]'
+}
+
+test_status_lists_dxberryd_not_cockpit() {
+  st_env
+  # no binary: the station version is empty, never an error
+  export DXB_STATION_CMD=$TEST_TMP/nowhere/dxberryd
+  assert_eq "$(st_run dxb_status_release | jq -c '[.dxberryd, has("cockpit")]')" '["",false]'
+  assert_not_contains "$(st_run dxb_status_unit_list)" "cockpit"
+  assert_contains "$(st_run dxb_status_unit_list | tr '\n' ' ')" "dxberryd.service nginx.service"
 }
 
 test_status_release_reports_the_cached_update_check() {
@@ -231,7 +241,7 @@ test_status_services_lists_the_station_units_and_each_rigctld() {
   : > "$DXB_RIGCTLD_RUN_DIR/radio1.env"
   local j; j=$(st_run dxb_status_services)
   assert_eq "$(jq -r '[.units[].unit] | join(" ")' <<< "$j")" \
-    "graywolf.service rigctld@radio1.service gpsd.service chrony.service dxberry-netwatch.service dxberry-radio-hotplug.service dxberry-radio-wire.service cockpit.socket dxberry-logbridge.service dxberry-logbook-flush.timer"
+    "graywolf.service rigctld@radio1.service gpsd.service chrony.service dxberry-netwatch.service dxberry-radio-hotplug.service dxberry-radio-wire.service dxberryd.service nginx.service dxberry-logbridge.service dxberry-logbook-flush.timer"
   assert_eq "$(jq -c '.units[0] | [.load, .active, .sub, .result, .type, .enabled]' <<< "$j")" '["loaded","active","running","success","simple","enabled"]'
   assert_eq "$(jq -c '.units[] | select(.unit == "dxberry-radio-wire.service") | [.load, .active]' <<< "$j")" '["not-found","inactive"]'
   assert_eq "$(jq -c '.units[] | select(.unit == "dxberry-radio-hotplug.service") | [.type, .result]' <<< "$j")" '["oneshot","success"]'
@@ -245,18 +255,17 @@ test_status_services_adds_screen_sessions_and_the_web_units_that_exist() {
       case $1 in
         list-units) printf '%s\n' 'dxberry-screen@wsjtx-radio2.service loaded active running WSJT-X on radio2' \
           'dxberry-screen@fldigi-radio1.service loaded inactive dead fldigi on radio1' ;;
-        list-unit-files) case ${*: -1} in nginx.service) echo 'nginx.service enabled enabled' ;; php*-fpm.service) echo 'php8.4-fpm.service enabled enabled' ;; esac ;;
+        list-unit-files) case ${*: -1} in php*-fpm.service) echo 'php8.4-fpm.service enabled enabled' ;; esac ;;
       esac
       return 0
     }
     dxb_status_unit_list | paste -sd' ' )
   assert_contains "$l" "dxberry-screen@wsjtx-radio2.service"
   assert_contains "$l" "dxberry-screen@fldigi-radio1.service"
-  assert_contains "$l" "nginx.service"
   assert_contains "$l" "php8.4-fpm.service"
   assert_not_contains "$l" "mariadb.service"          # its unit file is absent
   l=$(st_run dxb_status_unit_list | paste -sd' ')
-  assert_not_contains "$l" "nginx.service"
+  assert_not_contains "$l" "php8.4-fpm.service"
   assert_not_contains "$l" "dxberry-screen@"
 }
 
@@ -360,7 +369,7 @@ test_status_cli_prints_a_readable_report() {
   assert_contains "$(st_out)" 'network: WIFI on wlan0 10.0.0.90/24 via 10.0.0.1, WiFi "Shack Net" -47 dBm'
   assert_contains "$(st_out)" "graywolf: running, version 0.14.13, iGate connected to rotate.aprs2.net:14580, channel VHF APRS rx 6228 tx 1010 bad FCS 5044"
   assert_contains "$(st_out)" "time: synced to NTP 144.202.66.214, offset -0.412 ms"
-  assert_contains "$(st_out)" "release: DXBerry 0.3.0-rc1, Graywolf 0.14.13, Cockpit 337-1+deb13u2"
+  assert_contains "$(st_out)" "release: DXBerry 0.3.0-rc1, Graywolf 0.14.13, station 0.5.0-rc1"
   assert_contains "$(st_out)" "  dxberry-radio-wire.service: not installed"
 }
 
@@ -410,7 +419,7 @@ test_status_text_tolerates_null_arrays_in_otherwise_ok_parts() {
                api_ok: true, api_error: "", igate: null, channels: null, position_log: null},
     radios: {ok: true, radios: null, gps: {fix: 0, receiver: false}},
     time: {ok: true, synced: true, source: "NTP", reference: "144.202.66.214", stratum: 5, offset_ms: -0.412},
-    release: {ok: true, dxberry: "0.3.0-rc1", dxberry_commit: "abc1234", graywolf: "0.14.13", cockpit: "337-1+deb13u2", update: null},
+    release: {ok: true, dxberry: "0.3.0-rc1", dxberry_commit: "abc1234", graywolf: "0.14.13", dxberryd: "0.5.0-rc1", update: null},
     services: {ok: true, units: null}
   }')
   out=$(dxb_status_text <<< "$j"); rc=$?
@@ -420,7 +429,7 @@ test_status_text_tolerates_null_arrays_in_otherwise_ok_parts() {
   assert_contains "$out" "graywolf: running, version 0.14.13"
   assert_contains "$out" "radios: 0 radio(s)"
   assert_contains "$out" "time: synced to NTP 144.202.66.214, offset -0.412 ms"
-  assert_contains "$out" "release: DXBerry 0.3.0-rc1, Graywolf 0.14.13, Cockpit 337-1+deb13u2"
+  assert_contains "$out" "release: DXBerry 0.3.0-rc1, Graywolf 0.14.13, station 0.5.0-rc1"
   assert_contains "$out" "services:"
 }
 

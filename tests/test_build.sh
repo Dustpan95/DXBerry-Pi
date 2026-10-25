@@ -63,22 +63,42 @@ test_build_ships_the_status_command() {
   assert_contains "$executable" "provision/bin/dxberry-status"
 }
 
-test_build_ships_the_console_step() {
-  local required
-  required=$(sed -n '/^REQUIRED_FILES=(/,/^)/p' "$DXB_ROOT/build/build-image.sh")
-  assert_contains "$required" "provision/lib/console.sh"
-  assert_contains "$required" "provision/templates/cockpit-listen.conf"
-}
-
-test_build_ships_the_console_page() {
+test_build_ships_the_station_files() {
   local required f
   required=$(sed -n '/^REQUIRED_FILES=(/,/^)/p' "$DXB_ROOT/build/build-image.sh")
-  for f in manifest.json index.html; do
-    assert_contains "$required" "provision/cockpit/dxberry/$f"
+  for f in provision/lib/station.sh provision/templates/dxberryd.service provision/templates/nginx-dxberry.conf \
+    provision/templates/pam-dxberry provision/bin/dxberryd station/web/index.html station/web/dxberry.js station/web/dxberry.css; do
+    assert_contains "$required" "$f"
   done
-  for f in dxberry.js dxberry.css; do
-    assert_contains "$required" "station/web/$f"
-  done
+  # nothing of the Cockpit console is shipped any more
+  assert_not_contains "$required" "cockpit"
+  assert_not_contains "$required" "console.sh"
+}
+
+# bt_hide_bin / bt_restore_bin: the built service binary is git-ignored; a test controls whether one is there.
+bt_hide_bin() { local b=$DXB_ROOT/provision/bin/dxberryd; if [[ -e $b ]]; then mv -f "$b" "$b.bt-keep"; fi; }
+bt_restore_bin() { local b=$DXB_ROOT/provision/bin/dxberryd; rm -f "$b"; if [[ -e $b.bt-keep ]]; then mv -f "$b.bt-keep" "$b"; fi; }
+
+test_build_tree_check_lists_station_files() {
+  local b=$DXB_ROOT/provision/bin/dxberryd out
+  bt_hide_bin
+  out=$("$DXB_ROOT/build/build-image.sh" --check 2>&1); local rc=$?
+  assert_eq "$rc" "1"
+  assert_contains "$out" "missing provision/bin/dxberryd"
+  : > "$b"; chmod 755 "$b"
+  out=$("$DXB_ROOT/build/build-image.sh" --check 2>&1); rc=$?
+  bt_restore_bin
+  assert_eq "$out" "tree ok"
+  assert_eq "$rc" "0"
+}
+
+test_build_update_file_needs_the_service_binary() {
+  local out=$TEST_TMP/out msg
+  bt_hide_bin
+  msg=$("$DXB_ROOT/build/make-update-tarball.sh" v0.5.0-rc1 "$out" 2>&1); local rc=$?
+  bt_restore_bin
+  assert_eq "$rc" "1"
+  assert_contains "$msg" "provision/bin/dxberryd is missing"
 }
 
 test_build_ships_the_config_command() {
@@ -129,14 +149,19 @@ test_build_release_makes_the_update_file_before_the_image() {
 }
 
 test_build_makes_the_update_file() {
-  local out=$TEST_TMP/out name list
-  name=$( umask 002; "$DXB_ROOT/build/make-update-tarball.sh" v0.3.0-rc4 "$out" ) || _fail "make-update-tarball.sh failed"
+  local out=$TEST_TMP/out name list b=$DXB_ROOT/provision/bin/dxberryd
+  bt_hide_bin; : > "$b"
+  name=$( umask 002; "$DXB_ROOT/build/make-update-tarball.sh" v0.3.0-rc4 "$out" ); local rc=$?
+  bt_restore_bin
+  (( rc == 0 )) || _fail "make-update-tarball.sh failed"
   assert_eq "$name" "$out/dxberry-pi-0.3.0-rc4.tar.gz"
   ( cd "$out" && sha256sum -c --quiet dxberry-pi-0.3.0-rc4.tar.gz.sha256 ) || _fail "the .sha256 does not match"
   list=$(tar -tvzf "$name")
   assert_contains "$list" "dxberry/bin/dxberry-provision"
   assert_contains "$list" "dxberry/lib/settings.sh"
-  assert_contains "$list" "dxberry/cockpit/dxberry/index.html"
+  assert_contains "$list" "dxberry/bin/dxberryd"
+  assert_contains "$list" "dxberry/lib/station.sh"
+  assert_not_contains "$list" "cockpit"
   # modes as the image installs them, owned by root
   assert_eq "$(awk '$NF == "dxberry/bin/dxberry-provision" {print $1, $2}' <<< "$list")" "-rwxr-xr-x 0/0"
   assert_eq "$(awk '$NF == "dxberry/lib/common.sh" {print $1}' <<< "$list")" "-rw-r--r--"
@@ -152,7 +177,7 @@ test_build_makes_the_update_file() {
 test_build_ships_every_program_file() {
   local required f d
   required=" $(sed -n '/^REQUIRED_FILES=(/,/^)/p' "$DXB_ROOT/build/build-image.sh" | tr -s ' \n' '  ') "
-  for f in "$DXB_ROOT"/provision/lib/apps/*.sh "$DXB_ROOT"/provision/cockpit/dxberry/*.* "$DXB_ROOT"/provision/templates/dxberry-*; do
+  for f in "$DXB_ROOT"/provision/lib/apps/*.sh "$DXB_ROOT"/provision/templates/dxberry-*; do
     [[ -f $f ]] || continue
     f=${f#"$DXB_ROOT"/}
     [[ $required == *" $f "* ]] || _fail "$f is not in REQUIRED_FILES"

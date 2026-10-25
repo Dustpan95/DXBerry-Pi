@@ -22,6 +22,7 @@
 : "${DXB_STATUS_GW_COOKIES:=$DXB_RUN_DIR/status-graywolf.cookies}"
 : "${DXB_STATUS_CURL:=_dxb_status_curl}"
 : "${DXB_APP_CMD:=$DXB_BIN/dxberry-app}"
+: "${DXB_STATION_CMD:=$DXB_BIN/dxberryd}"
 : "${DXB_LOGBOOK_CMD:=$DXB_BIN/dxberry-logbook}"
 
 DXB_STATUS_PARTS='pi network graywolf radios time release services station apps'
@@ -118,7 +119,7 @@ _dxb_status_pkg_version() {
 # (its .error), never false/0: a failed check must not read as "up to date". Reading the cache
 # never runs a check: that is the Updates card's job.
 dxb_status_release() {
-  local v='' c='' cache=${DXB_UPDATE_CACHE:-$DXB_STATE_DIR/update-check.json} u=null
+  local v='' c='' s='' cache=${DXB_UPDATE_CACHE:-$DXB_STATE_DIR/update-check.json} u=null
   if [[ -r $DXB_RELEASE_FILE ]]; then
     v=$(sed -n 's/^DXBERRY_VERSION=//p' "$DXB_RELEASE_FILE" | head -1)
     c=$(sed -n 's/^DXBERRY_COMMIT=//p' "$DXB_RELEASE_FILE" | head -1)
@@ -128,8 +129,9 @@ dxb_status_release() {
       dxberry: (if .dxberry.error then null else .dxberry.update == true end),
       system: (if .system.error then null else .system.count // 0 end), checked_at: (.checked_at // null)}' "$cache" 2> /dev/null) || u=null
   fi
-  jq -cn --arg v "$v" --arg c "$c" --arg g "$(dxb_gw_installed_version)" --arg k "$(_dxb_status_pkg_version cockpit-ws)" --argjson u "${u:-null}" \
-    '{dxberry: $v, dxberry_commit: $c, graywolf: $g, cockpit: $k, update: $u}'
+  [[ -x $DXB_STATION_CMD ]] && s=$("$DXB_STATION_CMD" -version 2> /dev/null | head -1)
+  jq -cn --arg v "$v" --arg c "$c" --arg g "$(dxb_gw_installed_version)" --arg k "$s" --argjson u "${u:-null}" \
+    '{dxberry: $v, dxberry_commit: $c, graywolf: $g, dxberryd: $k, update: $u}'
 }
 
 # ---- services ------------------------------------------------------------------------------
@@ -142,13 +144,12 @@ dxb_status_unit_list() {
     n=${f##*/}
     echo "rigctld@${n%.env}.service"
   done
-  printf '%s\n' gpsd.service chrony.service dxberry-netwatch.service dxberry-radio-hotplug.service dxberry-radio-wire.service cockpit.socket
+  printf '%s\n' gpsd.service chrony.service dxberry-netwatch.service dxberry-radio-hotplug.service dxberry-radio-wire.service dxberryd.service nginx.service
   # the programs: every screen session systemd knows (running or not), the logging bridge and its
-  # flush timer, and the web units only where their unit files exist (Wavelog and Pat's proxy)
+  # flush timer, and the web units only where their unit files exist (Wavelog's php-fpm and database; nginx is always listed above)
   systemctl list-units --all --plain --no-legend 'dxberry-screen@*' 2> /dev/null \
     | awk '$1 ~ /^dxberry-screen@[A-Za-z0-9_.:-]+\.service$/ {print $1}'
   printf '%s\n' dxberry-logbridge.service dxberry-logbook-flush.timer
-  _dxb_status_unit_files nginx.service
   _dxb_status_unit_files 'php*-fpm.service'
   _dxb_status_unit_files mariadb.service
 }
@@ -393,7 +394,7 @@ dxb_status_text() {
     line("radios"; (.radios | length | tostring) + " radio(s)"
       + ([(.radios // {}) | to_entries[] | ", " + .key + " " + (if .value.present then "present" else "unplugged" end) + (if .value.owner != "" then " (" + .value.owner + ")" else "" end)] | join(""))),
     line("time"; if .synced then "synced to " + .source + (if .source == "NTP" and .reference != "" then " " + .reference else "" end) + ", offset " + (.offset_ms | tostring) + " ms" else "not synced" end),
-    line("release"; "DXBerry " + .dxberry + ", Graywolf " + (if .graywolf == "" then "-" else .graywolf end) + ", Cockpit " + (if .cockpit == "" then "-" else .cockpit end)),
+    line("release"; "DXBerry " + .dxberry + ", Graywolf " + (if .graywolf == "" then "-" else .graywolf end) + ", station " + (if .dxberryd == "" then "-" else .dxberryd end)),
     (if has("services") then
        (if .services.ok then "services:", ((.services.units // [])[] | "  " + .unit + ": " + (if .load == "not-found" then "not installed" else .active + " (" + .sub + ")" end))
         else "services: unavailable (" + (.services.error // "unknown error") + ")" end)

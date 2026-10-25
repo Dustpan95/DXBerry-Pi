@@ -45,12 +45,13 @@ const BAUDS = [0, 4800, 9600, 19200, 38400, 57600, 115200];
 const STOP_WARNINGS = {
   "graywolf.service": "APRS, the iGate and the digipeater stop until Graywolf is started again.",
   "dxberry-netwatch.service": "Network failover stops. If the Pi then loses its connection it will not switch over, and this page may become unreachable.",
-  "cockpit.socket": "This console closes and stays unreachable until cockpit.socket is started again over SSH or the Pi restarts.",
+  "dxberryd.service": "This console closes and stays unreachable until dxberryd.service is started again over SSH or the Pi restarts.",
+  "nginx.service": "This console closes and stays unreachable until nginx.service is started again over SSH or the Pi restarts.",
 };
-// Restarting cockpit.socket drops this console's session too, just like Stop, so it asks first
+// Restarting dxberryd.service drops this console's connection too, just like Stop, so it asks first
 // as well - but it comes back on its own, so the warning is softer than Stop's.
 const RESTART_WARNINGS = {
-  "cockpit.socket": "This console disconnects while cockpit.socket restarts. It comes back within a few seconds; reconnect and log in again.",
+  "dxberryd.service": "This console disconnects while dxberryd.service restarts. It comes back within a few seconds; reconnect and log in again.",
 };
 
 /* fields-begin: every path of dxberry-status --json this page reads. tests/test_page.sh checks each
@@ -82,7 +83,7 @@ const FIELDS = [
   "radios.apps.*.name", "radios.apps.*.label", "radios.apps.*.session", "radios.apps.*.installed",
   "radios.gps.fix", "radios.gps.receiver", "radios.gps.grid", "radios.gps.sats_used", "radios.gps.sats_seen",
   "time.ok", "time.synced", "time.source", "time.reference", "time.stratum", "time.offset_ms",
-  "release.ok", "release.dxberry", "release.dxberry_commit", "release.graywolf", "release.cockpit",
+  "release.ok", "release.dxberry", "release.dxberry_commit", "release.graywolf", "release.dxberryd",
   "release.update.graywolf", "release.update.dxberry", "release.update.system",
   "services.ok", "services.units.*.unit", "services.units.*.load", "services.units.*.active", "services.units.*.sub",
   "services.units.*.result", "services.units.*.type",
@@ -500,7 +501,7 @@ function aboutCard(r) {
   const rows = [
     ["DXBerry-Pi", r.dxberry ? r.dxberry + (r.dxberry_commit ? ` (${r.dxberry_commit})` : "") : DASH],
     ["Graywolf", r.graywolf || "not installed"],
-    ["Cockpit", r.cockpit || DASH],
+    ["Station", r.dxberryd || DASH],
   ];
   // a part the check could not read is null: "check failed", never "up to date"
   if (r.update) {

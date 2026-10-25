@@ -79,13 +79,18 @@ full_env() {
     DXB_RADIOS_STATE=$TEST_TMP/run/radios-state.json DXB_RADIOS_FILE=$TEST_TMP/state/radios.json \
     DXB_GPSD_DEFAULT=$TEST_TMP/etc/default/gpsd DXB_CHRONY_DROPIN=$TEST_TMP/etc/chrony/conf.d/dxberry.conf \
     DXB_RPI_CONFIG_TXT=$TEST_TMP/bootfs/config.txt DXB_GPSPIPE=fake_gpspipe DXB_RUN_DIR=$TEST_TMP/run \
-    DXB_COCKPIT_SRC=$TEST_TMP/cockpit-src DXB_COCKPIT_LINK=$TEST_TMP/usr-share-cockpit/dxberry \
-    DXB_COCKPIT_DROPIN=$TEST_TMP/cockpit.socket.d/dxberry-listen.conf DXB_REBOOT_FLAG=$TEST_TMP/run/reboot-required \
+    DXB_STATION_BIN=$TEST_TMP/opt/bin/dxberryd DXB_STATION_TLS=$TEST_TMP/etc/dxberry/tls DXB_PAM_DIR=$TEST_TMP/etc/pam.d \
+    DXB_POLICY_RC=$TEST_TMP/usr/sbin/policy-rc.d DXB_NGINX=pv_nginx DXB_STATION_WAIT_S=0 \
+    DXB_COCKPIT_LINK=$TEST_TMP/usr-share-cockpit/dxberry DXB_COCKPIT_DROPIN_DIR=$TEST_TMP/cockpit.socket.d \
+    DXB_REBOOT_FLAG=$TEST_TMP/run/reboot-required \
     DXB_APPS_DIR=$DXB_ROOT/provision/lib/apps DXB_APPS_TSV=$DXB_ROOT/provision/share/apps.tsv \
     DXB_APPS_OPT=$TEST_TMP/opt/dxberry-apps DXB_APPS_HOME=$TEST_TMP/home/dxbapps DXB_NGINX_DIR=$TEST_TMP/nginx \
     DXB_SYSTEMCTL=systemctl DXB_DPKG_QUERY=dpkg-query DXB_APT_GET=apt-get DXB_APPS_STATE=$TEST_TMP/state/apps DXB_GETENT=pv_account DXB_USERADD=pv_account DXB_GROUPADD=pv_account DXB_USERMOD=pv_account DXB_CHOWN=pv_account
   mkdir -p "$DXB_BOOT_DIR" "$DXB_SYSTEMD_DIR" "$DXB_ZONEINFO_DIR" "$DXB_SYS_NET/eth0" "$DXB_SYS_NET/wlan0" \
-    "$DXB_SYSFS_ROOT" "$TEST_TMP/etc" "$DXB_RIGCTLD_RUN_DIR" "$DXB_TMPFILES_DIR" "$TEST_TMP/cockpit-src"
+    "$DXB_SYSFS_ROOT" "$TEST_TMP/etc" "$DXB_RIGCTLD_RUN_DIR" "$DXB_TMPFILES_DIR" "$TEST_TMP/opt/bin" "$DXB_STATION_TLS"
+  # the station app is in place and has made its certificate; a stand-in binary
+  printf '#!/bin/sh\necho 0.5.0-rc1\n' > "$DXB_STATION_BIN"; chmod 755 "$DXB_STATION_BIN"
+  echo cert > "$DXB_STATION_TLS/station.crt"; echo key > "$DXB_STATION_TLS/station.key"
   : > "$DXB_ZONEINFO_DIR/UTC"
   echo DietPi > "$DXB_HOSTNAME_FILE"
   printf '127.0.0.1 localhost\n127.0.1.1 DietPi\n' > "$DXB_HOSTS_FILE"
@@ -116,8 +121,8 @@ full_env() {
     hostname() { echo "hostname $*" >> "$TEST_TMP/calls"; }
     swapon() { echo "NAME"; echo "/dev/zram0"; }
     apt-get() { echo "apt-get $*" >> "$TEST_TMP/calls"; }
-    # Graywolf is not installed; Cockpit is, so the console step does not try to install it
-    dpkg-query() { [[ $* == *cockpit* ]] || return 1; printf installed; }
+    # Graywolf is not installed; nginx and PAM are, so the station step does not try to install them
+    dpkg-query() { case ${*: -1} in nginx|libpam-runtime) printf 'installed 1.0' ;; *) return 1 ;; esac; }
     fake_udevadm() { echo "udevadm $*" >> "$TEST_TMP/calls"; }
     systemd-tmpfiles() { echo "systemd-tmpfiles $*" >> "$TEST_TMP/calls"; }
     rigctl() { printf '145390000\nFM\n'; }
@@ -505,11 +510,11 @@ test_provision_driver_runs_the_console_step_after_radio() {
   ) 2> /dev/null
   local radio console
   radio=$(grep -n 'dxberry-radio-hotplug' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
-  console=$(grep -n 'cockpit.socket' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  console=$(grep -n 'enable --now dxberryd.service' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
   if [[ -z $radio || -z $console ]] || (( radio > console )); then
-    _fail "the console step must run after the radio step (radio '$radio', console '$console')"
+    _fail "the station step must run after the radio step (radio '$radio', console '$console')"
   fi
-  assert_file_contains "$DXB_BOOT_DIR/dxberry-status.txt" "console: https://<this-pi>/ (log in as dietpi)"
+  assert_file_contains "$DXB_BOOT_DIR/dxberry-status.txt" "station: https://<this-pi>/ (log in as dietpi)"
 }
 
 test_run_mode_wifi_import_failure_leaves_wifi_password_intact() {
@@ -601,7 +606,7 @@ pv_driver_steps() { grep -v '^[[:space:]]*#' "$DXB_ROOT/provision/bin/dxberry-pr
 
 test_provision_apps_runs_right_after_radio_and_absorbs_the_logbook_step() {
   local steps; steps=$(pv_driver_steps)
-  assert_contains "$steps" "provision_radio provision_apps provision_console"
+  assert_contains "$steps" "provision_radio provision_apps provision_station"
   assert_not_contains "$steps" "provision_logbook"
 }
 
@@ -643,21 +648,21 @@ test_provision_apps_a_failure_is_a_failed_step_named_apps() (
   assert_contains "${DXB_FAILED_STEPS[0]}" "apps: "
 )
 
-# pv_nginx_scene: Pat installed behind a working nginx site (Cockpit's certificate under $TEST_TMP/certs);
+# pv_nginx_scene: Pat installed behind a working nginx site (the station certificate under $TEST_TMP/certs);
 # nginx and its checks are recorded in calls, and the check fails while $TEST_TMP/nginx-bad exists.
 # shellcheck disable=SC2317  # called through the DXB_NGINX override and by provision_apps
 pv_nginx() { echo "nginx $*" >> "$TEST_TMP/calls"; [[ ! -f $TEST_TMP/nginx-bad ]]; }
 pv_nginx_scene() {
   full_env; provision_cfg 'PASSWORD=examplepass'
-  export DXB_NGINX=pv_nginx DXB_COCKPIT_CERTS=$TEST_TMP/certs
-  mkdir -p "$DXB_COCKPIT_CERTS"
-  echo cert > "$DXB_COCKPIT_CERTS/0-self-signed.cert"; echo key > "$DXB_COCKPIT_CERTS/0-self-signed.key"
+  export DXB_NGINX=pv_nginx DXB_STATION_TLS=$TEST_TMP/certs
+  mkdir -p "$DXB_STATION_TLS"
+  echo cert > "$DXB_STATION_TLS/station.crt"; echo key > "$DXB_STATION_TLS/station.key"
   dxb_webproxy_site pat > /dev/null 2>&1
-  touch -d '1 hour ago' "$DXB_COCKPIT_CERTS"/0-self-signed.* 
+  touch -d '1 hour ago' "$DXB_STATION_TLS"/station.* 
   : > "$TEST_TMP/calls"
 }
 # shellcheck disable=SC2317
-pv_pat_nginx_dpkg() { dpkg-query() { case ${*: -1} in nginx|pat) printf 'installed 1.26' ;; cockpit*) printf installed ;; *) return 1 ;; esac; }; }
+pv_pat_nginx_dpkg() { dpkg-query() { case ${*: -1} in nginx|pat) printf 'installed 1.26' ;; libpam-runtime) printf 'installed 1.0' ;; *) return 1 ;; esac; }; }
 
 test_provision_apps_leaves_a_current_site_alone() (
   pv_nginx_scene; pv_pat_nginx_dpkg
@@ -670,7 +675,7 @@ test_provision_apps_leaves_a_current_site_alone() (
 
 test_provision_apps_picks_up_a_renewed_certificate_once() (
   pv_nginx_scene; pv_pat_nginx_dpkg
-  touch "$DXB_COCKPIT_CERTS/0-self-signed.cert"
+  touch "$DXB_STATION_TLS/station.crt"
   provision_apps 2> /dev/null
   assert_eq "$(grep -c 'reload nginx' "$TEST_TMP/calls")" "1"
   : > "$TEST_TMP/calls"
@@ -710,7 +715,7 @@ test_provision_apps_skips_a_disabled_site_and_missing_nginx() (
   assert_file_not_contains "$TEST_TMP/calls" "nginx"
   # nginx not installed, Pat still is
   ln -s "$DXB_NGINX_DIR/sites-available/dxberry-pat.conf" "$DXB_NGINX_DIR/sites-enabled/dxberry-pat.conf"
-  dpkg-query() { case ${*: -1} in pat) printf 'installed 1.26' ;; cockpit*) printf installed ;; *) return 1 ;; esac; }
+  dpkg-query() { case ${*: -1} in pat) printf 'installed 1.26' ;; libpam-runtime) printf 'installed 1.0' ;; *) return 1 ;; esac; }
   : > "$TEST_TMP/calls"
   provision_apps 2> /dev/null
   assert_file_not_contains "$TEST_TMP/calls" "nginx"

@@ -3,6 +3,8 @@ package httpapi
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -200,5 +202,21 @@ func TestIndexScriptsResolve(t *testing.T) {
 	want := "/app.js /dxberry.js /settings.js /updates.js /dashboard.js /programs.js"
 	if strings.Join(got, " ") != want {
 		t.Errorf("script tags %q, want %q", strings.Join(got, " "), want)
+	}
+}
+
+func TestServesStationCertificateWithoutSession(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "station.crt")
+	if err := os.WriteFile(f, []byte("-----BEGIN CERTIFICATE-----\nxx\n-----END CERTIFICATE-----\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := New(Config{Listen: "127.0.0.1:0", Web: fstest.MapFS{}, Auth: stubAuth{ok: false}, CertFile: f}).Handler
+	rec := do(h, "GET", "/station.crt", nil)
+	if rec.Code != 200 || rec.Header().Get("Content-Type") != "application/x-x509-ca-cert" || !strings.Contains(rec.Body.String(), "BEGIN CERTIFICATE") {
+		t.Fatalf("got %d %q %q", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+	h = New(Config{Listen: "127.0.0.1:0", Web: fstest.MapFS{}, Auth: stubAuth{ok: false}, CertFile: f + ".missing"}).Handler
+	if rec := do(h, "GET", "/station.crt", nil); rec.Code != 404 {
+		t.Fatalf("missing cert: %d", rec.Code)
 	}
 }

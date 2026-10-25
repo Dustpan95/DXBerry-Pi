@@ -9,6 +9,7 @@ die() { echo "make-update-tarball: $*" >&2; exit 1; }
 version=${1#v}; out=$2
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]] || die "not a version: $1"
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || die "cannot find the repository"
+[[ -f $root/provision/bin/dxberryd ]] || die "provision/bin/dxberryd is missing: build the station app first (station/build.sh), the update file carries it"
 stage=$(mktemp -d) || die "no temporary directory"
 trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/dxberry" "$out" || die "cannot create $out"

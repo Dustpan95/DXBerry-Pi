@@ -12,7 +12,7 @@ source "$DXB_LIB/webproxy.sh"
 
 # wl_env: the module loaded (here, not when the file is read: in the one shared test shell its
 # install_extra would otherwise run in test_apps.sh's installs of a stand-in wavelog), the
-# program environment, an nginx tree and Cockpit's certificate under $TEST_TMP, nginx
+# program environment, an nginx tree and the station certificate under $TEST_TMP, nginx
 # and mariadb stand-ins (mariadb keeps its stdin in $TEST_TMP/mariadb, its arguments in
 # $TEST_TMP/mariadb-argv), and Wavelog 3.2.4 released and installed the way the app-install job
 # does it (dxb_apps_install)
@@ -20,9 +20,9 @@ wl_env() {
   fx_apps_env
   source "$DXB_LIB/apps/wavelog.sh"
   export DXB_NGINX_DIR=$TEST_TMP/etc/nginx DXB_POLICY_RC=$TEST_TMP/usr/sbin/policy-rc.d DXB_NGINX=wl_nginx \
-    DXB_COCKPIT_CERTS=$TEST_TMP/etc/cockpit/ws-certs.d DXB_MARIADB=wl_mariadb
-  mkdir -p "$DXB_NGINX_DIR/sites-enabled" "$DXB_NGINX_DIR/sites-available" "${DXB_POLICY_RC%/*}" "$DXB_COCKPIT_CERTS"
-  : > "$DXB_COCKPIT_CERTS/0-self-signed.cert"; : > "$DXB_COCKPIT_CERTS/0-self-signed.key"
+    DXB_STATION_TLS=$TEST_TMP/etc/dxberry/tls DXB_MARIADB=wl_mariadb
+  mkdir -p "$DXB_NGINX_DIR/sites-enabled" "$DXB_NGINX_DIR/sites-available" "${DXB_POLICY_RC%/*}" "$DXB_STATION_TLS"
+  : > "$DXB_STATION_TLS/station.crt"; : > "$DXB_STATION_TLS/station.key"
   : > "$TEST_TMP/mariadb"; : > "$TEST_TMP/mariadb-argv"
   wl_new_release 3.2.4
   dxb_apps_install wavelog > /dev/null || _fail "the first install failed"
@@ -102,8 +102,8 @@ test_wavelog_site_listens_on_8082_tls_and_loopback_8083() {
   local f; f=$(wl_site)
   assert_file_contains "$f" "listen 8082 ssl;"
   assert_file_contains "$f" "listen 127.0.0.1:8083;"
-  assert_file_contains "$f" "ssl_certificate \"$DXB_COCKPIT_CERTS/0-self-signed.cert\";"
-  assert_file_contains "$f" "ssl_certificate_key \"$DXB_COCKPIT_CERTS/0-self-signed.key\";"
+  assert_file_contains "$f" "ssl_certificate \"$DXB_STATION_TLS/station.crt\";"
+  assert_file_contains "$f" "ssl_certificate_key \"$DXB_STATION_TLS/station.key\";"
   assert_file_contains "$f" "root \"$DXB_APPS_OPT/wavelog\";"
   assert_file_contains "$f" "fastcgi_pass unix:/run/php/php-fpm.sock;"
   assert_file_not_contains "$f" "@"
@@ -114,7 +114,7 @@ test_wavelog_site_gates_the_installer_and_backups_and_hides_the_code() {
   wl_env
   local f; f=$(wl_site)
   # the console login guards /install (and the backups Wavelog writes), not the whole site:
-  # Wavelog has its own login, and its API must answer without a Cockpit cookie
+  # Wavelog has its own login, and its API must answer without a session cookie
   assert_file_not_contains "$f" "include snippets/dxberry-auth.conf;"
   assert_file_contains "$f" "include snippets/dxberry-auth-endpoints.conf;"
   assert_eq "$(grep -c 'include snippets/dxberry-auth-gate.conf;' "$f")" "2"
@@ -141,7 +141,7 @@ test_wavelog_auth_snippets_split_and_pat_is_unchanged() {
   assert_file_contains "$s/dxberry-auth-gate.conf" "error_page 401 403 = @dxberry-login;"
   assert_file_not_contains "$s/dxberry-auth-gate.conf" "location"
   assert_file_contains "$s/dxberry-auth-endpoints.conf" "location = /.dxberry-auth {"
-  assert_file_contains "$s/dxberry-auth-endpoints.conf" 'location @dxberry-login { return 302 https://$host/; }'
+  assert_file_contains "$s/dxberry-auth-endpoints.conf" 'location @dxberry-login { return 302 https://$host/login?next=$request_uri; }'
   assert_file_not_contains "$s/dxberry-auth-endpoints.conf" "auth_request /"
   assert_eq "$(grep -v '^#' "$s/dxberry-auth.conf")" "$(cat "$s/dxberry-auth-gate.conf" "$s/dxberry-auth-endpoints.conf" | grep -v '^#')"
   # Pat's site still includes the whole snippet at server level

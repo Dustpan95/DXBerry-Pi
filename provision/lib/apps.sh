@@ -45,7 +45,7 @@ DXB_APPS_BASE_PACKAGES='tigervnc-standalone-server openbox socat xauth'
 DXB_APPS_USER=dxbapps
 DXB_APPS_SCREEN_GROUP=dxbscreen
 
-# dxb_console_user: the login user of the console (Cockpit, SSH).
+# dxb_console_user: the login user of the console (the station app, SSH).
 dxb_console_user() { printf '%s\n' "${DXB_CONSOLE_USER:-dietpi}"; }
 
 # ---- the catalog ---------------------------------------------------------------------------
@@ -616,7 +616,7 @@ _dxb_apps_remove() {
 # dxbapps user and its groups; the session, ARDOP, logging-bridge and flush units and the
 # tmpfiles file installed (daemon-reload and tmpfiles only when one changed); the logbook step
 # (provision_logbook: timer and bridge enabled, its status line); the nginx site of an installed
-# program that has one re-rendered, so a renewed Cockpit certificate is picked up (a warning when
+# program that has one re-rendered, so a renewed station certificate is picked up (a warning when
 # that fails; nginx is never installed here). It never installs or upgrades a program and never
 # rewrites a program's settings. A failure is a failed step named apps.
 provision_apps() {

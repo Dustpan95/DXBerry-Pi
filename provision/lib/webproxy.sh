@@ -1,14 +1,14 @@
 #!/bin/bash
 # shellcheck shell=bash
 # The web proxy (applications spec): nginx in front of a program's own web page, letting a request
-# through only with a live Cockpit login. Three snippets, from two templates:
+# through only with a live station login. Three snippets, from two templates:
 #   snippets/dxberry-auth-gate.conf       auth_request + error_page: the gate itself, valid in a
 #                                         server or in one location (Wavelog's /install)
 #   snippets/dxberry-auth-endpoints.conf  the two locations the gate asks and sends to (server
 #                                         level, once per site that uses the gate anywhere)
 #   snippets/dxberry-auth.conf            both together: a whole server behind the login (Pat)
 # Runs inside the app-install job, which already holds the update and config locks,
-# so nothing here takes a lock. Ruling 11: installing nginx never fights Cockpit for port 80 (a
+# so nothing here takes a lock. Ruling 11: installing nginx never takes port 80 before the station site is ready (a
 # policy-rc.d that refuses service starts is in place for the install; Debian's default site is
 # removed; nginx then starts with DXBerry's sites only).
 # Expects common.sh and apps.sh to be sourced.
@@ -18,7 +18,7 @@
 : "${DXB_NGINX:=nginx}"
 : "${DXB_POLICY_RC:=/usr/sbin/policy-rc.d}"
 : "${DXB_POLICY_MARK:=# DXBerry: temporary, removed after the nginx install}"
-: "${DXB_COCKPIT_CERTS:=/etc/cockpit/ws-certs.d}"
+: "${DXB_STATION_TLS:=/etc/dxberry/tls}"
 
 # dxb_webproxy_install: nginx, installed without starting, DXBerry's auth snippets, nginx enabled.
 # Idempotent. 0 ok, 6 failed.
@@ -57,21 +57,15 @@ dxb_webproxy_install() {
   return 0
 }
 
-# dxb_webproxy_cert: Cockpit's own certificate and key (the newest *.cert that has a matching
-# *.key), two lines: cert path, key path. 6 when there is none.
+# dxb_webproxy_cert: the station's own certificate and key (station.crt and station.key in
+# DXB_STATION_TLS, made by dxberryd), two lines: cert path, key path. 6 when either is missing.
 dxb_webproxy_cert() {
-  local c k best=''
-  for c in "$DXB_COCKPIT_CERTS"/*.cert; do
-    [[ -f $c ]] || continue
-    k=${c%.cert}.key
-    [[ -f $k ]] || continue
-    if [[ -z $best || $c -nt $best ]]; then best=$c; fi
-  done
-  [[ -n $best ]] || { echo "no certificate and key pair found in $DXB_COCKPIT_CERTS" >&2; return 6; }
-  printf '%s\n%s\n' "$best" "${best%.cert}.key"
+  local c=$DXB_STATION_TLS/station.crt k=$DXB_STATION_TLS/station.key
+  [[ -f $c && -f $k ]] || { echo "no certificate and key pair found in $DXB_STATION_TLS" >&2; return 6; }
+  printf '%s\n%s\n' "$c" "$k"
 }
 
-# dxb_webproxy_render NAME [PLACEHOLDER=VALUE...]: nginx-NAME.conf with CERT and KEY (Cockpit's
+# dxb_webproxy_render NAME [PLACEHOLDER=VALUE...]: nginx-NAME.conf with CERT and KEY (the station
 # certificate) and the site's own placeholders filled in, on stdout. 6 failed.
 dxb_webproxy_render() {
   local name=$1 cert key
@@ -83,7 +77,7 @@ dxb_webproxy_render() {
   dxb_render "$DXB_TEMPLATES/nginx-$name.conf" "CERT=$cert" "KEY=$key" "$@" || { echo "could not render the $name site" >&2; return 6; }
 }
 
-# dxb_webproxy_site NAME [PLACEHOLDER=VALUE...]: render nginx-NAME.conf (CERT and KEY: Cockpit's
+# dxb_webproxy_site NAME [PLACEHOLDER=VALUE...]: render nginx-NAME.conf (CERT and KEY: the station
 # certificate; the site's own placeholders as given) into sites-available/dxberry-NAME.conf,
 # enable it, check nginx's configuration and reload. A failing check unlinks the site again. 0
 # ok, 6 failed.
@@ -106,7 +100,7 @@ dxb_webproxy_site() {
 }
 
 # dxb_webproxy_site_stale NAME [PLACEHOLDER=VALUE...]: 0 when the installed site differs from what
-# would be rendered now, or Cockpit's certificate or key is newer than the site file (renewed in
+# would be rendered now, or the station certificate or key is newer than the site file (renewed in
 # place); 1 when it is current. 6 when it cannot be rendered.
 dxb_webproxy_site_stale() {
   local name=$1 avail content cert key

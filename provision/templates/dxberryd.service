@@ -1,0 +1,27 @@
+# Installed by DXBerry-Pi. The station app: the one web service behind nginx (design 5.1).
+# Runs as root: every function behind the login needs it. The sandbox below keeps /usr and the
+# boot files' parents read-only and everything the commands write explicitly listed.
+# Deliberately NOT set: PrivateDevices/DevicePolicy (the terminal needs /dev/ptmx and /dev/pts),
+# PrivateTmp (program windows share /tmp/.X11-unix with their session units), NoNewPrivileges
+# and RestrictSUIDSGID (login -f sets up the session), RestrictNamespaces.
+[Unit]
+Description=DXBerry-Pi station app
+After=network.target nginx.service
+
+[Service]
+Type=simple
+ExecStart=/opt/dxberry/bin/dxberryd
+Environment=GOMAXPROCS=2
+Restart=always
+RestartSec=2
+MemoryMax=400M
+TasksMax=256
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/var/lib /run /etc /var/log /var/tmp /tmp /opt/dxberry -/opt/dxberry-apps -/boot -/boot/firmware
+ProtectKernelTunables=yes
+RestrictSUIDSGID=no
+NoNewPrivileges=no
+
+[Install]
+WantedBy=multi-user.target

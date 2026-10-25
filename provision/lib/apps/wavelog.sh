@@ -10,7 +10,7 @@
 #   - a MariaDB database "wavelog" and a MariaDB user www-data that logs in through MariaDB's unix
 #     socket (only the www-data account, that is PHP, can use it: there is no password to show or
 #     leak);
-#   - nginx (through the web proxy, so it never fights Cockpit for port 80: ruling 11) with the
+#   - nginx (through the web proxy, so it never takes port 80 before the station site is ready: ruling 11) with the
 #     site nginx-wavelog.conf: https on 8082 for the LAN, http on 127.0.0.1:8083 for the logging
 #     bridge, the installer behind the console's login.
 # The first Wavelog user is made by Wavelog's own installer at https://<pi>:8082/install, which

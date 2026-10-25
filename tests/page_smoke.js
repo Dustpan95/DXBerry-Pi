@@ -1,4 +1,4 @@
-// page_smoke.js: drives the DXBerry page (provision/cockpit/dxberry/dxberry.js) in a fake browser -
+// page_smoke.js: drives the DXBerry page (station/web/dxberry.js) in a fake browser -
 // a minimal DOM shaped like index.html and a fake cockpit object whose spawn answers like the Pi's
 // commands - and checks what an operator would see: the cards, the radio actions and their
 // confirmations, and the Add/Edit form. Plain node, no packages.
@@ -159,9 +159,9 @@ const status = {
       functions: [{ kind: "serial", kernel: "ttyUSB0", path: "usb-0:1.4:1.0", vidpid: "10c4:ea60", serial: "0001", product: "CP2102 USB to UART Bridge Controller" }] }],
     apps: [{ name: "graywolf", label: "Graywolf" }], warnings: [] },
   time: { ok: true, synced: true, source: "NTP", reference: "1.2.3.4", stratum: 2, offset_ms: 0.2 },
-  release: { ok: true, dxberry: "0.3.0-rc2", dxberry_commit: "abc", graywolf: "0.14.13", cockpit: "337", update: null },
+  release: { ok: true, dxberry: "0.3.0-rc2", dxberry_commit: "abc", graywolf: "0.14.13", dxberryd: "0.5.0-rc1", update: null },
   services: { ok: true, units: [{ unit: "graywolf.service", load: "loaded", active: "active", sub: "running", result: "success", type: "simple" },
-    { unit: "cockpit.socket", load: "loaded", active: "active", sub: "listening", result: "success", type: "" }] },
+    { unit: "dxberryd.service", load: "loaded", active: "active", sub: "listening", result: "success", type: "" }] },
 };
 const models = [{ model: 1, mfg: "Hamlib", name: "Dummy", status: "Stable" }, { model: 4, mfg: "FLRig", name: "", status: "Stable" },
   { model: 3073, mfg: "Icom", name: "IC-7300", status: "Stable" }, { model: 3085, mfg: "Icom", name: "IC-705", status: "Stable" }];
@@ -230,7 +230,7 @@ const ctx = {
 vm.createContext(ctx);
 const flush = () => new Promise(r => setImmediate(r));
 // the other page files sit beside dxberry.js once they have moved too; until then, in the old folder
-const sibling = name => { const p = path.replace(/dxberry\.js$/, name); return fs.existsSync(p) ? p : require("path").join(__dirname, "..", "provision", "cockpit", "dxberry", name); };
+const sibling = name => { const p = path.replace(/dxberry\.js$/, name); return fs.existsSync(p) ? p : require("path").join(__dirname, "..", "station", "web", name); };
 const settingsPath = sibling("settings.js");
 const updatesPath = sibling("updates.js");
 const dashboardPath = sibling("dashboard.js");

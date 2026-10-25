@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/httpapi"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/status"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/term"
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/tlscert"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/vnc"
 	"github.com/Dustpan95/DXBerry-Pi/station/web"
 )
@@ -30,6 +33,7 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8090", "address nginx proxies to")
 	state := flag.String("state", "/var/lib/dxberry/station", "state directory")
 	bin := flag.String("bin", "/opt/dxberry/bin", "directory of the dxberry-* commands")
+	tlsDir := flag.String("tls", "/etc/dxberry/tls", "directory of station.crt and station.key")
 	screens := flag.String("screens", "/run/dxberry/screens", "directory of the program windows' unix sockets")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
@@ -53,6 +57,7 @@ func main() {
 			st.Poke()
 		}
 	}
+	ensureCertificate(*tlsDir, runner)
 	routes := func(mux *http.ServeMux) {
 		mgr.Register(mux)
 		runner.Register(mux)
@@ -81,7 +86,7 @@ func main() {
 			return err == nil && res.Exit == 0
 		}))
 	}
-	srv := httpapi.New(httpapi.Config{Listen: *listen, Web: web.Files, Auth: mgr, Version: version, Routes: routes})
+	srv := httpapi.New(httpapi.Config{Listen: *listen, Web: web.Files, Auth: mgr, Version: version, CertFile: filepath.Join(*tlsDir, "station.crt"), Routes: routes})
 	log.Printf("dxberryd %s listening on %s (state %s, bin %s)", version, *listen, *state, *bin)
 
 	statusCtx, stopStatus := context.WithCancel(context.Background())
@@ -102,4 +107,35 @@ func main() {
 		log.Fatal(err)
 	}
 	<-done
+}
+
+// ensureCertificate makes the self-signed certificate on first start (hostname, dxberry.local and
+// every non-loopback IPv4 as SANs) and has nginx pick it up when it was just made. Never fatal:
+// without it nginx simply cannot serve TLS yet and the next start tries again.
+func ensureCertificate(dir string, runner *cli.CLI) {
+	hosts := []string{"dxberry.local"}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		hosts = append(hosts, h)
+	}
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range addrs {
+			if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil && !n.IP.IsLoopback() {
+				hosts = append(hosts, n.IP.String())
+			}
+		}
+	}
+	changed, err := tlscert.Ensure(dir, hosts)
+	if err != nil {
+		slog.Error("certificate", "error", err)
+		return
+	}
+	if !changed {
+		return
+	}
+	slog.Info("made a new station certificate", "dir", dir)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if res, err := runner.Run(ctx, cli.Call{Command: "systemctl", Args: []string{"reload", "nginx.service"}}); err != nil || res.Exit != 0 {
+		slog.Warn("nginx did not reload after the new certificate", "error", err)
+	}
 }

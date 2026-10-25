@@ -139,7 +139,7 @@ func TestCLIAcceptsEveryCommand(t *testing.T) {
 		"dxberry-update":  {{"check", "--json"}, {"check", "--refresh", "--json"}, {"graywolf", "--json"}, {"dxberry", "--json"}, {"system", "--json"}, {"rollback", "--json"}, {"job", "--json"}, {"app", "wsjtx", "--json"}, {"app", "my_prog", "--json"}, {"prereleases", "on", "--json"}, {"prereleases", "off", "--json"}},
 		"dxberry-app":     {{"list", "--json"}, {"install", "wsjtx", "--json"}, {"remove", "wsjtx", "--json"}, {"start", "radio1", "--json"}, {"stop", "radio1", "--json"}, {"screen", "wsjtx-radio1", "--json"}},
 		"dxberry-logbook": {{"get", "--json"}, {"set", "--json"}, {"test", "--json"}, {"recent", "--json"}, {"recent", "25", "--json"}, {"flush", "--json"}},
-		"systemctl":       {{"start", "gpsd.service"}, {"stop", "dxberry-screen@wsjtx-radio1.service"}, {"is-active", "dxberry-screen@wsjtx-radio1.service"}, {"restart", "rigctld@radio1.service"}, {"restart", "dxberry-logbook-flush.timer"}, {"--no-block", "start", "reboot.target"}, {"--no-block", "start", "poweroff.target"}},
+		"systemctl":       {{"start", "gpsd.service"}, {"stop", "dxberry-screen@wsjtx-radio1.service"}, {"is-active", "dxberry-screen@wsjtx-radio1.service"}, {"restart", "rigctld@radio1.service"}, {"restart", "dxberry-logbook-flush.timer"}, {"reload", "nginx.service"}, {"--no-block", "start", "reboot.target"}, {"--no-block", "start", "poweroff.target"}},
 		"journalctl":      {{"-u", "nginx.service", "-n", "200", "--no-pager", "-o", "short-iso"}, {"-b", "-n", "2000", "--no-pager", "-o", "short-iso", "--priority=debug"}},
 	}
 	for cmd, shapes := range ok {
@@ -156,7 +156,7 @@ func TestCLIAcceptsEveryCommand(t *testing.T) {
 		"dxberry-update":  {{"dxberry", "--version", "1.0", "--json"}, {"apply", "system", "--json"}, {"prereleases", "maybe", "--json"}, {"prereleases", "--json"}},
 		"dxberry-app":     {{"start", "a", "b", "--json"}, {"screen", "nodash", "--json"}},
 		"dxberry-logbook": {{"recent", "26", "--json"}, {"submit", "--json"}, {"recent", "0", "--json"}},
-		"systemctl":       {{"enable", "gpsd.service"}, {"start", "gpsd"}, {"reboot"}, {"poweroff"}, {"--no-block", "start", "halt.target"}, {"start", "reboot.target"}},
+		"systemctl":       {{"enable", "gpsd.service"}, {"start", "gpsd"}, {"reload", "sshd.service"}, {"reload", "nginx"}, {"reload", "nginx.service", "x"}, {"reboot"}, {"poweroff"}, {"--no-block", "start", "halt.target"}, {"start", "reboot.target"}},
 		"journalctl":      {{"-u", "nginx.service", "-n", "2001", "--no-pager", "-o", "short-iso"}, {"-f"}},
 	}
 	for cmd, shapes := range bad {

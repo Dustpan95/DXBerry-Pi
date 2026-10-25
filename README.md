@@ -70,15 +70,18 @@ Logs and the journal live in RAM, swap is on zram, and Graywolf's position log (
 drives. The position log survives a Graywolf restart, starts empty after a reboot, and never uses more
 than 5% of RAM. Real state (Graywolf configuration, mail, logs you keep) is on disk.
 
-## Console
+## The station app
 
-Browse to `http://<the Pi's address>`; it redirects to `https://`, and your browser warns once about the
-Pi's self-signed certificate. Log in as `dietpi` with your `PASSWORD`. The DXBerry page opens first and
-refreshes every 10 seconds: Graywolf (running or not, iGate connection, packets per channel, position
-log), radios and GPS, the network (Ethernet or WiFi, address, signal), the Pi (temperature, power
-warnings, load, memory, disk), the clock, and versions. Buttons open Graywolf, restart it, start, stop
-or restart DXBerry's services, open each service's log, and restart or shut down the Pi. Cockpit's own
-Overview, Services, Logs, Terminal and Accounts pages are in the same menu.
+Browse to `https://<the Pi's address>/` (plain `http://` redirects there). Log in as `dietpi` with the
+Pi's password. The certificate is made by the Pi itself, so your browser warns once; to stop the
+warning on a phone or another computer, open `https://<the Pi's address>/station.crt` and install the
+certificate. The page opens on the dashboard and refreshes every 10 seconds: Graywolf (running or not,
+iGate connection, packets per channel, position log), radios and GPS, the network (Ethernet or WiFi,
+address, signal), the Pi (temperature, power warnings, load, memory, disk), the clock, and versions.
+Buttons open Graywolf, restart it, start, stop or restart DXBerry's services, open each service's log,
+and restart or shut down the Pi. A terminal for the Pi is in the same page, and each program you run on
+a radio opens in its own window. Cockpit, which earlier versions used for this, is gone: the update
+removes it, and the station app takes its place on the same ports (443 and 80), so bookmarks still work.
 
 The Radios card lists each radio DXBerry knows (its parts, rig, PTT, rigctld and frequency) with
 **Give to Graywolf**, **Release**, **Edit** and **Remove**, and every USB radio interface that is
@@ -108,8 +111,7 @@ job whose output the page shows. A DXBerry update keeps the previous version for
 checksum proves the file arrived intact, not who made it. On the command line: `sudo dxberry-update
 check`, `sudo dxberry-update dxberry`, `sudo dxberry-update job`.
 
-The console is [Cockpit](https://cockpit-project.org) from Debian with one extra page; `CONSOLE=off` in
-`dxberry.txt` turns it off. `sudo dxberry-status` prints the same report in a terminal, and
+`sudo dxberry-status` prints the same report in a terminal, and
 `sudo dxberry-status --json` gives it to scripts.
 
 ## Programs
@@ -182,7 +184,7 @@ Output goes to `out/DXBerry-Pi-<version>-rpi234-arm64.img.xz` and a matching `.s
 ## Layout
 
 - `boot/` — files for the boot partition and DietPi's automation hooks
-- `provision/` — the provisioner installed at `/opt/dxberry` (`dxberry-preboot`, `dxberry-provision`, `dxberry-netwatch`, `dxberry-radio`, `dxberry-status`, `dxberry-config`, `dxberry-update`, and the console page under `cockpit/`)
+- `provision/` — the provisioner installed at `/opt/dxberry` (`dxberry-preboot`, `dxberry-provision`, `dxberry-netwatch`, `dxberry-radio`, `dxberry-status`, `dxberry-config`, `dxberry-update`, and `bin/dxberryd`, the station app built from `station/`)
   - `bin/dxberry-config` — settings management
   - `lib/settings.sh` — settings provisioning library
   - `bin/dxberry-update` — update check and install
@@ -200,6 +202,5 @@ DXBerry-Pi is a thin layer over other people's work:
 - [Graywolf](https://github.com/chrissnell/graywolf) by Chris Snell provides APRS, the TNC and the web UI.
 - [Hamlib](https://hamlib.github.io) (`rigctld`), [gpsd](https://gpsd.io) and
   [chrony](https://chrony-project.org) handle CAT control, GPS and time.
-- [Cockpit](https://cockpit-project.org) provides the web console's login, terminal, service control and logs.
 
-DietPi and Graywolf are GPL-2.0; Cockpit is LGPL-2.1-or-later. DXBerry-Pi is licensed GPL-2.0-or-later; see `LICENSE`.
+DietPi and Graywolf are GPL-2.0. DXBerry-Pi is licensed GPL-2.0-or-later; see `LICENSE`.

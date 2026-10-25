@@ -143,6 +143,7 @@ var allow = map[string][][]string{
 		{"stop", "UNIT"},
 		{"restart", "UNIT"},
 		{"is-active", "UNIT"},
+		{"reload", "nginx.service"},
 		{"--no-block", "start", "reboot.target"},
 		{"--no-block", "start", "poweroff.target"},
 	},

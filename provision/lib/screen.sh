@@ -109,7 +109,7 @@ dxb_screen_parse() {
 
 # dxb_screen_session_argv S xvnc|openbox|pulse [ENVFILE]: one argument per line, the command
 # first: Xvnc on its fixed display with S's X cookie, its VNC on S's unix socket only (no TCP,
-# security None: the socket's group and Cockpit's login are the protection), the window manager,
+# security None: the socket's group and the station login are the protection), the window manager,
 # or a PulseAudio that loads only S's card (a sink and a source named after it) and a native
 # socket in S.d. The values come from ENVFILE (the runner, which cannot read the radio record) or
 # else from dxb_screen_env S. Pure: it starts nothing. 2 bad name or list, 3 unknown, 6 ENVFILE

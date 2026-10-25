@@ -69,8 +69,8 @@ REQUIRED_FILES=(
   provision/templates/dxberry-radio.tmpfiles provision/templates/70-dxberry-radio.rules.head
   provision/templates/dxberry-audio.conf provision/templates/chrony-dxberry.conf provision/templates/gpsd-default.tmpl
   provision/bin/dxberry-status provision/lib/status.sh
-  provision/lib/console.sh provision/templates/cockpit-listen.conf
-  provision/cockpit/dxberry/manifest.json provision/cockpit/dxberry/index.html station/web/dxberry.js station/web/dxberry.css
+  provision/lib/station.sh provision/templates/dxberryd.service provision/templates/nginx-dxberry.conf provision/templates/pam-dxberry
+  provision/bin/dxberryd station/web/index.html station/web/dxberry.js station/web/dxberry.css
   station/web/settings.js station/web/updates.js
   provision/bin/dxberry-config provision/lib/settings.sh provision/templates/dxberry-config-boot.service
   provision/bin/dxberry-update provision/lib/update.sh
@@ -107,6 +107,8 @@ check_tree() {
     fi
   done
   for f in "$ROOT"/provision/bin/* "$ROOT"/provision/lib/*.sh "$ROOT"/provision/lib/apps/*.sh "$ROOT"/boot/*.sh; do
+    # dxberryd is the built Go binary, not a script
+    [[ $f == "$ROOT/provision/bin/dxberryd" ]] && continue
     if [[ -f $f ]] && ! bash -n "$f"; then
       echo "syntax error in ${f#"$ROOT"/}" >&2
       ok=0

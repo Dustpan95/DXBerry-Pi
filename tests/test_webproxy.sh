@@ -9,15 +9,15 @@ source "$DXB_LIB/apps.sh"
 source "$DXB_ROOT/tests/fixtures/apps.sh"
 source "$DXB_LIB/webproxy.sh"
 
-# wp_env: the program environment plus an nginx tree, a policy-rc.d path and a Cockpit certificate
+# wp_env: the program environment plus an nginx tree, a policy-rc.d path and the station certificate
 # directory under $TEST_TMP, and nginx itself a stand-in (it records; wp-fail makes -t fail)
 wp_env() {
   fx_apps_env
   export DXB_NGINX_DIR=$TEST_TMP/etc/nginx DXB_POLICY_RC=$TEST_TMP/usr/sbin/policy-rc.d \
-    DXB_NGINX=wp_nginx DXB_COCKPIT_CERTS=$TEST_TMP/etc/cockpit/ws-certs.d
-  mkdir -p "$DXB_NGINX_DIR/sites-enabled" "$DXB_NGINX_DIR/sites-available" "${DXB_POLICY_RC%/*}" "$DXB_COCKPIT_CERTS"
+    DXB_NGINX=wp_nginx DXB_STATION_TLS=$TEST_TMP/etc/dxberry/tls
+  mkdir -p "$DXB_NGINX_DIR/sites-enabled" "$DXB_NGINX_DIR/sites-available" "${DXB_POLICY_RC%/*}" "$DXB_STATION_TLS"
   : > "$DXB_NGINX_DIR/sites-enabled/default"
-  : > "$DXB_COCKPIT_CERTS/0-self-signed.cert"; : > "$DXB_COCKPIT_CERTS/0-self-signed.key"
+  : > "$DXB_STATION_TLS/station.crt"; : > "$DXB_STATION_TLS/station.key"
 }
 wp_nginx() {
   echo "nginx $*" >> "$TEST_TMP/calls"
@@ -58,7 +58,7 @@ test_webproxy_install_skips_apt_when_nginx_is_installed_and_is_idempotent() {
   assert_ok dxb_webproxy_install
   assert_file_not_contains "$TEST_TMP/calls" "apt-get"
   [[ ! -e $DXB_POLICY_RC ]] || _fail "policy-rc.d created without an install"
-  assert_file_contains "$DXB_NGINX_DIR/snippets/dxberry-auth.conf" "location @dxberry-login { return 302 https://\$host/; }"
+  assert_file_contains "$DXB_NGINX_DIR/snippets/dxberry-auth.conf" "location @dxberry-login { return 302 https://\$host/login?next=\$request_uri; }"
 }
 test_webproxy_install_removes_a_stale_policy_file_of_its_own() {
   wp_env; AP_INSTALLED=nginx
@@ -86,18 +86,16 @@ test_webproxy_nginx_test_output_goes_to_stderr() {
   dxb_webproxy_site pat 2> "$TEST_TMP/err" > /dev/null
   assert_file_contains "$TEST_TMP/err" "emerg: bad directive"
 }
-test_webproxy_cert_picks_the_newest_complete_pair() {
+test_webproxy_cert_from_station_dir() {
   wp_env
-  : > "$DXB_COCKPIT_CERTS/5-newer.cert"; : > "$DXB_COCKPIT_CERTS/5-newer.key"
-  : > "$DXB_COCKPIT_CERTS/9-nokey.cert"
-  touch -d '2026-01-01' "$DXB_COCKPIT_CERTS/0-self-signed.cert"
-  touch -d '2026-06-01' "$DXB_COCKPIT_CERTS/5-newer.cert"
-  touch -d '2026-09-01' "$DXB_COCKPIT_CERTS/9-nokey.cert"
-  assert_eq "$(dxb_webproxy_cert | tr '\n' ' ')" "$DXB_COCKPIT_CERTS/5-newer.cert $DXB_COCKPIT_CERTS/5-newer.key "
+  assert_eq "$(dxb_webproxy_cert | tr '\n' ' ')" "$DXB_STATION_TLS/station.crt $DXB_STATION_TLS/station.key "
+  # a Cockpit certificate directory is no longer looked at
+  mkdir -p "$TEST_TMP/etc/cockpit/ws-certs.d"; : > "$TEST_TMP/etc/cockpit/ws-certs.d/0-self-signed.cert"
+  assert_eq "$(dxb_webproxy_cert | head -1)" "$DXB_STATION_TLS/station.crt"
 }
 test_webproxy_cert_without_a_pair_is_6() {
-  wp_env; rm -f "$DXB_COCKPIT_CERTS"/*
-  : > "$DXB_COCKPIT_CERTS/lonely.cert"
+  wp_env; rm -f "$DXB_STATION_TLS"/*
+  : > "$DXB_STATION_TLS/station.crt"
   assert_eq "$(dxb_webproxy_cert 2> "$TEST_TMP/err"; echo $?)" "6"
   assert_contains "$(< "$TEST_TMP/err")" "certificate"
 }
@@ -107,8 +105,8 @@ test_webproxy_pat_site_is_rendered_enabled_and_reloaded() {
   local f=$DXB_NGINX_DIR/sites-available/dxberry-pat.conf
   assert_file_contains "$f" "listen 8081 ssl;"
   assert_file_contains "$f" "include snippets/dxberry-auth.conf;"
-  assert_file_contains "$f" "ssl_certificate \"$DXB_COCKPIT_CERTS/0-self-signed.cert\";"
-  assert_file_contains "$f" "ssl_certificate_key \"$DXB_COCKPIT_CERTS/0-self-signed.key\";"
+  assert_file_contains "$f" "ssl_certificate \"$DXB_STATION_TLS/station.crt\";"
+  assert_file_contains "$f" "ssl_certificate_key \"$DXB_STATION_TLS/station.key\";"
   # shellcheck disable=SC2016  # nginx variables, matched literally
   assert_file_contains "$f" 'proxy_set_header Host $http_host;'
   assert_file_contains "$f" "proxy_pass http://127.0.0.1:8180;"
@@ -143,7 +141,7 @@ test_webproxy_refresh_marks_the_site_current_only_after_a_reload() (
   wp_reload_fails() { echo "systemctl $*" >> "$TEST_TMP/calls"; [[ $1 != reload ]]; }
   local avail=$DXB_NGINX_DIR/sites-available/dxberry-pat.conf
   assert_ok dxb_webproxy_site pat
-  touch -d '-2 hours' "$avail"; touch -d '-1 hour' "$DXB_COCKPIT_CERTS/0-self-signed.cert"
+  touch -d '-2 hours' "$avail"; touch -d '-1 hour' "$DXB_STATION_TLS/station.crt"
   assert_ok dxb_webproxy_site_stale pat
   DXB_SYSTEMCTL=wp_reload_fails
   dxb_webproxy_site_refresh pat 2> /dev/null; assert_eq "$?" "6"

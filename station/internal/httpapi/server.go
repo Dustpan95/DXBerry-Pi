@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"strings"
 	"time"
@@ -28,12 +29,13 @@ type AuthChecker interface {
 
 // Config is everything New needs.
 type Config struct {
-	Listen  string
-	Web     fs.FS
-	Auth    AuthChecker
-	Dev     bool // pages are served uncached
-	Version string
-	Routes  func(mux *http.ServeMux) // registers the API handlers behind the gate
+	Listen   string
+	Web      fs.FS
+	Auth     AuthChecker
+	Dev      bool // pages are served uncached
+	Version  string
+	CertFile string                   // the station certificate, served at /station.crt (empty: not served)
+	Routes   func(mux *http.ServeMux) // registers the API handlers behind the gate
 }
 
 func init() {
@@ -123,6 +125,10 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if p == "/station.crt" && s.cfg.CertFile != "" {
+		s.certificate(w, r)
+		return
+	}
 	if isAPI {
 		if _, pat := s.mux.Handler(r); pat != "" {
 			s.mux.ServeHTTP(w, r)
@@ -161,4 +167,17 @@ func (s *server) static(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 	}
 	http.ServeContent(w, r, name, info.ModTime(), bytes.NewReader(data))
+}
+
+// certificate serves the station certificate so a phone can install it.
+func (s *server) certificate(w http.ResponseWriter, r *http.Request) {
+	data, err := os.ReadFile(s.cfg.CertFile)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "no certificate yet")
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-x509-ca-cert")
+	w.Header().Set("Content-Disposition", `attachment; filename="dxberry.crt"`)
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(data)
 }

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC1091,SC2034,SC2317
-PG_DIR=$DXB_ROOT/provision/cockpit/dxberry
 # dxberry.js and dxberry.css moved to the station app (the other page files follow in later tasks)
 PG_WEB=$DXB_ROOT/station/web
+PG_DIR=$PG_WEB
 
 # pg_fields: the dxberry-status --json paths dxberry.js declares it reads (between its markers).
 # Anchored on the comment's own `/* fields-begin` so it does not also match `radio-fields-begin`.
@@ -31,25 +31,6 @@ pg_gpspipe() {
   printf '%s\n' '{"class":"DEVICES","devices":[{"path":"/dev/ttyACM0"}]}' \
     '{"class":"TPV","mode":3,"lat":38.9,"lon":-94.6,"altHAE":300,"speed":0,"time":"2026-10-06T12:00:00Z"}' \
     '{"class":"SKY","uSat":8,"nSat":12}'
-}
-
-test_page_manifest_makes_dxberry_the_first_menu_entry() {
-  local m=$PG_DIR/manifest.json
-  assert_eq "$(jq -r '.menu.index.label' "$m")" "DXBerry"
-  # Cockpit opens the first entry of its ordered menu after login; its own Overview is order 10
-  assert_eq "$(jq -r '.menu.index.order < 10' "$m")" "true"
-  assert_eq "$(jq -r '.requires.cockpit | type' "$m")" "string"
-}
-
-# Cockpit's page policy allows this package's own files only: no inline script, handler or style.
-test_page_html_loads_only_its_own_files() {
-  local html=$PG_DIR/index.html
-  # in this order: dashboard.js and programs.js use what the three before them define
-  assert_eq "$(grep -oE 'src="[^"]*"' "$html" | tr '\n' ' ')" 'src="../base1/cockpit.js" src="dxberry.js" src="settings.js" src="updates.js" src="dashboard.js" src="programs.js" '
-  assert_eq "$(grep -oE 'href="[^"]*"' "$html" | tr '\n' ' ')" 'href="dxberry.css" '
-  assert_file_not_contains "$html" "http"
-  assert_file_not_contains "$html" "style="
-  if grep -qE '<script>|[[:space:]]on[a-z]+=' "$html"; then _fail "index.html has an inline script or event handler"; fi
 }
 
 test_page_runs_everything_through_superuser_commands() {
@@ -140,9 +121,9 @@ console.log(problemText({problem: 'not-found'}));" "$stderr" '2026-10-06 12:00:0
   assert_eq "$(sed -n 3p <<< "$got")" "not-found"
 }
 
-# Restart of cockpit.socket drops this console's session just like Stop, so it must ask first
+# Restart of dxberryd.service drops this console's session just like Stop, so it must ask first
 # too, with its own warning text (it reconnects on its own, unlike Stop).
-test_page_confirms_restarting_cockpit_socket_too() {
+test_page_confirms_restarting_the_station_service_too() {
   local js=$PG_WEB/dxberry.js unit_action_body
   assert_file_contains "$js" "RESTART_WARNINGS"
   # shellcheck disable=SC2016  # checking for the literal, unexpanded `Restart ${unit}?` in the JS
@@ -153,7 +134,7 @@ test_page_confirms_restarting_cockpit_socket_too() {
   # Stop's own three confirmations must still be there, unchanged.
   assert_file_contains "$js" '"graywolf.service": "APRS, the iGate and the digipeater stop'
   assert_file_contains "$js" '"dxberry-netwatch.service": "Network failover stops.'
-  assert_file_contains "$js" '"cockpit.socket": "This console closes and stays unreachable'
+  assert_file_contains "$js" '"dxberryd.service": "This console closes and stays unreachable'
 }
 
 # tests/page_smoke.js runs the page against a fake DOM and a fake cockpit.spawn: the cards render,
@@ -503,9 +484,6 @@ test_page_services_card_spans_the_row_and_wraps() {
   assert_ok grep -qE '^\.row-actions \{[^}]*flex-wrap: wrap' "$css"
 }
 
-test_page_manifest_allows_secure_websockets_to_itself() {
-  assert_contains "$(jq -r '."content-security-policy"' "$PG_DIR/manifest.json")" "connect-src 'self' wss:"
-}
 # The dashboard, then the cards; Programs after Updates; the two new dialogs.
 test_page_html_puts_the_station_first_and_programs_after_updates() {
   local html=$PG_DIR/index.html ids
