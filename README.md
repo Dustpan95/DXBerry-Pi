@@ -83,6 +83,11 @@ and restart or shut down the Pi. A terminal for the Pi is in the same page, and 
 a radio opens in its own window. Cockpit, which earlier versions used for this, is gone: the update
 removes it, and the station app takes its place on the same ports (443 and 80), so bookmarks still work.
 
+The terminal is a real root-capable shell for `dietpi` (which has sudo), exactly as over SSH. The
+certificate's names (the Pi's hostname, `dxberry.local` and its addresses) are fixed when it is first
+created: after renaming the Pi, delete `/etc/dxberry/tls` and restart `dxberryd` to reissue it. The
+`CONSOLE=off` setting is still accepted in `dxberry.txt` but has no effect now.
+
 The Radios card lists each radio DXBerry knows (its parts, rig, PTT, rigctld and frequency) with
 **Give to Graywolf**, **Release**, **Edit** and **Remove**, and every USB radio interface that is
 plugged in but not set up yet, with **Add**: a form filled from the interface's profile, with Hamlib's

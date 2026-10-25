@@ -28,7 +28,15 @@ sn_env() {
   DXB_STATUS_LINES=(); DXB_FAILED_STEPS=(); DXB_CFG=([_IP]=10.0.0.90)
 }
 # enable --now starts the unit, which the fixture's is-active then reports
-sn_systemctl() { local rc; fx_systemctl "$@"; rc=$?; if [[ $1 == enable && $2 == --now ]]; then echo "$3" >> "$TEST_TMP/active"; fi; return "$rc"; }
+# $TEST_TMP/restart-fails and $TEST_TMP/cockpit-stays make those two calls fail
+sn_systemctl() {
+  local rc
+  fx_systemctl "$@"; rc=$?
+  if [[ $1 == enable && $2 == --now ]]; then echo "$3" >> "$TEST_TMP/active"; fi
+  if [[ $1 == restart && -e $TEST_TMP/restart-fails ]]; then return 1; fi
+  if [[ $* == "disable --now cockpit.socket" && -e $TEST_TMP/cockpit-stays ]]; then return 1; fi
+  return "$rc"
+}
 sn_nginx() { echo "nginx $*" >> "$TEST_TMP/calls"; [[ ! -e $TEST_TMP/nginx-bad ]]; }
 # sn_run: provision_station in a subshell with systemctl a recorder; its failed steps and status
 # lines come back through $TEST_TMP/failed and $TEST_TMP/status.
@@ -219,21 +227,84 @@ test_station_site_template_shape() {
   assert_file_contains "$t" 'proxy_set_header Connection $connection_upgrade;'
 }
 
-# The sandbox must leave the terminal's pty, the program-window sockets and the CLIs' places alone.
+# The terminal is a real login and the CLIs write all over the system: no filesystem sandbox.
 test_station_unit_sandbox_leaves_what_the_app_needs() {
-  local u=$DXB_ROOT/provision/templates/dxberryd.service rw
-  for d in PrivateDevices DevicePolicy RestrictNamespaces PrivateTmp; do
+  local u=$DXB_ROOT/provision/templates/dxberryd.service d
+  for d in PrivateDevices DevicePolicy RestrictNamespaces PrivateTmp ProtectSystem ProtectHome ReadWritePaths; do
     if grep -q "^$d=" "$u"; then _fail "$d is set in dxberryd.service"; fi
   done
-  assert_file_contains "$u" "NoNewPrivileges=no"
-  assert_file_contains "$u" "RestrictSUIDSGID=no"
-  assert_file_contains "$u" "ProtectSystem=strict"
-  assert_file_contains "$u" "ProtectHome=read-only"
-  assert_file_contains "$u" "ProtectKernelTunables=yes"
-  assert_file_contains "$u" "TasksMax=256"
-  assert_file_contains "$u" "Restart=always"
-  rw=$(sed -n 's/^ReadWritePaths=//p' "$u")
-  for d in /var/lib /run /etc /opt/dxberry /var/log /tmp; do assert_contains " $rw " " $d "; done
+  for d in NoNewPrivileges=no RestrictSUIDSGID=no ProtectKernelTunables=yes ProtectKernelModules=yes ProtectControlGroups=yes \
+    RestrictRealtime=yes TasksMax=256 MemoryMax=400M Restart=always Environment=GOMAXPROCS=2; do
+    assert_file_contains "$u" "$d"
+  done
+}
+
+test_station_site_listens_on_ipv4_only() {
+  assert_file_not_contains "$DXB_ROOT/provision/templates/nginx-dxberry.conf" "[::]"
+}
+
+# nginx -t that, like the real one, rejects an enabled site whose certificate file is gone
+sn_nginx_strict() {
+  local f c
+  echo "nginx $*" >> "$TEST_TMP/calls"
+  for f in "$DXB_NGINX_DIR"/sites-enabled/*; do
+    [[ -f $f ]] || continue
+    while read -r c; do [[ -f $c ]] || { echo "emerg: cannot load certificate $c"; return 1; }; done \
+      < <(sed -n 's/^ *ssl_certificate "\(.*\)";/\1/p' "$f")
+  done
+  return 0
+}
+# apt whose purge of Cockpit removes its certificate directory, as the package does
+sn_apt_purge() {
+  if [[ $1 == purge ]]; then echo "purged $TEST_TMP/etc/cockpit/ws-certs.d" >> "$TEST_TMP/calls"; rm -rf "$TEST_TMP/etc/cockpit"; fi
+  ap_apt "$@"
+}
+
+test_station_moves_pat_off_cockpits_certificate_before_the_purge() (
+  sn_env
+  export DXB_NGINX=sn_nginx_strict DXB_APT_GET=sn_apt_purge
+  AP_INSTALLED='nginx libpam-runtime pat cockpit-ws'
+  local old=$TEST_TMP/etc/cockpit/ws-certs.d avail=$DXB_NGINX_DIR/sites-available/dxberry-pat.conf
+  mkdir -p "$old"; echo c > "$old/0-self-signed.cert"; echo k > "$old/0-self-signed.key"
+  dxb_render "$DXB_TEMPLATES/nginx-pat.conf" "CERT=$old/0-self-signed.cert" "KEY=$old/0-self-signed.key" > "$avail"
+  ln -s "$avail" "$DXB_NGINX_DIR/sites-enabled/dxberry-pat.conf"
+  sn_run
+  assert_eq "$(cat "$TEST_TMP/failed")" ""
+  assert_file_contains "$avail" "ssl_certificate \"$DXB_STATION_TLS/station.crt\";"
+  local reload purge
+  reload=$(grep -n 'systemctl reload nginx' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  purge=$(grep -n '^purged ' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  if [[ -z $reload || -z $purge ]] || (( reload > purge )); then _fail "Pat was not re-rendered and reloaded before the purge (reload '$reload', purge '$purge')"; fi
+  [[ -L $DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf ]] || _fail "the station site is not linked"
+  assert_eq "$(cat "$TEST_TMP/status")" "station: https://10.0.0.90/ (log in as dietpi)"
+)
+
+test_station_does_not_load_the_site_when_cockpit_will_not_stop() {
+  sn_env
+  AP_INSTALLED='nginx libpam-runtime cockpit-ws'
+  : > "$TEST_TMP/cockpit-stays"
+  sn_run
+  assert_contains "$(cat "$TEST_TMP/failed")" "could not stop cockpit.socket"
+  assert_not_contains "$(sn_calls)" "purge"
+  [[ ! -e $DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf ]] || _fail "the station site was loaded over a running Cockpit"
+}
+
+test_station_stamps_the_binary_only_after_a_successful_restart() {
+  sn_env
+  sn_run
+  local stamp=$DXB_STATE_DIR/dxberryd.sha256 old
+  old=$(< "$stamp")
+  printf '#!/bin/sh\necho 0.5.0-rc2\n' > "$DXB_STATION_BIN"
+  : > "$TEST_TMP/restart-fails"
+  sn_run
+  assert_contains "$(cat "$TEST_TMP/failed")" "could not restart"
+  assert_eq "$(< "$stamp")" "$old"
+  # the next run tries again
+  rm -f "$TEST_TMP/restart-fails"
+  : > "$TEST_TMP/calls"
+  sn_run
+  assert_contains "$(sn_calls)" "systemctl restart dxberryd.service"
+  assert_eq "$(< "$stamp")" "$(sha256sum "$DXB_STATION_BIN" | cut -d' ' -f1)"
 }
 
 test_station_is_not_run_without_the_template_files() {

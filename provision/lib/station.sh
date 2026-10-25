@@ -40,11 +40,15 @@ _dxb_station_write() {
 # dxb_station_cockpit_installed: 0 when the Cockpit server package is installed.
 dxb_station_cockpit_installed() { [[ -n $(_dxb_apps_dpkg_version cockpit-ws) ]]; }
 
-# dxb_station_remove_cockpit: Cockpit held ports 443 and 80, so it goes first. 0 done, 1 failed
-# (step recorded). Only called once the station app is up.
+# dxb_station_remove_cockpit: Cockpit held ports 443 and 80, so it goes first. 0 done, 1 not purged
+# (ports are free), 2 not stopped (ports still held). Steps recorded. Only called once the station app is up.
 dxb_station_remove_cockpit() {
   local rc=0
-  "$DXB_SYSTEMCTL" disable --now cockpit.socket > /dev/null 2>&1 || dxb_warn "cockpit.socket could not be stopped"
+  # still running, it keeps 443 and 80: nothing may be loaded over it
+  if ! "$DXB_SYSTEMCTL" disable --now cockpit.socket > /dev/null 2>&1; then
+    dxb_step_failed station "could not stop cockpit.socket; it keeps ports 443 and 80 until a re-run"
+    return 2
+  fi
   # shellcheck disable=SC2086
   if ! _dxb_apps_apt purge -y $DXB_COCKPIT_PACKAGES > /dev/null 2>&1; then
     dxb_step_failed station "could not remove Cockpit ($DXB_COCKPIT_PACKAGES); it keeps ports 443 and 80 until a re-run"
@@ -85,7 +89,7 @@ _dxb_station_site() {
 
 # provision_station: never fatal; every problem is a failed step named station and the run goes on.
 provision_station() {
-  local rc unit_changed=0 want_restart=0 was_active=0 sum='' stamp=$DXB_STATE_DIR/dxberryd.sha256 name msg
+  local rc unit_changed=0 want_restart=0 was_active=0 restamp=0 sum='' stamp=$DXB_STATE_DIR/dxberryd.sha256 name msg
   local -a extra
   # the network undo's boot unit is a safety net, not a station feature
   dxb_netsafe_install_unit || dxb_step_failed station "could not install dxberry-config-boot.service"
@@ -126,10 +130,14 @@ provision_station() {
     dxb_status_add "station: unavailable (see FAILED STEPS)"
     return 0
   fi
+  # the stamp says "this binary and unit are running": written only once that is true
   if (( want_restart && was_active )); then
-    "$DXB_SYSTEMCTL" restart "$DXB_STATION_UNIT" > /dev/null 2>&1 || dxb_step_failed station "could not restart $DXB_STATION_UNIT"
+    if "$DXB_SYSTEMCTL" restart "$DXB_STATION_UNIT" > /dev/null 2>&1; then restamp=1
+    else dxb_step_failed station "could not restart $DXB_STATION_UNIT"; fi
+  else
+    restamp=1
   fi
-  if [[ -n $sum && ( ! -f $stamp || $(< "$stamp") != "$sum" ) ]]; then printf '%s\n' "$sum" > "$stamp" 2> /dev/null; fi
+  if (( restamp )) && [[ -n $sum && ( ! -f $stamp || $(< "$stamp") != "$sum" ) ]]; then printf '%s\n' "$sum" > "$stamp" 2> /dev/null; fi
 
   if ! _dxb_station_wait_cert; then
     dxb_step_failed station "no certificate in $DXB_STATION_TLS ($DXB_STATION_UNIT did not make one); Cockpit is left alone"
@@ -137,20 +145,28 @@ provision_station() {
     return 0
   fi
 
-  # Cockpit holds 443 and 80 until it is gone, so nginx's new site binds only after this
-  rc=0
-  if dxb_station_cockpit_installed; then dxb_station_remove_cockpit || rc=1; fi
-
-  if ! msg=$(_dxb_station_site dxberry 2>&1); then
-    dxb_step_failed station "the nginx site failed: ${msg##*$'\n'}"
-    rc=1
-  fi
+  # Pat and Wavelog (8081, 8082) move onto the station certificate first: Cockpit's purge can
+  # remove the certificate they were rendered against, and nginx -t would then reject every site
   for name in pat wavelog; do
     [[ -e $DXB_NGINX_DIR/sites-enabled/dxberry-$name.conf ]] || continue
     extra=()
     [[ $name == wavelog ]] && extra=("ROOT=$DXB_APPS_OPT/wavelog")
     _dxb_station_site "$name" "${extra[@]}" > /dev/null 2>&1 || dxb_warn "station: the $name nginx site could not be re-rendered"
   done
+
+  # Cockpit holds 443 and 80 until it is gone, so nginx's new site binds only after this
+  rc=0
+  if dxb_station_cockpit_installed; then
+    dxb_station_remove_cockpit; case $? in 0) ;; 1) rc=1 ;; *) rc=2 ;; esac
+  fi
+  if (( rc == 2 )); then
+    dxb_status_add "station: unavailable (see FAILED STEPS)"
+    return 0
+  fi
+  if ! msg=$(_dxb_station_site dxberry 2>&1); then
+    dxb_step_failed station "the nginx site failed: ${msg##*$'\n'}"
+    rc=1
+  fi
   if (( rc )); then
     dxb_status_add "station: unavailable (see FAILED STEPS)"
   else
