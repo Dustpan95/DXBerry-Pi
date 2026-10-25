@@ -1,0 +1,27 @@
+# Captured from Hamlib 4.6.2 (rigctld -m 1, dummy rig), extended protocol.
+# Each section: "=== <command sent as +\\cmd>" then the exact reply lines (dump_caps: first 12 lines only).
+=== get_freq
+get_freq:
+Frequency: 145000000
+RPRT 0
+=== set_freq 14074000
+set_freq: 14074000
+RPRT 0
+=== get_mode
+get_mode:
+Mode: FM
+Passband: 15000
+RPRT 0
+=== dump_caps
+dump_caps:
+Caps dump for model: 1
+Model name:	Dummy
+Mfg name:	Hamlib
+Hamlib version:	Hamlib 4.6.2 2025-02-09T21:03:50Z SHA=870364 64-bit
+Backend version:	20240709.0
+Backend copyright:	LGPL
+Backend status:	Stable
+Rig type:	Other 
+PTT type:	None
+DCD type:	Rig capable
+Port type:	None
