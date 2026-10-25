@@ -183,7 +183,6 @@ const cfgKeys = {
   GPS_BAUD: { value: "", effective: "57600" },
   GPS_PPS: { value: "" },
   POSITION_LOG: { value: "", effective: "off" },
-  CONSOLE: { value: "", effective: "on" },
 };
 // network settings start switched off, as in v0.3.0-rc3 (dxberry-config get's network_editable)
 let cfgNetworkEditable = false;
@@ -435,7 +434,8 @@ const programsPath = sibling("programs.js");
   ok(!!sbtn("cfg:system"), "system settings are still offered while network settings are off");
 
   // From here on, dxberry-config's own answers drive the section: a successful network save makes
-  // its job pending (Keep/Undo), CONSOLE=off is refused by the validator.
+  // its job pending (Keep/Undo); a save made after refuseSet is set is refused by the validator.
+  let refuseSet = false;
   let jobAnswer = { now: 1000, pending: false, revert_at: null, reverted_at: null, reboot_required: false, job: null };
   answer = args => {
     if (!args[0].endsWith("dxberry-config")) return Promise.reject({ problem: "not-found" });
@@ -443,7 +443,7 @@ const programsPath = sibling("programs.js");
     if (cmd === "get") return Promise.resolve(cfgGetAnswer());
     if (cmd === "job") return Promise.resolve(JSON.stringify(jobAnswer));
     if (cmd === "set") {
-      if (args.includes("CONSOLE=off")) {
+      if (refuseSet) {
         return Promise.reject({ exit_status: 4,
           message: "dxberry.txt would not be valid, so nothing was written:\n  line 3: GATEWAY is not inside 10.0.0.90/24" });
       }
@@ -498,14 +498,16 @@ const programsPath = sibling("programs.js");
     "Keep these settings runs dxberry-config confirm --json: " + (confirmCall && confirmCall.args.join(" ")));
   ok(doc.getElementById("notices").textContent.includes("Network settings kept."), "a kept change says so");
 
-  // Change system settings: turning the console off asks first, naming what it does.
+  // Change system settings: a new login password asks first, naming what it also changes.
   sbtn("cfg:system").click();
   await flush(); await flush();
   ok(settingsD.open && $("settings-dialog-title").textContent === "System settings", "Change system settings opens the dialog");
-  $("cf-CONSOLE").value = "off";
+  ok(!doc.getElementById("cf-CONSOLE"), "Settings does not offer the console");
+  $("cf-PASSWORD").value = "a new pass"; $("cf-PASSWORD2").value = "a new pass";
   sform.fire("submit");
-  ok(confirmD.open && confirmD.querySelector("p").textContent.includes("CONSOLE=off turns this console off"),
-    "turning the console off asks first and names it: " + confirmD.querySelector("p").textContent);
+  ok(confirmD.open && confirmD.querySelector("p").textContent.includes("console login") && confirmD.querySelector("p").textContent.includes("root"),
+    "a new password asks first and names the console login and root: " + confirmD.querySelector("p").textContent);
+  refuseSet = true;
 
   // A refused save (the validator rejected it) shows the exit code's meaning and the validator's
   // own line, in the still-open dialog.
@@ -660,7 +662,7 @@ const programsPath = sibling("programs.js");
   ubtn("upd:system").click();
   const sysText = confirmD.querySelector("p").textContent;
   ok(confirmD.open && confirmD.querySelector("h2").textContent === "Install the system updates?" && sysText.includes("apt-get upgrades the Debian packages without asking")
-    && sysText.includes("you log in again"), "Install the system updates asks first: " + sysText);
+    && sysText.includes("this page reconnects"), "Install the system updates asks first: " + sysText);
   confirmD.returnValue = "cancel"; confirmD.close();
   ok(!calls.some(c => c.args && c.args[0].endsWith("dxberry-update") && ["dxberry", "system", "rollback"].includes(c.args[1])), "Cancel starts nothing");
 

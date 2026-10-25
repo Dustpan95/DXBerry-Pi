@@ -52,8 +52,9 @@ test_page_watches_visibility_and_reports_power_failures() {
   assert_file_not_contains "$js" "document.hidden"
   power_body=$(sed -n '/^function power(/,/^}/p' "$js")
   assert_contains "$power_body" "failure("
-  assert_contains "$power_body" "disconnected"
-  assert_contains "$power_body" "terminated"
+  assert_contains "$power_body" "unreachable"
+  assert_not_contains "$power_body" "disconnected"
+  assert_not_contains "$power_body" "terminated"
 }
 
 # A refresh failure's notice must not outlive the refresh: notice()/failure() return the node
@@ -411,7 +412,7 @@ const document = { getElementById: id => (id in vals ? { value: vals[id] } : nul
 const keys = {STATIC_IP: {value: '10.0.0.90/24'}, GATEWAY: {value: '10.0.0.1'}, DNS: {value: ''}, WIFI_SSID: {value: 'Shack Net'},
   WIFI_PASSWORD: {secret: true, set: true}, WIFI_COUNTRY: {value: 'US'}, HOSTNAME: {value: 'shackpi'}, TIMEZONE: {value: ''},
   PASSWORD: {secret: true, set: true}, SSH_PUBKEY: {value: ''}, GPS_DEVICE: {value: ''}, GPS_BAUD: {value: ''}, GPS_PPS: {value: ''},
-  POSITION_LOG: {value: ''}, CONSOLE: {value: ''}};
+  POSITION_LOG: {value: ''}};
 const settings = {form: {section: 'network'}, values: {keys}};
 $fn
 console.log(JSON.stringify(cfgFormArgs()));
@@ -421,7 +422,7 @@ vals['cf-mode'] = 'dhcp';
 console.log(JSON.stringify(cfgFormArgs().args));
 settings.form.section = 'system';
 Object.assign(vals, {'cf-HOSTNAME': 'shackpi', 'cf-TIMEZONE': 'America/Chicago', 'cf-PASSWORD': 'a', 'cf-PASSWORD2': 'b', 'cf-SSH_PUBKEY': '',
-  'cf-GPS_DEVICE': '', 'cf-GPS_PATH': '', 'cf-GPS_BAUD': '', 'cf-GPS_PPS': '', 'cf-POSITION_LOG': '', 'cf-CONSOLE': 'off'});
+  'cf-GPS_DEVICE': '', 'cf-GPS_PATH': '', 'cf-GPS_BAUD': '', 'cf-GPS_PPS': '', 'cf-POSITION_LOG': ''});
 console.log(JSON.stringify(cfgFormArgs()));
 vals['cf-PASSWORD2'] = 'a';
 const r = cfgFormArgs();
@@ -439,7 +440,7 @@ console.log(JSON.stringify(cfgFormArgs()));")
   assert_eq "$(sed -n 2p <<< "$got")" '{"args":["set","STATIC_IP=10.0.0.91/24","--stdin"],"stdin":"WIFI_PASSWORD=new wifi pass\n","warn":[]}'
   assert_eq "$(sed -n 3p <<< "$got")" '["set","STATIC_IP=","GATEWAY=","--stdin"]'
   assert_contains "$(sed -n 4p <<< "$got")" "differ"
-  assert_eq "$(sed -n 5p <<< "$got")" '["set","TIMEZONE=America/Chicago","CONSOLE=off","--stdin"] "PASSWORD=a\n" 2'
+  assert_eq "$(sed -n 5p <<< "$got")" '["set","TIMEZONE=America/Chicago","--stdin"] "PASSWORD=a\n" 1'
   # dxberry.txt's parser would trim a space at either end, or strip wrapping double quotes
   assert_contains "$(sed -n 6p <<< "$got")" '"error":"A password cannot start or end with a space or be wrapped in double quotes (dxberry.txt would change it)."'
   assert_contains "$(sed -n 7p <<< "$got")" '"error":"A password cannot start or end with a space'

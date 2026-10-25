@@ -17,7 +17,7 @@ func page(t *testing.T, name string) string {
 // Settings must not offer CONSOLE: 0.5.0 ignores it.
 func TestSettingsDoesNotOfferConsole(t *testing.T) {
 	s := page(t, "settings.js")
-	for _, bad := range []string{`"cf-CONSOLE"`, `put("CONSOLE"`, "CONSOLE=off turns"} {
+	for _, bad := range []string{"CONSOLE"} {
 		if strings.Contains(s, bad) {
 			t.Errorf("settings.js still has %s", bad)
 		}

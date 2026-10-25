@@ -25,8 +25,7 @@ const CONFIG_FIELDS = [
   "get:keys.DNS.effective", "get:keys.WIFI_SSID.value", "get:keys.WIFI_PASSWORD.set", "get:keys.WIFI_COUNTRY.value",
   "get:keys.TIMEZONE.value", "get:keys.TIMEZONE.effective", "get:keys.PASSWORD.set", "get:keys.SSH_PUBKEY.value",
   "get:keys.GPS_DEVICE.value", "get:keys.GPS_DEVICE.effective", "get:keys.GPS_BAUD.value", "get:keys.GPS_BAUD.effective",
-  "get:keys.GPS_PPS.value", "get:keys.POSITION_LOG.value", "get:keys.POSITION_LOG.effective", "get:keys.CONSOLE.value",
-  "get:keys.CONSOLE.effective",
+  "get:keys.GPS_PPS.value", "get:keys.POSITION_LOG.value", "get:keys.POSITION_LOG.effective",
   "set:changed", "set:job", "set:network",
   "job:now", "job:pending", "job:revert_at", "job:reverted_at", "job:reboot_required",
   "job:job.unit", "job:job.state", "job:job.exit", "job:job.changed", "job:job.network", "job:job.lines",
@@ -119,7 +118,6 @@ function cfgSystemRows(keys) {
     ["SSH key", key[0] ? [key[0], key.slice(2).join(" ")].filter(Boolean).join(" … ") : "none"],
     ["GPS", gps === "none" ? "off" : `${gps}, ${cfgShown(keys, "GPS_BAUD")} baud${pps ? `, PPS on GPIO ${pps}` : ""}`],
     ["Position log", cfgShown(keys, "POSITION_LOG") === "on" ? "on, in RAM" : "off"],
-    ["Console", cfgShown(keys, "CONSOLE")],
   ];
 }
 
