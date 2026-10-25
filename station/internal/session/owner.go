@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -59,11 +61,13 @@ type Owners struct {
 	claims       map[string]claim
 	programs     *Programs
 	transmitting func(radio string) bool
+	onDrop       func(radio string)
+	sockets      map[string]int // open events sockets per tab id
 }
 
 // NewOwners returns an empty lock.
 func NewOwners(clock Clock) *Owners {
-	return &Owners{clock: clock, claims: map[string]claim{}}
+	return &Owners{clock: clock, claims: map[string]claim{}, sockets: map[string]int{}}
 }
 
 // SetPrograms makes running programs holders.
@@ -80,6 +84,49 @@ func (o *Owners) SetTransmitting(fn func(radio string) bool) {
 	o.mu.Unlock()
 }
 
+// OnDrop sets a function told, after the lock is released, whenever a tab's claim on a radio ends
+// (release, socket close, idle). The intents use it to end a running carrier.
+func (o *Owners) OnDrop(fn func(radio string)) {
+	o.mu.Lock()
+	o.onDrop = fn
+	o.mu.Unlock()
+}
+
+// dropped tells the OnDrop function about radios; call it with o.mu not held.
+func (o *Owners) dropped(radios ...string) {
+	o.mu.Lock()
+	fn := o.onDrop
+	o.mu.Unlock()
+	if fn == nil {
+		return
+	}
+	for _, r := range radios {
+		fn(r)
+	}
+}
+
+// SocketOpened counts an events socket of the tab id.
+func (o *Owners) SocketOpened(id string) {
+	o.mu.Lock()
+	o.sockets[id]++
+	o.mu.Unlock()
+}
+
+// SocketClosed ends the count of one socket; the tab's claims are released when its last
+// socket closes (a reload opens the new socket before the old one's close arrives).
+func (o *Owners) SocketClosed(id string) {
+	o.mu.Lock()
+	o.sockets[id]--
+	last := o.sockets[id] <= 0
+	if last {
+		delete(o.sockets, id)
+	}
+	o.mu.Unlock()
+	if last {
+		o.ReleaseAll(id)
+	}
+}
+
 func (o *Owners) programLocked(radio string) (Holder, bool) {
 	if o.programs == nil {
 		return Holder{}, false
@@ -88,61 +135,83 @@ func (o *Owners) programLocked(radio string) (Holder, bool) {
 }
 
 // expireLocked drops a tab claim that has been idle too long.
-func (o *Owners) expireLocked(radio string) {
+func (o *Owners) expireLocked(radio string) (dropped bool) {
 	if c, ok := o.claims[radio]; ok && o.clock.Now().Sub(c.last) >= IdleLimit {
 		delete(o.claims, radio)
+		return true
 	}
+	return false
 }
 
 // Claim gives radio to a tab. It is refused while a program runs on the radio or another tab
 // holds it.
 func (o *Owners) Claim(radio string, h Holder) error {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if _, ok := o.programLocked(radio); ok {
+		o.mu.Unlock()
 		return ErrProgramOwns
 	}
-	o.expireLocked(radio)
+	exp := o.expireLocked(radio)
+	var err error
 	if c, ok := o.claims[radio]; ok && c.h.ID != h.ID {
-		return ErrHeld
+		err = ErrHeld
+	} else {
+		o.claims[radio] = claim{h: h, last: o.clock.Now()}
 	}
-	o.claims[radio] = claim{h: h, last: o.clock.Now()}
-	return nil
+	o.mu.Unlock()
+	if exp {
+		o.dropped(radio)
+	}
+	return err
 }
 
 // TakeOver moves a tab's claim to h, unless the radio is transmitting or a program holds it.
 func (o *Owners) TakeOver(radio string, h Holder) error {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if _, ok := o.programLocked(radio); ok {
+		o.mu.Unlock()
 		return ErrProgramOwns
 	}
-	o.expireLocked(radio)
+	exp := o.expireLocked(radio)
+	var err error
 	if c, ok := o.claims[radio]; ok && c.h.ID != h.ID && o.transmitting != nil && o.transmitting(radio) {
-		return ErrTransmitting
+		err = ErrTransmitting
+	} else {
+		o.claims[radio] = claim{h: h, last: o.clock.Now()}
 	}
-	o.claims[radio] = claim{h: h, last: o.clock.Now()}
-	return nil
+	o.mu.Unlock()
+	if exp {
+		o.dropped(radio)
+	}
+	return err
 }
 
 // Release drops id's claim on radio; anyone else's is left alone.
 func (o *Owners) Release(radio, id string) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
-	if c, ok := o.claims[radio]; ok && c.h.ID == id {
+	c, ok := o.claims[radio]
+	ok = ok && c.h.ID == id
+	if ok {
 		delete(o.claims, radio)
+	}
+	o.mu.Unlock()
+	if ok {
+		o.dropped(radio)
 	}
 }
 
 // ReleaseAll drops every claim id holds (its events socket closed).
 func (o *Owners) ReleaseAll(id string) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
+	var gone []string
 	for r, c := range o.claims {
 		if c.h.ID == id {
 			delete(o.claims, r)
+			gone = append(gone, r)
 		}
 	}
+	o.mu.Unlock()
+	o.dropped(gone...)
 }
 
 // Touch records a transmit intent by id, which restarts its idle time.
@@ -158,18 +227,22 @@ func (o *Owners) Touch(radio, id string) {
 // Holder says who holds radio: a running program first, else a tab.
 func (o *Owners) Holder(radio string) (Holder, bool) {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if h, ok := o.programLocked(radio); ok {
+		o.mu.Unlock()
 		return h, true
 	}
-	o.expireLocked(radio)
+	exp := o.expireLocked(radio)
 	c, ok := o.claims[radio]
+	o.mu.Unlock()
+	if exp {
+		o.dropped(radio)
+	}
 	return c.h, ok
 }
 
-// Probe says whether the program session (<program>-<radio>) is running, and the program's
-// label.
-type Probe func(ctx context.Context, session string) (running bool, label string)
+// Probe says whether the program session (<program>-<radio>) holds the radio (running or
+// starting), and the program's label. An error means it could not tell.
+type Probe func(ctx context.Context, session string) (held bool, label string, err error)
 
 // Programs derives program holders from the radio records and the running screens.
 type Programs struct {
@@ -178,21 +251,39 @@ type Programs struct {
 
 	mu      sync.Mutex
 	holders map[string]Holder
+	failing map[string]bool // radios whose last probe failed (logged once per streak)
 }
 
 // NewPrograms returns a source that has not looked yet; Refresh or Run fills it.
 func NewPrograms(list func() []radios.Radio, probe Probe) *Programs {
-	return &Programs{list: list, probe: probe, holders: map[string]Holder{}}
+	return &Programs{list: list, probe: probe, holders: map[string]Holder{}, failing: map[string]bool{}}
 }
 
-// Refresh asks about every radio that has an owner and keeps the answers.
+// Refresh asks about every radio that has an owner and keeps the answers. When a probe cannot
+// tell, the radio keeps the holder it had: a transient failure must not free a transmitter.
 func (p *Programs) Refresh(ctx context.Context) {
 	next := map[string]Holder{}
+	failing := map[string]bool{}
 	for _, r := range p.list() {
 		if r.Owner == "" {
 			continue
 		}
-		if ok, label := p.probe(ctx, r.Owner+"-"+r.Name); ok {
+		held, label, err := p.probe(ctx, r.Owner+"-"+r.Name)
+		if err != nil {
+			failing[r.Name] = true
+			p.mu.Lock()
+			prev, had := p.holders[r.Name]
+			again := p.failing[r.Name]
+			p.mu.Unlock()
+			if !again {
+				slog.Error("could not tell whether a program holds a radio; keeping the last answer", "radio", r.Name, "owner", r.Owner, "error", err, "kept", had)
+			}
+			if had {
+				next[r.Name] = prev
+			}
+			continue
+		}
+		if held {
 			if label == "" {
 				label = r.Owner
 			}
@@ -200,7 +291,7 @@ func (p *Programs) Refresh(ctx context.Context) {
 		}
 	}
 	p.mu.Lock()
-	p.holders = next
+	p.holders, p.failing = next, failing
 	p.mu.Unlock()
 }
 
@@ -227,18 +318,28 @@ func (p *Programs) Holder(radio string) (Holder, bool) {
 	return h, ok
 }
 
-// ScreenProbe asks `dxberry-app screen <session> --json` through run and reads state == "running".
-// run executes that command with the given arguments (the cli package's runner, in the service).
+// ScreenProbe asks `dxberry-app screen <session> --json` through run. The session holds the radio
+// while its state is "running" or "starting". A failed command, unreadable output or
+// access:false is an error, not "free".
 func ScreenProbe(run func(ctx context.Context, args []string) (stdout string, exit int, err error)) Probe {
-	return func(ctx context.Context, session string) (bool, string) {
+	return func(ctx context.Context, session string) (bool, string, error) {
 		out, exit, err := run(ctx, []string{"screen", session, "--json"})
-		if err != nil || exit != 0 {
-			return false, ""
+		if err != nil {
+			return false, "", err
 		}
-		var v struct{ State, Label string }
+		if exit != 0 {
+			return false, "", fmt.Errorf("dxberry-app screen exited %d", exit)
+		}
+		var v struct {
+			State, Label string
+			Access       *bool
+		}
 		if json.Unmarshal([]byte(out), &v) != nil {
-			return false, ""
+			return false, "", errors.New("dxberry-app screen printed something unreadable")
 		}
-		return v.State == "running", v.Label
+		if v.Access != nil && !*v.Access {
+			return false, "", errors.New("the station user cannot read program screens (access false): log out and back in, or join the dxbscreen group")
+		}
+		return v.State == "running" || v.State == "starting", v.Label, nil
 	}
 }

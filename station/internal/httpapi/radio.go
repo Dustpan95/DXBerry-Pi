@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -57,17 +58,39 @@ type RadioAPI struct {
 	Clock  rig.Clock // nil: real time
 
 	mu      sync.Mutex
-	intents map[string]*intentSet
+	intents map[string]*rig.Intents
 }
 
-type intentSet struct {
-	w  rig.Writer
-	in *rig.Intents
+// dynWriter resolves the radio's poller on every call, so a reconnected or replaced poller is
+// followed without rebuilding the intents (and losing a carrier's pending unkey).
+type dynWriter struct {
+	a    *RadioAPI
+	name string
+}
+
+func (d dynWriter) State() rig.State {
+	if w, ok := d.a.Rigs.Writer(d.name); ok {
+		return w.State()
+	}
+	return rig.State{}
+}
+
+func (d dynWriter) Write(ctx context.Context, fn func(rig.Commander) error, opt func(*rig.State)) error {
+	if w, ok := d.a.Rigs.Writer(d.name); ok {
+		return w.Write(ctx, fn, opt)
+	}
+	return rig.ErrNotConnected
 }
 
 // Register adds the radio routes, one pattern per intent. Call it from Config.Routes, so
 // the session gate and the same-origin rule apply.
 func (a *RadioAPI) Register(mux *http.ServeMux) {
+	// a tab's claim ending (release, socket close, idle) ends its carrier
+	a.Owners.OnDrop(func(radio string) {
+		if rec, ok := a.Radios.Get(radio); ok {
+			a.intentsFor(rec).Unkey()
+		}
+	})
 	mux.HandleFunc("GET /api/radio/{name}", a.get)
 	post := func(intent string, fn func(r *http.Request, in *rig.Intents, b *radioBody, sess *Session) rig.Result) {
 		mux.HandleFunc("POST /api/radio/{name}/"+intent, a.post(fn))
@@ -200,24 +223,24 @@ func (a *RadioAPI) lookup(w http.ResponseWriter, r *http.Request) (radios.Radio,
 	return rec, true
 }
 
-func (a *RadioAPI) intentsFor(rec radios.Radio, w rig.Writer) *rig.Intents {
+func (a *RadioAPI) intentsFor(rec radios.Radio) *rig.Intents {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.intents == nil {
-		a.intents = map[string]*intentSet{}
+		a.intents = map[string]*rig.Intents{}
 	}
-	if s, ok := a.intents[rec.Name]; ok && s.w == w {
-		return s.in
+	if in, ok := a.intents[rec.Name]; ok {
+		return in
 	}
 	name := rec.Name
 	in := &rig.Intents{
 		Radio:  name,
 		Caps:   func() (rig.Caps, bool) { return a.Rigs.Caps(name) },
-		Poller: w,
+		Poller: dynWriter{a, name},
 		Owners: a.Owners,
 		Clock:  a.Clock,
 	}
-	a.intents[name] = &intentSet{w: w, in: in}
+	a.intents[name] = in
 	return in
 }
 
@@ -238,12 +261,11 @@ func (a *RadioAPI) post(fn func(r *http.Request, in *rig.Intents, b *radioBody, 
 			writeJSON(w, http.StatusBadRequest, badBody())
 			return
 		}
-		rw, ok := a.Rigs.Writer(rec.Name)
-		if !ok {
+		if _, ok := a.Rigs.Writer(rec.Name); !ok {
 			writeJSON(w, http.StatusConflict, rig.Result{Reason: "this radio has no rig control", Fix: "give the radio a rig control port in its settings"})
 			return
 		}
-		writeJSON(w, http.StatusOK, fn(r, a.intentsFor(rec, rw), &b, sess))
+		writeJSON(w, http.StatusOK, fn(r, a.intentsFor(rec), &b, sess))
 	}
 }
 

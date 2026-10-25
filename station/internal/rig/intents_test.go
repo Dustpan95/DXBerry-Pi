@@ -17,7 +17,10 @@ type ixRig struct {
 	mu    sync.Mutex
 	st    State
 	calls []string
+	fail  error
 }
+
+func (f *ixRig) setUp(up bool) { f.mu.Lock(); f.st.Connected = up; f.mu.Unlock() }
 
 func (f *ixRig) State() State {
 	f.mu.Lock()
@@ -38,6 +41,9 @@ func (f *ixRig) Do(ctx context.Context, cmd string, args ...string) (Reply, erro
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, strings.TrimSpace(cmd+" "+strings.Join(args, " ")))
+	if f.fail != nil {
+		return Reply{}, f.fail
+	}
 	if cmd == "set_ptt" {
 		f.st.PTT = args[0] == "1"
 	}
@@ -84,14 +90,40 @@ func newIxHarness(caps Caps) *ixHarness {
 	f := &ixRig{st: State{Connected: true, Freq: 14074000, Mode: "USB", VFO: "VFOA",
 		Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}
 	own := session.NewOwners(clock)
-	return &ixHarness{rig: f, clock: clock, own: own, in: &Intents{
+	h := &ixHarness{rig: f, clock: clock, own: own}
+	h.in = &Intents{
 		Radio:  "radio1",
 		Caps:   func() (Caps, bool) { return caps, true },
 		Poller: f,
 		Owners: own,
 		Clock:  clock,
 		Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}}
+	}
+	own.OnDrop(func(string) { h.in.Unkey() })
+	return h
+}
+
+func (h *ixHarness) count(c string) int {
+	n := 0
+	for _, x := range h.rig.log() {
+		if x == c {
+			n++
+		}
+	}
+	return n
+}
+
+// tick advances the fake clock a second at a time until cond holds.
+func (h *ixHarness) tick(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("never: %s (calls %v)", what, h.rig.log())
+		}
+		h.clock.Advance(time.Second)
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func ixHolder(id string) session.Holder { return session.Holder{Kind: "tab", ID: id, Label: "iPad"} }
@@ -199,7 +231,7 @@ func TestTuneRefusedInDataMode(t *testing.T) {
 	for _, m := range []string{"PKTUSB", "PKTLSB", "PKTFM", "RTTY", "RTTYR"} {
 		h.rig.st.Mode = m
 		r := h.in.Tune(context.Background(), "a", true)
-		ixRefused(t, r, "a data mode would key the sound card with silence; switch to USB or CW to tune", "")
+		ixRefused(t, r, "a data mode would key the sound card with silence; switch to USB or CW to tune", "switch to USB or CW to tune")
 	}
 	if h.rig.has("set_ptt 1") {
 		t.Fatal("keyed in a data mode")
@@ -272,5 +304,87 @@ func TestClaimIntents(t *testing.T) {
 	}
 	if _, ok := h.own.Holder("radio1"); ok {
 		t.Fatal("still held")
+	}
+}
+
+func TestStopWhileLinkDownIsRetriedUntilTheRadioAnswers(t *testing.T) {
+	h := newIxHarness(ixCaps())
+	ctx := context.Background()
+	_ = h.own.Claim("radio1", ixHolder("a"))
+	h.in.Tune(ctx, "a", true)
+	h.rig.setUp(false)
+	r := h.in.Stop(ctx)
+	if r.OK || r.Reason != "rig control unreachable; the radio's rigctld is restarting" {
+		t.Fatalf("stop while down: %+v", r)
+	}
+	if !h.in.Pending() {
+		t.Fatal("the owed unkey was forgotten")
+	}
+	h.clock.Advance(3 * time.Second)
+	time.Sleep(20 * time.Millisecond)
+	if h.count("set_ptt 0") != 0 {
+		t.Fatal("sent while down")
+	}
+	h.rig.setUp(true)
+	h.tick(t, "set_ptt 0 after the link returns", func() bool { return h.count("set_ptt 0") > 0 })
+	h.tick(t, "pending cleared", func() bool { return !h.in.Pending() })
+	if h.rig.State().PTT {
+		t.Fatal("still keyed")
+	}
+}
+
+func TestCarrierCapFiresWhileLinkDown(t *testing.T) {
+	h := newIxHarness(ixCaps())
+	_ = h.own.Claim("radio1", ixHolder("a"))
+	h.in.Tune(context.Background(), "a", true)
+	h.rig.setUp(false)
+	h.clock.Advance(10 * time.Second)
+	h.tick(t, "cap owes an unkey", func() bool { return h.in.Pending() })
+	if h.count("set_ptt 0") != 0 {
+		t.Fatal("sent while down")
+	}
+	h.rig.setUp(true)
+	h.tick(t, "set_ptt 0 after the link returns", func() bool { return h.count("set_ptt 0") > 0 })
+	h.tick(t, "pending cleared", func() bool { return !h.in.Pending() })
+}
+
+func TestReleaseAndSocketCloseEndTheCarrier(t *testing.T) {
+	h := newIxHarness(ixCaps())
+	ctx := context.Background()
+	_ = h.own.Claim("radio1", ixHolder("a"))
+	h.in.Tune(ctx, "a", true)
+	h.in.Release("a")
+	if h.count("set_ptt 0") != 1 || h.rig.State().PTT {
+		t.Fatalf("release left the carrier: %v", h.rig.log())
+	}
+	_ = h.own.Claim("radio1", ixHolder("a"))
+	h.in.Tune(ctx, "a", true)
+	h.own.SocketOpened("a")
+	h.own.SocketClosed("a")
+	if h.count("set_ptt 0") != 2 {
+		t.Fatalf("socket close left the carrier: %v", h.rig.log())
+	}
+}
+
+func TestIdleExpiryEndsTheCarrier(t *testing.T) {
+	h := newIxHarness(ixCaps())
+	_ = h.own.Claim("radio1", ixHolder("a"))
+	h.in.Tune(context.Background(), "a", true)
+	h.rig.setUp(false) // the carrier is still owed after the expiry
+	h.clock.Advance(11 * time.Minute)
+	if _, ok := h.own.Holder("radio1"); ok {
+		t.Fatal("still held")
+	}
+	if !h.in.Pending() {
+		t.Fatal("expiry did not owe an unkey")
+	}
+}
+
+func TestIntentAnswersWhenTheWriteFails(t *testing.T) {
+	h := newIxHarness(ixCaps())
+	h.rig.fail = io.ErrUnexpectedEOF
+	r := h.in.Freq(context.Background(), 7074000)
+	if r.OK || r.Reason == "" || r.Fix == "" {
+		t.Fatalf("got %+v", r)
 	}
 }

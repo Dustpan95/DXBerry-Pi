@@ -70,9 +70,15 @@ type Intents struct {
 	Clock  Clock
 	Log    *slog.Logger
 
-	mu      sync.Mutex
-	carrier chan struct{} // closed to cancel the running carrier timer
+	mu       sync.Mutex
+	carrier  chan struct{} // closed to cancel the running carrier timer
+	keyed    bool          // a tune carrier was keyed and not yet confirmed off
+	pending  bool          // set_ptt 0 is owed to the radio
+	retrying bool          // a retry loop is running
 }
+
+// RetryEvery is how often an owed unkey is retried.
+const RetryEvery = time.Second
 
 func (in *Intents) log() *slog.Logger {
 	if in.Log != nil {
@@ -239,7 +245,7 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 		return *bad
 	}
 	if slices.Contains(dataModes, st.Mode) {
-		return in.refuse("tune", reasonDataMode, "")
+		return in.refuse("tune", reasonDataMode, "switch to USB or CW to tune")
 	}
 	in.Owners.Touch(in.Radio, tab)
 	res := in.send(ctx, "tune", func(s *State) { s.PTT = true }, "set_ptt", "1")
@@ -252,6 +258,7 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 		close(in.carrier)
 	}
 	in.carrier = cancel
+	in.keyed, in.pending = true, false
 	in.mu.Unlock()
 	fire := in.clock().At(in.clock().Now().Add(CarrierLimit)) // taken now, not in the goroutine
 	go func() {
@@ -266,7 +273,7 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 			in.mu.Unlock()
 			if current {
 				in.log().Info("tune carrier ended at its limit", "radio", in.Radio)
-				in.ptt0(context.Background(), "tune")
+				in.unkey("tune")
 			}
 		}
 	}()
@@ -286,13 +293,87 @@ func (in *Intents) endCarrier() {
 	in.mu.Unlock()
 }
 
-// Stop drops PTT and ends any carrier. Any tab may send it.
-func (in *Intents) Stop(ctx context.Context) Result {
+// unkey owes the radio a set_ptt 0, tries it now and, if the radio cannot take it, keeps trying
+// every RetryEvery until it answers. A carrier is a safety matter: nothing cancels this.
+func (in *Intents) unkey(intent string) Result {
 	in.endCarrier()
-	if st := in.Poller.State(); !st.Connected {
-		return in.refuse("stop", reasonUnreachable, fixUnreachable)
+	in.mu.Lock()
+	in.pending = true
+	in.mu.Unlock()
+	res := in.attemptUnkey(intent)
+	if !res.OK {
+		in.startRetry(intent)
 	}
-	return in.ptt0(ctx, "stop")
+	return res
+}
+
+func (in *Intents) attemptUnkey(intent string) Result {
+	if st := in.Poller.State(); !st.Connected {
+		return in.refuse(intent, reasonUnreachable, fixUnreachable)
+	}
+	res := in.ptt0(context.Background(), intent)
+	if res.OK {
+		in.mu.Lock()
+		in.pending, in.keyed = false, false
+		in.mu.Unlock()
+	}
+	return res
+}
+
+func (in *Intents) startRetry(intent string) {
+	in.mu.Lock()
+	if in.retrying {
+		in.mu.Unlock()
+		return
+	}
+	in.retrying = true
+	in.mu.Unlock()
+	tick := in.clock().At(in.clock().Now().Add(RetryEvery))
+	go func() {
+		for {
+			<-tick
+			in.mu.Lock()
+			if !in.pending {
+				in.retrying = false
+				in.mu.Unlock()
+				return
+			}
+			in.mu.Unlock()
+			in.attemptUnkey(intent)
+			in.mu.Lock()
+			if !in.pending {
+				in.retrying = false
+				in.mu.Unlock()
+				return
+			}
+			in.mu.Unlock()
+			tick = in.clock().At(in.clock().Now().Add(RetryEvery))
+		}
+	}()
+}
+
+// Unkey ends a running carrier (the owner released the radio, its socket closed, or it idled
+// out). Nothing happens when no carrier is up.
+func (in *Intents) Unkey() {
+	in.mu.Lock()
+	need := in.keyed || in.pending
+	in.mu.Unlock()
+	if need {
+		in.unkey("release")
+	}
+}
+
+// Pending reports whether an unkey is still owed to the radio.
+func (in *Intents) Pending() bool {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.pending
+}
+
+// Stop drops PTT and ends any carrier. Any tab may send it. While the link is down it answers
+// the refusal but the unkey stays owed and is retried until the radio takes it.
+func (in *Intents) Stop(ctx context.Context) Result {
+	return in.unkey("stop")
 }
 
 // ATU starts the radio's antenna tuner when the radio has one that CAT controls.

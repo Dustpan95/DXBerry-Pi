@@ -119,7 +119,7 @@ func TestOwnerReleasedAfterIdle10m(t *testing.T) {
 func TestProgramHolderBlocksTabs(t *testing.T) {
 	list := []radios.Radio{{Name: "radio1", Owner: "wsjtx"}, {Name: "radio2"}}
 	active := map[string]bool{"wsjtx-radio1": true}
-	probe := func(ctx context.Context, s string) (bool, string) { return active[s], "WSJT-X" }
+	probe := func(ctx context.Context, s string) (bool, string, error) { return active[s], "WSJT-X", nil }
 	p := NewPrograms(func() []radios.Radio { return list }, probe)
 	o := NewOwners(newClock())
 	o.SetPrograms(p)
@@ -157,14 +157,64 @@ func TestScreenProbeReadsState(t *testing.T) {
 			return out, exit, nil
 		}
 	}
-	ok, label := ScreenProbe(run(`{"state":"running","label":"WSJT-X"}`, 0))(context.Background(), "wsjtx-radio1")
+	ok, label, _ := ScreenProbe(run(`{"state":"running","label":"WSJT-X"}`, 0))(context.Background(), "wsjtx-radio1")
 	if !ok || label != "WSJT-X" {
 		t.Fatalf("running: %v %q", ok, label)
 	}
-	if ok, _ := ScreenProbe(run(`{"state":"stopped"}`, 0))(context.Background(), "wsjtx-radio1"); ok {
-		t.Fatal("stopped read as running")
+	if ok, _, err := ScreenProbe(run(`{"state":"stopped"}`, 0))(context.Background(), "wsjtx-radio1"); ok || err != nil {
+		t.Fatalf("stopped: %v %v", ok, err)
 	}
-	if ok, _ := ScreenProbe(run(`{"state":"running"}`, 3))(context.Background(), "wsjtx-radio1"); ok {
-		t.Fatal("a failed command read as running")
+	if ok, _, err := ScreenProbe(run(`{"state":"starting"}`, 0))(context.Background(), "wsjtx-radio1"); !ok || err != nil {
+		t.Fatalf("starting must hold the radio: %v %v", ok, err)
+	}
+	if _, _, err := ScreenProbe(run(`{"state":"running"}`, 3))(context.Background(), "wsjtx-radio1"); err == nil {
+		t.Fatal("a failed command is not an answer")
+	}
+	if _, _, err := ScreenProbe(run(`not json`, 0))(context.Background(), "wsjtx-radio1"); err == nil {
+		t.Fatal("unreadable output is not an answer")
+	}
+	if _, _, err := ScreenProbe(run(`{"session":"wsjtx-radio1","access":false}`, 0))(context.Background(), "wsjtx-radio1"); err == nil {
+		t.Fatal("access:false is not an answer")
+	}
+}
+
+func TestProgramHolderKeptWhenProbeFails(t *testing.T) {
+	list := []radios.Radio{{Name: "radio1", Owner: "wsjtx"}}
+	fail := false
+	probe := func(ctx context.Context, s string) (bool, string, error) {
+		if fail {
+			return false, "", errors.New("timeout")
+		}
+		return true, "WSJT-X", nil
+	}
+	p := NewPrograms(func() []radios.Radio { return list }, probe)
+	o := NewOwners(newClock())
+	o.SetPrograms(p)
+	p.Refresh(context.Background())
+	fail = true
+	p.Refresh(context.Background())
+	p.Refresh(context.Background())
+	if err := o.Claim("radio1", tab("a")); !errors.Is(err, ErrProgramOwns) {
+		t.Fatalf("a failed probe freed the radio: %v", err)
+	}
+}
+
+func TestSocketRefcountReleasesOnLastClose(t *testing.T) {
+	o := NewOwners(newClock())
+	var dropped []string
+	o.OnDrop(func(r string) { dropped = append(dropped, r) })
+	_ = o.Claim("radio1", tab("a"))
+	o.SocketOpened("a") // the old page's socket
+	o.SocketOpened("a") // the reloaded page's
+	o.SocketClosed("a")
+	if _, ok := o.Holder("radio1"); !ok || len(dropped) != 0 {
+		t.Fatal("claim dropped while a socket is still open")
+	}
+	o.SocketClosed("a")
+	if _, ok := o.Holder("radio1"); ok {
+		t.Fatal("claim kept after the last socket closed")
+	}
+	if len(dropped) != 1 || dropped[0] != "radio1" {
+		t.Fatalf("OnDrop calls: %v", dropped)
 	}
 }

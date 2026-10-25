@@ -190,3 +190,44 @@ func TestRadioClaimTuneAndGet(t *testing.T) {
 		t.Fatalf("stop: %q", rec.Body.String())
 	}
 }
+
+// otherSession lets a test log in as a second session.
+type multiAuth struct{}
+
+func (multiAuth) Session(r *http.Request) (*Session, bool) {
+	return &Session{ID: r.Header.Get("X-Test-Session"), User: "dietpi"}, true
+}
+
+func TestTuneAndATURefuseWithoutTheirOwnTab(t *testing.T) {
+	f := &rwRig{st: rig.State{Connected: true, Mode: "USB", Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}
+	owners := session.NewOwners(realNow{})
+	api := &RadioAPI{Auth: multiAuth{}, Radios: rwRecords{"radio1": {Name: "radio1", Port: 4532}}, Rigs: rwRigs{f}, Owners: owners}
+	h := New(Config{Listen: "127.0.0.1:0", Auth: multiAuth{}, Routes: api.Register}).Handler
+	own := map[string]string{TabHeader: "iPad#a1", "X-Test-Session": "s1"}
+	if rec := rwDo(h, "POST", "/api/radio/radio1/claim", `{}`, own); strings.TrimSpace(rec.Body.String()) != `{"ok":true}` {
+		t.Fatalf("claim: %q", rec.Body.String())
+	}
+	cases := map[string]map[string]string{
+		"no header":     {"X-Test-Session": "s1"},
+		"empty header":  {TabHeader: "", "X-Test-Session": "s1"},
+		"other session": {TabHeader: "iPad#a1", "X-Test-Session": "s2"},
+		"other tab":     {TabHeader: "iPad#zz", "X-Test-Session": "s1"},
+		"unprintable":   {TabHeader: "a\tb", "X-Test-Session": "s1"},
+	}
+	for name, hdr := range cases {
+		for _, route := range []string{"tune", "atu"} {
+			rec := rwDo(h, "POST", "/api/radio/radio1/"+route, `{"on":true}`, hdr)
+			if strings.Contains(rec.Body.String(), `"ok":true`) {
+				t.Fatalf("%s %s: accepted %q", route, name, rec.Body.String())
+			}
+		}
+	}
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, "set_ptt") || strings.HasPrefix(c, "set_func") {
+			t.Fatalf("a refused request keyed the radio: %v", f.calls)
+		}
+	}
+	if rec := rwDo(h, "POST", "/api/radio/radio1/tune", `{"on":true}`, own); strings.TrimSpace(rec.Body.String()) != `{"ok":true}` {
+		t.Fatalf("the owner's tune: %q", rec.Body.String())
+	}
+}

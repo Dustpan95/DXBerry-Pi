@@ -665,3 +665,45 @@ func TestEventsRigDeltasFollowTheSocketsLevel(t *testing.T) {
 		t.Fatalf("bystander: %v", m)
 	}
 }
+
+func TestEventsSocketHookFiresOnOpenAndClose(t *testing.T) {
+	r := newRig(t)
+	opened, closed := make(chan string, 4), make(chan string, 4)
+	r.st.OnSocket(func(req *http.Request) func() {
+		id := "s1|" + req.URL.Query().Get("tab")
+		opened <- id
+		return func() { closed <- id }
+	})
+	ts := serve(t, r.st, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/api/events?tab=iPad%23a1", &websocket.DialOptions{
+		HTTPHeader: http.Header{"Origin": {ts.URL}, "Sec-Fetch-Site": {"same-origin"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	select {
+	case id := <-opened:
+		if id != "s1|iPad#a1" {
+			t.Fatalf("opened with %q", id)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("hook did not run on open")
+	}
+	select {
+	case id := <-closed:
+		t.Fatalf("closed early: %q", id)
+	case <-time.After(100 * time.Millisecond):
+	}
+	_ = c.Close(websocket.StatusNormalClosure, "bye")
+	select {
+	case id := <-closed:
+		if id != "s1|iPad#a1" {
+			t.Fatalf("closed with %q", id)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("hook did not run on close")
+	}
+}
