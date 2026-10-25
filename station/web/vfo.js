@@ -180,7 +180,9 @@
   }
 
   // ownerActions OWNER: the buttons beside the owner line
-  function ownerActions(owner) {
+  // On a radio with no rig control nothing can be claimed: every intent would be refused.
+  function ownerActions(owner, noCatRadio) {
+    if (noCatRadio) return [];
     if (!owner) return ["claim"];
     if (owner.kind === "program") return ["open"];
     return [owner.mine ? "release" : "takeover"];
@@ -283,7 +285,7 @@
     if (S.sending || S.want === null) return;
     const hz = S.want;
     S.sending = true;
-    dxb.api("POST", `/api/radio/${name}/freq`, { hz }).then((res) => {
+    dxb.api("POST", `/api/radio/${name}/freq`, { hz }, { timeout: 5000 }).then((res) => {
       S.sending = false;
       if (!(res && res.ok)) {
         if (S.want === hz) S.want = null;
@@ -342,8 +344,11 @@
     return !!(S.st && S.st.optimistic && S.st.optimistic[field]);
   }
 
+  const lowest = () => (S.nc && S.nc.ranges.length ? Math.min(...S.nc.ranges.map((r) => r.lo)) : 0);
+  const highest = () => (S.nc && S.nc.ranges.length ? Math.max(...S.nc.ranges.map((r) => r.hi)) : 0);
+
   sectionBuilders.dial = () => {
-    const knob = ctl(h("div", { class: "vfo-dial", role: "slider", tabindex: "0", "aria-label": "Tuning dial", "aria-valuemin": "0", "aria-valuemax": "0", "aria-valuenow": "0" },
+    const knob = ctl(h("div", { class: "vfo-dial", role: "slider", tabindex: "0", "aria-label": "Tuning dial", "aria-valuemin": String(lowest()), "aria-valuemax": String(highest()), "aria-valuenow": "0" },
       h("span", { class: "vfo-dial-mark" })));
     const stepBox = h("div", { class: "vfo-steps", role: "group", "aria-label": "Tuning step" });
     const stepBtns = STEPS.map((s) => {
@@ -587,8 +592,9 @@
     const b = ctl(h("button", { class: "btn small", type: "button", onclick: () => {
       dxb.api("POST", `/api/radio/${name}/atu`, claimBody()).then((res) => { if (!(res && res.ok)) say(failText(res || {}), "bad"); });
     } }, "ATU"));
-    S.upd.push(() => needsOwner(b, !mine()));
-    return h("section", { class: "card vfo-box" }, h("h3", {}, "Antenna tuner"), b);
+    const why = h("p", { class: "muted hint vfo-needs" }, "Take the transmitter first.");
+    S.upd.push(() => { needsOwner(b, !mine()); why.hidden = mine(); });
+    return h("section", { class: "card vfo-box" }, h("h3", {}, "Antenna tuner"), b, why);
   };
 
   function tuneEnd(send) {
@@ -600,9 +606,13 @@
 
   sectionBuilders.tune = () => {
     const b = ctl(h("button", { class: "btn small", type: "button" }, "Tune"));
+    const why = h("p", { class: "muted hint vfo-needs" }, "Take the transmitter first.");
     b.addEventListener("click", () => {
       if (S.tune) { tuneEnd(true); return; }
+      if (S.tuneAsked) return;
+      S.tuneAsked = true;
       dxb.api("POST", `/api/radio/${name}/tune`, { on: true, device: dxb.tab() }).then((res) => {
+        S.tuneAsked = false;
         if (!(res && res.ok)) { say(failText(res || {}), "bad"); return; }
         S.tune = { until: Date.now() + 10000, since: Date.now(), timer: setInterval(() => {
           if (Date.now() >= S.tune.until) tuneEnd(false); else paint();
@@ -618,8 +628,9 @@
         setText(b, "Tune");
       }
       needsOwner(b, !mine() && !S.tune);
+      why.hidden = mine() || !!S.tune;
     });
-    return h("section", { class: "card vfo-box" }, h("h3", {}, "Tune"), b,
+    return h("section", { class: "card vfo-box" }, h("h3", {}, "Tune"), b, why,
       h("p", { class: "muted hint" }, "Sends a carrier for up to 10 seconds."));
   };
 
@@ -649,13 +660,13 @@
 
   function paintOwner() {
     const o = S.owner;
-    const key = JSON.stringify([o, S.rec && S.rec.owner]);
+    const key = JSON.stringify([o, S.rec && S.rec.owner, noCat(S.rec, S.caps)]);
     const box = document.getElementById("vfo-owner");
     const prog = document.getElementById("vfo-program");
     if (S.ownerKey === key) return;
     S.ownerKey = key;
     if (box) {
-      const acts = ownerActions(o).map((a) => {
+      const acts = ownerActions(o, noCat(S.rec, S.caps)).map((a) => {
         if (a === "claim") return h("button", { class: "btn small primary", type: "button", onclick: () => ownerCall("claim") }, "Take the transmitter");
         if (a === "release") return h("button", { class: "btn small", type: "button", onclick: () => ownerCall("release") }, "Release");
         if (a === "takeover") return h("button", { class: "btn small", type: "button", onclick: () => ownerCall("takeover") }, "Take over");

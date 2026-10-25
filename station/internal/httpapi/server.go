@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -101,6 +102,10 @@ func New(cfg Config) *http.Server {
 	}
 }
 
+// safeRedirect is the only kind of path a trailing-slash redirect is made for: plain characters,
+// one leading slash. A backslash or a second slash could be read by a browser as another host.
+var safeRedirect = regexp.MustCompile(`^/[A-Za-z0-9._~-][A-Za-z0-9._~/-]*$`)
+
 func isPageRequest(r *http.Request) bool {
 	return strings.Contains(r.Header.Get("Accept"), "text/html") || path.Ext(r.URL.Path) == ""
 }
@@ -113,7 +118,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if p != "" && path.Clean(p) != p {
 		// a page address that is unclean only for a trailing slash goes to its clean form
 		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && !strings.HasPrefix(p, "/api/") &&
-			len(p) > 1 && path.Clean(p)+"/" == p {
+			len(p) > 1 && path.Clean(p)+"/" == p && safeRedirect.MatchString(path.Clean(p)) {
 			to := path.Clean(p)
 			if r.URL.RawQuery != "" {
 				to += "?" + r.URL.RawQuery

@@ -59,10 +59,27 @@
   // the socket closes.
   let tabToken = null;
 
+  // deviceLabel: a short name for this browser's device, from the user agent; other devices see
+  // it as the name of whoever holds a radio's transmitter
+  function deviceLabel() {
+    const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+    if (/iPhone/.test(ua)) return "iPhone";
+    if (/iPad/.test(ua)) return "iPad";
+    if (/Android/.test(ua)) return "Android";
+    if (/Windows/.test(ua)) return "Windows";
+    if (/Macintosh|Mac OS/.test(ua)) return "Mac";
+    if (/Linux|X11/.test(ua)) return "Linux";
+    return "Browser";
+  }
+
+  // The token is "<device>#<nonce>": the station shows the part before the # as the owner's name.
+  // At most 64 printable characters (the station's rule), so the nonce is 36 at most.
   function tab() {
     if (tabToken === null) {
-      if (typeof crypto !== "undefined" && crypto.randomUUID) tabToken = crypto.randomUUID();
-      else tabToken = Date.now().toString(36) + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);
+      let nonce;
+      if (typeof crypto !== "undefined" && crypto.randomUUID) nonce = crypto.randomUUID();
+      else nonce = Date.now().toString(36) + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);
+      tabToken = deviceLabel() + "#" + nonce.slice(0, 36);
     }
     return tabToken;
   }
@@ -70,12 +87,20 @@
   // api METHOD PATH [BODY]: a call to the station's own API. It resolves with the answer's JSON;
   // an intent answers {ok:true} or {ok:false, reason, fix}, and anything that went wrong on the
   // way (HTTP error, unreadable answer, no network) is turned into that same shape.
-  function api(method, path, body) {
+  // OPTS.timeout (ms) abandons a request that hangs.
+  function api(method, path, body, opts) {
     const headers = {};
+    let ctl = null;
+    let timer = null;
+    if (opts && opts.timeout && typeof AbortController !== "undefined") {
+      ctl = new AbortController();
+      timer = setTimeout(() => ctl.abort(), opts.timeout);
+    }
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (path.startsWith("/api/radio/")) headers["X-DXB-Tab"] = tab();
-    return fetch(path, { method, headers, credentials: "same-origin", body: body === undefined ? undefined : JSON.stringify(body) }).then(
+    return fetch(path, { method, headers, credentials: "same-origin", signal: ctl ? ctl.signal : undefined, body: body === undefined ? undefined : JSON.stringify(body) }).then(
       (r) => {
+        if (timer !== null) clearTimeout(timer);
         if (r.status === 401) {
           toLogin();
           return new Promise(() => {});
@@ -87,7 +112,10 @@
           },
           () => ({ ok: false, reason: "The station's answer could not be read.", fix: "reload the page and try again" }));
       },
-      () => ({ ok: false, reason: "The station could not be reached.", fix: "check the connection and try again" }));
+      () => {
+        if (timer !== null) clearTimeout(timer);
+        return { ok: false, reason: "The station could not be reached.", fix: "check the connection and try again" };
+      });
   }
 
   // ---- the log panel ----------------------------------------------------------------------

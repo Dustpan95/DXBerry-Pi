@@ -6,6 +6,10 @@ import "net/http"
 // VFO page: the same index.html as /, and the page script reads the name from the address.
 func (s *server) registerPages(mux *http.ServeMux) {
 	mux.HandleFunc("GET /radio/{name}", s.radioPage)
+	// nothing deeper is a page
+	mux.HandleFunc("GET /radio/{name}/{rest...}", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "not found")
+	})
 }
 
 // radioPage serves the app shell for a well-formed radio name. Whether the radio exists is the

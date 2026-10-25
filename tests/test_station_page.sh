@@ -305,6 +305,8 @@ test_vfo_bands_from_ranges() {
 test_vfo_no_cat_layout() {
   command -v node > /dev/null 2>&1 || return 0
   local j; j=$(svf_run) || { _fail "station_vfo.js failed"; return; }
+  # nothing can be claimed, taken or released on a radio with no rig control
+  assert_eq "$(jq -c '.actionsNoCat' <<< "$j")" '[[],[],[],[]]'
   assert_eq "$(jq -c '.layoutDummy' <<< "$j")" '["nocat","stop","owner"]'
   assert_eq "$(jq -c '.layoutNoCatRecord' <<< "$j")" '["nocat","stop","owner","program"]'
   assert_eq "$(jq -c '.layoutNoCapsYet' <<< "$j")" '["connecting","stop","owner"]'
@@ -341,10 +343,10 @@ svf_api() { node "$DXB_ROOT/tests/station_vfo_api.js" "$SP_WEB/app.js" "$@"; }
 test_vfo_api_sends_the_tab_token_and_shapes_failures() {
   command -v node > /dev/null 2>&1 || return 0
   local j; j=$(svf_api) || { _fail "station_vfo_api.js failed"; return; }
-  assert_eq "$(jq -r '.tab' <<< "$j")" "uuid-1"
+  assert_eq "$(jq -r '.tab' <<< "$j")" "Browser#uuid-1"
   assert_eq "$(jq -r '.tabStable' <<< "$j")" "true"
-  assert_eq "$(jq -c '.calls[0]' <<< "$j")" '{"url":"/api/radio/ic7300/freq","method":"POST","tab":"uuid-1","type":"application/json","body":"{\"hz\":99}"}'
-  assert_eq "$(jq -r '.calls[1].tab' <<< "$j")" "uuid-1"
+  assert_eq "$(jq -c '.calls[0]' <<< "$j")" '{"url":"/api/radio/ic7300/freq","method":"POST","tab":"Browser#uuid-1","type":"application/json","body":"{\"hz\":99}"}'
+  assert_eq "$(jq -r '.calls[1].tab' <<< "$j")" "Browser#uuid-1"
   assert_eq "$(jq -r '.otherHasTab' <<< "$j")" "false"
   assert_eq "$(jq -c '.refused' <<< "$j")" '{"ok":false,"reason":"99 is outside this radio'"'"'s range","fix":"this radio tunes 30000-74800000 Hz"}'
   assert_eq "$(jq -r '.accepted.ok' <<< "$j")" "true"
@@ -356,7 +358,7 @@ test_vfo_api_sends_the_tab_token_and_shapes_failures() {
 test_vfo_events_carry_the_tab_and_deliver_rig_messages() {
   command -v node > /dev/null 2>&1 || return 0
   local j; j=$(svf_api) || { _fail "station_vfo_api.js failed"; return; }
-  assert_eq "$(jq -r '.socketUrl' <<< "$j")" "wss://pi.local/api/events?tab=uuid-1"
+  assert_eq "$(jq -r '.socketUrl' <<< "$j")" "wss://pi.local/api/events?tab=Browser%23uuid-1"
   assert_eq "$(jq -r '.sendBeforeOpen' <<< "$j")" "false"
   assert_eq "$(jq -r '(.opened|tostring) + " " + (.sendOpen|tostring)' <<< "$j")" "1 true"
   assert_eq "$(jq -r '.sent[0]' <<< "$j")" '{"type":"watch","radio":"ic7300","level":"page"}'
@@ -388,27 +390,54 @@ svf_page() { node "$DXB_ROOT/tests/station_vfo_page.js" "$SP_WEB" "$1"; }
 test_vfo_page_draws_a_radio_with_cat() {
   command -v node > /dev/null 2>&1 || return 0
   local j; j=$(svf_page ic7300 2> "$TEST_TMP/p.err") || { _fail "station_vfo_page.js failed: $(cat "$TEST_TMP/p.err")"; return; }
-  assert_eq "$(jq -r '.socketUrl' <<< "$j")" "wss://pi.local/api/events?tab=tab-1"
+  # the tab token is "<device>#<nonce>" on the socket (the # encoded) and on every radio request
+  assert_eq "$(jq -r '.socketUrl' <<< "$j")" "wss://pi.local/api/events?tab=iPhone%23tab-1"
   assert_eq "$(jq -r '.watch[0]' <<< "$j")" '{"type":"watch","radio":"ic7300","level":"page"}'
-  assert_eq "$(jq -r '.getTabs | unique | join(",")' <<< "$j")" "tab-1"
+  assert_eq "$(jq -r '.getTabs | join(",")' <<< "$j")" "iPhone#tab-1"
   assert_eq "$(jq -r '.readout' <<< "$j")" "14.074.000 Hz"
   assert_eq "$(jq -r '.readoutAfterEvent' <<< "$j")" "7.074.000 Hz"
   assert_eq "$(jq -r '.hasDial' <<< "$j")" "true"
+  assert_eq "$(jq -r '.dialRange' <<< "$j")" "30000-74800000"
   assert_eq "$(jq -r '.sectionTitles | join(",")' <<< "$j")" "Band,Mode,VFO,Filter width,Levels,Signal,Antenna tuner,Tune"
   assert_eq "$(jq -r '.bandButtons' <<< "$j")" "160 m,80 m,60 m,40 m,30 m,20 m,17 m,15 m,12 m,10 m,6 m"
   assert_eq "$(jq -r '.modeButtons' <<< "$j")" "USB,LSB,CW,AM,FM"
   assert_eq "$(jq -r '.ownerText' <<< "$j")" "Nobody has the transmitterTake the transmitter"
   assert_contains "$(jq -r '.why' <<< "$j")" "RF gain: this radio cannot set RF over CAT"
-  # a tapped mode shows at once, goes to the station with the tab token, and clears with the next state
+  # before any drop only Tune and ATU are disabled (they wait for the transmitter), with a visible line
+  assert_eq "$(jq -r '.chipHiddenBefore' <<< "$j")" "true"
+  assert_eq "$(jq -c '.disabledBefore' <<< "$j")" '["ATU","Tune"]'
+  assert_eq "$(jq -r '.needsHint' <<< "$j")" "2"
+  # a tapped mode shows at once and goes to the station with the tab token ...
   assert_eq "$(jq -r '.cwPressedAtOnce' <<< "$j")" "true"
-  assert_eq "$(jq -r '.modeCall[0]' <<< "$j")" '/api/radio/ic7300/mode {"mode":"CW"} tab-1'
-  assert_eq "$(jq -r '.cwPressedAfter' <<< "$j")" "false"
-  # the rig link down: the chip shows, controls are disabled, STOP is never dimmed
-  assert_eq "$(jq -r '.chipHidden' <<< "$j")" "false"
-  assert_eq "$(jq -r '.dimmed' <<< "$j")" "true"
+  assert_eq "$(jq -r '.modeCall[0]' <<< "$j")" '/api/radio/ic7300/mode {"mode":"CW"} iPhone#tab-1'
+  # ... stays while the station still marks the field optimistic (even with the old value), clears after
+  assert_eq "$(jq -r '.cwKeptWhileOptimistic + " " + .cwKeptWhileStillOptimistic' <<< "$j")" "true true"
+  assert_eq "$(jq -r '.cwPressedAfter + " " + .usbPressedAfter' <<< "$j")" "false true"
+  # the rig link down: the real chip shows, controls are disabled, STOP is not; recovery undoes it
+  assert_eq "$(jq -r '.chipHiddenAfter' <<< "$j")" "false"
+  assert_eq "$(jq -r '.rootDown' <<< "$j")" "true"
+  assert_eq "$(jq -r '.disabledAfterCount > 10' <<< "$j")" "true"
   assert_eq "$(jq -r '.stopCount' <<< "$j")" "1"
   assert_eq "$(jq -r '.stopDimmable' <<< "$j")" "0"
   assert_eq "$(jq -r '.stopDisabled' <<< "$j")" "0"
+  assert_eq "$(jq -r '.chipHiddenRecovered' <<< "$j")" "true"
+  assert_eq "$(jq -c '.disabledRecovered' <<< "$j")" '["ATU","Tune"]'
+  # the dashboard card follows a rig event in place
+  assert_eq "$(jq -r '.dashFreq' <<< "$j")" "14.074.000 Hz USB"
+}
+
+test_vfo_page_shows_another_device_by_name() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(svf_page other 2> "$TEST_TMP/p.err") || { _fail "station_vfo_page.js failed: $(cat "$TEST_TMP/p.err")"; return; }
+  assert_eq "$(jq -r '.ownerText' <<< "$j")" "iPhone has the transmitterTake over"
+}
+
+test_vfo_page_refusal_shows_reason_and_fix_and_rolls_back() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(svf_page refuse 2> "$TEST_TMP/p.err") || { _fail "station_vfo_page.js failed: $(cat "$TEST_TMP/p.err")"; return; }
+  assert_eq "$(jq -r '.cwPressedAtOnce' <<< "$j")" "true"
+  assert_eq "$(jq -r '.refusedPressed' <<< "$j")" "false"
+  assert_eq "$(jq -r '.refusedNotice[0]' <<< "$j")" "bad: this radio has no mode CW modes: USB LSB."
 }
 
 test_vfo_page_no_cat_and_unknown_radio() {
@@ -418,6 +447,9 @@ test_vfo_page_no_cat_and_unknown_radio() {
   assert_eq "$(jq -r '.hasDial' <<< "$j")" "false"
   assert_eq "$(jq -r '.sectionTitles | length' <<< "$j")" "0"
   assert_eq "$(jq -r '.stopCount' <<< "$j")" "1"
+  # nothing to claim, and STOP says why the radio refuses (the station's 409)
+  assert_eq "$(jq -c '.ownerButtons' <<< "$j")" "[]"
+  assert_eq "$(jq -r '.stopNotice[0]' <<< "$j")" "bad: this radio has no rig control give the radio a rig control port in its settings."
   j=$(svf_page missing 2> "$TEST_TMP/p.err") || { _fail "station_vfo_page.js failed: $(cat "$TEST_TMP/p.err")"; return; }
   assert_eq "$(jq -r '.missing' <<< "$j")" "true"
   assert_eq "$(jq -r '.stopCount' <<< "$j")" "0"

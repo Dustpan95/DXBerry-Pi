@@ -48,7 +48,7 @@ func TestTrailingSlashRedirectsPagesNotAPI(t *testing.T) {
 		t.Fatalf("with a query: got %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 	// only a trailing slash is forgiven; anything else unclean stays a 404
-	for _, p := range []string{"/a//b/", "/a/../b/", "//evil.example/"} {
+	for _, p := range []string{"/a//b/", "/a/../b/", "//evil.example/", "/%5Cevil.example/", "/\\evil/", "/radio/a/b"} {
 		if rec := do(h, "GET", p, nil); rec.Code != 404 {
 			t.Errorf("%s: got %d", p, rec.Code)
 		}
