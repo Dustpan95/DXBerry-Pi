@@ -55,7 +55,7 @@ const out = {
     other: v.ownerLine({ kind: "tab", label: "iPad", mine: false }),
     program: v.ownerLine({ kind: "program", label: "WSJT-X", mine: false }),
   },
-  actions: [null, { kind: "tab", mine: true }, { kind: "tab", mine: false }, { kind: "program" }].map(v.ownerActions),
+  actions: [null, { kind: "tab", mine: true }, { kind: "tab", mine: false }, { kind: "program" }].map((o) => v.ownerActions(o)),
   actionsNoCat: [null, { kind: "tab", mine: true }, { kind: "tab", mine: false }, { kind: "program" }].map((o) => v.ownerActions(o, true)),
   s: [v.sText(-54), v.sText(-6), v.sText(0), v.sText(22), v.sText(60)],
   sUnits: [v.sUnits(-120), v.sUnits(0), v.sUnits(60), v.sUnits(200)],
