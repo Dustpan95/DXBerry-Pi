@@ -88,6 +88,73 @@
     byId("logs-text").textContent = "";
   }
 
+  // ---- the events stream ------------------------------------------------------------------
+  // dxb.events.start(onStatus) opens /api/events and calls onStatus(data) for every status
+  // message. While it is not open the "reconnecting" chip shows and the socket is retried with a
+  // growing delay (1 s to 30 s). dxb.events.open tells the page whether to leave polling to it.
+  const EV_MIN = 1000;
+  const EV_MAX = 30000;
+  let evWant = false;
+  let evSock = null;
+  let evOpen = false;
+  let evTimer = null;
+  let evDelay = EV_MIN;
+  let evOnStatus = null;
+
+  function showLink(down) {
+    const chip = byId("link");
+    if (chip) chip.hidden = !down;
+  }
+
+  function evSchedule() {
+    if (!evWant || evTimer !== null) return;
+    evTimer = setTimeout(() => { evTimer = null; evConnect(); }, evDelay);
+    evDelay = Math.min(evDelay * 2, EV_MAX);
+  }
+
+  function evConnect() {
+    if (!evWant || evSock) return;
+    let s;
+    try { s = dxb.ws("/api/events"); } catch (e) { showLink(true); evSchedule(); return; }
+    evSock = s;
+    s.onopen = () => {
+      if (evSock !== s) return;
+      evOpen = true;
+      evDelay = EV_MIN;
+      showLink(false);
+    };
+    s.onmessage = (e) => {
+      if (evSock !== s) return;
+      let m = null;
+      try { m = JSON.parse(e.data); } catch (x) { m = null; }
+      if (m && m.type === "status" && m.data && evOnStatus) evOnStatus(m.data);
+    };
+    s.onclose = () => {
+      if (evSock !== s) return;
+      evSock = null;
+      evOpen = false;
+      if (evWant) { showLink(true); evSchedule(); }
+    };
+  }
+
+  const events = {
+    get open() { return evOpen; },
+    start(onStatus) {
+      evOnStatus = onStatus;
+      evWant = true;
+      evConnect();
+    },
+    stop() {
+      evWant = false;
+      evOpen = false;
+      if (evTimer !== null) { clearTimeout(evTimer); evTimer = null; }
+      const s = evSock;
+      evSock = null;
+      if (s) { try { s.close(); } catch (e) { /* already gone */ } }
+      showLink(false);
+    },
+  };
+
   // ---- the dxb object ---------------------------------------------------------------------
   const dxb = {
     run,
@@ -100,6 +167,7 @@
       return fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).then(done, done);
     },
     openLog,
+    events,
   };
   window.dxb = dxb;
 

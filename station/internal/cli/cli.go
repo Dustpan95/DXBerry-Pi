@@ -50,6 +50,8 @@ type CLI struct {
 	Timeout time.Duration
 	// Logf receives one line per call; it defaults to slog.
 	Logf func(format string, args ...any)
+	// OnCall, when set, is told about every call the HTTP handler ran to completion (not a refused one).
+	OnCall func(cmd string, args []string)
 
 	mu    sync.Mutex
 	units map[string]bool // the services list from the last dxberry-status

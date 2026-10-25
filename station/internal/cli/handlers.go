@@ -43,6 +43,9 @@ func (c *CLI) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.Logf("%s", logLine(call, res.Exit, time.Since(start)))
+	if c.OnCall != nil {
+		c.OnCall(call.Command, call.Args)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"exit": res.Exit, "stdout": res.Stdout, "stderr": res.Stderr})
 }
 

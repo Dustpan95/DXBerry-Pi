@@ -17,6 +17,7 @@ import (
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/auth"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/cli"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/httpapi"
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/status"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/term"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/vnc"
 	"github.com/Dustpan95/DXBerry-Pi/station/web"
@@ -40,9 +41,22 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	mgr := auth.New(auth.PAM{Service: "dxberry"}, auth.DefaultGroups(), time.Now)
 	runner := cli.New(*bin, nil)
+	st := status.New(func(ctx context.Context) (string, error) {
+		res, err := runner.Run(ctx, cli.Call{Command: "dxberry-status", Args: []string{"--json"}})
+		if err == nil && res.Exit != 0 {
+			err = fmt.Errorf("dxberry-status exited %d", res.Exit)
+		}
+		return res.Stdout, err
+	}, nil)
+	runner.OnCall = func(cmd string, args []string) {
+		if status.ChangesState(cmd, args) {
+			st.Poke()
+		}
+	}
 	routes := func(mux *http.ServeMux) {
 		mgr.Register(mux)
 		runner.Register(mux)
+		st.Register(mux)
 		sessionOf := func(r *http.Request) *httpapi.Session {
 			s, _ := mgr.Session(r)
 			return s
@@ -69,6 +83,10 @@ func main() {
 	}
 	srv := httpapi.New(httpapi.Config{Listen: *listen, Web: web.Files, Auth: mgr, Version: version, Routes: routes})
 	log.Printf("dxberryd %s listening on %s (state %s, bin %s)", version, *listen, *state, *bin)
+
+	statusCtx, stopStatus := context.WithCancel(context.Background())
+	defer stopStatus()
+	go st.Run(statusCtx)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)

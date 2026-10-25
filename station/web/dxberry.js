@@ -846,6 +846,9 @@ function render(s) {
   const a = document.activeElement;
   const focused = a && a.dataset ? a.dataset.key : undefined;
   document.getElementById("host").textContent = (s.network && s.network.hostname) || "";
+  // the callsign in the top bar (null-safe: the top bar belongs to index.html)
+  const callsign = document.getElementById("callsign");
+  if (callsign) callsign.textContent = s.station && s.station.ok && s.station.callsign ? s.station.callsign : "";
   document.getElementById("updated").textContent = s.generated ? "updated " + new Date(s.generated).toLocaleTimeString("en-US") : "";
   document.getElementById("cards").replaceChildren(
     stationCard(s.graywolf), radiosCard(s.radios), networkCard(s.network), piCard(s.pi),
@@ -909,6 +912,20 @@ function refresh(force) {
   });
 }
 
+// A status message from the events socket draws the same report the poll would have.
+function onEventStatus(data) {
+  const s = data && data.status;
+  if (!s || typeof s !== "object") return;
+  last = s;
+  if (show()) clearRefreshFailureNotice();
+}
+
+// The timer poll stands down while the events socket is open.
+function pollTick() {
+  if (dxb.events && dxb.events.open) return;
+  refresh(false);
+}
+
 function applyTheme() {
   let style = "auto";
   try { style = localStorage.getItem("shell:style") || "auto"; } catch (e) { /* storage blocked: follow the system */ }
@@ -924,7 +941,8 @@ function init() {
   document.getElementById("radio-form").addEventListener("submit", saveRadioForm);
   document.getElementById("radio-cancel").addEventListener("click", () => { form = null; document.getElementById("radio-dialog").close(); });
   refresh(true);
-  setInterval(() => refresh(false), REFRESH_MS);
+  setInterval(pollTick, REFRESH_MS);
+  if (dxb.events) dxb.events.start(onEventStatus);
 }
 
 init();

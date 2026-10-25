@@ -206,3 +206,31 @@ test_station_screen_smoke_drives_the_program_window() {
   out=$(node "$DXB_ROOT/tests/station_screen.js" "$SP_WEB/screen.js" 2>&1) || _fail "station_screen.js failed:
 $out"
 }
+
+# ---- the events stream (Task 8) ----------------------------------------------------------------
+test_refresh_uses_events_when_open() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j
+  j=$(node "$DXB_ROOT/tests/station_events.js" "$SP_WEB" 2> "$TEST_TMP/ev.err") || { _fail "station_events.js failed: $(cat "$TEST_TMP/ev.err")"; return; }
+  assert_eq "$(jq -r '.socketUrl' <<< "$j")" "wss://pi.local/api/events"
+  assert_eq "$(jq -r '.pollTimer' <<< "$j")" "true"
+  assert_eq "$(jq -r '.initialRuns' <<< "$j")" "1"
+  # open: the timer poll runs nothing, a status message renders (callsign and host from the message)
+  assert_eq "$(jq -r '.runsWhileOpen' <<< "$j")" "0"
+  assert_eq "$(jq -r '.chipHiddenWhileOpen' <<< "$j")" "true"
+  assert_eq "$(jq -r '.callsign' <<< "$j")" "W1AW"
+  assert_eq "$(jq -r '.hostAfterMessage' <<< "$j")" "pi"
+  # a ping, junk and a null status change nothing and never run the command
+  assert_eq "$(jq -r '.runsAfterMessages' <<< "$j")" "0"
+  # closed: the chip shows, a retry is queued at 1 s (then 2 s) and the poll resumes
+  assert_eq "$(jq -r '.chipShownOnClose' <<< "$j")" "true"
+  assert_eq "$(jq -r '.retryDelayMs' <<< "$j")" "1000"
+  assert_eq "$(jq -r '.runsAfterClose' <<< "$j")" "1"
+  assert_eq "$(jq -r '.sockets' <<< "$j")" "2"
+  assert_eq "$(jq -r '.secondRetryDelayMs' <<< "$j")" "2000"
+  assert_eq "$(jq -r '.chipHiddenAfterReopen' <<< "$j")" "true"
+}
+
+test_station_index_has_the_reconnecting_chip() {
+  assert_file_contains "$SP_WEB/index.html" '<span id="link" class="chip" hidden>'
+}
