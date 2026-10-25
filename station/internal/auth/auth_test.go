@@ -274,7 +274,7 @@ func TestLoginPasswordNeverLogged(t *testing.T) {
 	if id := cookieOf(t, good).Value; strings.Contains(out, id) {
 		t.Fatal("session id in log")
 	}
-	for _, want := range []string{"login ok user=dietpi from=10.0.0.5", "login refused user=dietpi from=10.0.0.5 reason=", "login refused user=root"} {
+	for _, want := range []string{"msg=\"login ok\" user=dietpi from=10.0.0.5", "msg=\"login refused\" user=dietpi from=10.0.0.5 reason=", "msg=\"login refused\" user=root"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("log lacks %q: %s", want, out)
 		}
@@ -316,4 +316,28 @@ func TestRealPAM(t *testing.T) {
 func TestMain(m *testing.M) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	os.Exit(m.Run())
+}
+
+func TestCheckNeedsNoOriginHeaders(t *testing.T) {
+	r := newRig()
+	c := cookieOf(t, r.login("dietpi", "right"))
+	h := withCookie(c)
+	h["Sec-Fetch-Site"] = ""
+	if rec := r.do("GET", "/api/auth/check", "", "127.0.0.1:9", h); rec.Code != 200 {
+		t.Fatalf("check without origin headers: %d", rec.Code)
+	}
+	if rec := r.do("POST", "/api/auth/logout", "", "127.0.0.1:9", h); rec.Code != 403 {
+		t.Fatalf("logout without origin headers: %d", rec.Code)
+	}
+}
+
+func TestLoggedUserIsTruncated(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(old)
+	newRig().login(strings.Repeat("u", 200), "x")
+	if strings.Contains(buf.String(), strings.Repeat("u", 65)) || !strings.Contains(buf.String(), strings.Repeat("u", 64)) {
+		t.Fatalf("user not truncated to 64: %s", buf.String())
+	}
 }

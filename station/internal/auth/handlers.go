@@ -18,6 +18,14 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
+// logUser bounds what a client can put in a log line.
+func logUser(u string) string {
+	if r := []rune(u); len(r) > 64 {
+		return string(r[:64])
+	}
+	return u
+}
+
 func setCookie(w http.ResponseWriter, value string, expire bool) {
 	c := &http.Cookie{Name: cookieName, Value: value, Path: "/", HttpOnly: true, Secure: true,
 		SameSite: http.SameSiteStrictMode}
@@ -38,7 +46,7 @@ func (m *Manager) Register(mux *http.ServeMux) {
 func (m *Manager) Login(w http.ResponseWriter, r *http.Request) {
 	addr := sourceAddr(r)
 	if ok, retry := m.allow(addr); !ok {
-		slog.Warn("login limited from=" + addr)
+		slog.Warn("login limited", "from", addr)
 		w.Header().Set("Retry-After", strconv.Itoa(retry))
 		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many attempts", "retry_after": retry})
 		return
@@ -52,7 +60,7 @@ func (m *Manager) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	refuse := func(code int, msg, reason string) {
-		slog.Warn("login refused user=" + body.User + " from=" + addr + " reason=" + reason)
+		slog.Warn("login refused", "user", logUser(body.User), "from", addr, "reason", reason)
 		writeError(w, code, msg)
 	}
 	switch {
@@ -77,7 +85,7 @@ func (m *Manager) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := m.create(body.User, addr)
-	slog.Info("login ok user=" + body.User + " from=" + addr)
+	slog.Info("login ok", "user", logUser(body.User), "from", addr)
 	setCookie(w, s.ID, false)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": s.User})
 }
@@ -86,7 +94,7 @@ func (m *Manager) Login(w http.ResponseWriter, r *http.Request) {
 func (m *Manager) Logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(cookieName); err == nil {
 		if s, ok := m.lookup(r, false); ok {
-			slog.Info("logout user=" + s.User + " from=" + sourceAddr(r))
+			slog.Info("logout", "user", logUser(s.User), "from", sourceAddr(r))
 		}
 		m.drop(c.Value)
 	}

@@ -98,7 +98,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	isAPI := strings.HasPrefix(p, "/api/")
-	if isAPI && !(r.Method == http.MethodGet && p == "/api/version") && !SameOrigin(r) {
+	if isAPI && !(r.Method == http.MethodGet && (p == "/api/version" || p == "/api/auth/check")) && !SameOrigin(r) {
 		writeError(w, http.StatusForbidden, "cross-site request refused")
 		return
 	}

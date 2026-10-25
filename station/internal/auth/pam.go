@@ -5,7 +5,7 @@ package auth
 import (
 	"errors"
 
-	"github.com/msteinert/pam"
+	"github.com/msteinert/pam/v2"
 )
 
 // PAM authenticates against the Pi's accounts through the named PAM service.
@@ -28,6 +28,7 @@ func (p PAM) Authenticate(user, password string) error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = t.End() }()
 	if err := t.Authenticate(0); err != nil {
 		return err
 	}

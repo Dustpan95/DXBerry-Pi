@@ -4,11 +4,20 @@
   var errorLine = document.getElementById("error");
   var button = form.querySelector("button");
 
-  // Only a path on this host: one leading slash, never "//", "/\" or a scheme.
+  // Only a path on this host: the raw value has no control characters, and it resolves to
+  // this origin (so "//host", "/\\host" and a scheme all fall back to "/").
   function nextPath() {
     var next = new URLSearchParams(window.location.search).get("next");
-    if (next && next.charAt(0) === "/" && next.charAt(1) !== "/" && next.charAt(1) !== "\\" && next.indexOf("\n") < 0 && next.indexOf("\r") < 0) {
-      return next;
+    if (!next || next.charAt(0) !== "/" || /[\u0000-\u001f\u007f]/.test(next)) {
+      return "/";
+    }
+    try {
+      var url = new URL(next, window.location.origin);
+      if (url.origin === window.location.origin && url.pathname.charAt(0) === "/") {
+        return url.pathname + url.search + url.hash;
+      }
+    } catch (e) {
+      // fall through
     }
     return "/";
   }
