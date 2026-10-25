@@ -676,7 +676,11 @@ Each as: decision — why — cost if wrong.
 5. **`dxberryd` runs as root** — every function already needs it, Cockpit
    gave the same through sudo, a broker is a second service — a request
    handling defect is root; mitigated by the allowlisted CLI set, no client
-   paths, cookie-only API behind TLS.
+   paths, cookie-only API behind TLS. The unit does not use
+   `ProtectSystem` or `ProtectHome`: the terminal's login shell and the
+   settings commands run inside the service's mount namespace and need a
+   writable system (found in the rc1 build; §5.1's sandbox list is read
+   accordingly).
 6. **The CLI remains the contract for configuration** — tests, idempotency
    and the hardware-proven paths stay as they are; the Go side stays small —
    a round trip through a bash command for every setting; acceptable, these
