@@ -212,7 +212,7 @@ func (c *CLI) matchAt(pat, args []string, at int) (bool, int, string) {
 		if len(args) == 0 {
 			return true, at, ""
 		}
-		return false, at, "end of arguments"
+		return false, at, "END"
 	}
 	tok := pat[0]
 	if base, rep := strings.CutSuffix(tok, "..."); rep {
@@ -249,26 +249,30 @@ func (r *Refusal) Error() string { return r.Public }
 
 var reKeyName = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,39}$`)
 
-// hint says which argument was refused without risking a secret: a KEYVALUE shows only its key.
+// hint says which argument was refused without risking a secret. A KEYVALUE shows only its key;
+// only tokens that can never carry a secret echo their value; everything else (literals, END,
+// VALUE) says nothing.
 func hint(tok, arg string) string {
-	if tok == "KEYVALUE" {
+	switch tok {
+	case "KEYVALUE":
 		if k, _, ok := strings.Cut(arg, "="); ok && reKeyName.MatchString(k) {
 			return " (key " + k + ")"
 		}
-		return ""
+	case "NAME", "PROG", "SESSION", "UNIT", "N", "N25", "OPTVAL":
+		if len(arg) > 40 {
+			return " (too long to show)"
+		}
+		return " (" + strconv.Quote(arg) + ")"
 	}
-	if len(arg) > 40 {
-		return " (too long to show)"
-	}
-	return " (" + strconv.Quote(arg) + ")"
+	return ""
 }
 
 // Validate reports why a call is refused, or nil when it is allowed to run.
 func (c *CLI) Validate(call Call) error {
 	pats, ok := allow[call.Command]
 	if !ok {
-		msg := "command is not allowed"
-		return &Refusal{0, msg, msg + hint("", call.Command)}
+		msg := "unknown command"
+		return &Refusal{0, msg, msg}
 	}
 	best, btok := 0, ""
 	for _, p := range pats {

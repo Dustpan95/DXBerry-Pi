@@ -313,3 +313,29 @@ func TestCLIRefusalNeverLeaksValues(t *testing.T) {
 		t.Fatalf("body %s", rec.Body)
 	}
 }
+
+func TestCLIRefusalDoesNotEchoStrayArguments(t *testing.T) {
+	var sb strings.Builder
+	c := newTest(t)
+	c.Logf = func(f string, a ...any) { sb.WriteString(fmt.Sprintf(f, a...) + "\n") }
+	mux := http.NewServeMux()
+	c.Register(mux)
+	for _, tc := range []struct{ path, body string }{
+		{"/api/cli/dxberry-config", `{"args":["get","PASSWORD=hunter2","--json"]}`},
+		{"/api/cli/dxberry-radio", `{"args":["models","PASSWORD=hunter2","--json"]}`},
+	} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("POST", tc.path, strings.NewReader(tc.body)))
+		if rec.Code != 400 || strings.Contains(rec.Body.String(), "hunter2") {
+			t.Fatalf("%s: %d %s", tc.body, rec.Code, rec.Body)
+		}
+	}
+	if strings.Contains(sb.String(), "hunter2") {
+		t.Fatalf("log leaks: %q", sb.String())
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/cli/rm", strings.NewReader(`{"args":[]}`)))
+	if rec.Code != 400 || strings.TrimSpace(rec.Body.String()) != `{"error":"unknown command"}` {
+		t.Fatalf("got %d %s", rec.Code, rec.Body)
+	}
+}
