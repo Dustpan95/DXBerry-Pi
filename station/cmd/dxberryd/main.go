@@ -134,6 +134,7 @@ func main() {
 
 	statusCtx, stopStatus := context.WithCancel(context.Background())
 	defer stopStatus()
+	radioAPI.Ctx = statusCtx // owed-unkey retries end with the service
 	go st.Run(statusCtx)
 	go rw.Run(statusCtx)
 	go rigs.Run(statusCtx)

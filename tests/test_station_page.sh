@@ -147,7 +147,7 @@ test_station_dashboard_opens_programs_on_the_screen_page() {
 test_station_index_loads_the_page_scripts_in_order() {
   local got
   got=$(grep -oE '<script src="[^"]+"' "$SP_WEB/index.html" | grep -oE '/[a-z.]+' | tr '\n' ' ')
-  assert_eq "$got" "/app.js /dxberry.js /settings.js /updates.js /dashboard.js /programs.js /vfo.js "
+  assert_eq "$got" "/app.js /dxberry.js /settings.js /updates.js /dashboard.js /programs.js /vfo.js /radiosettings.js "
 }
 
 test_station_pages_parse_together() {
@@ -250,6 +250,10 @@ test_radio_settings_form_values() {
   assert_eq "$(jq -r '.savedMsg' <<< "$j")" "Station settings saved."
   # a refusal shows the reason and the fix
   assert_contains "$(jq -r '.refusedMsg' <<< "$j")" "between 1.5 and 10"
+  # Tab leaves the fields alone; Enter saves the station settings and never submits the radio form
+  assert_eq "$(jq -r '[.tabSaved, .enterSaved, .enterPrevented] | join(" ")' <<< "$j")" "0 1 true"
+  # an expired session names the login problem instead of a network failure
+  assert_contains "$(jq -r '.expiredMsg' <<< "$j")" "session"
   assert_contains "$(jq -r '.refusedMsg' <<< "$j")" "enter a value in that range"
   assert_eq "$(jq -r '.refusedClass' <<< "$j")" "error"
   # Re-probe posts to /reprobe and reports both outcomes

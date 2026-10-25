@@ -199,7 +199,7 @@ func TestIndexScriptsResolve(t *testing.T) {
 			t.Errorf("%s: got %d", m[1], rec.Code)
 		}
 	}
-	want := "/app.js /dxberry.js /settings.js /updates.js /dashboard.js /programs.js /vfo.js"
+	want := "/app.js /dxberry.js /settings.js /updates.js /dashboard.js /programs.js /vfo.js /radiosettings.js"
 	if strings.Join(got, " ") != want {
 		t.Errorf("script tags %q, want %q", strings.Join(got, " "), want)
 	}
