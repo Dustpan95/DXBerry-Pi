@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,9 @@ type ixRig struct {
 	st    State
 	calls []string
 	fail  error
+	// failCmd, when set, fails only that command ("set_ptt 1") with failErr
+	failCmd string
+	failErr error
 }
 
 func (f *ixRig) setUp(up bool) { f.mu.Lock(); f.st.Connected = up; f.mu.Unlock() }
@@ -43,6 +47,9 @@ func (f *ixRig) Do(ctx context.Context, cmd string, args ...string) (Reply, erro
 	f.calls = append(f.calls, strings.TrimSpace(cmd+" "+strings.Join(args, " ")))
 	if f.fail != nil {
 		return Reply{}, f.fail
+	}
+	if f.failCmd != "" && f.calls[len(f.calls)-1] == f.failCmd {
+		return Reply{}, f.failErr
 	}
 	if cmd == "set_ptt" {
 		f.st.PTT = args[0] == "1"
@@ -386,5 +393,88 @@ func TestIntentAnswersWhenTheWriteFails(t *testing.T) {
 	r := h.in.Freq(context.Background(), 7074000)
 	if r.OK || r.Reason == "" || r.Fix == "" {
 		t.Fatalf("got %+v", r)
+	}
+}
+
+func TestTuneKeyOnErrorOwesAnUnkey(t *testing.T) {
+	h := newIxHarness(ixCaps())
+	_ = h.own.Claim("radio1", ixHolder("a"))
+	h.rig.failCmd, h.rig.failErr = "set_ptt 1", ErrDeadline
+	r := h.in.Tune(context.Background(), "a", true)
+	if r.OK || r.Reason == "" {
+		t.Fatalf("got %+v", r)
+	}
+	if !h.in.Pending() {
+		t.Fatal("a key-on that may have reached the radio owes an unkey")
+	}
+	h.rig.mu.Lock()
+	h.rig.failCmd = ""
+	h.rig.mu.Unlock()
+	h.tick(t, "set_ptt 0", func() bool { return h.count("set_ptt 0") > 0 })
+	h.tick(t, "pending cleared", func() bool { return !h.in.Pending() })
+}
+
+func TestTuneKeyOnRigErrorOwesNothing(t *testing.T) {
+	h := newIxHarness(ixCaps())
+	_ = h.own.Claim("radio1", ixHolder("a"))
+	h.rig.failCmd, h.rig.failErr = "set_ptt 1", &RigError{Code: -1}
+	if r := h.in.Tune(context.Background(), "a", true); r.OK || h.in.Pending() {
+		t.Fatalf("got %+v pending %v", r, h.in.Pending())
+	}
+}
+
+func (h *ixHarness) retrying() bool {
+	h.in.mu.Lock()
+	defer h.in.mu.Unlock()
+	return h.in.retrying
+}
+
+func TestRetryLoopEndsOnCloseContextAndGone(t *testing.T) {
+	for name, stop := range map[string]func(h *ixHarness, cancel context.CancelFunc){
+		"close":   func(h *ixHarness, _ context.CancelFunc) { h.in.Close() },
+		"context": func(h *ixHarness, cancel context.CancelFunc) { cancel() },
+		"gone":    func(h *ixHarness, _ context.CancelFunc) {},
+	} {
+		h := newIxHarness(ixCaps())
+		ctx, cancel := context.WithCancel(context.Background())
+		h.in.Ctx = ctx
+		var gone atomic.Bool
+		h.in.Gone = gone.Load
+		_ = h.own.Claim("radio1", ixHolder("a"))
+		h.in.Tune(context.Background(), "a", true)
+		h.rig.setUp(false)
+		h.in.Stop(context.Background())
+		if !h.retrying() {
+			t.Fatalf("%s: no retry loop", name)
+		}
+		stop(h, cancel)
+		gone.Store(true)
+		deadline := time.Now().Add(3 * time.Second)
+		for h.retrying() {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: retry loop still running", name)
+			}
+			h.clock.Advance(time.Second)
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+	}
+}
+
+func TestStopOwesNothingWhenNothingIsKeyed(t *testing.T) {
+	h := newIxHarness(ixCaps())
+	h.rig.setUp(false)
+	r := h.in.Stop(context.Background())
+	if r.OK || r.Reason != "rig control unreachable; the radio's rigctld is restarting" {
+		t.Fatalf("got %+v", r)
+	}
+	if h.in.Pending() {
+		t.Fatal("owed an unkey for a carrier that was never keyed")
+	}
+	h.rig.setUp(true)
+	h.clock.Advance(5 * time.Second)
+	time.Sleep(30 * time.Millisecond)
+	if h.count("set_ptt 0") != 0 {
+		t.Fatalf("a stray unkey was sent: %v", h.rig.log())
 	}
 }

@@ -69,12 +69,38 @@ type Intents struct {
 	Owners OwnerLock
 	Clock  Clock
 	Log    *slog.Logger
+	Ctx    context.Context // ends the unkey retry loop (nil: never)
+	Gone   func() bool     // true once the radio no longer exists; ends the retry loop
 
 	mu       sync.Mutex
 	carrier  chan struct{} // closed to cancel the running carrier timer
 	keyed    bool          // a tune carrier was keyed and not yet confirmed off
 	pending  bool          // set_ptt 0 is owed to the radio
 	retrying bool          // a retry loop is running
+	closed   chan struct{} // closed by Close
+}
+
+// Close stops the unkey retry loop (the radio left the records or the service is ending).
+func (in *Intents) Close() {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.closed == nil {
+		in.closed = make(chan struct{})
+	}
+	select {
+	case <-in.closed:
+	default:
+		close(in.closed)
+	}
+}
+
+func (in *Intents) closedCh() <-chan struct{} {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.closed == nil {
+		in.closed = make(chan struct{})
+	}
+	return in.closed
 }
 
 // RetryEvery is how often an owed unkey is retried.
@@ -248,10 +274,23 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 		return in.refuse("tune", reasonDataMode, "switch to USB or CW to tune")
 	}
 	in.Owners.Touch(in.Radio, tab)
-	res := in.send(ctx, "tune", func(s *State) { s.PTT = true }, "set_ptt", "1")
-	if !res.OK {
+	err := in.Poller.Write(ctx, func(c Commander) error {
+		_, err := c.Do(ctx, "set_ptt", "1")
+		return err
+	}, func(s *State) { s.PTT = true })
+	if err != nil {
+		res := in.refuse("tune", rigFailure(err), "check the radio and try again")
+		var re *RigError
+		if !errors.As(err, &re) {
+			// the key-on may have reached the radio: owe the unkey
+			in.mu.Lock()
+			in.keyed, in.pending = true, true
+			in.mu.Unlock()
+			in.startRetry("tune")
+		}
 		return res
 	}
+	res := Result{OK: true}
 	cancel := make(chan struct{})
 	in.mu.Lock()
 	if in.carrier != nil {
@@ -298,20 +337,45 @@ func (in *Intents) endCarrier() {
 func (in *Intents) unkey(intent string) Result {
 	in.endCarrier()
 	in.mu.Lock()
+	owed := in.keyed || in.pending
+	in.mu.Unlock()
+	if !owed && !in.Poller.State().Connected {
+		// nothing of ours is keyed and the radio cannot be reached: owe nothing, or a
+		// set_ptt 0 would fire whenever the link returns, maybe in the middle of a program's turn
+		return in.refuse(intent, reasonUnreachable, fixUnreachable)
+	}
+	in.mu.Lock()
 	in.pending = true
 	in.mu.Unlock()
-	res := in.attemptUnkey(intent)
+	res := in.attemptUnkey(intent, false)
 	if !res.OK {
 		in.startRetry(intent)
 	}
 	return res
 }
 
-func (in *Intents) attemptUnkey(intent string) Result {
+// attemptUnkey sends set_ptt 0 once. quiet keeps a failure out of the Info log (the retry loop).
+func (in *Intents) attemptUnkey(intent string, quiet bool) Result {
 	if st := in.Poller.State(); !st.Connected {
+		if quiet {
+			return Result{Reason: reasonUnreachable, Fix: fixUnreachable}
+		}
 		return in.refuse(intent, reasonUnreachable, fixUnreachable)
 	}
-	res := in.ptt0(context.Background(), intent)
+	var res Result
+	if quiet {
+		err := in.Poller.Write(context.Background(), func(c Commander) error {
+			_, err := c.Do(context.Background(), "set_ptt", "0")
+			return err
+		}, func(s *State) { s.PTT = false })
+		if err != nil {
+			res = Result{Reason: rigFailure(err), Fix: "check the radio and try again"}
+		} else {
+			res = Result{OK: true}
+		}
+	} else {
+		res = in.ptt0(context.Background(), intent)
+	}
 	if res.OK {
 		in.mu.Lock()
 		in.pending, in.keyed = false, false
@@ -328,25 +392,46 @@ func (in *Intents) startRetry(intent string) {
 	}
 	in.retrying = true
 	in.mu.Unlock()
+	done := in.closedCh()
+	var ctxDone <-chan struct{}
+	if in.Ctx != nil {
+		ctxDone = in.Ctx.Done()
+	}
 	tick := in.clock().At(in.clock().Now().Add(RetryEvery))
 	go func() {
-		for {
-			<-tick
+		defer func() {
 			in.mu.Lock()
-			if !in.pending {
-				in.retrying = false
-				in.mu.Unlock()
+			in.retrying = false
+			in.mu.Unlock()
+		}()
+		for n := 1; ; n++ {
+			select {
+			case <-tick:
+			case <-done:
+				return
+			case <-ctxDone:
 				return
 			}
-			in.mu.Unlock()
-			in.attemptUnkey(intent)
-			in.mu.Lock()
-			if !in.pending {
-				in.retrying = false
-				in.mu.Unlock()
+			if in.Gone != nil && in.Gone() {
+				in.log().Info("radio is gone; giving up the owed unkey", "radio", in.Radio)
 				return
 			}
+			in.mu.Lock()
+			owed := in.pending
 			in.mu.Unlock()
+			if !owed {
+				return
+			}
+			res := in.attemptUnkey(intent, true)
+			switch {
+			case res.OK:
+				in.log().Info("owed unkey sent", "radio", in.Radio, "attempts", n)
+				return
+			case n%60 == 0:
+				in.log().Info("owed unkey still failing", "radio", in.Radio, "attempts", n, "reason", res.Reason)
+			default:
+				in.log().Debug("owed unkey failed; retrying", "radio", in.Radio, "reason", res.Reason)
+			}
 			tick = in.clock().At(in.clock().Now().Add(RetryEvery))
 		}
 	}()
