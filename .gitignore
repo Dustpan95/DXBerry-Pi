@@ -1,6 +1,8 @@
 # Built images and build scratch
 out/
 build/work/
+station/out/
+provision/bin/dxberryd
 *.img
 *.img.xz
 *.sha256

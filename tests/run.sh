@@ -27,5 +27,14 @@ for t in $(declare -F | awk '{print $3}' | grep '^test_' | sort); do
   if (( TESTS_FAILED == before )); then echo "ok   $t"; else echo "FAIL $t"; cat "$err" >&2; fi
   rm -f "$err"
 done
+# Go service tests, when a Go toolchain is present (the CI "station" job covers them otherwise)
+if command -v go > /dev/null; then
+  if ! (cd station && go vet ./... && go test -race ./...); then
+    echo "FAIL station (go vet / go test)"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+  fi
+else
+  echo "Go tests skipped: no go toolchain"
+fi
 echo "$TESTS_RUN tests, $TESTS_FAILED failures"
 (( TESTS_FAILED == 0 ))

@@ -27,3 +27,21 @@ jobs:
         run: tests/run.sh
       - name: Build tree check
         run: build/build-image.sh --check
+  station:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: station
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: station/go.mod
+      - name: PAM headers
+        run: sudo apt-get update && sudo apt-get install -y libpam0g-dev
+      - name: go vet
+        run: go vet ./...
+      - name: staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest && "$(go env GOPATH)/bin/staticcheck" ./...
+      - name: go test
+        run: go test -race ./...
