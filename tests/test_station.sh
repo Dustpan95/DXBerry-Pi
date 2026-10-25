@@ -16,7 +16,8 @@ sn_env() {
     DXB_STATION_TLS=$TEST_TMP/etc/dxberry/tls DXB_PAM_DIR=$TEST_TMP/etc/pam.d DXB_SYSTEMD_DIR=$TEST_TMP/etc/systemd/system \
     DXB_STATION_BIN=$TEST_TMP/opt/bin/dxberryd DXB_POLICY_RC=$TEST_TMP/usr/sbin/policy-rc.d DXB_STATION_WAIT_S=0 \
     DXB_COCKPIT_LINK=$TEST_TMP/usr-share-cockpit/dxberry DXB_COCKPIT_DROPIN_DIR=$TEST_TMP/etc/systemd/system/cockpit.socket.d \
-    DXB_NETSAFE_UNIT_FILE=$TEST_TMP/etc/systemd/system/dxberry-config-boot.service DXB_SYSTEMCTL=sn_systemctl
+    DXB_NETSAFE_UNIT_FILE=$TEST_TMP/etc/systemd/system/dxberry-config-boot.service DXB_SYSTEMCTL=sn_systemctl \
+    DXB_STATION_CURL=sn_curl DXB_SS=sn_ss DXB_STATION_API_WAIT_S=0 DXB_STATION_LISTEN_WAIT_S=0
   mkdir -p "$DXB_NGINX_DIR/sites-enabled" "$DXB_NGINX_DIR/sites-available" "$DXB_SYSTEMD_DIR" "$DXB_PAM_DIR" \
     "$DXB_STATION_TLS" "${DXB_STATION_BIN%/*}" "${DXB_POLICY_RC%/*}"
   : > "$DXB_NGINX_DIR/sites-enabled/default"
@@ -37,6 +38,10 @@ sn_systemctl() {
   if [[ $* == "disable --now cockpit.socket" && -e $TEST_TMP/cockpit-stays ]]; then return 1; fi
   return "$rc"
 }
+# the app's version answer ($TEST_TMP/api-down: it does not) and the listening sockets
+# ($TEST_TMP/no-listen: nothing on 443)
+sn_curl() { echo "curl $*" >> "$TEST_TMP/calls"; [[ ! -e $TEST_TMP/api-down ]]; }
+sn_ss() { echo "ss $*" >> "$TEST_TMP/calls"; [[ -e $TEST_TMP/no-listen ]] || echo "LISTEN 0 511 0.0.0.0:443 0.0.0.0:*"; }
 sn_nginx() { echo "nginx $*" >> "$TEST_TMP/calls"; [[ ! -e $TEST_TMP/nginx-bad ]]; }
 # sn_run: provision_station in a subshell with systemctl a recorder; its failed steps and status
 # lines come back through $TEST_TMP/failed and $TEST_TMP/status.
@@ -225,6 +230,10 @@ test_station_site_template_shape() {
   assert_file_contains "$t" "client_max_body_size 1m;"
   # shellcheck disable=SC2016
   assert_file_contains "$t" 'proxy_set_header Connection $connection_upgrade;'
+  # the port the browser used stays in Host, so a WebSocket behind a forwarded port keeps its Origin match
+  # shellcheck disable=SC2016
+  assert_file_contains "$t" 'proxy_set_header Host $http_host;'
+  assert_file_not_contains "$t" 'proxy_set_header Host $host;'
 }
 
 # The terminal is a real login and the CLIs write all over the system: no filesystem sandbox.
@@ -233,8 +242,11 @@ test_station_unit_sandbox_leaves_what_the_app_needs() {
   for d in PrivateDevices DevicePolicy RestrictNamespaces PrivateTmp ProtectSystem ProtectHome ReadWritePaths; do
     if grep -q "^$d=" "$u"; then _fail "$d is set in dxberryd.service"; fi
   done
-  for d in NoNewPrivileges=no RestrictSUIDSGID=no ProtectKernelTunables=yes ProtectKernelModules=yes ProtectControlGroups=yes \
-    RestrictRealtime=yes TasksMax=256 MemoryMax=400M Restart=always Environment=GOMAXPROCS=2; do
+  # udevadm trigger, modprobe and kernel package upgrades need these writable and reachable
+  for d in ProtectKernelTunables ProtectKernelModules ProtectControlGroups RestrictRealtime; do
+    if grep -q "^$d=" "$u"; then _fail "$d is set in dxberryd.service"; fi
+  done
+  for d in NoNewPrivileges=no RestrictSUIDSGID=no TasksMax=256 MemoryMax=400M Restart=always Environment=GOMAXPROCS=2; do
     assert_file_contains "$u" "$d"
   done
 }
@@ -336,4 +348,58 @@ test_station_is_not_run_without_the_template_files() {
   sn_env
   DXB_TEMPLATES=$TEST_TMP/none sn_run
   assert_contains "$(cat "$TEST_TMP/failed")" "station"
+}
+
+# line number of the first recorded call matching PATTERN
+sn_line() { grep -n -- "$1" "$TEST_TMP/calls" | head -1 | cut -d: -f1; }
+
+test_station_checks_the_app_and_the_site_before_it_touches_cockpit() {
+  sn_env
+  AP_INSTALLED='nginx libpam-runtime cockpit-ws cockpit-bridge cockpit-system'
+  sn_run
+  assert_eq "$(cat "$TEST_TMP/failed")" ""
+  local v t off rl ss
+  v=$(sn_line 'curl .*127.0.0.1:8090/api/version'); t=$(sn_line '^nginx -t'); off=$(sn_line 'disable --now cockpit.socket')
+  rl=$(sn_line 'systemctl reload nginx'); ss=$(sn_line '^ss ')
+  if [[ -z $v || -z $t || -z $off || -z $rl || -z $ss ]] || ! (( v < t && t < off && off < rl && rl < ss )); then
+    _fail "wrong order: version $v, nginx -t $t, cockpit stop $off, reload $rl, ss $ss"
+  fi
+  assert_contains "$(sn_calls)" "ss -Hltn sport = :443"
+  assert_eq "$(cat "$TEST_TMP/status")" "station: https://10.0.0.90/ (log in as dietpi)"
+}
+
+# nginx whose -t rejects the station site once it is enabled
+sn_nginx_site_bad() { echo "nginx $*" >> "$TEST_TMP/calls"; [[ ! -e $DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf ]]; }
+
+test_station_keeps_cockpit_when_nginx_rejects_the_station_site() {
+  sn_env
+  # shellcheck disable=SC2031
+  export DXB_NGINX=sn_nginx_site_bad
+  AP_INSTALLED='nginx libpam-runtime cockpit-ws cockpit-bridge cockpit-system'
+  sn_run
+  assert_contains "$(cat "$TEST_TMP/failed")" "nginx rejected the dxberry site"
+  assert_not_contains "$(sn_calls)" "disable --now cockpit.socket"
+  assert_not_contains "$(sn_calls)" "purge"
+  [[ ! -e $DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf && ! -L $DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf ]] || _fail "the rejected site is still enabled"
+  assert_eq "$(cat "$TEST_TMP/status")" "station: unavailable (see FAILED STEPS)"
+}
+
+test_station_keeps_cockpit_when_the_app_does_not_answer() {
+  sn_env
+  AP_INSTALLED='nginx libpam-runtime cockpit-ws'
+  : > "$TEST_TMP/api-down"
+  sn_run
+  assert_contains "$(cat "$TEST_TMP/failed")" "did not answer"
+  assert_not_contains "$(sn_calls)" "cockpit.socket"
+  assert_not_contains "$(sn_calls)" "purge"
+  [[ ! -e $DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf ]] || _fail "the station site was enabled"
+  assert_eq "$(cat "$TEST_TMP/status")" "station: unavailable (see FAILED STEPS)"
+}
+
+test_station_fails_when_nothing_listens_on_443_afterwards() {
+  sn_env
+  : > "$TEST_TMP/no-listen"
+  sn_run
+  assert_contains "$(cat "$TEST_TMP/failed")" "nothing is listening on port 443"
+  assert_eq "$(cat "$TEST_TMP/status")" "station: unavailable (see FAILED STEPS)"
 }

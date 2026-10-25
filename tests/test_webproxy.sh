@@ -77,7 +77,7 @@ test_webproxy_auth_snippet_sends_only_the_cookie() {
   assert_file_contains "$DXB_NGINX_DIR/snippets/dxberry-auth.conf" 'proxy_set_header Authorization "";'
   assert_file_contains "$DXB_NGINX_DIR/snippets/dxberry-auth.conf" 'proxy_set_header Upgrade "";'
   # shellcheck disable=SC2016  # nginx variables, matched literally
-  assert_file_contains "$DXB_NGINX_DIR/snippets/dxberry-auth.conf" 'proxy_set_header Host $host;'
+  assert_file_contains "$DXB_NGINX_DIR/snippets/dxberry-auth.conf" 'proxy_set_header Host $http_host;'
 }
 test_webproxy_nginx_test_output_goes_to_stderr() {
   wp_env

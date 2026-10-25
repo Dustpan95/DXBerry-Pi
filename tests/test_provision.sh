@@ -81,6 +81,7 @@ full_env() {
     DXB_RPI_CONFIG_TXT=$TEST_TMP/bootfs/config.txt DXB_GPSPIPE=fake_gpspipe DXB_RUN_DIR=$TEST_TMP/run \
     DXB_STATION_BIN=$TEST_TMP/opt/bin/dxberryd DXB_STATION_TLS=$TEST_TMP/etc/dxberry/tls DXB_PAM_DIR=$TEST_TMP/etc/pam.d \
     DXB_POLICY_RC=$TEST_TMP/usr/sbin/policy-rc.d DXB_NGINX=pv_nginx DXB_STATION_WAIT_S=0 \
+    DXB_STATION_CURL=true DXB_SS=pv_ss DXB_STATION_API_WAIT_S=0 DXB_STATION_LISTEN_WAIT_S=0 \
     DXB_COCKPIT_LINK=$TEST_TMP/usr-share-cockpit/dxberry DXB_COCKPIT_DROPIN_DIR=$TEST_TMP/cockpit.socket.d \
     DXB_REBOOT_FLAG=$TEST_TMP/run/reboot-required \
     DXB_APPS_DIR=$DXB_ROOT/provision/lib/apps DXB_APPS_TSV=$DXB_ROOT/provision/share/apps.tsv \
@@ -651,6 +652,7 @@ test_provision_apps_a_failure_is_a_failed_step_named_apps() (
 # pv_nginx_scene: Pat installed behind a working nginx site (the station certificate under $TEST_TMP/certs);
 # nginx and its checks are recorded in calls, and the check fails while $TEST_TMP/nginx-bad exists.
 # shellcheck disable=SC2317  # called through the DXB_NGINX override and by provision_apps
+pv_ss() { echo 'LISTEN 0 511 0.0.0.0:443 0.0.0.0:*'; }
 pv_nginx() { echo "nginx $*" >> "$TEST_TMP/calls"; [[ ! -f $TEST_TMP/nginx-bad ]]; }
 pv_nginx_scene() {
   full_env; provision_cfg 'PASSWORD=examplepass'

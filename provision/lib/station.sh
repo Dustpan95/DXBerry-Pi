@@ -11,6 +11,11 @@
 : "${DXB_SYSTEMD_DIR:=/etc/systemd/system}"
 : "${DXB_STATION_TLS:=/etc/dxberry/tls}"
 : "${DXB_STATION_WAIT_S:=20}"
+: "${DXB_STATION_API_URL:=http://127.0.0.1:8090/api/version}"
+: "${DXB_STATION_API_WAIT_S:=10}"
+: "${DXB_STATION_LISTEN_WAIT_S:=5}"
+: "${DXB_STATION_CURL:=curl}"
+: "${DXB_SS:=ss}"
 : "${DXB_COCKPIT_PACKAGES:=cockpit-ws cockpit-bridge cockpit-system}"
 : "${DXB_COCKPIT_LINK:=/usr/share/cockpit/dxberry}"
 : "${DXB_COCKPIT_DROPIN_DIR:=/etc/systemd/system/cockpit.socket.d}"
@@ -87,6 +92,53 @@ _dxb_station_site() {
   esac
 }
 
+# _dxb_station_wait_api: dxberryd answers its version on loopback (a few tries over
+# DXB_STATION_API_WAIT_S seconds). 0 answers, 1 not.
+_dxb_station_wait_api() {
+  local i
+  for (( i = 0; i <= DXB_STATION_API_WAIT_S; i++ )); do
+    "$DXB_STATION_CURL" -fsS --max-time 2 -o /dev/null "$DXB_STATION_API_URL" > /dev/null 2>&1 && return 0
+    (( i < DXB_STATION_API_WAIT_S )) && sleep 1
+  done
+  return 1
+}
+
+# _dxb_station_wait_listen: something listens on port 443 (nginx, once it has loaded the site).
+_dxb_station_wait_listen() {
+  local i
+  for (( i = 0; i <= DXB_STATION_LISTEN_WAIT_S; i++ )); do
+    [[ -n $("$DXB_SS" -Hltn 'sport = :443' 2> /dev/null) ]] && return 0
+    (( i < DXB_STATION_LISTEN_WAIT_S )) && sleep 1
+  done
+  return 1
+}
+
+# _dxb_station_site_prepare: the station's nginx site written, enabled and checked with nginx -t,
+# but NOT loaded: while Cockpit holds 443 and 80, nginx could not bind them anyway. A failing
+# check puts the site back as it was (unlinked when it was new). 0 changed, 1 current, 6 failed.
+_dxb_station_site_prepare() {
+  local avail=$DXB_NGINX_DIR/sites-available/dxberry-dxberry.conf enabled=$DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf
+  local content old='' had=0 rc
+  content=$(dxb_webproxy_render dxberry) || return 6
+  if [[ -e $enabled ]]; then
+    had=1
+    dxb_webproxy_site_stale dxberry; rc=$?
+    case $rc in 1) return 1 ;; 0) ;; *) return 6 ;; esac
+    old=$(< "$avail")
+  fi
+  mkdir -p "$DXB_NGINX_DIR/sites-available" "$DXB_NGINX_DIR/sites-enabled" || return 6
+  dxb_write_if_changed "$avail" "$content" 644
+  [[ $(< "$avail") == "$content" ]] || { echo "could not write $avail" >&2; return 6; }
+  ln -sfn "$avail" "$enabled" || { echo "could not enable the dxberry site" >&2; return 6; }
+  if ! "$DXB_NGINX" -t >&2; then
+    if (( had )); then dxb_write_if_changed "$avail" "$old" 644; else rm -f "$enabled"; fi
+    echo "nginx rejected the dxberry site; it is not enabled" >&2
+    return 6
+  fi
+  touch "$avail"
+  return 0
+}
+
 # _dxb_station_cockpit_certs_left: the first enabled site whose certificate is Cockpit's or is
 # gone (name on stdout, 0), else 1. Removing Cockpit under such a site would make nginx -t reject
 # every site, the station's included.
@@ -103,7 +155,7 @@ _dxb_station_cockpit_certs_left() {
 
 # provision_station: never fatal; every problem is a failed step named station and the run goes on.
 provision_station() {
-  local rc unit_changed=0 want_restart=0 was_active=0 restamp=0 sum='' stamp=$DXB_STATE_DIR/dxberryd.sha256 name msg
+  local rc cockpit site_new reload=0 unit_changed=0 want_restart=0 was_active=0 restamp=0 sum='' stamp=$DXB_STATE_DIR/dxberryd.sha256 name msg
   local -a extra
   # the network undo's boot unit is a safety net, not a station feature
   dxb_netsafe_install_unit || dxb_step_failed station "could not install dxberry-config-boot.service"
@@ -168,22 +220,49 @@ provision_station() {
     _dxb_station_site "$name" "${extra[@]}" > /dev/null 2>&1 || dxb_warn "station: the $name nginx site could not be re-rendered"
   done
 
-  # Cockpit holds 443 and 80 until it is gone, so nginx's new site binds only after this
-  rc=0
-  if dxb_station_cockpit_installed; then
-    if name=$(_dxb_station_cockpit_certs_left); then
-      dxb_step_failed station "site ${name#dxberry-} still uses Cockpit's certificate; not removing Cockpit"
-      rc=2
-    else
-      dxb_station_remove_cockpit; case $? in 0) ;; 1) rc=1 ;; *) rc=2 ;; esac
-    fi
-  fi
-  if (( rc == 2 )); then
+  # Cockpit stays until the station is proven: the app answers, and nginx accepts its site (-t
+  # only validates, it binds nothing, so it works while Cockpit still holds 443 and 80)
+  if ! _dxb_station_wait_api; then
+    dxb_step_failed station "$DXB_STATION_UNIT did not answer at $DXB_STATION_API_URL; Cockpit is left alone"
     dxb_status_add "station: unavailable (see FAILED STEPS)"
     return 0
   fi
-  if ! msg=$(_dxb_station_site dxberry 2>&1); then
-    dxb_step_failed station "the nginx site failed: ${msg##*$'\n'}"
+  cockpit=0; dxb_station_cockpit_installed && cockpit=1
+  if (( cockpit )) && name=$(_dxb_station_cockpit_certs_left); then
+    dxb_step_failed station "site ${name#dxberry-} still uses Cockpit's certificate; not removing Cockpit"
+    dxb_status_add "station: unavailable (see FAILED STEPS)"
+    return 0
+  fi
+  site_new=0
+  [[ -e $DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf ]] || site_new=1
+  msg=$(_dxb_station_site_prepare 2>&1); rc=$?
+  case $rc in
+    0) reload=1 ;;
+    1) ;;
+    *)
+      dxb_step_failed station "the nginx site failed: ${msg##*$'\n'}"
+      (( cockpit )) && dxb_warn "station: Cockpit is left alone"
+      dxb_status_add "station: unavailable (see FAILED STEPS)"
+      return 0 ;;
+  esac
+  # Cockpit holds 443 and 80 until it is gone, so nginx loads the site only after this
+  rc=0
+  if (( cockpit )); then
+    dxb_station_remove_cockpit; case $? in 0) reload=1 ;; 1) rc=1; reload=1 ;; *) rc=2 ;; esac
+  fi
+  if (( rc == 2 )); then
+    # Cockpit still holds the ports: a site that did not exist before is not left enabled for the
+    # next reload to trip over
+    (( site_new )) && rm -f "$DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf"
+    dxb_status_add "station: unavailable (see FAILED STEPS)"
+    return 0
+  fi
+  if (( reload )) && ! "$DXB_SYSTEMCTL" reload nginx > /dev/null 2>&1; then
+    dxb_step_failed station "nginx could not reload with the dxberry site"
+    rc=1
+  fi
+  if (( rc == 0 )) && ! _dxb_station_wait_listen; then
+    dxb_step_failed station "nothing is listening on port 443 after nginx loaded the dxberry site"
     rc=1
   fi
   if (( rc )); then
