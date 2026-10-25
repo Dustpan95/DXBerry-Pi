@@ -75,7 +75,7 @@ var (
 	reName     = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	reSession  = regexp.MustCompile(`^[a-z][a-z0-9]*-[a-z][a-z0-9-]*$`)
 	reValue    = regexp.MustCompile(`^[A-Za-z0-9._:,/= +-]{1,128}$`)
-	reKeyValue = regexp.MustCompile(`^[A-Z][A-Z0-9_]*=[A-Za-z0-9._:,/= +-]{0,128}$`)
+	reKeyValue = regexp.MustCompile(`^[A-Z][A-Z0-9_]*=[^\x00-\x1f\x7f]{0,256}$`)
 	reOption   = regexp.MustCompile(`^--(audio|cat|hid|ptt-serial|ptt|ptt-type|wiring|label|rig-control|model|baud|gpio-line)$`)
 	reUnit     = regexp.MustCompile(`^(dxberry-[a-z0-9@._-]+|rigctld@[a-z0-9-]+|graywolf[a-z0-9-]*|gpsd|chrony|nginx|php[0-9.]*-fpm|mariadb)\.(service|timer|socket)$`)
 	reNumber   = regexp.MustCompile(`^[1-9][0-9]{0,3}$`)
