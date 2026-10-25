@@ -604,8 +604,9 @@ function unitAction(verb, unit) {
   else go();
 }
 
-// The connection drops as the Pi goes down; Cockpit then shows its own Disconnected screen, from
-// which the operator reconnects and logs in again once the Pi is back.
+// The station stops answering as the Pi goes down (dxb.run then says "unreachable"): that is the
+// expected end of the call, not a failure. After a restart the Pi's sessions are gone, so once it
+// answers again the page goes to the login page.
 function power(target) {
   const reboot = target === "reboot.target";
   confirmThen(reboot ? "Restart the Pi?" : "Shut down the Pi?",
@@ -615,14 +616,24 @@ function power(target) {
     () => {
       state.stopped = true;
       notice(reboot ? "Pi restarting, reconnecting…" : "Pi shutting down…", "warn", true);
-      dxb.run(["systemctl", "--no-block", "start", target]).then(null, ex => {
-        // "disconnected"/"terminated": the connection going away as the Pi goes down, not a failure.
-        if (ex && (ex.problem === "disconnected" || ex.problem === "terminated")) return;
+      const started = () => { if (reboot) waitForPi(); };
+      dxb.run(["systemctl", "--no-block", "start", target]).then(started, ex => {
+        if (ex && ex.problem === "unreachable") { started(); return; }
         state.stopped = false;
         failure(reboot ? "Restart" : "Shut down", ex);
         refresh(true);
       });
     });
+}
+
+// waitForPi: once /api/version has failed (the Pi is down) and then answers again (it is back),
+// log in again. A Pi that never goes down is waited for as long as the page stays open.
+function waitForPi() {
+  let down = false;
+  const probe = () => fetch("/api/version", { cache: "no-store" }).then(
+    r => { if (r.ok && down) dxb.toLogin(); else setTimeout(probe, 3000); },
+    () => { down = true; setTimeout(probe, 3000); });
+  setTimeout(probe, 3000);
 }
 
 // ---- the radio form -----------------------------------------------------------------------

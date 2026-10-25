@@ -300,7 +300,6 @@ function cfgSystemFields(keys) {
     field("GPS baud rate", "cf-GPS_BAUD", choice("cf-GPS_BAUD", dflt("GPS_BAUD", CONFIG_GPS_BAUDS.map(b => [b, b])), raw("GPS_BAUD"))),
     field("GPS PPS pin", "cf-GPS_PPS", cfgInput("cf-GPS_PPS", raw("GPS_PPS"), { placeholder: "none" }), "The BCM GPIO number of a 1PPS signal; empty for none."),
     field("Position log", "cf-POSITION_LOG", choice("cf-POSITION_LOG", dflt("POSITION_LOG", [["on", "On, in RAM"], ["off", "Off"]]), raw("POSITION_LOG"))),
-    field("Console", "cf-CONSOLE", choice("cf-CONSOLE", dflt("CONSOLE", [["on", "On"], ["off", "Off"]]), raw("CONSOLE")), "Off turns this console off."),
   ];
 }
 
@@ -376,10 +375,6 @@ function cfgFormArgs() {
     put("GPS_BAUD", v("cf-GPS_BAUD"));
     put("GPS_PPS", v("cf-GPS_PPS"));
     put("POSITION_LOG", v("cf-POSITION_LOG"));
-    put("CONSOLE", v("cf-CONSOLE"));
-    if (v("cf-CONSOLE") === "off" && was("CONSOLE") !== "off") {
-      warn.push("CONSOLE=off turns this console off as soon as the change is applied. Turn it back on over SSH: sudo dxberry-config set CONSOLE=on.");
-    }
   }
   if (secrets.some(s => /[\u0000-\u001f\u007f]/.test(s))) return { error: "A password cannot contain a line break or another control character." };
   // dxberry.txt's parser trims spaces around a value and strips wrapping double quotes

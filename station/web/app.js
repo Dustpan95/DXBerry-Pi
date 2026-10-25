@@ -24,6 +24,11 @@
   // The page scripts name a command by its path on the Pi; the endpoint takes the bare name.
   const commandName = (arg) => String(arg).split("/").pop();
 
+  // toLogin: the session is gone; log in again and come back to this page (the hash included).
+  function toLogin() {
+    location.assign("/login?next=" + encodeURIComponent(location.pathname + location.search + location.hash));
+  }
+
   function run(args, input) {
     return fetch("/api/cli/" + encodeURIComponent(commandName(args[0])), {
       method: "POST",
@@ -33,7 +38,7 @@
     }).then(
       (r) => {
         if (r.status === 401) {
-          location.assign("/login?next=" + encodeURIComponent(location.pathname + location.search));
+          toLogin();
           return new Promise(() => {});
         }
         if (r.status !== 200 && r.status !== 400) return Promise.reject(fail(`The station answered HTTP ${r.status}.`, null, "unreachable"));
@@ -133,7 +138,15 @@
       if (evSock !== s) return;
       evSock = null;
       evOpen = false;
-      if (evWant) { showLink(true); evSchedule(); }
+      if (!evWant) return;
+      showLink(true);
+      evSchedule();
+      // A socket refused for want of a session closes the same way as one that lost the network:
+      // ask, and send an ended session to the login page instead of retrying for ever.
+      if (typeof fetch === "function") {
+        fetch("/api/auth/check", { credentials: "same-origin", cache: "no-store" }).then(
+          (r) => { if (r.status === 401) toLogin(); }, () => {});
+      }
     };
   }
 
@@ -167,6 +180,7 @@
       return fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).then(done, done);
     },
     openLog,
+    toLogin,
     events,
   };
   window.dxb = dxb;

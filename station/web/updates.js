@@ -174,7 +174,7 @@ function updActions(c) {
     `DXBerry ${d.installed} is replaced with ${d.latest} and the setup runs again; this page may reload. ${d.installed} is kept for a rollback.`, "Update"),
     { cls: "primary", key: "upd:dxberry", disabled: busy }));
   if (s.count) acts.push(btn(`Install ${s.count} system update${s.count === 1 ? "" : "s"}`, () => updStart("system", "Install the system updates?",
-    "apt-get upgrades the Debian packages without asking. This can take several minutes; if Cockpit itself is upgraded, this page disconnects and you log in again.", "Install"),
+    "apt-get upgrades the Debian packages without asking. This can take several minutes; if the station app itself is upgraded, it restarts and this page reconnects.", "Install"),
     { key: "upd:system", disabled: busy }));
   // after a rollback, the kept tree is the NEWER one: the words never say which way this goes
   if (c.rollback && c.rollback.available) acts.push(btn(`Roll back to ${c.rollback.version}`, () => updStart("rollback", "Roll back DXBerry?",
