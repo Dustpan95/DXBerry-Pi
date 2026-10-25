@@ -201,74 +201,91 @@ func b2i(b bool) int {
 }
 
 // match reports whether pat accepts args; on failure, pos is how many arguments were accepted
-// before the first one that could not be (the furthest any branch got).
-func (c *CLI) match(pat []string, args []string) (ok bool, pos int) {
+// before the first one that could not be (the furthest any branch got) and tok is the pattern
+// token that refused it.
+func (c *CLI) match(pat []string, args []string) (ok bool, pos int, tok string) {
 	return c.matchAt(pat, args, 0)
 }
 
-func (c *CLI) matchAt(pat, args []string, at int) (bool, int) {
+func (c *CLI) matchAt(pat, args []string, at int) (bool, int, string) {
 	if len(pat) == 0 {
 		if len(args) == 0 {
-			return true, at
+			return true, at, ""
 		}
-		return false, at
+		return false, at, "end of arguments"
 	}
 	tok := pat[0]
 	if base, rep := strings.CutSuffix(tok, "..."); rep {
-		best := at
+		best, btok := at, base
 		for i := 0; ; {
-			if ok, p := c.matchAt(pat[1:], args[i:], at+i); ok {
-				return true, p
+			if ok, p, t := c.matchAt(pat[1:], args[i:], at+i); ok {
+				return true, p, ""
 			} else if p > best {
-				best = p
+				best, btok = p, t
 			}
 			w := c.width(base, args[i:])
 			if w == 0 {
-				return false, best
+				return false, best, btok
 			}
 			i += w
 		}
 	}
 	w := c.width(tok, args)
 	if w == 0 {
-		return false, at
+		return false, at, tok
 	}
 	return c.matchAt(pat[1:], args[w:], at+w)
-}
-
-func shown(s string) string {
-	if len(s) > 40 {
-		return "(too long to show)"
-	}
-	return strconv.Quote(s)
 }
 
 // Refusal is why a call was not allowed; Pos is the 1-based argument at fault (0: the command).
 type Refusal struct {
 	Pos int
-	Msg string
+	Msg string // never holds an argument value: this is what gets logged
+	// Public is Msg plus, where harmless, the offending value; it is the HTTP error text.
+	Public string
 }
 
-func (r *Refusal) Error() string { return r.Msg }
+func (r *Refusal) Error() string { return r.Public }
+
+var reKeyName = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,39}$`)
+
+// hint says which argument was refused without risking a secret: a KEYVALUE shows only its key.
+func hint(tok, arg string) string {
+	if tok == "KEYVALUE" {
+		if k, _, ok := strings.Cut(arg, "="); ok && reKeyName.MatchString(k) {
+			return " (key " + k + ")"
+		}
+		return ""
+	}
+	if len(arg) > 40 {
+		return " (too long to show)"
+	}
+	return " (" + strconv.Quote(arg) + ")"
+}
 
 // Validate reports why a call is refused, or nil when it is allowed to run.
 func (c *CLI) Validate(call Call) error {
 	pats, ok := allow[call.Command]
 	if !ok {
-		return &Refusal{0, fmt.Sprintf("command %s is not allowed", shown(call.Command))}
+		msg := "command is not allowed"
+		return &Refusal{0, msg, msg + hint("", call.Command)}
 	}
-	best := 0
+	best, btok := 0, ""
 	for _, p := range pats {
-		ok, pos := c.match(p, call.Args)
+		ok, pos, tok := c.match(p, call.Args)
 		if ok {
 			return nil
 		}
-		best = max(best, pos)
+		if pos >= best {
+			best, btok = pos, tok
+		}
 	}
 	if best >= len(call.Args) {
-		return &Refusal{best, fmt.Sprintf("%s: arguments incomplete after argument %d", call.Command, best)}
+		msg := fmt.Sprintf("%s: arguments incomplete, expected %s after argument %d", call.Command, btok, best)
+		return &Refusal{best, msg, msg}
 	}
-	return &Refusal{best + 1, fmt.Sprintf("%s: argument %d is not allowed (%s)", call.Command, best+1, shown(call.Args[best]))}
+	msg := fmt.Sprintf("%s: argument %d does not match %s", call.Command, best+1, btok)
+	return &Refusal{best + 1, msg, msg + hint(btok, call.Args[best])}
 }
 
 func (c *CLI) path(command string) string {
@@ -347,10 +364,13 @@ func (b *capBuffer) String() string {
 
 // runExec is the default Runner: exec of an absolute path, no working directory, a fixed
 // environment, capped output.
+// waitDelay is how long a finished command's leftover children may keep its pipes open.
+var waitDelay = 2 * time.Second
+
 func runExec(ctx context.Context, name string, args []string, stdin string, env []string) (Result, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = env
-	cmd.WaitDelay = 2 * time.Second // a background child holding the pipes must not hold the call
+	cmd.WaitDelay = waitDelay // a background child holding the pipes must not hold the call
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}

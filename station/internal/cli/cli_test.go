@@ -135,7 +135,7 @@ func TestCLIAcceptsEveryCommand(t *testing.T) {
 	ok := map[string][][]string{
 		"dxberry-status":  {{"--json"}},
 		"dxberry-radio":   {{"scan", "--json"}, {"status", "--json"}, {"status", "radio1", "--json"}, {"add", "radio1", "--audio", "1", "--cat", "2:1", "--model", "3073", "--label", "IC-7300", "--json"}, {"set", "radio1", "--audio", "none", "--json"}, {"remove", "radio1", "--json"}, {"hotplug", "--json"}, {"claim", "radio1", "wsjtx", "--json"}, {"claim", "radio1", "my_prog", "--json"}, {"release", "radio1", "--json"}, {"models", "--json"}},
-		"dxberry-config":  {{"get", "--json"}, {"set", "GPS_BAUD=9600", "POSITION_LOG=on", "--json"}, {"set", "WIFI_COUNTRY=US", "--stdin", "--json"}, {"set", "SSH_PUBKEY=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIabc+/= dietpi@laptop", "--json"}, {"set", "SSH_PUBKEY=", "--json"}, {"job", "--json"}, {"confirm", "--json"}, {"revert", "--json"}, {"apply", "--json"}},
+		"dxberry-config":  {{"get", "--json"}, {"set", "GPS_BAUD=9600", "POSITION_LOG=on", "--json"}, {"set", "WIFI_COUNTRY=US", "--stdin", "--json"}, {"set", "SSH_PUBKEY=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIabc+/= dietpi@laptop", "--json"}, {"set", "SSH_PUBKEY=", "--json"}, {"set", "SSH_PUBKEY=ssh-ed25519 " + strings.Repeat("A", 990) + " c", "--json"}, {"job", "--json"}, {"confirm", "--json"}, {"revert", "--json"}, {"apply", "--json"}},
 		"dxberry-update":  {{"check", "--json"}, {"check", "--refresh", "--json"}, {"graywolf", "--json"}, {"dxberry", "--json"}, {"system", "--json"}, {"rollback", "--json"}, {"job", "--json"}, {"app", "wsjtx", "--json"}, {"app", "my_prog", "--json"}, {"prereleases", "on", "--json"}, {"prereleases", "off", "--json"}},
 		"dxberry-app":     {{"list", "--json"}, {"install", "wsjtx", "--json"}, {"remove", "wsjtx", "--json"}, {"start", "radio1", "--json"}, {"stop", "radio1", "--json"}, {"screen", "wsjtx-radio1", "--json"}},
 		"dxberry-logbook": {{"get", "--json"}, {"set", "--json"}, {"test", "--json"}, {"recent", "--json"}, {"recent", "25", "--json"}, {"flush", "--json"}},
@@ -151,8 +151,8 @@ func TestCLIAcceptsEveryCommand(t *testing.T) {
 	}
 	bad := map[string][][]string{
 		"dxberry-status":  {{}, {"--json", "pi"}},
-		"dxberry-radio":   {{"scan"}, {"apply", "--json"}, {"claim", "radio1", "Bad", "--json"}, {"claim", "radio1", "--json"}, {"add", "Bad", "--json"}, {"add", "r", "--bogus", "1", "--json"}, {"add", "r", "--audio", "--json"}},
-		"dxberry-config":  {{"set", "PASSWORD=x", "--json"}, {"set", "wifi=x", "--json"}, {"set", "SSH_PUBKEY=ssh-ed25519 AAAA c;rm -rf", "--json"}, {"set", "SSH_PUBKEY=ssh-ed25519 AAAA $(id)", "--json"}, {"set", "SSH_PUBKEY=ssh-ed25519 AAAA " + strings.Repeat("a", 1100), "--json"}, {"set", "SSH_PUBKEY=ssh-dss AAAA", "--json"}, {"set", "--json"}},
+		"dxberry-radio":   {{"scan"}, {"apply", "--json"}, {"claim", "radio1", "Bad", "--json"}, {"claim", "radio1", "--json"}, {"release", "--json"}, {"release", "a", "b", "--json"}, {"models", "extra", "--json"}, {"add", "Bad", "--json"}, {"add", "r", "--bogus", "1", "--json"}, {"add", "r", "--audio", "--json"}},
+		"dxberry-config":  {{"set", "PASSWORD=x", "--json"}, {"set", "wifi=x", "--json"}, {"set", "SSH_PUBKEY=ssh-ed25519 AAAA c;rm -rf", "--json"}, {"set", "SSH_PUBKEY=ssh-ed25519 AAAA $(id)", "--json"}, {"set", "SSH_PUBKEY=ssh-ed25519 " + strings.Repeat("A", 1000) + " c", "--json"}, {"set", "SSH_PUBKEY=ssh-dss AAAA", "--json"}, {"set", "--json"}},
 		"dxberry-update":  {{"dxberry", "--version", "1.0", "--json"}, {"apply", "system", "--json"}, {"prereleases", "maybe", "--json"}, {"prereleases", "--json"}},
 		"dxberry-app":     {{"start", "a", "b", "--json"}, {"screen", "nodash", "--json"}},
 		"dxberry-logbook": {{"recent", "26", "--json"}, {"submit", "--json"}, {"recent", "0", "--json"}},
@@ -268,5 +268,48 @@ func TestCLIHandlerLogsRefusal(t *testing.T) {
 	mux.ServeHTTP(httptest.NewRecorder(), req)
 	if !strings.HasPrefix(sb.String(), "cli refused ") || !strings.Contains(sb.String(), "pos=3") {
 		t.Fatalf("log %q", sb.String())
+	}
+}
+
+func TestCLIExitZeroWithLeftoverChild(t *testing.T) {
+	old := waitDelay
+	waitDelay = 100 * time.Millisecond
+	defer func() { waitDelay = old }()
+	c := New("/x", func(ctx context.Context, name string, args []string, stdin string, env []string) (Result, error) {
+		return runExec(ctx, "/bin/sh", []string{"-c", "sleep 4 & exit 0"}, "", env)
+	})
+	res, err := c.Run(context.Background(), Call{Command: "dxberry-status", Args: []string{"--json"}})
+	if err != nil || res.Exit != 0 {
+		t.Fatalf("got %+v %v", res, err)
+	}
+}
+
+func TestCLIRefusalNeverLeaksValues(t *testing.T) {
+	var sb strings.Builder
+	c := newTest(t)
+	c.Logf = func(f string, a ...any) { sb.WriteString(fmt.Sprintf(f, a...) + "\n") }
+	mux := http.NewServeMux()
+	c.Register(mux)
+	for _, body := range []string{
+		`{"args":["set","PASSWORD=hunter2","--json"]}`,
+		`{"args":["set","SSH_PUBKEY=ssh-ed25519 AAAA hunter2;x","--json"]}`,
+		`{"args":["set","hunter2","--json"]}`,
+	} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/cli/dxberry-config", strings.NewReader(body)))
+		if rec.Code != 400 || strings.Contains(rec.Body.String(), "hunter2") {
+			t.Fatalf("%s: %d %s", body, rec.Code, rec.Body)
+		}
+	}
+	if strings.Contains(sb.String(), "hunter2") {
+		t.Fatalf("log leaks: %q", sb.String())
+	}
+	if !strings.HasPrefix(sb.String(), "cli refused dxberry-config pos=2 reason=dxberry-config: argument 2 does not match KEYVALUE\n") {
+		t.Fatalf("log %q", sb.String())
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/cli/dxberry-config", strings.NewReader(`{"args":["set","PASSWORD=hunter2","--json"]}`)))
+	if !strings.Contains(rec.Body.String(), "key PASSWORD") {
+		t.Fatalf("body %s", rec.Body)
 	}
 }

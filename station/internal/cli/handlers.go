@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -33,11 +34,11 @@ func (c *CLI) handle(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	res, err := c.Run(r.Context(), call)
 	if err != nil {
-		pos := 0
+		pos, reason := 0, "refused"
 		if rf, ok := err.(*Refusal); ok {
-			pos = rf.Pos
+			pos, reason = rf.Pos, rf.Msg
 		}
-		c.Logf("cli refused %s pos=%d reason=%s", shown(call.Command), pos, err.Error())
+		c.Logf("cli refused %s pos=%d reason=%s", logName(call.Command), pos, reason)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -56,3 +57,13 @@ func logLine(call Call, exit int, d time.Duration) string {
 	parts = append(parts, "exit="+strconv.Itoa(exit), "ms="+strconv.FormatInt(d.Milliseconds(), 10))
 	return strings.Join(parts, " ")
 }
+
+// logName is the command as logged: only a plain name, never whatever a client put in the URL.
+func logName(s string) string {
+	if reLogName.MatchString(s) {
+		return s
+	}
+	return "(invalid)"
+}
+
+var reLogName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,40}$`)
