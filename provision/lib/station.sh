@@ -87,6 +87,20 @@ _dxb_station_site() {
   esac
 }
 
+# _dxb_station_cockpit_certs_left: the first enabled site whose certificate is Cockpit's or is
+# gone (name on stdout, 0), else 1. Removing Cockpit under such a site would make nginx -t reject
+# every site, the station's included.
+_dxb_station_cockpit_certs_left() {
+  local f c
+  for f in "$DXB_NGINX_DIR"/sites-enabled/*; do
+    [[ -f $f ]] || continue
+    while IFS= read -r c; do
+      if [[ $c == */cockpit/* || ! -f $c ]]; then basename "$f" .conf; return 0; fi
+    done < <(sed -n 's/^[[:space:]]*ssl_certificate\(_key\)\{0,1\}[[:space:]]*"\{0,1\}\([^";]*\)"\{0,1\};.*/\2/p' "$f")
+  done
+  return 1
+}
+
 # provision_station: never fatal; every problem is a failed step named station and the run goes on.
 provision_station() {
   local rc unit_changed=0 want_restart=0 was_active=0 restamp=0 sum='' stamp=$DXB_STATE_DIR/dxberryd.sha256 name msg
@@ -157,7 +171,12 @@ provision_station() {
   # Cockpit holds 443 and 80 until it is gone, so nginx's new site binds only after this
   rc=0
   if dxb_station_cockpit_installed; then
-    dxb_station_remove_cockpit; case $? in 0) ;; 1) rc=1 ;; *) rc=2 ;; esac
+    if name=$(_dxb_station_cockpit_certs_left); then
+      dxb_step_failed station "site ${name#dxberry-} still uses Cockpit's certificate; not removing Cockpit"
+      rc=2
+    else
+      dxb_station_remove_cockpit; case $? in 0) ;; 1) rc=1 ;; *) rc=2 ;; esac
+    fi
   fi
   if (( rc == 2 )); then
     dxb_status_add "station: unavailable (see FAILED STEPS)"

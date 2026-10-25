@@ -2,8 +2,8 @@
 # Runs as root by design: every function behind the login needs it, and the terminal (a real
 # login shell) and the CLIs need a writable system, so there is no ProtectSystem/ProtectHome.
 # Deliberately NOT set: PrivateDevices/DevicePolicy (the terminal needs /dev/ptmx and /dev/pts),
-# PrivateTmp (program windows share /tmp/.X11-unix with their session units), NoNewPrivileges
-# and RestrictSUIDSGID (login -f sets up the session), RestrictNamespaces.
+# PrivateTmp (program windows share /tmp/.X11-unix with their session units), RestrictNamespaces.
+# Set to no on purpose: NoNewPrivileges and RestrictSUIDSGID (login -f sets up the session).
 [Unit]
 Description=DXBerry-Pi station app
 After=network.target nginx.service

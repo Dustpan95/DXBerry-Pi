@@ -262,6 +262,7 @@ sn_apt_purge() {
 
 test_station_moves_pat_off_cockpits_certificate_before_the_purge() (
   sn_env
+  # shellcheck disable=SC2030,SC2031  # a subshell test: the change is meant to stay inside
   export DXB_NGINX=sn_nginx_strict DXB_APT_GET=sn_apt_purge
   AP_INSTALLED='nginx libpam-runtime pat cockpit-ws'
   local old=$TEST_TMP/etc/cockpit/ws-certs.d avail=$DXB_NGINX_DIR/sites-available/dxberry-pat.conf
@@ -277,6 +278,30 @@ test_station_moves_pat_off_cockpits_certificate_before_the_purge() (
   if [[ -z $reload || -z $purge ]] || (( reload > purge )); then _fail "Pat was not re-rendered and reloaded before the purge (reload '$reload', purge '$purge')"; fi
   [[ -L $DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf ]] || _fail "the station site is not linked"
   assert_eq "$(cat "$TEST_TMP/status")" "station: https://10.0.0.90/ (log in as dietpi)"
+)
+
+# nginx whose -t rejects the re-rendered Pat site (the previous one is put back by the refresh)
+sn_nginx_pat_bad() {
+  echo "nginx $*" >> "$TEST_TMP/calls"
+  ! grep -q 'station.crt' "$DXB_NGINX_DIR/sites-available/dxberry-pat.conf"
+}
+
+test_station_keeps_cockpit_when_a_site_still_uses_its_certificate() (
+  sn_env
+  # shellcheck disable=SC2030,SC2031
+  export DXB_NGINX=sn_nginx_pat_bad
+  AP_INSTALLED='nginx libpam-runtime pat cockpit-ws'
+  local old=$TEST_TMP/etc/cockpit/ws-certs.d avail=$DXB_NGINX_DIR/sites-available/dxberry-pat.conf
+  mkdir -p "$old"; echo c > "$old/0-self-signed.cert"; echo k > "$old/0-self-signed.key"
+  dxb_render "$DXB_TEMPLATES/nginx-pat.conf" "CERT=$old/0-self-signed.cert" "KEY=$old/0-self-signed.key" > "$avail"
+  ln -s "$avail" "$DXB_NGINX_DIR/sites-enabled/dxberry-pat.conf"
+  sn_run
+  assert_contains "$(cat "$TEST_TMP/failed")" "site pat still uses Cockpit's certificate; not removing Cockpit"
+  assert_not_contains "$(sn_calls)" "purge"
+  assert_not_contains "$(sn_calls)" "disable --now cockpit.socket"
+  [[ ! -e $DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf ]] || _fail "the station site was loaded"
+  assert_eq "$(cat "$TEST_TMP/status")" "station: unavailable (see FAILED STEPS)"
+  [[ -f $old/0-self-signed.cert ]] || _fail "Cockpit's certificate was touched"
 )
 
 test_station_does_not_load_the_site_when_cockpit_will_not_stop() {
