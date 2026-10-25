@@ -37,6 +37,7 @@ type Status struct {
 	clock  Clock
 	radios RadioSource // nil until SetRadios
 	hub    RigHub      // nil until SetRig
+	onSock SocketHook  // nil until OnSocket
 
 	smu   sync.Mutex // guards socks and the order of hub interest updates
 	socks map[*sock]struct{}

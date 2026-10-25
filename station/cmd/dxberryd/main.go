@@ -21,12 +21,17 @@ import (
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/httpapi"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/radios"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/rig"
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/session"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/status"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/term"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/tlscert"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/vnc"
 	"github.com/Dustpan95/DXBerry-Pi/station/web"
 )
+
+type wallClock struct{}
+
+func (wallClock) Now() time.Time { return time.Now() }
 
 // version is set at build time (-X main.version=...).
 var version = "dev"
@@ -63,6 +68,27 @@ func main() {
 	}
 	rigs := rig.NewManager(rw, rig.CapsCache{Dir: *rigCaps}, nil, slog.Default())
 	st.SetRig(rigs)
+	owners := session.NewOwners(wallClock{})
+	programs := session.NewPrograms(rw.List, session.ScreenProbe(func(ctx context.Context, args []string) (string, int, error) {
+		res, err := runner.Run(ctx, cli.Call{Command: "dxberry-app", Args: args})
+		return res.Stdout, res.Exit, err
+	}))
+	owners.SetPrograms(programs)
+	owners.SetTransmitting(func(radio string) bool {
+		p, ok := rigs.Radio(radio)
+		return ok && p.State().PTT
+	})
+	radioAPI := &httpapi.RadioAPI{Auth: mgr, Radios: rw, Rigs: httpapi.ManagerRigs(rigs), Owners: owners}
+	// a tab's claim ends with its events socket (the page opens it with ?tab=<its token>)
+	st.OnSocket(func(r *http.Request) func() {
+		s, ok := mgr.Session(r)
+		tab := r.URL.Query().Get("tab")
+		if !ok || !httpapi.ValidTab(tab) {
+			return nil
+		}
+		id := session.TabID(s.ID, tab)
+		return func() { owners.ReleaseAll(id) }
+	})
 	runner.OnCall = func(cmd string, args []string) {
 		if status.ChangesState(cmd, args) {
 			st.Poke()
@@ -73,6 +99,7 @@ func main() {
 		mgr.Register(mux)
 		runner.Register(mux)
 		st.Register(mux, mgr.Alive)
+		radioAPI.Register(mux)
 		sessionOf := func(r *http.Request) *httpapi.Session {
 			s, _ := mgr.Session(r)
 			return s
@@ -105,6 +132,7 @@ func main() {
 	go st.Run(statusCtx)
 	go rw.Run(statusCtx)
 	go rigs.Run(statusCtx)
+	go programs.Run(statusCtx, 2*time.Second)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)

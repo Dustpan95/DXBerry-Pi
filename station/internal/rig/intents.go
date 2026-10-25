@@ -1,0 +1,351 @@
+package rig
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"math"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/session"
+)
+
+// Result is the answer to every intent: done, or why not and what to do about it. The same
+// words are logged.
+type Result struct {
+	OK     bool   `json:"ok"`
+	Reason string `json:"reason,omitempty"`
+	Fix    string `json:"fix,omitempty"`
+}
+
+// Writer is a radio's poller as the intents use it: its state, and writes that show their
+// effect at once and are confirmed by the next read.
+type Writer interface {
+	State() State
+	Write(ctx context.Context, fn func(Commander) error, optimistic func(*State)) error
+}
+
+// PollerWriter adapts a Poller (whose Write hands out a *Client) to Writer.
+func PollerWriter(p *Poller) Writer { return pollerWriter{p} }
+
+type pollerWriter struct{ p *Poller }
+
+func (w pollerWriter) State() State { return w.p.State() }
+
+func (w pollerWriter) Write(ctx context.Context, fn func(Commander) error, opt func(*State)) error {
+	return w.p.Write(ctx, func(c *Client) error { return fn(c) }, opt)
+}
+
+// OwnerLock is the transmitter lock (*session.Owners).
+type OwnerLock interface {
+	Claim(radio string, h session.Holder) error
+	TakeOver(radio string, h session.Holder) error
+	Release(radio, id string)
+	Holder(radio string) (session.Holder, bool)
+	Touch(radio, id string)
+}
+
+const (
+	// CarrierLimit is the longest a tune carrier stays up.
+	CarrierLimit = 10 * time.Second
+
+	reasonUnreachable = "rig control unreachable; the radio's rigctld is restarting"
+	fixUnreachable    = "wait a few seconds"
+	reasonDataMode    = "a data mode would key the sound card with silence; switch to USB or CW to tune"
+)
+
+var dataModes = []string{"PKTUSB", "PKTLSB", "PKTFM", "RTTY", "RTTYR"}
+
+// Intents is everything a browser may ask of one radio.
+type Intents struct {
+	Radio  string
+	Caps   func() (Caps, bool) // false until the radio's capabilities are known
+	Poller Writer
+	Owners OwnerLock
+	Clock  Clock
+	Log    *slog.Logger
+
+	mu      sync.Mutex
+	carrier chan struct{} // closed to cancel the running carrier timer
+}
+
+func (in *Intents) log() *slog.Logger {
+	if in.Log != nil {
+		return in.Log
+	}
+	return slog.Default()
+}
+
+func (in *Intents) clock() Clock {
+	if in.Clock != nil {
+		return in.Clock
+	}
+	return realClock{}
+}
+
+func (in *Intents) refuse(intent, reason, fix string) Result {
+	in.log().Info("intent refused", "radio", in.Radio, "intent", intent, "reason", reason, "fix", fix)
+	return Result{Reason: reason, Fix: fix}
+}
+
+// check is the rig-link guard plus the capability lookup shared by every command intent.
+func (in *Intents) check(intent string) (State, Caps, *Result) {
+	st := in.Poller.State()
+	if !st.Connected {
+		r := in.refuse(intent, reasonUnreachable, fixUnreachable)
+		return st, Caps{}, &r
+	}
+	caps, ok := in.Caps()
+	if !ok {
+		r := in.refuse(intent, "this radio's capabilities are not known yet", fixUnreachable)
+		return st, Caps{}, &r
+	}
+	return st, caps, nil
+}
+
+func (in *Intents) send(ctx context.Context, intent string, opt func(*State), cmd string, args ...string) Result {
+	err := in.Poller.Write(ctx, func(c Commander) error {
+		_, err := c.Do(ctx, cmd, args...)
+		return err
+	}, opt)
+	if err != nil {
+		return in.refuse(intent, rigFailure(err), "check the radio and try again")
+	}
+	return Result{OK: true}
+}
+
+func rigFailure(err error) string {
+	var re *RigError
+	switch {
+	case errors.As(err, &re):
+		return fmt.Sprintf("the radio refused the command (rigctld error %d)", re.Code)
+	case errors.Is(err, ErrDeadline):
+		return "the radio did not answer in time"
+	case errors.Is(err, ErrNotConnected):
+		return reasonUnreachable
+	}
+	return "the command could not be sent to the radio"
+}
+
+// Freq tunes the radio.
+func (in *Intents) Freq(ctx context.Context, hz int64) Result {
+	_, caps, bad := in.check("freq")
+	if bad != nil {
+		return *bad
+	}
+	if !caps.InRange(hz) {
+		return in.refuse("freq", fmt.Sprintf("%d is outside this radio's range", hz), rangeFix(caps))
+	}
+	return in.send(ctx, "freq", func(s *State) { s.Freq = hz }, "set_freq", strconv.FormatInt(hz, 10))
+}
+
+func rangeFix(c Caps) string {
+	if len(c.FreqRanges) == 0 {
+		return "this radio's frequency range is not known"
+	}
+	lo, hi := c.FreqRanges[0].Lo, c.FreqRanges[0].Hi
+	for _, r := range c.FreqRanges[1:] {
+		lo, hi = min(lo, r.Lo), max(hi, r.Hi)
+	}
+	return fmt.Sprintf("this radio tunes %d–%d Hz", lo, hi)
+}
+
+// Mode sets the mode; passband 0 leaves the radio's default.
+func (in *Intents) Mode(ctx context.Context, mode string, passband int) Result {
+	_, caps, bad := in.check("mode")
+	if bad != nil {
+		return *bad
+	}
+	if !caps.Allows(mode) {
+		return in.refuse("mode", fmt.Sprintf("this radio has no mode %s", mode), "modes: "+strings.Join(caps.Modes, " "))
+	}
+	if passband < 0 {
+		return in.refuse("mode", fmt.Sprintf("%d is outside this radio's range", passband), "a passband is 0 or more Hz")
+	}
+	pb := strconv.Itoa(passband)
+	return in.send(ctx, "mode", func(s *State) { s.Mode, s.Passband = mode, pb }, "set_mode", mode, pb)
+}
+
+// VFO selects a VFO.
+func (in *Intents) VFO(ctx context.Context, which string) Result {
+	_, caps, bad := in.check("vfo")
+	if bad != nil {
+		return *bad
+	}
+	if !caps.CanSetVFO || !slices.Contains(caps.VFOs, which) {
+		return in.refuse("vfo", fmt.Sprintf("this radio has no VFO %s", which), "VFOs: "+strings.Join(caps.VFOs, " "))
+	}
+	return in.send(ctx, "vfo", func(s *State) { s.VFO = which }, "set_vfo", which)
+}
+
+// Split turns split on or off.
+func (in *Intents) Split(ctx context.Context, on bool) Result {
+	_, caps, bad := in.check("split")
+	if bad != nil {
+		return *bad
+	}
+	if !caps.CanSetSplit {
+		return in.refuse("split", "this radio's split cannot be set over CAT", "set split on the radio itself")
+	}
+	n, tx := "0", "VFOA"
+	if on {
+		n, tx = "1", "VFOB"
+	}
+	return in.send(ctx, "split", func(s *State) { s.Split = on }, "set_split_vfo", n, tx)
+}
+
+// Level sets one of the radio's settable levels, a float from 0 to 1.
+func (in *Intents) Level(ctx context.Context, name string, value float64) Result {
+	_, caps, bad := in.check("level")
+	if bad != nil {
+		return *bad
+	}
+	if !slices.Contains(caps.SettableLevels, name) {
+		return in.refuse("level", fmt.Sprintf("%s is not a level this radio sets", name), "levels: "+strings.Join(caps.SettableLevels, " "))
+	}
+	if math.IsNaN(value) || value < 0 || value > 1 {
+		return in.refuse("level", fmt.Sprintf("%g is outside this radio's range", value), "levels run from 0 to 1")
+	}
+	v := strconv.FormatFloat(value, 'f', -1, 64)
+	return in.send(ctx, "level", func(s *State) { s.Levels[name] = value }, "set_level", name, v)
+}
+
+func (in *Intents) owns(intent, tab string) *Result {
+	if h, ok := in.Owners.Holder(in.Radio); ok && h.Kind == "tab" && h.ID == tab {
+		return nil
+	}
+	r := in.refuse(intent, "this tab does not hold the transmitter", "claim the radio first")
+	return &r
+}
+
+// Tune keys a carrier for at most CarrierLimit (on) or ends it (off). Only the owner may.
+func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
+	if !on {
+		if bad := in.owns("tune", tab); bad != nil {
+			return *bad
+		}
+		return in.Stop(ctx)
+	}
+	st, _, bad := in.check("tune")
+	if bad != nil {
+		return *bad
+	}
+	if bad := in.owns("tune", tab); bad != nil {
+		return *bad
+	}
+	if slices.Contains(dataModes, st.Mode) {
+		return in.refuse("tune", reasonDataMode, "")
+	}
+	in.Owners.Touch(in.Radio, tab)
+	res := in.send(ctx, "tune", func(s *State) { s.PTT = true }, "set_ptt", "1")
+	if !res.OK {
+		return res
+	}
+	cancel := make(chan struct{})
+	in.mu.Lock()
+	if in.carrier != nil {
+		close(in.carrier)
+	}
+	in.carrier = cancel
+	in.mu.Unlock()
+	fire := in.clock().At(in.clock().Now().Add(CarrierLimit)) // taken now, not in the goroutine
+	go func() {
+		select {
+		case <-cancel:
+		case <-fire:
+			in.mu.Lock()
+			current := in.carrier == cancel
+			if current {
+				in.carrier = nil
+			}
+			in.mu.Unlock()
+			if current {
+				in.log().Info("tune carrier ended at its limit", "radio", in.Radio)
+				in.ptt0(context.Background(), "tune")
+			}
+		}
+	}()
+	return res
+}
+
+func (in *Intents) ptt0(ctx context.Context, intent string) Result {
+	return in.send(ctx, intent, func(s *State) { s.PTT = false }, "set_ptt", "0")
+}
+
+func (in *Intents) endCarrier() {
+	in.mu.Lock()
+	if in.carrier != nil {
+		close(in.carrier)
+		in.carrier = nil
+	}
+	in.mu.Unlock()
+}
+
+// Stop drops PTT and ends any carrier. Any tab may send it.
+func (in *Intents) Stop(ctx context.Context) Result {
+	in.endCarrier()
+	if st := in.Poller.State(); !st.Connected {
+		return in.refuse("stop", reasonUnreachable, fixUnreachable)
+	}
+	return in.ptt0(ctx, "stop")
+}
+
+// ATU starts the radio's antenna tuner when the radio has one that CAT controls.
+func (in *Intents) ATU(ctx context.Context, tab string) Result {
+	_, caps, bad := in.check("atu")
+	if bad != nil {
+		return *bad
+	}
+	if bad := in.owns("atu", tab); bad != nil {
+		return *bad
+	}
+	if caps.ModelName == "Dummy" || !slices.Contains(caps.SettableFuncs, "TUNER") {
+		return in.refuse("atu", "this radio has no antenna tuner control", "tune with the radio's own tuner button")
+	}
+	in.Owners.Touch(in.Radio, tab)
+	return in.send(ctx, "atu", nil, "set_func", "TUNER", "1")
+}
+
+func (in *Intents) lockRefusal(intent string, err error) Result {
+	switch {
+	case errors.Is(err, session.ErrProgramOwns):
+		return in.refuse(intent, "a program holds this radio's transmitter", "stop the program, or use its own window")
+	case errors.Is(err, session.ErrHeld):
+		return in.refuse(intent, "another tab holds this radio's transmitter", "take over from that tab")
+	case errors.Is(err, session.ErrTransmitting):
+		return in.refuse(intent, "the radio is transmitting", "wait until it stops, or press stop")
+	}
+	return in.refuse(intent, err.Error(), "")
+}
+
+// Claim makes a tab the radio's transmitter owner.
+func (in *Intents) Claim(h session.Holder) Result {
+	if err := in.Owners.Claim(in.Radio, h); err != nil {
+		return in.lockRefusal("claim", err)
+	}
+	return Result{OK: true}
+}
+
+// Release gives the transmitter back.
+func (in *Intents) Release(id string) Result {
+	in.Owners.Release(in.Radio, id)
+	return Result{OK: true}
+}
+
+// TakeOver moves the claim to a tab unless the radio is transmitting.
+func (in *Intents) TakeOver(h session.Holder) Result {
+	if in.Poller.State().PTT {
+		if cur, ok := in.Owners.Holder(in.Radio); ok && cur.ID != h.ID {
+			return in.lockRefusal("takeover", session.ErrTransmitting)
+		}
+	}
+	if err := in.Owners.TakeOver(in.Radio, h); err != nil {
+		return in.lockRefusal("takeover", err)
+	}
+	return Result{OK: true}
+}

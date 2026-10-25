@@ -42,6 +42,13 @@ type RigHub interface {
 // SetRig connects the rig layer; without it watch messages are ignored.
 func (s *Status) SetRig(h RigHub) { s.hub = h }
 
+// SocketHook is told when an events socket opens and returns the function to run when it
+// closes. The owner lock uses it to drop a tab's claim with its socket.
+type SocketHook func(r *http.Request) (closed func())
+
+// OnSocket sets the hook. Call it before serving.
+func (s *Status) OnSocket(h SocketHook) { s.onSock = h }
+
 const (
 	watchNone      = 0
 	watchDashboard = 1
@@ -220,6 +227,10 @@ func (s *Status) events(w http.ResponseWriter, r *http.Request, alive func(*http
 	readerDone := make(chan struct{})
 	sk := &sock{levels: map[string]int{}}
 	s.addSock(sk)
+	var onClosed func()
+	if s.onSock != nil {
+		onClosed = s.onSock(r)
+	}
 	watched := make(chan string, 16) // radios whose level just went up: send their state now
 	defer func() {
 		cancel()
@@ -227,6 +238,9 @@ func (s *Status) events(w http.ResponseWriter, r *http.Request, alive func(*http
 		<-readerDone
 		s.dropSock(sk)
 		unsubscribe()
+		if onClosed != nil {
+			onClosed()
+		}
 	}()
 	go func() {
 		defer close(readerDone)
