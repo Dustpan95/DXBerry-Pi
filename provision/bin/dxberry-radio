@@ -121,7 +121,7 @@ cmd_models() {
 }
 
 main() {
-  local cmd='' args=() a rc opts
+  local cmd='' args=() a rc opts rec
   for a in "$@"; do case $a in --json) JSON=1 ;; *) args+=("$a") ;; esac; done
   if (( JSON )); then
     DXB_RADIO_WARN_FILE=$(mktemp 2> /dev/null) || DXB_RADIO_WARN_FILE=''
@@ -157,8 +157,11 @@ main() {
       [[ ${#args[@]} -eq 1 ]] || { echo "usage: dxberry-radio remove NAME" >&2; return 2; }
       dxb_radio_load || return 6; dxb_radio_scan_cache
       dxb_radio_release "${args[0]}" || return $?
+      rec=$(dxb_radio_get "${args[0]}")
       dxb_radio_remove "${args[0]}" || return $?
-      dxb_radio_apply; rc=$?; (( rc == 0 )) && json_ok
+      dxb_radio_apply; rc=$?
+      _dxb_radio_card_restore "${args[0]}" "$rec"
+      (( rc == 0 )) && json_ok
       return $rc ;;
     apply) dxb_radio_apply; rc=$?; (( rc == 0 )) && json_ok; return $rc ;;
     hotplug) dxb_radio_apply hotplug; rc=$?; (( rc == 0 )) && json_ok; return $rc ;;

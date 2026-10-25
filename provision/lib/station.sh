@@ -135,7 +135,8 @@ _dxb_station_site_prepare() {
     echo "nginx rejected the dxberry site; it is not enabled" >&2
     return 6
   fi
-  touch "$avail"
+  # the site file is stamped as current (touched) by provision_station once nginx has reloaded, so
+  # a certificate renewed in place counts as picked up only when it really was
   return 0
 }
 
@@ -257,9 +258,13 @@ provision_station() {
     dxb_status_add "station: unavailable (see FAILED STEPS)"
     return 0
   fi
-  if (( reload )) && ! "$DXB_SYSTEMCTL" reload nginx > /dev/null 2>&1; then
-    dxb_step_failed station "nginx could not reload with the dxberry site"
-    rc=1
+  if (( reload )); then
+    if "$DXB_SYSTEMCTL" reload nginx > /dev/null 2>&1; then
+      touch "$DXB_NGINX_DIR/sites-available/dxberry-dxberry.conf"
+    else
+      dxb_step_failed station "nginx could not reload with the dxberry site"
+      rc=1
+    fi
   fi
   if (( rc == 0 )) && ! _dxb_station_wait_listen; then
     dxb_step_failed station "nothing is listening on port 443 after nginx loaded the dxberry site"

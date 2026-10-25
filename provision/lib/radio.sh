@@ -17,6 +17,14 @@
 # in the /run mirror: a mark that vanished at every boot made the boot-time hotplug apply re-wire
 # every owned radio before its owner's unit was up, and fail
 : "${DXB_WIRED_FILE:=$DXB_STATE_DIR/wired.json}"
+# DXB_SYS_SOUND (default $DXB_SYSFS_ROOT/class/sound) and DXB_USB_DRIVER_DIR (default $DXB_SYSFS_ROOT/bus/usb/drivers/usb)
+# are worked out where used, so a DXB_SYSFS_ROOT set later still counts
+: "${DXB_DEV_SND:=/dev/snd}"
+: "${DXB_FUSER:=fuser}"
+: "${DXB_PS:=ps}"
+: "${DXB_SLEEP:=sleep}"
+# DXB_SYS_WRITE FILE VALUE writes VALUE into a sysfs file (the tests swap it to see or fail the write)
+: "${DXB_SYS_WRITE:=_dxb_radio_sys_write}"
 : "${DXB_APPS_DIR:=${DXB_LIB:-/opt/dxberry/lib}/apps}"
 : "${DXB_DIETPI_TXT:=/boot/dietpi.txt}"
 # DXB_RADIO_SCAN / DXB_RADIOS are the module's public interface state, filled by
@@ -240,7 +248,24 @@ dxb_radio_add() {
   jq -e 'type == "object"' <<< "$opts" > /dev/null 2>&1 || { dxb_error "options must be a JSON object"; return 2; }
   radio=$(_dxb_radio_build "$opts" '{}') || return $?
   radio=$(jq -c --argjson p "$(dxb_radio_alloc_port)" '. + {rigctld_port: $p, owner: ""}' <<< "$radio")
+  radio=$(_dxb_radio_record_card_id "$name" "$radio")
   dxb_radio_save "$(jq -c --arg n "$name" --argjson r "$radio" '.radios[$n] = $r' <<< "$DXB_RADIOS")" && dxb_info "radio $name added"
+}
+
+# _dxb_radio_record_card_id NAME RADIO: RADIO with audio.card_id set to the ALSA id the card has
+# right now - read before the udev rules rename it, so remove can put it back. Prints RADIO as it
+# is (and says so in the log) when the card is absent or its id cannot be read.
+_dxb_radio_record_card_id() {
+  local name=$1 radio=$2 path kernel id='' snd=${DXB_SYS_SOUND:-$DXB_SYSFS_ROOT/class/sound}
+  path=$(jq -r '.audio.path // empty' <<< "$radio")
+  [[ -n $path ]] || { printf '%s\n' "$radio"; return 0; }
+  kernel=$(_dxb_radio_kernel_for "$path" audio)
+  [[ -n $kernel && -f $snd/$kernel/id ]] && read -r id < "$snd/$kernel/id"
+  if [[ -z $id ]]; then
+    dxb_info "radio $name: could not read the sound card's id; it will not be restored on remove" >&2
+    printf '%s\n' "$radio"; return 0
+  fi
+  jq -c --arg id "$id" '.audio.card_id = $id' <<< "$radio"
 }
 
 dxb_radio_set() {
@@ -256,6 +281,57 @@ dxb_radio_remove() {
   dxb_radio_save "$(jq -c --arg n "$1" 'del(.radios[$n])' <<< "$DXB_RADIOS")" || return $?
   _dxb_radio_unmark_wired "$1" || dxb_warn "radio $1: could not drop its wiring mark from $DXB_WIRED_FILE"
   dxb_info "radio $1 removed"
+}
+
+_dxb_radio_sys_write() { printf '%s' "$2" > "$1"; }
+
+# _dxb_radio_card_restore NAME RECORD: run after remove has rewritten and applied the udev rules.
+# The kernel keeps a card's id until it is re-enumerated, so a card the removed radio's rule
+# renamed would stay NAME. Put the recorded id back: written into the card's sysfs id when nothing
+# holds the card, else by unbinding and rebinding its USB device; a held card is left, with a warning.
+_dxb_radio_card_restore() {
+  local name=$1 rec=$2 want=${1^^} id c cid='' card='' num devs=() pids='' real ctx dev comm drv=${DXB_USB_DRIVER_DIR:-$DXB_SYSFS_ROOT/bus/usb/drivers/usb}
+  id=$(jq -r '.audio.card_id // empty' <<< "$rec" 2> /dev/null)
+  [[ -n $id && $id != "$want" ]] || return 0
+  for c in "${DXB_SYS_SOUND:-$DXB_SYSFS_ROOT/class/sound}"/card*; do
+    [[ -e $c ]] || continue
+    cid=''; [[ -f $c/id ]] && read -r cid < "$c/id"
+    if [[ $cid == "$want" ]]; then card=$c; break; fi
+  done
+  [[ -n $card ]] || return 0
+  num=${card##*/card}
+  devs=("$DXB_DEV_SND"/pcmC"${num}"D*)
+  [[ -e ${devs[0]} ]] || devs=()
+  if (( ${#devs[@]} )); then
+    pids=$("$DXB_FUSER" "${devs[@]}" 2> /dev/null) || pids=''
+    pids=${pids//[^0-9 ]/}
+    if [[ -n ${pids//[[:space:]]/} ]]; then
+      read -r pids _ <<< "$pids"
+      comm=$("$DXB_PS" -o comm= -p "$pids" 2> /dev/null) || comm=''
+      dxb_warn "the sound card keeps the name $want until it is replugged or the Pi restarts (in use by ${comm:-process $pids})"
+      return 0
+    fi
+  fi
+  if "$DXB_SYS_WRITE" "$card/id" "$id" 2> /dev/null && { read -r cid < "$card/id"; [[ $cid == "$id" ]]; }; then
+    dxb_info "radio $name: sound card id restored to $id"
+    return 0
+  fi
+  # the id will not take: re-enumerate the USB device, which brings the card back under its own id
+  real=$(readlink -f "$card"); ctx=$(_dxb_radio_usb_ctx "$real")
+  if [[ -z $ctx ]]; then
+    dxb_warn "the sound card keeps the name $want until it is replugged or the Pi restarts"
+    return 0
+  fi
+  read -r _ _ real <<< "$ctx"
+  dev=${real##*/}
+  if "$DXB_SYS_WRITE" "$drv/unbind" "$dev" 2> /dev/null; then
+    "$DXB_SLEEP" 3
+    "$DXB_SYS_WRITE" "$drv/bind" "$dev" 2> /dev/null || dxb_warn "radio $name: could not bind USB device $dev again; replug it"
+    dxb_info "radio $name: USB device $dev re-enumerated to restore the sound card id $id"
+  else
+    dxb_warn "the sound card keeps the name $want until it is replugged or the Pi restarts"
+  fi
+  return 0
 }
 
 _dxb_radio_set_owner() { dxb_radio_save "$(jq -c --arg n "$1" --arg a "$2" '.radios[$n].owner = $a' <<< "$DXB_RADIOS")"; }

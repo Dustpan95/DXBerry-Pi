@@ -565,7 +565,7 @@ up_station_env() {
 up_sc() { echo "systemctl $*" >> "$TEST_TMP/calls"; return 0; }
 up_nginx() { echo "nginx $*" >> "$TEST_TMP/calls"; return 0; }
 
-test_update_rollback_to_a_tree_without_the_station_tears_it_down() {
+test_update_rollback_to_a_tree_without_the_station_tears_it_down() (
   up_env; up_provision_stub; up_station_env
   up_tree "$DXB_OPT" 0.5.0-rc1
   up_tree "$DXB_OPT.prev" 0.4.0
@@ -579,9 +579,9 @@ test_update_rollback_to_a_tree_without_the_station_tears_it_down() {
   [[ -e $DXB_NGINX_DIR/sites-available/dxberry-pat.conf ]] || _fail "another site was removed"
   # before the restored tree's setup ran
   assert_contains "$(cat "$TEST_TMP/provision-ran")" "LIB=$DXB_OPT/lib"
-}
+)
 
-test_update_rollback_to_a_tree_with_the_station_leaves_it_alone() {
+test_update_rollback_to_a_tree_with_the_station_leaves_it_alone() (
   up_env; up_provision_stub; up_station_env
   up_tree "$DXB_OPT" 0.5.0-rc2
   up_tree "$DXB_OPT.prev" 0.5.0-rc1
@@ -589,6 +589,17 @@ test_update_rollback_to_a_tree_with_the_station_leaves_it_alone() {
   assert_ok dxb_update_apply_rollback > /dev/null 2>&1
   assert_eq "$(grep -cE '^(systemctl|nginx)' "$TEST_TMP/calls")" "0"
   [[ -e $DXB_SYSTEMD_DIR/dxberryd.service && -L $DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf ]] || _fail "the station was torn down"
+)
+
+# up_station_env's stand-ins stay inside those tests' subshells
+test_update_station_env_does_not_leak_into_later_tests() {
+  local v before after
+  local -a vars=(DXB_SYSTEMCTL DXB_NGINX DXB_NGINX_DIR DXB_SYSTEMD_DIR)
+  before=$(for v in "${vars[@]}"; do printf '%s=%s;' "$v" "${!v-unset}"; done)
+  test_update_rollback_to_a_tree_without_the_station_tears_it_down > /dev/null 2>&1
+  test_update_rollback_to_a_tree_with_the_station_leaves_it_alone > /dev/null 2>&1
+  after=$(for v in "${vars[@]}"; do printf '%s=%s;' "$v" "${!v-unset}"; done)
+  assert_eq "$after" "$before"
 }
 
 test_update_rollback_swaps_back_and_forth() {

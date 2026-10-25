@@ -35,6 +35,7 @@ sn_systemctl() {
   fx_systemctl "$@"; rc=$?
   if [[ $1 == enable && $2 == --now ]]; then echo "$3" >> "$TEST_TMP/active"; fi
   if [[ $1 == restart && -e $TEST_TMP/restart-fails ]]; then return 1; fi
+  if [[ $1 == reload && -e $TEST_TMP/reload-fails ]]; then return 1; fi
   if [[ $* == "disable --now cockpit.socket" && -e $TEST_TMP/cockpit-stays ]]; then return 1; fi
   return "$rc"
 }
@@ -325,6 +326,25 @@ test_station_does_not_load_the_site_when_cockpit_will_not_stop() {
   assert_contains "$(cat "$TEST_TMP/failed")" "could not stop cockpit.socket"
   assert_not_contains "$(sn_calls)" "purge"
   [[ ! -e $DXB_NGINX_DIR/sites-enabled/dxberry-dxberry.conf ]] || _fail "the station site was loaded over a running Cockpit"
+}
+
+# a certificate renewed in place makes the site stale; the site counts as current only once nginx
+# has reloaded, so a failed reload leaves it stale and the next run tries again
+test_station_site_stamp_only_after_reload() {
+  sn_env
+  sn_run
+  local avail=$DXB_NGINX_DIR/sites-available/dxberry-dxberry.conf
+  touch -d '-1 hour' "$avail"
+  : > "$TEST_TMP/reload-fails"
+  : > "$TEST_TMP/calls"
+  sn_run
+  assert_contains "$(cat "$TEST_TMP/failed")" "nginx could not reload"
+  [[ $DXB_STATION_TLS/station.crt -nt $avail ]] || _fail "the site was stamped as current although nginx did not reload"
+  rm -f "$TEST_TMP/reload-fails"
+  : > "$TEST_TMP/calls"
+  sn_run
+  assert_contains "$(sn_calls)" "systemctl reload nginx"
+  [[ ! $DXB_STATION_TLS/station.crt -nt $avail ]] || _fail "the site is still stale after a successful reload"
 }
 
 test_station_stamps_the_binary_only_after_a_successful_restart() {
