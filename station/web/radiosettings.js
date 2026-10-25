@@ -9,7 +9,10 @@
       opt.headers = { "Content-Type": "application/json" };
       opt.body = JSON.stringify(body);
     }
-    return fetch(path, opt).then(r => r.json());
+    return fetch(path, opt).then(r => {
+      if (r.status === 401 || r.status === 403) return Promise.reject({ login: true });
+      return r.json();
+    });
   }
 
   function node(tag, attrs, ...kids) {
@@ -30,6 +33,9 @@
     return "The station did not accept that.";
   }
 
+  // failed: the words for a request that did not come back as an answer.
+  const failed = ex => (ex && ex.login ? "Your session has ended; log in again." : "Could not reach the station.");
+
   function section(name) {
     const base = "/api/radio/" + encodeURIComponent(name);
     const swr = numberField("rs-swr", "SWR limit", { min: "1.5", max: "10", step: "0.1", value: "3" },
@@ -46,20 +52,29 @@
       if (typeof s.swr_limit === "number") swr.input.value = String(s.swr_limit);
       if (typeof s.ptt_timeout_s === "number") ptt.input.value = String(s.ptt_timeout_s);
       probed.textContent = s.probed ? `Capabilities last read ${s.probed}.` : "Capabilities not re-read since setup.";
-    }, () => say("Could not read the station settings.", true));
+    }, ex => say(ex && ex.login ? failed(ex) : "Could not read the station settings.", true));
     load();
 
-    save.addEventListener("click", () => {
+    const doSave = () => {
       const body = { swr_limit: Number(swr.input.value), ptt_timeout_s: Number(ptt.input.value) };
       call("POST", base + "/settings", body).then(
         out => say(out && out.ok ? "Station settings saved." : refusal(out), !(out && out.ok)),
-        () => say("Could not reach the station.", true));
-    });
+        ex => say(failed(ex), true));
+    };
+    save.addEventListener("click", doSave);
+    // Enter in a number field saves these settings; it must not submit the radio form around them
+    for (const f of [swr.input, ptt.input]) {
+      f.addEventListener("keydown", e => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        doSave();
+      });
+    }
     probe.addEventListener("click", () => {
       say("Reading the radio...", false);
       call("POST", base + "/reprobe", {}).then(out => {
         if (out && out.ok) { say("Capabilities re-read.", false); load(); } else say(refusal(out), true);
-      }, () => say("Could not reach the station.", true));
+      }, ex => say(failed(ex), true));
     });
 
     return node("fieldset", { class: "station-settings" }, node("legend", {}, "Station settings"),

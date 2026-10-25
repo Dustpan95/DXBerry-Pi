@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -80,5 +81,41 @@ func TestSettingsRoundTrip(t *testing.T) {
 	got = s.Get("radio1")
 	if got.SWRLimit != 2.5 || got.PTTTimeoutS != 90 || !got.Probed.Equal(at2) {
 		t.Fatalf("after SetProbed %+v", got)
+	}
+}
+
+func TestSettingsConcurrentSetAndProbed(t *testing.T) {
+	s := &Store{Dir: t.TempDir()}
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			if err := s.Modify("radio1", func(r *RadioSettings) { r.SWRLimit = 2.5; r.PTTTimeoutS = 60 + i }); err != nil {
+				t.Error(err)
+			}
+		}(i)
+		go func() {
+			defer wg.Done()
+			if err := s.SetProbed("radio1", time.Now()); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	got := s.Get("radio1")
+	if got.SWRLimit != 2.5 || got.PTTTimeoutS < 60 || got.Probed.IsZero() {
+		t.Fatalf("a writer lost an update: %+v", got)
+	}
+	// a stale temp file from a crash is cleaned by the next write
+	stale := filepath.Join(s.Dir, ".radio1-123.tmp")
+	if err := os.WriteFile(stale, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set("radio1", Defaults()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); err == nil {
+		t.Fatal("stale temp file kept")
 	}
 }

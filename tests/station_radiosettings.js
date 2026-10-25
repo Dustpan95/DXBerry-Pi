@@ -23,11 +23,12 @@ const calls = [];
 let settingsReply = { swr_limit: 2.5, ptt_timeout_s: 90, probed: null };
 let saveReply = { ok: true };
 let probeReply = { ok: true };
+let httpStatus = 200;
 const fetch = (url, opt) => {
   calls.push({ url, method: opt.method, credentials: opt.credentials, body: opt.body || null });
   let r = settingsReply;
   if (opt.method === "POST") r = url.endsWith("/reprobe") ? probeReply : saveReply;
-  return Promise.resolve({ ok: true, json: () => Promise.resolve(r) });
+  return Promise.resolve({ ok: true, status: httpStatus, json: () => Promise.resolve(r) });
 };
 const ctx = { document: { createElement: (t) => new Elem(t) }, fetch, JSON, Promise, Object, String, Number, encodeURIComponent };
 ctx.window = ctx;
@@ -69,5 +70,22 @@ const flush = () => new Promise((r) => setImmediate(r));
   sec.find("rs-reprobe").listeners.click();
   await flush();
   out.probeOk = msg.textContent;
+
+  // Enter in a number field saves and is kept from submitting the radio form
+  let prevented = false;
+  const before = calls.length;
+  swr.value = "3"; saveReply = { ok: true };
+  swr.listeners.keydown({ key: "Tab", preventDefault() { prevented = true; } });
+  out.tabSaved = calls.length - before;
+  swr.listeners.keydown({ key: "Enter", preventDefault() { prevented = true; } });
+  await flush();
+  out.enterSaved = calls.length - before;
+  out.enterPrevented = prevented;
+
+  // an expired session says so
+  httpStatus = 401;
+  sec.find("rs-save").listeners.click();
+  await flush();
+  out.expiredMsg = msg.textContent;
   console.log(JSON.stringify(out));
 })().catch((e) => { console.error(e); process.exit(1); });

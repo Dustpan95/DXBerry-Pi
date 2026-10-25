@@ -321,6 +321,22 @@ func (m *Manager) Caps(name string) (Caps, bool) {
 	return e.caps, e.have
 }
 
+// SetCaps replaces a radio's capabilities (a re-probe): the manager's answer and the poller's
+// both change. It reports false for a radio the manager does not run.
+func (m *Manager) SetCaps(name string, caps Caps) bool {
+	m.mu.Lock()
+	e, ok := m.entries[name]
+	m.mu.Unlock()
+	if !ok {
+		return false
+	}
+	e.mu.Lock()
+	e.caps, e.have = caps, true
+	e.mu.Unlock()
+	e.poller.SetCaps(caps)
+	return true
+}
+
 // Client returns the radio's rigctld client (false when the connection is not
 // a *Client, as in tests).
 func (m *Manager) Client(name string) (*Client, bool) {

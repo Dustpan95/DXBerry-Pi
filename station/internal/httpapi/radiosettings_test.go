@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 
 type rsProbe struct {
 	connected bool
+	absent    bool
 	caps      rig.Caps
 	err       error
 	did       int
@@ -19,7 +21,7 @@ type rsProbe struct {
 	used      map[string]rig.Caps
 }
 
-func (p *rsProbe) Connected(name string) bool { return p.connected }
+func (p *rsProbe) State(name string) (bool, bool) { return !p.absent, p.connected }
 func (p *rsProbe) Discover(ctx context.Context, name string) (rig.Caps, error) {
 	p.did++
 	return p.caps, p.err
@@ -60,8 +62,19 @@ func TestRadioSettingsRoutes(t *testing.T) {
 		t.Fatalf("a refused save changed the file: %+v", g)
 	}
 	rec = rwDo(h, "POST", "/api/radio/radio1/settings", `not json`, nil)
-	if !strings.Contains(rec.Body.String(), `"ok":false`) {
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), `"ok":false`) {
 		t.Fatalf("junk body: %d %s", rec.Code, rec.Body)
+	}
+	rec = rwDo(h, "POST", "/api/radio/radio1/settings", `{"swr_limit":3,"ptt_timeout_s":90.5}`, nil)
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), "whole number of seconds") {
+		t.Fatalf("fraction: %d %s", rec.Code, rec.Body)
+	}
+	rec = rwDo(h, "POST", "/api/radio/radio1/settings", `{"swr_limit":3,"ptt_timeout_s":90,"extra":1}`, nil)
+	if rec.Code != 400 {
+		t.Fatalf("unknown field: %d %s", rec.Code, rec.Body)
+	}
+	if g := st.Get("radio1"); g.SWRLimit != 2.5 || g.PTTTimeoutS != 90 {
+		t.Fatalf("a refused body changed the file: %+v", g)
 	}
 }
 
@@ -79,8 +92,8 @@ func TestRadioSettingsGateAnd404(t *testing.T) {
 	if p.did != 0 {
 		t.Fatal("an unknown radio was probed")
 	}
-	if es := st.Get("nope"); es.SWRLimit != 3 {
-		t.Fatal("defaults")
+	if es, _ := os.ReadDir(st.Dir); len(es) != 0 {
+		t.Fatalf("a 404 touched the settings directory: %v", es)
 	}
 	h, _, _ = settingsServer(t, false)
 	for _, tc := range []struct{ m, path string }{
@@ -112,6 +125,13 @@ func TestReprobeRoute(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"ok":false`) || !strings.Contains(rec.Body.String(), want) || p.did != 0 {
 		t.Fatalf("disconnected: %s did=%d", rec.Body, p.did)
 	}
+	// no poller at all: the same words the intents use
+	p.absent = true
+	rec = rwDo(h, "POST", "/api/radio/radio1/reprobe", "", nil)
+	if rec.Code != 409 || !strings.Contains(rec.Body.String(), "this radio has no rig control") {
+		t.Fatalf("absent: %d %s", rec.Code, rec.Body)
+	}
+	p.absent = false
 	// a failed discovery is a refusal and stores nothing new
 	p.connected = true
 	p.err = context.DeadlineExceeded

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -16,7 +15,8 @@ import (
 
 // Prober is what the re-probe route needs from the rig layer.
 type Prober interface {
-	Connected(name string) bool
+	// State says whether the manager runs the radio at all, and whether rigctld answers.
+	State(name string) (present, connected bool)
 	Discover(ctx context.Context, name string) (rig.Caps, error)
 	Store(model string, c rig.Caps) error
 	Use(name string, c rig.Caps)
@@ -27,13 +27,15 @@ type managerProbe struct {
 	cache rig.CapsCache
 }
 
-// ManagerProbe adapts a rig.Manager and the caps cache to Prober. Use reaches the radio's
-// poller (rig.Manager has no SetCaps), so Manager.Caps keeps the old answer until restart.
+// ManagerProbe adapts a rig.Manager and the caps cache to Prober.
 func ManagerProbe(m *rig.Manager, cache rig.CapsCache) Prober { return managerProbe{m, cache} }
 
-func (p managerProbe) Connected(name string) bool {
+func (p managerProbe) State(name string) (bool, bool) {
 	pl, ok := p.m.Radio(name)
-	return ok && pl.State().Connected
+	if !ok {
+		return false, false
+	}
+	return true, pl.State().Connected
 }
 
 func (p managerProbe) Discover(ctx context.Context, name string) (rig.Caps, error) {
@@ -46,11 +48,7 @@ func (p managerProbe) Discover(ctx context.Context, name string) (rig.Caps, erro
 
 func (p managerProbe) Store(model string, c rig.Caps) error { return p.cache.Store(model, c) }
 
-func (p managerProbe) Use(name string, c rig.Caps) {
-	if pl, ok := p.m.Radio(name); ok {
-		pl.SetCaps(c)
-	}
-}
+func (p managerProbe) Use(name string, c rig.Caps) { p.m.SetCaps(name, c) }
 
 // RadioSettingsAPI serves /api/radio/{name}/settings and /api/radio/{name}/reprobe.
 type RadioSettingsAPI struct {
@@ -110,17 +108,26 @@ func (a *RadioSettingsAPI) set(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var b settingsBody
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&b); err != nil && !errors.Is(err, io.EOF) || b.SWRLimit == nil || b.PTTTimeoutS == nil {
-		writeJSON(w, http.StatusOK, rig.Result{Reason: "the request was not understood", Fix: "reload the page"})
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&b); err != nil {
+		var te *json.UnmarshalTypeError
+		if errors.As(err, &te) && te.Field == "ptt_timeout_s" {
+			writeJSON(w, http.StatusBadRequest, rig.Result{Reason: "the PTT timeout must be a whole number of seconds", Fix: "enter a whole number between 30 and 600"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, badBody())
 		return
 	}
-	s := a.Settings.Get(name)
-	s.SWRLimit, s.PTTTimeoutS = *b.SWRLimit, *b.PTTTimeoutS
-	if err := s.Validate(); err != nil {
+	if b.SWRLimit == nil || b.PTTTimeoutS == nil {
+		writeJSON(w, http.StatusBadRequest, badBody())
+		return
+	}
+	if err := (settings.RadioSettings{SWRLimit: *b.SWRLimit, PTTTimeoutS: *b.PTTTimeoutS}).Validate(); err != nil {
 		writeJSON(w, http.StatusOK, rig.Result{Reason: err.Error(), Fix: "enter a value in that range"})
 		return
 	}
-	if err := a.Settings.Set(name, s); err != nil {
+	if err := a.Settings.Modify(name, func(s *settings.RadioSettings) { s.SWRLimit, s.PTTTimeoutS = *b.SWRLimit, *b.PTTTimeoutS }); err != nil {
 		log.Printf("radio settings: %s: %v", name, err)
 		writeJSON(w, http.StatusOK, rig.Result{Reason: "the settings could not be saved: " + err.Error(), Fix: "check the station state directory"})
 		return
@@ -134,7 +141,12 @@ func (a *RadioSettingsAPI) reprobe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rec, _ := a.Radios.Get(name)
-	if !a.Probe.Connected(name) {
+	present, connected := a.Probe.State(name)
+	if !present {
+		writeJSON(w, http.StatusConflict, rig.Result{Reason: "this radio has no rig control", Fix: "give the radio a rig control port in its settings"})
+		return
+	}
+	if !connected {
 		writeJSON(w, http.StatusOK, rig.Result{Reason: "rig control unreachable; the radio's rigctld is restarting", Fix: "wait a few seconds"})
 		return
 	}

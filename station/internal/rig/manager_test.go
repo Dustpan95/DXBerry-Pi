@@ -145,6 +145,23 @@ func TestManagerUsesCachedCaps(t *testing.T) {
 	}
 }
 
+func TestManagerSetCapsReplacesCaps(t *testing.T) {
+	r := newMgRig(t, radio("hf", 4532, 3073))
+	r.run()
+	plEventually(t, "caps for hf", func() bool { _, ok := r.m.Caps("hf"); return ok })
+	if !r.m.SetCaps("hf", Caps{ModelName: "Reprobed"}) {
+		t.Fatal("SetCaps refused a known radio")
+	}
+	if c, ok := r.m.Caps("hf"); !ok || c.ModelName != "Reprobed" {
+		t.Fatalf("Caps after SetCaps: %+v %v", c, ok)
+	}
+	p, _ := r.m.Radio("hf")
+	plEventually(t, "poller has the new caps", func() bool { c := p.State().Caps; return c != nil && c.ModelName == "Reprobed" })
+	if r.m.SetCaps("nope", Caps{}) {
+		t.Fatal("SetCaps accepted an unknown radio")
+	}
+}
+
 func TestManagerRetriesDiscoveryWithBackoff(t *testing.T) {
 	r := newMgRig(t, radio("hf", 4532, 3073))
 	r.tune = func(l *plLink) { l.errs["dump_caps"] = ErrDeadline }

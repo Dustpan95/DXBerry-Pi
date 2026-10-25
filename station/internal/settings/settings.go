@@ -50,7 +50,8 @@ func (s RadioSettings) Validate() error {
 type Store struct {
 	Dir string
 
-	mu     sync.Mutex
+	mu     sync.Mutex // writers
+	logMu  sync.Mutex
 	logged map[string]bool
 }
 
@@ -60,6 +61,11 @@ func (st *Store) Get(name string) RadioSettings {
 	if !nameRe.MatchString(name) {
 		return Defaults()
 	}
+	return st.read(name)
+}
+
+// read is Get for a validated name; it takes no lock the writers hold.
+func (st *Store) read(name string) RadioSettings {
 	b, err := os.ReadFile(filepath.Join(st.Dir, name+".json"))
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -82,8 +88,8 @@ func (st *Store) Get(name string) RadioSettings {
 }
 
 func (st *Store) warn(name string, err error) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
+	st.logMu.Lock()
+	defer st.logMu.Unlock()
 	if st.logged == nil {
 		st.logged = map[string]bool{}
 	}
@@ -94,7 +100,7 @@ func (st *Store) warn(name string, err error) {
 	log.Printf("settings: radio %s: using the defaults: %v", name, err)
 }
 
-// Set validates s and writes it atomically (temp file, then rename), mode 0600.
+// Set validates s and writes it atomically, mode 0600.
 func (st *Store) Set(name string, s RadioSettings) error {
 	if !nameRe.MatchString(name) {
 		return fmt.Errorf("no such radio")
@@ -107,18 +113,29 @@ func (st *Store) Set(name string, s RadioSettings) error {
 	return st.write(name, s)
 }
 
-// SetProbed records when the radio's capabilities were probed, keeping its limits.
-func (st *Store) SetProbed(name string, at time.Time) error {
+// Modify reads the radio's settings, lets fn change them, validates and writes the result, all
+// under the store's lock, so two writers never overwrite each other's field.
+func (st *Store) Modify(name string, fn func(*RadioSettings)) error {
 	if !nameRe.MatchString(name) {
 		return fmt.Errorf("no such radio")
 	}
-	s := st.Get(name)
-	s.Probed = at
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	s := st.read(name)
+	fn(&s)
+	if err := s.Validate(); err != nil {
+		return err
+	}
 	return st.write(name, s)
 }
 
+// SetProbed records when the radio's capabilities were probed, keeping its limits.
+func (st *Store) SetProbed(name string, at time.Time) error {
+	return st.Modify(name, func(s *RadioSettings) { s.Probed = at })
+}
+
+// write needs st.mu. The temp file is synced before the rename; stale temp files from an
+// earlier crash are removed first.
 func (st *Store) write(name string, s RadioSettings) error {
 	if err := os.MkdirAll(st.Dir, 0o700); err != nil {
 		return err
@@ -127,7 +144,12 @@ func (st *Store) write(name string, s RadioSettings) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(st.Dir, "."+name+"-*.tmp")
+	if stale, _ := filepath.Glob(filepath.Join(st.Dir, "."+name+"-*.tmp")); len(stale) > 0 {
+		for _, p := range stale {
+			os.Remove(p)
+		}
+	}
+	f, err := os.CreateTemp(st.Dir, "."+name+"-*.tmp") // mode 0600
 	if err != nil {
 		return err
 	}
@@ -137,10 +159,11 @@ func (st *Store) write(name string, s RadioSettings) error {
 			f.Close()
 			return err
 		}
-		if err := f.Close(); err != nil {
+		if err := f.Sync(); err != nil {
+			f.Close()
 			return err
 		}
-		if err := os.Chmod(tmp, 0o600); err != nil {
+		if err := f.Close(); err != nil {
 			return err
 		}
 		return os.Rename(tmp, filepath.Join(st.Dir, name+".json"))
