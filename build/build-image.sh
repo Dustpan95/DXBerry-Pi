@@ -107,8 +107,9 @@ check_tree() {
     fi
   done
   for f in "$ROOT"/provision/bin/* "$ROOT"/provision/lib/*.sh "$ROOT"/provision/lib/apps/*.sh "$ROOT"/boot/*.sh; do
-    # dxberryd is the built Go binary, not a script
+    # dxberryd is the built Go binary, not a script; anything else without a #! line is not one either
     [[ $f == "$ROOT/provision/bin/dxberryd" ]] && continue
+    [[ -f $f ]] && [[ $(head -c 2 "$f" 2> /dev/null) != '#!' ]] && continue
     if [[ -f $f ]] && ! bash -n "$f"; then
       echo "syntax error in ${f#"$ROOT"/}" >&2
       ok=0

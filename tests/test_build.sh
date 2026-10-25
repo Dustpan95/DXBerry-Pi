@@ -76,8 +76,9 @@ test_build_ships_the_station_files() {
 }
 
 # bt_hide_bin / bt_restore_bin: the built service binary is git-ignored; a test controls whether one is there.
-bt_hide_bin() { local b=$DXB_ROOT/provision/bin/dxberryd; if [[ -e $b ]]; then mv -f "$b" "$b.bt-keep"; fi; }
-bt_restore_bin() { local b=$DXB_ROOT/provision/bin/dxberryd; rm -f "$b"; if [[ -e $b.bt-keep ]]; then mv -f "$b.bt-keep" "$b"; fi; }
+# The real binary is parked OUTSIDE provision/bin: the tree check runs bash -n over provision/bin/*.
+bt_hide_bin() { local b=$DXB_ROOT/provision/bin/dxberryd; if [[ -e $b ]]; then mv -f "$b" "$TEST_TMP/dxberryd.bt-keep"; fi; }
+bt_restore_bin() { local b=$DXB_ROOT/provision/bin/dxberryd; rm -f "$b"; if [[ -e $TEST_TMP/dxberryd.bt-keep ]]; then mv -f "$TEST_TMP/dxberryd.bt-keep" "$b"; fi; }
 
 test_build_tree_check_lists_station_files() {
   local b=$DXB_ROOT/provision/bin/dxberryd out
