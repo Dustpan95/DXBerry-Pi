@@ -68,3 +68,9 @@ jobs:
         run: bash station/build.sh out/dxberryd
       - name: Show the binary
         run: file station/out/dxberryd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dxberryd-arm64
+          path: station/out/dxberryd
+          if-no-files-found: error
+          retention-days: 7
