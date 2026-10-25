@@ -3,7 +3,9 @@ package status
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/radios"
@@ -19,6 +21,146 @@ type RadioSource interface {
 
 // SetRadios makes events sockets also carry the radios part. Call it before serving.
 func (s *Status) SetRadios(src RadioSource) { s.radios = src }
+
+// RigUpdate is one rig delta from the hub. Package rig declares the same
+// unnamed struct type (Link: the connection to the radio went up or down),
+// so the two packages meet without importing each other.
+type RigUpdate = struct {
+	Radio string
+	Data  []byte
+	Link  bool
+}
+
+// RigHub is what the events socket needs from the rig layer (rig.Manager).
+// Levels are plain ints: 0 none, 1 dashboard, 2 page.
+type RigHub interface {
+	SetWatch(radio string, level int)
+	Snapshot(radio string) ([]byte, bool)
+	Subscribe() (<-chan RigUpdate, func())
+}
+
+// SetRig connects the rig layer; without it watch messages are ignored.
+func (s *Status) SetRig(h RigHub) { s.hub = h }
+
+const (
+	watchNone      = 0
+	watchDashboard = 1
+	watchPage      = 2
+)
+
+// sock is one open events socket's per-radio watch levels.
+type sock struct {
+	mu     sync.Mutex
+	levels map[string]int
+	warned bool // an ignored watch has been logged for this socket
+}
+
+func (k *sock) level(radio string) int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.levels[radio]
+}
+
+func (s *Status) addSock(k *sock) {
+	s.smu.Lock()
+	if s.socks == nil {
+		s.socks = map[*sock]struct{}{}
+	}
+	s.socks[k] = struct{}{}
+	s.smu.Unlock()
+}
+
+// maxLevel is the highest level any open socket holds for radio; s.smu held.
+func (s *Status) maxLevel(radio string) int {
+	m := watchNone
+	for k := range s.socks {
+		if l := k.level(radio); l > m {
+			m = l
+		}
+	}
+	return m
+}
+
+// setLevel records a socket's level for a radio and tells the hub the new max.
+func (s *Status) setLevel(k *sock, radio string, level int) {
+	s.smu.Lock()
+	defer s.smu.Unlock()
+	k.mu.Lock()
+	if level == watchNone {
+		delete(k.levels, radio)
+	} else {
+		k.levels[radio] = level
+	}
+	k.mu.Unlock()
+	s.hub.SetWatch(radio, s.maxLevel(radio))
+}
+
+// dropSock forgets a closed socket's contributions.
+func (s *Status) dropSock(k *sock) {
+	s.smu.Lock()
+	defer s.smu.Unlock()
+	delete(s.socks, k)
+	k.mu.Lock()
+	var held []string
+	for r := range k.levels {
+		held = append(held, r)
+	}
+	k.mu.Unlock()
+	if s.hub == nil {
+		return
+	}
+	for _, r := range held {
+		s.hub.SetWatch(r, s.maxLevel(r))
+	}
+}
+
+func (s *Status) knownRadio(name string) bool {
+	if s.radios == nil {
+		return false
+	}
+	for _, r := range s.radios.List() {
+		if r.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// handleFrame acts on one client frame; only watch messages mean anything.
+// It returns the radio whose level was raised, for an immediate state.
+func (s *Status) handleFrame(k *sock, data []byte) (watched string) {
+	var m struct {
+		Type, Radio, Level string
+	}
+	if json.Unmarshal(data, &m) != nil || m.Type != "watch" || s.hub == nil {
+		return ""
+	}
+	level, ok := map[string]int{"none": watchNone, "dashboard": watchDashboard, "page": watchPage}[m.Level]
+	if !ok || !s.knownRadio(m.Radio) {
+		k.mu.Lock()
+		first := !k.warned
+		k.warned = true
+		k.mu.Unlock()
+		if first {
+			slog.Warn("events socket sent a watch for an unknown radio or level; ignored", "radio", m.Radio, "level", m.Level)
+		}
+		return ""
+	}
+	s.setLevel(k, m.Radio, level)
+	if level == watchNone {
+		return ""
+	}
+	return m.Radio
+}
+
+func rigMessage(radio string, data []byte) []byte {
+	b, _ := json.Marshal(struct {
+		Type  string          `json:"type"`
+		Radio string          `json:"radio"`
+		Data  json.RawMessage `json:"data"`
+	}{"rig", radio, data})
+	return b
+}
 
 func radiosMessage(list []radios.Radio) []byte {
 	if list == nil {
@@ -76,18 +218,29 @@ func (s *Status) events(w http.ResponseWriter, r *http.Request, alive func(*http
 	ctx, cancel := context.WithCancel(r.Context())
 	updates, unsubscribe := s.Subscribe()
 	readerDone := make(chan struct{})
+	sk := &sock{levels: map[string]int{}}
+	s.addSock(sk)
+	watched := make(chan string, 16) // radios whose level just went up: send their state now
 	defer func() {
 		cancel()
 		_ = ws.CloseNow() // ends the reader's Read
 		<-readerDone
+		s.dropSock(sk)
 		unsubscribe()
 	}()
 	go func() {
 		defer close(readerDone)
 		for {
-			if _, _, err := ws.Read(ctx); err != nil {
+			_, data, err := ws.Read(ctx)
+			if err != nil {
 				cancel()
 				return
+			}
+			if radio := s.handleFrame(sk, data); radio != "" {
+				select {
+				case watched <- radio:
+				default: // the writer is behind; the next delta carries the state
+				}
 			}
 		}
 	}()
@@ -96,6 +249,12 @@ func (s *Status) events(w http.ResponseWriter, r *http.Request, alive func(*http
 		wctx, c := context.WithTimeout(ctx, writeTimeout)
 		defer c()
 		return ws.Write(wctx, websocket.MessageText, b) == nil
+	}
+	var rigUpdates <-chan RigUpdate // nil (never ready) when no rig layer is set
+	if s.hub != nil {
+		var stop func()
+		rigUpdates, stop = s.hub.Subscribe()
+		defer stop()
 	}
 	if !send(s.message()) {
 		return
@@ -124,6 +283,18 @@ func (s *Status) events(w http.ResponseWriter, r *http.Request, alive func(*http
 		case l := <-radioUpdates:
 			if !send(radiosMessage(l)) {
 				return
+			}
+		case u := <-rigUpdates:
+			if u.Link || sk.level(u.Radio) > watchNone { // a connection change goes to every socket
+				if !send(rigMessage(u.Radio, u.Data)) {
+					return
+				}
+			}
+		case radio := <-watched:
+			if data, ok := s.hub.Snapshot(radio); ok && sk.level(radio) > watchNone {
+				if !send(rigMessage(radio, data)) {
+					return
+				}
 			}
 		case <-check.C:
 			if !alive(r) {

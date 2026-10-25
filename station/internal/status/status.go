@@ -36,6 +36,10 @@ type Status struct {
 	run    func(ctx context.Context) (string, error)
 	clock  Clock
 	radios RadioSource // nil until SetRadios
+	hub    RigHub      // nil until SetRig
+
+	smu   sync.Mutex // guards socks and the order of hub interest updates
+	socks map[*sock]struct{}
 
 	mu      sync.Mutex
 	raw     json.RawMessage // the last answer that parsed; nil before the first

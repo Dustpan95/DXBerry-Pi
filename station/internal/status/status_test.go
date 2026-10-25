@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -503,5 +504,164 @@ func TestEventsCarriesRadios(t *testing.T) {
 	}
 	if !strings.Contains(string(m["data"]), `"Two"`) {
 		t.Fatalf("change not published: %s", m["data"])
+	}
+}
+
+// ---- watch messages and rig deltas ---------------------------------------------------------------
+
+type fakeRadios struct{ names []string }
+
+func (f fakeRadios) List() []radios.Radio {
+	var out []radios.Radio
+	for _, n := range f.names {
+		out = append(out, radios.Radio{Name: n})
+	}
+	return out
+}
+func (fakeRadios) Subscribe() <-chan []radios.Radio  { return make(chan []radios.Radio) }
+func (fakeRadios) Unsubscribe(<-chan []radios.Radio) {}
+
+type fakeHub struct {
+	mu    sync.Mutex
+	sets  []string // "radio=level", in order
+	state map[string]string
+	chs   []chan RigUpdate
+}
+
+func newFakeHub() *fakeHub {
+	return &fakeHub{state: map[string]string{"a": `{"freq":1}`}}
+}
+
+func (h *fakeHub) SetWatch(radio string, level int) {
+	h.mu.Lock()
+	h.sets = append(h.sets, radio+"="+strconv.Itoa(level))
+	h.mu.Unlock()
+}
+
+func (h *fakeHub) Snapshot(radio string) ([]byte, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	s, ok := h.state[radio]
+	return []byte(s), ok
+}
+
+func (h *fakeHub) Subscribe() (<-chan RigUpdate, func()) {
+	ch := make(chan RigUpdate, 16)
+	h.mu.Lock()
+	h.chs = append(h.chs, ch)
+	h.mu.Unlock()
+	return ch, func() {}
+}
+
+// push delivers an update to every subscribed socket.
+func (h *fakeHub) push(u RigUpdate) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, ch := range h.chs {
+		ch <- u
+	}
+}
+
+func (h *fakeHub) last() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.sets) == 0 {
+		return ""
+	}
+	return h.sets[len(h.sets)-1]
+}
+
+func (h *fakeHub) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.sets)
+}
+
+func watchMsg(t *testing.T, c *websocket.Conn, radio, level string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	b, _ := json.Marshal(map[string]string{"type": "watch", "radio": radio, "level": level})
+	if err := c.Write(ctx, websocket.MessageText, b); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func rigSetup(t *testing.T) (*Status, *fakeHub, *httptest.Server) {
+	t.Helper()
+	r := newRig(t)
+	h := newFakeHub()
+	r.st.SetRadios(fakeRadios{names: []string{"a", "b"}})
+	r.st.SetRig(h)
+	return r.st, h, serve(t, r.st, true)
+}
+
+func openSock(t *testing.T, ts *httptest.Server) *websocket.Conn {
+	t.Helper()
+	c, err := dial(t, ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readMsg(t, c) // status
+	readMsg(t, c) // radios
+	return c
+}
+
+func TestEventsWatchDerivesMaxInterest(t *testing.T) {
+	st, h, ts := rigSetup(t)
+	c1, c2 := openSock(t, ts), openSock(t, ts)
+
+	watchMsg(t, c1, "a", "dashboard")
+	eventually(t, "dashboard", func() bool { return h.last() == "a=1" })
+	watchMsg(t, c2, "a", "page")
+	eventually(t, "page", func() bool { return h.last() == "a=2" })
+	watchMsg(t, c2, "a", "none")
+	eventually(t, "back to dashboard", func() bool { return h.last() == "a=1" })
+	watchMsg(t, c2, "a", "page")
+	eventually(t, "page again", func() bool { return h.last() == "a=2" })
+
+	// a closing socket drops its contribution
+	c2.CloseNow()
+	eventually(t, "dashboard after close", func() bool { return h.last() == "a=1" })
+	c1.CloseNow()
+	eventually(t, "none after both closed", func() bool { return h.last() == "a=0" && st.Listeners() == 0 })
+}
+
+func TestEventsWatchIgnoresUnknownRadioAndLevel(t *testing.T) {
+	_, h, ts := rigSetup(t)
+	c := openSock(t, ts)
+	watchMsg(t, c, "nope", "page")
+	watchMsg(t, c, "a", "loud")
+	watchMsg(t, c, "a", "dashboard") // a good one after the bad ones still works
+	eventually(t, "the good watch", func() bool { return h.last() == "a=1" })
+	if h.count() != 1 {
+		t.Fatalf("bad watches reached the hub: %v", h.sets)
+	}
+}
+
+func TestEventsRigDeltasFollowTheSocketsLevel(t *testing.T) {
+	_, h, ts := rigSetup(t)
+	watcher, bystander := openSock(t, ts), openSock(t, ts)
+
+	watchMsg(t, watcher, "a", "page")
+	m := readMsg(t, watcher) // the current state at once
+	if string(m["type"]) != `"rig"` || string(m["radio"]) != `"a"` || string(m["data"]) != `{"freq":1}` {
+		t.Fatalf("immediate state: %v", m)
+	}
+
+	h.push(RigUpdate{Radio: "a", Data: []byte(`{"freq":2}`)})
+	h.push(RigUpdate{Radio: "b", Data: []byte(`{"freq":9}`)})                      // watcher does not watch b
+	h.push(RigUpdate{Radio: "b", Data: []byte(`{"connected":false}`), Link: true}) // but a link change reaches everyone
+	m = readMsg(t, watcher)
+	if string(m["radio"]) != `"a"` || string(m["data"]) != `{"freq":2}` {
+		t.Fatalf("delta: %v", m)
+	}
+	m = readMsg(t, watcher)
+	if string(m["radio"]) != `"b"` || string(m["data"]) != `{"connected":false}` {
+		t.Fatalf("link change: %v", m)
+	}
+	m = readMsg(t, bystander) // the bystander watches nothing: the first rig message it gets is the link change
+	if string(m["type"]) != `"rig"` || string(m["data"]) != `{"connected":false}` {
+		t.Fatalf("bystander: %v", m)
 	}
 }

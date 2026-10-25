@@ -20,6 +20,7 @@ import (
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/cli"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/httpapi"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/radios"
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/rig"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/status"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/term"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/tlscert"
@@ -36,6 +37,7 @@ func main() {
 	bin := flag.String("bin", "/opt/dxberry/bin", "directory of the dxberry-* commands")
 	tlsDir := flag.String("tls", "/etc/dxberry/tls", "directory of station.crt and station.key")
 	screens := flag.String("screens", "/run/dxberry/screens", "directory of the program windows' unix sockets")
+	rigCaps := flag.String("rigcaps", "", "radio capability cache directory (default <state>/rigcaps)")
 	radiosPath := flag.String("radios", "/var/lib/dxberry/radios.json", "radio records file")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
@@ -56,6 +58,11 @@ func main() {
 	}, nil)
 	rw := radios.New(*radiosPath, 0)
 	st.SetRadios(rw)
+	if *rigCaps == "" {
+		*rigCaps = filepath.Join(*state, "rigcaps")
+	}
+	rigs := rig.NewManager(rw, rig.CapsCache{Dir: *rigCaps}, nil, slog.Default())
+	st.SetRig(rigs)
 	runner.OnCall = func(cmd string, args []string) {
 		if status.ChangesState(cmd, args) {
 			st.Poke()
@@ -97,6 +104,7 @@ func main() {
 	defer stopStatus()
 	go st.Run(statusCtx)
 	go rw.Run(statusCtx)
+	go rigs.Run(statusCtx)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
