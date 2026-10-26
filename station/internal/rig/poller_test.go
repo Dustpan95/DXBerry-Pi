@@ -771,3 +771,74 @@ func TestPollerHookGetsStationTx(t *testing.T) {
 		t.Fatalf("stationTx %v", tx)
 	}
 }
+
+func getPTTCount(l *plLink) int { return l.count("get_ptt") }
+
+// Dashboard interest with a guard: exactly one get_ptt per second, the main cycle's read counting
+// for its second.
+func TestPollerProbeOncePerSecondAtDashboard(t *testing.T) {
+	l := txLink()
+	l.set("get_ptt", "PTT: 0")
+	p, clk := startPoller(t, l, meterCaps())
+	p.SetHooks(Hooks{SWR: func(float64, bool) {}})
+	p.SetInterest(Dashboard)
+	plEventually(t, "first read", func() bool { return getPTTCount(l) >= 1 })
+	settle()
+	base := getPTTCount(l)
+	if base != 1 {
+		t.Fatalf("first second: %d get_ptt", base)
+	}
+	for i := 1; i <= 4; i++ {
+		clk.Advance(time.Second)
+		want := base + i
+		plEventually(t, "one more", func() bool { return getPTTCount(l) >= want })
+		settle()
+		if n := getPTTCount(l); n != want {
+			t.Fatalf("after %d s: %d get_ptt, want %d", i, n, want)
+		}
+	}
+}
+
+func TestPollerNoProbeAtPageWithoutGuardOrAfterHooksCleared(t *testing.T) {
+	// Page interest: the main cycle at 250 ms is the only reader
+	l := txLink()
+	l.set("get_ptt", "PTT: 0")
+	p, clk := startPoller(t, l, meterCaps())
+	p.SetHooks(Hooks{SWR: func(float64, bool) {}})
+	p.SetInterest(Page)
+	plEventually(t, "first read", func() bool { return getPTTCount(l) >= 1 })
+	settle()
+	for i := 0; i < 4; i++ {
+		clk.Advance(250 * time.Millisecond)
+		settle()
+	}
+	if n := getPTTCount(l); n > 5 {
+		t.Fatalf("Page interest read PTT %d times in 1 s", n)
+	}
+	// no guard: Dashboard reads PTT every 2 s only
+	l2 := txLink()
+	l2.set("get_ptt", "PTT: 0")
+	p2, clk2 := startPoller(t, l2, meterCaps())
+	p2.SetInterest(Dashboard)
+	plEventually(t, "first read", func() bool { return getPTTCount(l2) >= 1 })
+	settle()
+	clk2.Advance(time.Second)
+	settle()
+	if n := getPTTCount(l2); n != 1 {
+		t.Fatalf("a probe ran with no guard: %d", n)
+	}
+	// hooks cleared: the probe stops
+	l3 := txLink()
+	l3.set("get_ptt", "PTT: 0")
+	p3, clk3 := startPoller(t, l3, meterCaps())
+	p3.SetHooks(Hooks{SWR: func(float64, bool) {}})
+	p3.SetInterest(Dashboard)
+	plEventually(t, "first read", func() bool { return getPTTCount(l3) >= 1 })
+	settle()
+	p3.SetHooks(Hooks{})
+	clk3.Advance(time.Second)
+	settle()
+	if n := getPTTCount(l3); n != 1 {
+		t.Fatalf("the probe kept running after the hooks were cleared: %d", n)
+	}
+}

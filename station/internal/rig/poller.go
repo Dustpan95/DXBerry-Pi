@@ -340,7 +340,7 @@ func (p *Poller) Run(ctx context.Context) {
 			next, isTx = lastTx.Add(txEvery), true
 		}
 		isProbe := false
-		if !txActive && in != Page && p.probesPTT() && lastProbe.Add(probeEvery).Before(next) {
+		if !txActive && in != Page && !lastStart.IsZero() && p.probesPTT() && lastProbe.Add(probeEvery).Before(next) {
 			next, isTx, isProbe = lastProbe.Add(probeEvery), false, true
 		}
 		if next.After(now) {
@@ -375,7 +375,7 @@ func (p *Poller) Run(ctx context.Context) {
 			}
 			continue
 		}
-		lastStart = now
+		lastStart, lastProbe = now, now // the main read covers the probe's second
 		if p.mainCycle(ctx, in) && watch && (p.lastReadPTT() || p.transmitting.Load()) && !txActive {
 			txActive, lastTx = true, now
 		}

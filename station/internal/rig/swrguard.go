@@ -164,18 +164,6 @@ func (g *SWRGuard) NoteFreq(hz int64) bool {
 	return false
 }
 
-// ClearForBandChange clears the latch because the radio moved to another band. It reports
-// whether there was a latch to clear.
-func (g *SWRGuard) ClearForBandChange() bool { return g.clear() }
-
-func (g *SWRGuard) clear() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	was := g.latched
-	g.latched, g.atuArmed, g.over = false, false, 0
-	return was
-}
-
 // SuppressAroundATU ignores SWR reads for d from now (an ATU intent was sent: the tuner is
 // mismatched while it works) and arms ClearAfterATU.
 func (g *SWRGuard) SuppressAroundATU(d time.Duration) {
@@ -402,11 +390,13 @@ func (gd *Guard) ATUStarted() {
 // Override is the owner's confirmed override: the latch clears for the band the radio is on.
 func (gd *Guard) Override(device string) {
 	gd.g.Override()
+	id := ""
 	if h, ok := gd.in.Owners.Holder(gd.in.Radio); ok {
-		gd.omu.Lock()
-		gd.ovHolder = h.ID
-		gd.omu.Unlock()
+		id = h.ID
 	}
+	gd.omu.Lock()
+	gd.ovHolder = id // no holder: nothing stale from an earlier override is left behind
+	gd.omu.Unlock()
 	gd.in.log().Warn(fmt.Sprintf("radio %s: SWR guard overridden by %s", gd.in.Radio, device))
 	gd.cleared("override by " + device)
 }

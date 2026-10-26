@@ -101,10 +101,6 @@ func TestSWRGuardClearsOnBandChange(t *testing.T) {
 	if !g.NoteFreq(7074000) || g.Latched() {
 		t.Fatal("a move to 40 m did not clear the latch")
 	}
-	trip(t, g, 5.8)
-	if !g.ClearForBandChange() || g.Latched() {
-		t.Fatal("ClearForBandChange did not clear")
-	}
 	if BandOf(14074000) != "20 m" || BandOf(99) != "" || BandOf(144390000) != "2 m" {
 		t.Fatal("band table")
 	}
@@ -474,5 +470,23 @@ func TestSWRGuardLogLines(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("log lacks %s:\n%s", want, out)
 		}
+	}
+}
+
+// An override made with nobody holding the radio forgets an earlier override's holder.
+func TestSWRGuardOverrideWithoutHolderClearsStaleHolder(t *testing.T) {
+	h := newGuardHarness(t, swrCaps())
+	h.in.Claim(ixHolder("a"))
+	h.read(5.8, 3)
+	h.in.Override("a")
+	h.in.Release("a") // the stale holder "a" is now gone
+	h.read(5.8, 3)    // re-armed by the release, trips again
+	if _, l, _ := h.gd.View(); !l {
+		t.Fatal("no trip after the release")
+	}
+	h.gd.Override("somebody") // no holder now
+	h.read(6, 3)
+	if _, l, _ := h.gd.View(); l {
+		t.Fatal("a stale holder re-armed the override at once")
 	}
 }
