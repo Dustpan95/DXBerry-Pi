@@ -343,9 +343,8 @@ hidden with the reason). Every intent is checked against the owner lock
 ### 8.1 The radio's sound server
 
 Today each program session starts a private PulseAudio for its radio. That
-server moves to the radio: `dxberry-audio@<radio>.service` (as `dxbapps`,
-started by `dxberryd` when a radio with an audio device is recorded, stopped
-when it is removed), `pulseaudio -n` with `module-alsa-sink` as `<CARD>` and
+server moves to the radio: `dxberry-audio@<radio>.service` (as `dxbapps`),
+`pulseaudio -n` with `module-alsa-sink` as `<CARD>` and
 `module-alsa-source` as `<CARD>.in`, exactly the names the applications spec
 and the program modules already use, plus `module-native-protocol-unix` on
 `/run/dxberry/audio/<radio>/native`. Program sessions connect to it instead
@@ -354,6 +353,17 @@ program modules' sound-device names do not change. Graywolf is untouched: it
 opens its ALSA device directly, and a radio whose card Graywolf holds is not
 given a sound server (the radio record already knows this, as the
 applications spec's "CODEC fallback" test showed).
+
+Who starts it: the radio setup, not `dxberryd`. `dxberry-radio`'s apply (at
+boot, on hotplug, and after an add, set or remove) starts the server for a
+radio that is present, has an audio device and is owned by no program, and
+stops it for a radio that is unplugged, removed or owned by Graywolf; a
+program session's own steps start or stop it around that session (below),
+and the apply leaves those radios alone. Presence, hotplug and ownership
+already live in the radio setup, so the server follows them there; stopping
+it while the radio is unplugged means a replug comes back to a fresh server.
+(The first draft had `dxberryd` start it when a radio was recorded; rc3
+changed that.)
 
 One more object per radio: a null sink `<CARD>.tx` whose monitor is
 loop-backed to `<CARD>` only while PTT is held (module-loopback loaded and
@@ -364,17 +374,18 @@ using `<CARD>` and `<CARD>.in`. Latency budget: 100 ms end to end on the
 LAN, measured in the hardware check.
 
 **Programs that open the card themselves.** Three program modules use ALSA
-directly today (`app_<a>_audio` is `alsa` for WSJT-X, flrig and Pat; JS8Call,
-fldigi and QSSTV use the private PulseAudio). A card cannot be held by the
-sound server and opened raw at the same time. Rule: while a session of an
-ALSA program owns the radio, `dxberryd` stops that radio's sound server
-before the session starts and starts it again after the session ends; the
-VFO page says "WSJT-X has the sound card; no browser audio while it runs"
-and keeps tuning and the readout. Pulse programs connect to the running
-server through `PULSE_SERVER`, so the browser can listen alongside JS8Call,
-fldigi and QSSTV. Moving WSJT-X and Pat onto the sound server (both support
-PulseAudio devices) is a later item, not this release; the module contract
-does not change here.
+directly today (`app_<a>_audio` is `alsa` for WSJT-X, flrig and Pat;
+JS8Call, fldigi and QSSTV use the private PulseAudio). A card cannot be held
+by the sound server and opened raw at the same time. Rule: while a session
+of an ALSA program owns the radio, the session's `dxberry-app prepare` step
+stops that radio's sound server before the program starts and its `stopped`
+step starts it again after the session ends (for a PulseAudio program,
+`prepare` starts it); the VFO page says "WSJT-X has the sound card; no
+browser audio while it runs" and keeps tuning and the readout. Pulse
+programs connect to the running server through `PULSE_SERVER`, so the
+browser can listen alongside JS8Call, fldigi and QSSTV. Moving WSJT-X and
+Pat onto the sound server (both support PulseAudio devices) is a later item,
+not this release; the module contract does not change here.
 
 ### 8.2 Codec
 
@@ -390,8 +401,11 @@ send track (RX) and one receive track (TX). ICE: host candidates only, UDP
 port range 50000–50199, no STUN or TURN servers configured (LAN and the
 operator's VPN carry host candidates; a relay is out of scope by decision).
 Signalling over `WS /api/audio/<radio>/signal`. DTLS keys are per connection
-as the standard requires. The browser's microphone is requested only when the
-operator first presses PTT, never on page load.
+as the standard requires. The browser's microphone is requested when the
+operator taps Microphone or first presses PTT, never on page load; it is
+released when the tab stops listening, and goes out only while PTT is held.
+(The first draft asked for it on the first PTT press only; rc3 added the
+Microphone button, which asks too and names the device.)
 
 A connection that receives no RTP for 5 s is torn down and the page shows
 "audio lost, tap to reconnect". If `parec` or `pacat` exits, the station
@@ -567,7 +581,13 @@ sidebar.
 
 - **Dashboard**: as the applications spec's dashboard, with the owner and a
   live mini readout (frequency, mode) on each radio card, and a Listen
-  button that starts RX audio without opening the VFO page.
+  button that opens the radio's VFO page as `/radio/<name>#listen`, where the
+  first tap starts RX audio. (Changed in rc3; the first draft played RX on
+  the dashboard itself. The tap on Listen loads the radio's page, a new
+  document, so a stream started on the dashboard would end there, and the
+  dashboard would need its own audio controls; a browser starts sound only
+  from a gesture on the page that plays it, so the radio's page asks for one
+  tap.)
 - **VFO** (`/radio/<name>`): readout, dial (drag and wheel, with a step
   selector 10 Hz to 1 MHz), keypad on tap, band buttons from the radio's
   range, mode buttons from the caps, VFO A/B and SPLIT, filter width slider
@@ -603,16 +623,25 @@ service worker (nothing works offline anyway, and a stale cache would lie).
   `/usr/share/cockpit/dxberry` link; leaves `systemd-logind` unmasked (the
   app's power actions use it as Cockpit did). Idempotent, write-if-changed,
   one daemon-reload.
-- The sessions' PulseAudio start in `dxberry-screen@` is replaced by
-  `Requires=dxberry-audio@%i-radio` wiring (the session unit learns its
-  radio's sound server socket through its env file).
+- The sessions' private PulseAudio is gone: the session runner gives the
+  program `PULSE_SERVER`, its radio's sound server. There is no
+  `Requires=` between `dxberry-screen@` and `dxberry-audio@`: the session's
+  `dxberry-app prepare` starts the server for a PulseAudio program and stops
+  it for an ALSA one, and `stopped` starts it again after an ALSA program
+  (§8.1). The radio setup starts and stops it for radios no program owns;
+  on an update the radio step runs before `provision_station` has written the
+  unit, so `provision_station` runs that start and stop once more after it.
 - The image build cross-builds nothing: CI builds `dxberryd` on an arm64
   runner with cgo for PAM and Opus and places the binary in the update
   tarball and the image. The tarball's `install-remote` path and
   `dxberry-update` copy it like any other file; `/etc/dxberry-release` is
   unchanged.
-- `dxberry-update` gains nothing new; the binary is part of the tree it
-  already replaces.
+- `dxberry-update` copies the binary like any other file of the tree, and
+  gains one step: after a setup run with no failed step it restarts every
+  running program window (`dxberry-screen@`) once, so a session started
+  before the update moves from its private PulseAudio onto the radio's sound
+  server (a stale private server would hold the card and silently break
+  browser audio; the cost is one program restart per update).
 
 ## 16. Verified facts and open risks
 
