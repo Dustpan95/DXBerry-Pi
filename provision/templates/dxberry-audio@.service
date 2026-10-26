@@ -1,0 +1,22 @@
+[Unit]
+Description=DXBerry-Pi sound server for radio %i
+Documentation=file:///opt/dxberry/bin/dxberry-audio
+After=sound.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=dxbapps
+Group=dxbscreen
+SupplementaryGroups=audio
+UMask=0007
+RuntimeDirectory=dxberry/audio/%i
+RuntimeDirectoryMode=0750
+Environment=HOME=/var/lib/dxberry-apps
+Environment=XDG_RUNTIME_DIR=/run/dxberry/audio/%i
+ExecStartPre=+/opt/dxberry/bin/dxberry-audio check %i
+ExecStart=/opt/dxberry/bin/dxberry-audio run %i
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10

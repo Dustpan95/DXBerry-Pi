@@ -11,7 +11,10 @@
 # - the sessions directory (/run/dxberry/sessions, 0750 root:dxbscreen, root's) holds S.env
 #   (0640 root:dxbscreen: what the runner and the program tab read), the S.waiting markers
 #   (radio.sh) and each session's private directory S.d (0700 dxbapps: client.conf, the X
-#   cookie, the PulseAudio socket, the runtime directory - all written by the session itself).
+#   cookie, the runtime directory - all written by the session itself).
+# The radio's PulseAudio is not the session's: it is dxberry-audio@RADIO.service (provision/bin/
+# dxberry-audio), which prepare starts for a program that uses PulseAudio and stops for one that
+# opens the card itself (ALSA), and stopped starts again after that program.
 # The program's settings files are written as dxbapps (dxberry-app settings), never as root.
 # Nothing here ever sources an env file: it is read back as data.
 # Expects common.sh, radio.sh and apps.sh to be sourced.
@@ -23,6 +26,8 @@
 : "${DXB_PULSEAUDIO:=pulseaudio}"
 : "${DXB_XAUTH:=xauth}"
 : "${DXB_ID:=id}"
+# seconds prepare (and dxberry-audio ensure) wait for a radio's sound server socket
+: "${DXB_AUDIO_WAIT_S:=5}"
 # where X servers keep their lock files and sockets
 : "${DXB_X_LOCK_DIR:=/tmp}"
 : "${DXB_X11_UNIX_DIR:=/tmp/.X11-unix}"
@@ -48,9 +53,50 @@ dxb_screen_dir() { printf '%s/%s.d\n' "$(_dxb_sessions_dir)" "$1"; }
 
 # ---- what the module says (the module loaded: dxb_app_load) ----------------------------------
 # dxb_screen_audio APP: alsa (the program opens plughw:CARD=<RADIO>,DEV=0 itself) or pulse (it
-# gets a private PulseAudio with only that card: ruling 2). Default alsa.
+# uses the radio's sound server, dxberry-audio@RADIO, which an alsa program makes way for). Default alsa.
 dxb_screen_audio() { local v=alsa; declare -F "app_$1_audio" > /dev/null && v=$("app_$1_audio"); [[ $v == pulse ]] && echo pulse || echo alsa; }
 # dxb_screen_wants_screen APP: yes (an X screen) or no (a program with no window, e.g. a web interface).
+
+# the radio's sound server: its directory (DXB_AUDIO_DIR, default /run/dxberry/audio) and the
+# native socket in it
+dxb_audio_dir() { printf '%s\n' "${DXB_AUDIO_DIR:-$DXB_RUN_DIR/audio}"; }
+dxb_audio_socket() { printf '%s/%s/native\n' "$(dxb_audio_dir)" "$1"; }
+# dxb_screen_audio_held RADIO: 0 when Graywolf (or any owner that is not a session program) holds
+# RADIO's card: it gets no sound server.
+dxb_screen_audio_held() {
+  [[ -n ${DXB_RADIOS:-} ]] || dxb_radio_load || return 1
+  [[ $(dxb_radio_owner_kind "$1") == graywolf ]]
+}
+# dxb_screen_audio_prepare APP RADIO: before APP starts on RADIO (the app module loaded): the
+# sound server runs for a program that uses PulseAudio (started, and awaited up to
+# DXB_AUDIO_WAIT_S seconds), and is stopped for one that opens the card itself. A server that does
+# not come up is a warning; the program starts without it. Always 0.
+dxb_screen_audio_prepare() {
+  local a=$1 r=$2 u="dxberry-audio@$2.service" sock i
+  dxb_screen_audio_held "$r" && return 0
+  if [[ $(dxb_screen_audio "$a") == pulse ]]; then
+    "$DXB_SYSTEMCTL" start "$u" || { dxb_warn "$a on $r: could not start $u; no sound for it"; return 0; }
+    sock=$(dxb_audio_socket "$r")
+    for (( i = 0; i < DXB_AUDIO_WAIT_S * 10; i++ )); do [[ -e $sock ]] && return 0; command sleep 0.1; done
+    [[ -e $sock ]] || dxb_warn "$a on $r: $u has made no socket yet"
+  else
+    "$DXB_SYSTEMCTL" stop "$u" || dxb_warn "$a on $r: could not stop $u; the program may not get the sound card"
+  fi
+  return 0
+}
+# dxb_screen_audio_stopped APP RADIO: after APP ended on RADIO: an alsa program had stopped the
+# sound server, so it starts again when the radio has an audio device that is plugged in. Always 0.
+dxb_screen_audio_stopped() {
+  local a=$1 r=$2
+  [[ $(dxb_screen_audio "$a") == alsa ]] || return 0
+  dxb_screen_audio_held "$r" && return 0
+  [[ -n ${DXB_RADIOS:-} ]] || dxb_radio_load || return 0
+  jq -e --arg n "$r" '.radios[$n].audio != null' <<< "$DXB_RADIOS" > /dev/null 2>&1 || return 0
+  dxb_radio_present "$r" || return 0
+  "$DXB_SYSTEMCTL" start "dxberry-audio@$r.service" || dxb_warn "$a on $r: could not start dxberry-audio@$r.service again"
+  return 0
+}
+
 dxb_screen_wants_screen() { local v=yes; declare -F "app_$1_screen" > /dev/null && v=$("app_$1_screen"); [[ $v == no ]] && echo no || echo yes; }
 dxb_screen_label() { local v=''; declare -F "app_$1_label" > /dev/null && v=$("app_$1_label"); printf '%s\n' "${v:-$1}"; }
 # dxb_screen_open APP: how the page opens the program, {"kind":"screen"} or {"kind":"url","port":N}.
@@ -107,20 +153,18 @@ dxb_screen_parse() {
   done <<< "$1"
 }
 
-# dxb_screen_session_argv S xvnc|openbox|pulse [ENVFILE]: one argument per line, the command
+# dxb_screen_session_argv S xvnc|openbox [ENVFILE]: one argument per line, the command
 # first: Xvnc on its fixed display with S's X cookie, its VNC on S's unix socket only (no TCP,
-# security None: the socket's group and the station login are the protection), the window manager,
-# or a PulseAudio that loads only S's card (a sink and a source named after it) and a native
-# socket in S.d. The values come from ENVFILE (the runner, which cannot read the radio record) or
+# security None: the socket's group and the station login are the protection), or the window
+# manager. The values come from ENVFILE (the runner, which cannot read the radio record) or
 # else from dxb_screen_env S. Pure: it starts nothing. 2 bad name or list, 3 unknown, 6 ENVFILE
 # unreadable.
 dxb_screen_session_argv() {
-  local s=$1 what=$2 text sock dir dev card
+  local s=$1 what=$2 text sock dir
   dxb_screen_split "$s" > /dev/null || return 2
   if [[ -n ${3:-} ]]; then text=$(< "$3") || return 6; else text=$(dxb_screen_env "$s") || return $?; fi
   dxb_screen_parse "$text"
   sock=$(dxb_screen_sock "$s"); dir=$(dxb_screen_dir "$s")
-  dev=${DXB_SCREEN_ENV[DEVICE]:-}; card=${DXB_SCREEN_ENV[CARD]:-}
   case $what in
     xvnc)
       printf '%s\n' "$DXB_XVNC" ":${DXB_SCREEN_ENV[DISPLAY_NUM]:-}" -auth "$dir/Xauthority" \
@@ -128,10 +172,6 @@ dxb_screen_session_argv() {
         -geometry "${DXB_SCREEN_ENV[GEOMETRY]:-$DXB_SCREEN_GEOMETRY}" -nolisten tcp \
         -desktop "${DXB_SCREEN_ENV[LABEL]:-} · ${DXB_SCREEN_ENV[RADIO_LABEL]:-}" ;;
     openbox) printf '%s\n' "$DXB_OPENBOX" --sm-disable ;;
-    pulse)
-      printf '%s\n' "$DXB_PULSEAUDIO" -n --daemonize=no --exit-idle-time=-1 --use-pid-file=no -F /dev/null \
-        -L "module-alsa-sink device=$dev sink_name=$card" -L "module-alsa-source device=$dev source_name=$card.in" \
-        -L "module-native-protocol-unix socket=$dir/pulse.sock" ;;
     *) dxb_error "dxb_screen_session_argv: no argument list $what"; return 2 ;;
   esac
 }
@@ -363,6 +403,7 @@ dxb_screen_prepare() {
     "$DXB_SYSTEMCTL" start "$u" || dxb_warn "$s: could not start $u"
   done
   # rigctld (model 4) depends on flrig, not the other way round: flrig never waits for it
+  dxb_screen_audio_prepare "$a" "$r"
   [[ $(dxb_app_kind "$a") == rigcontrol ]] || _dxb_screen_wait_rigctld "$r" "$w"
   return 0
 }
@@ -378,6 +419,7 @@ dxb_screen_stopped() {
   dxb_app_load "${ar% *}" > /dev/null 2>&1
   for u in $(_dxb_screen_companions "${ar% *}" "$r"); do "$DXB_SYSTEMCTL" stop "$u" || dxb_warn "$1: could not stop $u"; done
   rm -rf "$(dxb_screen_dir "$1")"
+  dxb_screen_audio_stopped "${ar% *}" "$r"
   dxb_radio_get "$r" > /dev/null 2>&1 || return 0
   dxb_radio_present "$r" || dxb_screen_mark_waiting "$1"
   return 0
@@ -470,18 +512,16 @@ _dxb_screen_cookie() {
 # dxb_screen_session_run S: the session itself. Reads S.env (never the radio record), writes
 # client.conf (no sound server may spawn) and the X cookie into S.d, starts Xvnc on the session's
 # fixed display (SCREEN=yes; ready once it runs and its X socket is a socket of this user's own)
-# and openbox, the private PulseAudio
-# (AUDIO=pulse), then the program (app_APP_command RADIO INDEX, one argument per line) with
-# HOME, DISPLAY, XAUTHORITY, XDG_RUNTIME_DIR=S.d and PULSE_SERVER / PULSE_CLIENTCONFIG set for
-# every program (an ALSA one too). The program also sees APP, RADIO, INDEX, DEVICE, CARD, RIGCTLD
+# and openbox, then the program (app_APP_command RADIO INDEX, one argument per line) with
+# HOME, DISPLAY, XAUTHORITY, XDG_RUNTIME_DIR=S.d and PULSE_SERVER (the radio's sound server,
+# dxberry-audio@RADIO) / PULSE_CLIENTCONFIG set for every program (an ALSA one too). The program also sees APP, RADIO, INDEX, DEVICE, CARD, RIGCTLD
 # and DXB_APPS_OPT. Ends with the program's own exit status; on TERM the program gets TERM, then
 # KILL after DXB_SCREEN_STOP_WAIT_S (ruling 9), and the session ends 0 (a stop is not a failure).
-# Xvnc and PulseAudio ending first end the program too (status 1); the helpers always end with
-# the program.
+# Xvnc ending first ends the program too (status 1); the helpers always end with the program.
 dxb_screen_session_run() {
-  local s=$1 envf dir sock n xs i rc=0 done_pid a r
-  local xpid='' opid='' ppid='' prog='' why=''
-  local -a argv=() xv=() ob=() pa=() live=()
+  local s=$1 envf dir sock n xs i rc=0 done_pid a r ps
+  local xpid='' opid='' prog='' why=''
+  local -a argv=() xv=() ob=() live=()
   envf=$(dxb_screen_envfile "$s"); dir=$(dxb_screen_dir "$s"); sock=$(dxb_screen_sock "$s")
   [[ -f $envf && -r $envf && -d $dir ]] || { echo "$envf or $dir is missing: the session's prepare step did not run" >&2; return 6; }
   dxb_screen_parse "$(< "$envf")"
@@ -492,7 +532,8 @@ dxb_screen_session_run() {
   mapfile -t argv < <("app_${a}_command" "$r" "${DXB_SCREEN_ENV[INDEX]:-0}")
   [[ ${#argv[@]} -gt 0 && -n ${argv[0]} ]] || { echo "$a gave no command to run" >&2; return 6; }
   printf 'autospawn = no\n' > "$dir/client.conf" || { echo "could not write $dir/client.conf" >&2; return 6; }
-  export HOME=$DXB_APPS_HOME XDG_RUNTIME_DIR=$dir PULSE_SERVER="unix:$dir/pulse.sock" PULSE_CLIENTCONFIG="$dir/client.conf" \
+  ps=$(dxb_audio_socket "$r")
+  export HOME=$DXB_APPS_HOME XDG_RUNTIME_DIR=$dir PULSE_SERVER="unix:$ps" PULSE_CLIENTCONFIG="$dir/client.conf" \
     APP=$a RADIO=$r INDEX=${DXB_SCREEN_ENV[INDEX]:-} DEVICE=${DXB_SCREEN_ENV[DEVICE]:-} CARD=${DXB_SCREEN_ENV[CARD]:-} \
     RIGCTLD=${DXB_SCREEN_ENV[RIGCTLD]:-} DXB_APPS_OPT
   unset DISPLAY XAUTHORITY
@@ -526,27 +567,11 @@ dxb_screen_session_run() {
     "${ob[@]}" &
     opid=$!
   fi
-  if [[ ${DXB_SCREEN_ENV[AUDIO]:-alsa} == pulse && $_DXB_SCREEN_TERM == 0 ]]; then
-    mapfile -t pa < <(dxb_screen_session_argv "$s" pulse "$envf")
-    "${pa[@]}" &
-    ppid=$!
-    for (( i = 0; i < 100; i++ )); do
-      [[ -S $dir/pulse.sock ]] && break
-      kill -0 "$ppid" 2> /dev/null || break
-      (( _DXB_SCREEN_TERM )) && break
-      command sleep 0.1
-    done
-    if [[ ! -S $dir/pulse.sock && $_DXB_SCREEN_TERM == 0 ]]; then
-      echo "PulseAudio did not start for $s" >&2
-      _dxb_screen_end "$ppid" "$opid" "$xpid"
-      return 6
-    fi
-  fi
-  if (( _DXB_SCREEN_TERM )); then _dxb_screen_end "$ppid" "$opid" "$xpid"; return 0; fi
+  if (( _DXB_SCREEN_TERM )); then _dxb_screen_end "$opid" "$xpid"; return 0; fi
   "${argv[@]}" &
   prog=$!
   live=("$prog")
-  for i in "$xpid" "$ppid" "$opid"; do [[ -z $i ]] || live+=("$i"); done
+  for i in "$xpid" "$opid"; do [[ -z $i ]] || live+=("$i"); done
   while :; do
     # checked before every wait: a TERM that came while the last round was being handled is not lost
     (( _DXB_SCREEN_TERM )) && { why=term; break; }
@@ -563,11 +588,10 @@ dxb_screen_session_run() {
       # a window manager that ended leaves the program usable
       echo "openbox ended (exit $rc); $a keeps running" >&2
       opid=''; live=("$prog")
-      for i in "$xpid" "$ppid"; do [[ -z $i ]] || live+=("$i"); done
+      [[ -z $xpid ]] || live+=("$xpid")
       continue
     fi
     [[ $done_pid == "$xpid" ]] && { echo "Xvnc ended (exit $rc); stopping $a" >&2; xpid=''; }
-    [[ $done_pid == "$ppid" ]] && { echo "PulseAudio ended (exit $rc); stopping $a" >&2; ppid=''; }
     why=helper
     break
   done
@@ -583,7 +607,7 @@ dxb_screen_session_run() {
     fi
     wait "$prog" 2> /dev/null
   fi
-  _dxb_screen_end "$opid" "$ppid" "$xpid"
+  _dxb_screen_end "$opid" "$xpid"
   rm -f "$sock"
   trap - TERM INT HUP
   case $why in

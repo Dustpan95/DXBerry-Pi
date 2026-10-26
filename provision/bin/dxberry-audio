@@ -1,0 +1,145 @@
+#!/bin/bash
+# dxberry-audio: the sound server of one radio (dxberry-audio@RADIO.service), the sink, source and
+# null sink the station's browser audio uses. Design: docs/design/2026-10-25-station-app.md section 8.1 and 15
+#   run RADIO              the unit's ExecStart: PulseAudio on RADIO's card (sink CARD, source CARD.in,
+#                          null sink CARD.tx) and a native socket, /run/dxberry/audio/RADIO/native
+#   check RADIO            the unit's root ExecStartPre: refuses a radio that is unknown or whose card Graywolf holds
+#   ensure RADIO [--json]  start the unit and wait up to 5 s for the socket
+#   stop RADIO [--json]    stop the unit
+#   status RADIO --json    {radio, active, socket, card, present}
+# CARD is the radio's name in capitals. A radio whose card Graywolf holds gets no server.
+# Exit: 0 ok, 1 not root, 2 usage, 4 unknown radio, 6 failed (or Graywolf holds the card).
+set -uo pipefail
+
+DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
+for _m in common config graywolf settings update gps radio rigctld inifile apps screen; do
+  # shellcheck disable=SC1090
+  source "$DXB_LIB/$_m.sh"
+done
+
+usage() { sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+JSON=0
+
+# say OK REASON: the answer of ensure and stop, in JSON when asked, else on stderr when it failed
+say() {
+  local ok=$1 reason=${2:-}
+  if (( JSON )); then
+    jq -cn --argjson ok "$ok" --arg r "$reason" --arg s "$(dxb_audio_socket "$RADIO")" \
+      '{ok: $ok} + (if $ok then {socket: $s} else {reason: $r} end)'
+  elif [[ $ok == false ]]; then
+    echo "$reason" >&2
+  fi
+}
+
+# known RADIO: 0 when it is in the record; else 4 (message on stderr)
+known() {
+  dxb_radio_load || return 6
+  dxb_radio_get "$1" > /dev/null 2>&1 || { echo "no such radio: $1" >&2; return 4; }
+}
+
+# held RADIO: 0 (message on stderr) when Graywolf holds its card
+held() {
+  if dxb_screen_audio_held "$1"; then
+    echo "radio $1: Graywolf holds its sound card, so it gets no sound server" >&2
+    return 0
+  fi
+  return 1
+}
+
+# card_device RADIO: "CARD DEVICE" from the radio record's wiring; when the record cannot be read
+# (the unit runs as dxbapps, the record is root's) from the name, which is how the wiring makes them
+card_device() {
+  local w
+  if [[ -r $DXB_RADIOS_FILE ]] && w=$(dxb_apps_wiring "$1" 2> /dev/null); then
+    jq -r '.card + " " + .device' <<< "$w"
+  else
+    local c=${1^^}
+    printf '%s plughw:CARD=%s,DEV=0\n' "$c" "$c"
+  fi
+}
+
+cmd_run() {
+  local card dev sock
+  [[ $1 =~ $DXB_RADIO_NAME_RE ]] || { echo "bad radio name: $1" >&2; return 2; }
+  read -r card dev <<< "$(card_device "$1")"
+  sock=$(dxb_audio_socket "$1")
+  exec "$DXB_PULSEAUDIO" -n --daemonize=no --exit-idle-time=-1 --disallow-exit --use-pid-file=no -F /dev/null \
+    -L "module-alsa-sink device=$dev sink_name=$card" \
+    -L "module-alsa-source device=$dev source_name=$card.in" \
+    -L "module-null-sink sink_name=$card.tx" \
+    -L "module-native-protocol-unix socket=$sock auth-anonymous=1"
+}
+
+cmd_check() {
+  local rc
+  known "$1"; rc=$?
+  (( rc == 0 )) || return "$rc"
+  held "$1" && return 6
+  return 0
+}
+
+cmd_ensure() {
+  local rc i sock
+  RADIO=$1
+  dxb_require_root
+  known "$1" 2> /dev/null; rc=$?
+  if (( rc != 0 )); then say false "no such radio: $1"; return "$rc"; fi
+  if dxb_screen_audio_held "$1"; then
+    say false "radio $1: Graywolf holds its sound card, so it gets no sound server"
+    return 6
+  fi
+  sock=$(dxb_audio_socket "$1")
+  if ! "$DXB_SYSTEMCTL" start "dxberry-audio@$1.service"; then
+    say false "could not start dxberry-audio@$1.service"; return 6
+  fi
+  for (( i = 0; i <= DXB_AUDIO_WAIT_S * 10; i++ )); do
+    [[ -e $sock ]] && { say true; return 0; }
+    (( i < DXB_AUDIO_WAIT_S * 10 )) && command sleep 0.1
+  done
+  say false "radio $1: the sound server did not come up (no $sock)"
+  return 6
+}
+
+cmd_stop() {
+  local rc
+  RADIO=$1
+  dxb_require_root
+  known "$1" 2> /dev/null; rc=$?
+  if (( rc != 0 )); then say false "no such radio: $1"; return "$rc"; fi
+  if "$DXB_SYSTEMCTL" stop "dxberry-audio@$1.service"; then say true; return 0; fi
+  say false "could not stop dxberry-audio@$1.service"
+  return 6
+}
+
+cmd_status() {
+  local active=false present=false sock
+  known "$1" || return $?
+  sock=$(dxb_audio_socket "$1")
+  [[ $("$DXB_SYSTEMCTL" is-active "dxberry-audio@$1.service" 2> /dev/null) == active ]] && active=true
+  [[ -e $sock ]] && present=true
+  jq -cn --arg r "$1" --argjson a "$active" --arg s "$sock" --arg c "${1^^}" --argjson p "$present" \
+    '{radio: $r, active: $a, socket: $s, card: $c, present: $p}'
+}
+
+main() {
+  local cmd='' a
+  local -a args=()
+  for a in "$@"; do case $a in --json) JSON=1 ;; *) args+=("$a") ;; esac; done
+  cmd=${args[0]:-}; args=("${args[@]:1}")
+  case $cmd in
+    -h|--help) usage; return 0 ;;
+    run|check|ensure|stop|status) [[ ${#args[@]} -eq 1 ]] || { echo "usage: dxberry-audio $cmd RADIO" >&2; return 2; } ;;
+    '') usage >&2; return 2 ;;
+    *) echo "unknown subcommand: $cmd" >&2; usage >&2; return 2 ;;
+  esac
+  [[ ${args[0]} =~ $DXB_RADIO_NAME_RE ]] || { echo "bad radio name: ${args[0]}" >&2; return 2; }
+  case $cmd in
+    run) cmd_run "${args[0]}" ;;
+    check) cmd_check "${args[0]}" ;;
+    ensure) cmd_ensure "${args[0]}" ;;
+    stop) cmd_stop "${args[0]}" ;;
+    status) cmd_status "${args[0]}" ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; exit $?; fi

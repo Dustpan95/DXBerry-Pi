@@ -105,12 +105,9 @@ test_screen_env_names_only_its_own_card() {
   assert_not_contains "$e" "RADIO1"
   assert_not_contains "$e" "CODEC"
 }
-test_screen_pulse_loads_only_the_session_card() {
-  sc_env; sc_owned radio2 gamma; GAMMA_AUDIO=pulse
-  dxb_screen_session_argv gamma-radio2 pulse > "$TEST_TMP/argv"
-  assert_eq "$(grep -c 'module-alsa-' "$TEST_TMP/argv")" "2"
-  assert_eq "$(grep -c 'device=plughw:CARD=RADIO2,DEV=0' "$TEST_TMP/argv")" "2"
-  assert_not_contains "$(cat "$TEST_TMP/argv")" "module-udev-detect"
+test_screen_has_no_private_pulse_argument_list() {
+  sc_env; sc_owned radio2 gamma
+  assert_fails dxb_screen_session_argv gamma-radio2 pulse
 }
 test_prepare_fills_once_and_rewires_on_hash_change() {
   sc_env; sc_owned radio2 gamma
@@ -180,7 +177,7 @@ test_screen_unit_template_and_tmpfiles_are_exact() {
   assert_file_contains "$u" "KillMode=mixed"
   assert_eq "$(grep -c . "$u")" "20"
   assert_eq "$(cat "$DXB_ROOT/provision/templates/dxberry-apps.tmpfiles")" \
-    "$(printf '%s\n' "d /run/dxberry/screens 3770 root dxbscreen -" "d /run/dxberry/sessions 0750 root dxbscreen -")"
+    "$(printf '%s\n' "d /run/dxberry/screens 3770 root dxbscreen -" "d /run/dxberry/sessions 0750 root dxbscreen -" "d /run/dxberry/audio 0750 root dxbscreen -")"
 }
 
 # present skips an unplugged radio's start and leaves the session waiting for it (the hotplug
@@ -326,8 +323,6 @@ test_screen_xvnc_and_openbox_argv() {
   assert_eq "$(tr '\n' ' ' < "$TEST_TMP/argv")" \
     "Xvnc :102 -auth $DXB_SESSIONS_DIR/gamma-radio2.d/Xauthority -rfbunixpath $DXB_SCREENS_DIR/gamma-radio2.sock -rfbunixmode 0660 -rfbport -1 -SecurityTypes None -geometry 1280x800 -nolisten tcp -desktop Gamma · IC-7300 "
   assert_eq "$(dxb_screen_session_argv gamma-radio2 openbox | tr '\n' ' ')" "openbox --sm-disable "
-  assert_eq "$(dxb_screen_session_argv gamma-radio2 pulse | tail -1)" \
-    "module-native-protocol-unix socket=$DXB_SESSIONS_DIR/gamma-radio2.d/pulse.sock"
   # the runner reads the env file prepare wrote, never the radio record
   sc_app prepare gamma-radio2
   DXB_RADIOS='' DXB_RADIOS_FILE=$TEST_TMP/none dxb_screen_session_argv gamma-radio2 xvnc "$DXB_SESSIONS_DIR/gamma-radio2.env" > "$TEST_TMP/argv2"
@@ -523,7 +518,7 @@ test_screen_session_runs_the_program_and_ends_with_it() {
   assert_eq "$?" "3"
   local d=$DXB_SESSIONS_DIR/gamma-radio2.d cookie
   assert_eq "$(cat "$TEST_TMP/prog-env")" "$(printf '%s\n' "DEVICE=plughw:CARD=RADIO2,DEV=0" "DISPLAY=:102" "HOME=$DXB_APPS_HOME" \
-    "PULSE_CLIENTCONFIG=$d/client.conf" "PULSE_SERVER=unix:$d/pulse.sock" "RADIO=radio2" "RIGCTLD=127.0.0.1:4534" \
+    "PULSE_CLIENTCONFIG=$d/client.conf" "PULSE_SERVER=unix:$DXB_RUN_DIR/audio/radio2/native" "RADIO=radio2" "RIGCTLD=127.0.0.1:4534" \
     "XAUTHORITY=$d/Xauthority" "XDG_RUNTIME_DIR=$d" "args --rig-name=radio2")"
   assert_eq "$(LC_ALL=C sort "$TEST_TMP/helpers" | tr '\n' ';')" "Xvnc ended;openbox ended;"
   assert_eq "$(cat "$d/client.conf")" "autospawn = no"
@@ -692,4 +687,18 @@ test_screen_flrig_never_waits_for_its_radio_in_a_marker() {
   sc_owned radio2 gamma
   sc_app present gamma-radio2 2> /dev/null
   [[ -e $DXB_SESSIONS_DIR/gamma-radio2.waiting ]] || _fail "an owner's session lost its waiting marker"
+}
+
+# a pulse program is pointed at the radio's own sound server (dxberry-audio@RADIO), and the
+# session starts no sound server of its own
+test_pulse_program_gets_PULSE_SERVER() {
+  sc_env; sc_owned radio2 gamma; GAMMA_AUDIO=pulse; sc_app prepare gamma-radio2; sc_fakes
+  printf '#!/bin/bash\necho "$*" >> "$TEST_TMP/pulse-ran"\n' > "$TEST_TMP/bin/pulseaudio"; chmod 755 "$TEST_TMP/bin/pulseaudio"
+  export DXB_PULSEAUDIO=$TEST_TMP/bin/pulseaudio
+  sc_session 2> "$TEST_TMP/err"
+  assert_contains "$(cat "$TEST_TMP/prog-env")" "PULSE_SERVER=unix:$DXB_RUN_DIR/audio/radio2/native"
+  assert_eq "$(cat "$TEST_TMP/pulse-ran" 2> /dev/null)" ""
+}
+test_no_private_pulse_in_session() {
+  assert_eq "$(grep -c 'pulse.sock\|module-alsa-sink\|"\${pa\[@\]}"' "$DXB_ROOT/provision/lib/screen.sh")" "0"
 }

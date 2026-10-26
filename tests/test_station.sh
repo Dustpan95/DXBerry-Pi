@@ -446,3 +446,12 @@ test_station_build_stamps_the_given_version() (
   PATH=$TEST_TMP/gobin:$PATH bash "$DXB_ROOT/station/build.sh" "$TEST_TMP/out"
   assert_contains "$(cat "$TEST_TMP/go-args")" "-X main.version=$(< "$DXB_ROOT/provision/VERSION")"
 )
+
+# the radios' sound server unit goes in beside the app's, and the app is not restarted for it
+test_station_installs_the_audio_unit() {
+  sn_env
+  sn_run
+  assert_eq "$(cat "$TEST_TMP/failed")" ""
+  assert_eq "$(< "$DXB_SYSTEMD_DIR/dxberry-audio@.service")" "$(< "$DXB_ROOT/provision/templates/dxberry-audio@.service")"
+  assert_file_contains "$DXB_ROOT/provision/templates/dxberry-apps.tmpfiles" "d /run/dxberry/audio 0750 root dxbscreen -"
+}

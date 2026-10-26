@@ -158,7 +158,7 @@ _dxb_station_cockpit_certs_left() {
 
 # provision_station: never fatal; every problem is a failed step named station and the run goes on.
 provision_station() {
-  local rc cockpit site_new reload=0 unit_changed=0 want_restart=0 was_active=0 restamp=0 sum='' stamp=$DXB_STATE_DIR/dxberryd.sha256 name msg
+  local rc cockpit site_new reload=0 unit_changed=0 audio_changed=0 want_restart=0 was_active=0 restamp=0 sum='' stamp=$DXB_STATE_DIR/dxberryd.sha256 name msg
   local -a extra
   # the network undo's boot unit is a safety net, not a station feature
   dxb_netsafe_install_unit || dxb_step_failed station "could not install dxberry-config-boot.service"
@@ -177,18 +177,21 @@ provision_station() {
   _dxb_station_write "$DXB_PAM_DIR/dxberry" pam-dxberry; rc=$?
   _dxb_station_write "$DXB_SYSTEMD_DIR/$DXB_STATION_UNIT" dxberryd.service; rc=$?
   (( rc == 0 )) && unit_changed=1
+  # the radios' sound server unit (dxberry-audio): systemd reads it, the app is not restarted for it
+  _dxb_station_write "$DXB_SYSTEMD_DIR/dxberry-audio@.service" dxberry-audio@.service; rc=$?
+  (( rc == 0 )) && audio_changed=1
   dxb_station_logind
 
   if [[ ! -x $DXB_STATION_BIN ]]; then
     dxb_warn "station: $DXB_STATION_BIN is missing; the station app is not started and Cockpit is left alone"
-    (( unit_changed )) && { "$DXB_SYSTEMCTL" daemon-reload > /dev/null 2>&1 || dxb_step_failed station "systemctl daemon-reload failed"; }
+    (( unit_changed || audio_changed )) && { "$DXB_SYSTEMCTL" daemon-reload > /dev/null 2>&1 || dxb_step_failed station "systemctl daemon-reload failed"; }
     dxb_status_add "station: unavailable (dxberryd is not installed)"
     return 0
   fi
 
-  if (( unit_changed )); then
+  if (( unit_changed || audio_changed )); then
     "$DXB_SYSTEMCTL" daemon-reload > /dev/null 2>&1 || { dxb_step_failed station "systemctl daemon-reload failed"; return 0; }
-    want_restart=1
+    (( unit_changed )) && want_restart=1
   fi
   # a new binary (an update) needs a restart, which enable --now alone never does
   sum=$(sha256sum "$DXB_STATION_BIN" 2> /dev/null | cut -d' ' -f1)

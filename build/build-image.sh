@@ -81,6 +81,7 @@ REQUIRED_FILES=(
   provision/bin/dxberry-app provision/lib/screen.sh provision/lib/apps.sh provision/share/apps.tsv
   provision/lib/apps/fldigi.sh provision/lib/apps/flrig.sh provision/lib/apps/js8call.sh provision/lib/apps/qsstv.sh provision/lib/apps/wsjtx.sh
   provision/templates/dxberry-screen@.service provision/templates/dxberry-apps.tmpfiles
+  provision/bin/dxberry-audio provision/templates/dxberry-audio@.service
   station/web/dashboard.js station/web/programs.js station/web/screen.html station/web/screen.js
   station/web/vendor/novnc/core/rfb.js
   station/web/terminal.html station/web/terminal.js station/web/vendor/xterm/xterm.js station/web/vendor/xterm/xterm.css
@@ -88,7 +89,7 @@ REQUIRED_FILES=(
 )
 EXECUTABLE_FILES=(
   provision/bin/dxberry-preboot provision/bin/dxberry-provision provision/bin/dxberry-netwatch provision/bin/dxberry-radio
-  provision/bin/dxberry-status provision/bin/dxberry-config provision/bin/dxberry-update provision/bin/dxberry-logbook provision/bin/dxberry-app
+  provision/bin/dxberry-status provision/bin/dxberry-config provision/bin/dxberry-update provision/bin/dxberry-logbook provision/bin/dxberry-app provision/bin/dxberry-audio
   boot/Automation_Custom_PreScript.sh boot/Automation_Custom_Script.sh
 )
 
