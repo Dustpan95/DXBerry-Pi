@@ -301,3 +301,33 @@ func TestManagerAnsweringChangeIsALinkUpdate(t *testing.T) {
 		}
 	}
 }
+
+// A flrig-controlled radio runs rigctld's FLRig model, so its caps are not the hamlib model's:
+// they are cached under flrig-<model>, and a control change starts the radio again.
+func TestManagerCapsKeyFollowsRigControl(t *testing.T) {
+	if k := CapsKey(radios.Radio{Model: 3073}); k != "3073" {
+		t.Fatalf("hamlib key %q", k)
+	}
+	if k := CapsKey(radios.Radio{Model: 3073, Control: "hamlib"}); k != "3073" {
+		t.Fatalf("explicit hamlib key %q", k)
+	}
+	if k := CapsKey(radios.Radio{Model: 3073, Control: "flrig"}); k != "flrig-3073" {
+		t.Fatalf("flrig key %q", k)
+	}
+	r := newMgRig(t, radio("hf", 4532, 3073))
+	if err := r.cache.Store("3073", Caps{ModelName: "IC-7300 (hamlib)", Probed: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	r.run()
+	plEventually(t, "hamlib caps from the cache", func() bool { c, ok := r.m.Caps("hf"); return ok && c.ModelName == "IC-7300 (hamlib)" })
+	first, _ := r.m.Radio("hf")
+	viaFlrig := radio("hf", 4532, 3073)
+	viaFlrig.Control = "flrig"
+	r.lst.push(viaFlrig)
+	plEventually(t, "restarted for the control change", func() bool { p, _ := r.m.Radio("hf"); return p != first && len(r.all()) == 2 })
+	plEventually(t, "flrig caps discovered", func() bool { c, ok := r.m.Caps("hf"); return ok && c.ModelName != "IC-7300 (hamlib)" })
+	plEventually(t, "cached under flrig-3073", func() bool { _, ok := r.cache.Load("flrig-3073"); return ok })
+	if c, ok := r.cache.Load("3073"); !ok || c.ModelName != "IC-7300 (hamlib)" {
+		t.Fatalf("the hamlib entry was overwritten: %+v %v", c, ok)
+	}
+}

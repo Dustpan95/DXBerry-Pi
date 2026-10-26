@@ -141,3 +141,19 @@ func TestReprobeRoute(t *testing.T) {
 		t.Fatalf("failed: %s %v", rec.Body, p.stored)
 	}
 }
+
+func TestReprobeStoresFlrigCapsUnderTheirOwnKey(t *testing.T) {
+	p := &rsProbe{connected: true, caps: rig.Caps{ModelName: "FLRig"}, stored: map[string]rig.Caps{}, used: map[string]rig.Caps{}}
+	api := &RadioSettingsAPI{
+		Radios:   rwRecords{"radio1": {Name: "radio1", Model: 3073, Control: "flrig", Port: 4532}},
+		Settings: &settings.Store{Dir: t.TempDir()},
+		Probe:    p,
+	}
+	h := New(Config{Listen: "127.0.0.1:0", Auth: rwAuth{ok: true}, Routes: api.Register}).Handler
+	if rec := rwDo(h, "POST", "/api/radio/radio1/reprobe", "", nil); !strings.Contains(rec.Body.String(), `"ok":true`) {
+		t.Fatalf("reprobe: %s", rec.Body)
+	}
+	if _, ok := p.stored["flrig-3073"]; !ok || len(p.stored) != 1 {
+		t.Fatalf("stored under %v", p.stored)
+	}
+}

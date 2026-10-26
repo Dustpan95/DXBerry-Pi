@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/rig"
@@ -158,7 +157,7 @@ func (a *RadioSettingsAPI) reprobe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, rig.Result{Reason: "the radio's capabilities could not be read", Fix: "try again in a few seconds"})
 		return
 	}
-	if err := a.Probe.Store(strconv.Itoa(rec.Model), caps); err != nil {
+	if err := a.Probe.Store(rig.CapsKey(rec), caps); err != nil {
 		log.Printf("radio settings: caching caps for %s: %v", name, err)
 	}
 	a.Probe.Use(name, caps)

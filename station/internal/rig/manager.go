@@ -102,6 +102,15 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 }
 
+// CapsKey is the caps cache key of a radio: its Hamlib model number, or flrig-<model> when
+// flrig controls it (rigctld then runs the FLRig model, whose caps are flrig's, not the radio's).
+func CapsKey(r radios.Radio) string {
+	if r.Control == "flrig" {
+		return "flrig-" + strconv.Itoa(r.Model)
+	}
+	return strconv.Itoa(r.Model)
+}
+
 func (m *Manager) reconcile(ctx context.Context, list []radios.Radio) {
 	want := map[string]radios.Radio{}
 	for _, r := range list {
@@ -115,7 +124,7 @@ func (m *Manager) reconcile(ctx context.Context, list []radios.Radio) {
 	var gone []*entry
 	for name, e := range m.entries {
 		r, ok := want[name]
-		if !ok || r.Port != e.radio.Port || r.Model != e.radio.Model {
+		if !ok || r.Port != e.radio.Port || r.Model != e.radio.Model || r.Control != e.radio.Control {
 			gone = append(gone, e)
 			delete(m.entries, name)
 			continue
@@ -163,7 +172,7 @@ func (m *Manager) start(parent context.Context, r radios.Radio) {
 		p.client = c
 	}
 	e := &entry{radio: r, name: r.Name, conn: conn, poller: p, cancel: cancel, done: make(chan struct{})}
-	model := strconv.Itoa(r.Model)
+	model := CapsKey(r)
 	if c, ok := m.cache.Load(model); ok {
 		e.caps, e.have = c, true
 		p.SetCaps(c)
@@ -182,7 +191,7 @@ func (m *Manager) start(parent context.Context, r radios.Radio) {
 }
 
 // discover learns the radio's capabilities once the connection is up, retrying
-// with backoff, and caches them by model number.
+// with backoff, and caches them under CapsKey (the model number, flrig-<model> under flrig).
 func (m *Manager) discover(ctx context.Context, e *entry, model string) {
 	e.mu.Lock()
 	have := e.have
