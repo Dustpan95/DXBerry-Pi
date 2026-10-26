@@ -756,10 +756,18 @@
   const pttReason = () => pttWhy(S.owner, S.audio, !!window.dxbAudio) || (guardLatched() ? "SWR guard is latched: see the banner above." : "");
   const pttPost = (body) => dxb.api("POST", `/api/radio/${name}/ptt`, Object.assign({ device: dxb.tab() }, body));
 
+  // micTX ON: audio.js's microphone and duck for a hold. Its trouble (a Web Audio write that
+  // throws) must not keep a hold's heartbeat from starting or its off from going.
+  function micTX(on) {
+    if (!window.dxbAudio) return;
+    try { window.dxbAudio.setTX(on); } catch (e) { /* the hold goes on, or ends, without it */ }
+  }
+
   // holdEnd HOLD: the press is over, whatever ended it. The off goes to the station whenever an
   // on was sent (the station's Off is idempotent and ignores a tab that no longer holds the
   // transmitter), after the on's answer so the two cannot cross: a hold that ends here never
-  // leaves the radio keyed until the heartbeat lapses.
+  // leaves the radio keyed until the heartbeat lapses. The off is chained before anything else
+  // runs, and an opening that failed part-way still sends it once its on went.
   function holdEnd(hold) {
     if (hold.ended) return;
     hold.ended = true;
@@ -767,8 +775,8 @@
     if (hold.tick !== null) clearInterval(hold.tick);
     hold.hb = hold.tick = null;
     if (S.hold === hold) S.hold = null;
-    if (window.dxbAudio) window.dxbAudio.setTX(false);
-    hold.onDone.then((sent) => { if (sent) pttPost({ on: false }); });
+    if (hold.onDone) hold.onDone.then((sent) => sent, () => hold.sent).then((sent) => { if (sent) pttPost({ on: false }); });
+    micTX(false);
     paint();
   }
 
@@ -776,7 +784,7 @@
     if (e && e.preventDefault) e.preventDefault();
     if (S.hold || pttReason()) return;
     const A = window.dxbAudio;
-    const hold = { since: Date.now(), ok: false, ended: false, hb: null, tick: null, onDone: null, window: null,
+    const hold = { since: Date.now(), ok: false, ended: false, sent: false, hb: null, tick: null, onDone: null, window: null,
       pointer: e && e.pointerId !== undefined ? e.pointerId : null };
     S.hold = hold;
     // the radio's audio starts inside the press (the browser lets it play then); the mic is asked for
@@ -793,6 +801,7 @@
         holdEnd(hold);
         return false;
       }
+      hold.sent = true;
       return pttPost({ on: true }).then((res) => {
         if (!(res && res.ok)) {
           say(failText(res || {}), "bad");
@@ -802,13 +811,14 @@
         if (!hold.ended) {
           hold.ok = true;
           hold.window = res.window === undefined ? null : res.window;
-          // the microphone goes out only once the station has opened the window
-          A.setTX(true);
           hold.hb = setInterval(() => {
             pttPost({ hb: true }).then((r) => {
               if (!(r && r.ok) && !hold.ended) { say(failText(r || {}), "bad"); holdEnd(hold); }
             });
           }, pure.PTT_HEARTBEAT);
+          // the microphone goes out only once the station has opened the window (and the
+          // heartbeat runs whatever the audio does)
+          micTX(true);
           paint();
         }
         return true;

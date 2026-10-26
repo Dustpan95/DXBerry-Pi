@@ -677,6 +677,16 @@ test_ptt_page_wide_release() {
   assert_eq "$(jq -c '.posts' <<< "$j")" '["on","off","on","off","on","off"]'
 }
 
+# rc3 fix wave (m8): audio.js's setTX throwing (on or off) skips neither the heartbeat nor the off
+test_ptt_audio_trouble_keeps_the_heartbeat_and_the_off() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(spt_run txthrows 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -r '"\(.held) \(.heartbeatTimers)"' <<< "$j")" "Transmitting 1"
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["on","hb","off"]'
+  assert_eq "$(jq -r '"\(.labelAfter) \(.hbCleared)"' <<< "$j")" "PTT true"
+  assert_eq "$(jq -c '.tx' <<< "$j")" '[true,false]'
+}
+
 test_ptt_page_files_are_plain() {
   assert_file_not_contains "$DXB_ROOT/tests/station_ptt.js" "innerHTML"
   assert_file_not_contains "$SP_WEB/vfo.js" "innerHTML"

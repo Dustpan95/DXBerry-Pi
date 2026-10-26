@@ -2,7 +2,7 @@
 // timers and a fake dxbAudio, presses and releases its PTT button, and prints what it sent.
 // Run: node tests/station_ptt.js station/web SCENARIO
 //   scenarios: release (each release event, the heartbeat), notowner, noaudio, refused, dropped,
-//   stale, hbrefused, rebuild, pendingmic, docrelease
+//   stale, hbrefused, rebuild, pendingmic, docrelease, txthrows (audio.js's setTX throws)
 "use strict";
 const fs = require("fs");
 const vm = require("vm");
@@ -104,7 +104,10 @@ const ctx = {
       if (scenario === "pendingmic") return new Promise((r) => { micResolve = r; });
       return Promise.resolve({ ok: true });
     },
-    setTX(on) { audioCalls.tx.push(!!on); },
+    setTX(on) {
+      audioCalls.tx.push(!!on);
+      if (scenario === "txthrows") throw new Error("the gain could not be set");
+    },
   },
 };
 ctx.window = ctx;
@@ -241,6 +244,24 @@ function release(kind) {
     await flush();
     out.afterLost = button().textContent;
     out.posts = posts;
+    console.log(JSON.stringify(out));
+    return;
+  }
+  if (scenario === "txthrows") {
+    // audio.js's setTX throws (a Web Audio write that fails): the heartbeat still runs while
+    // held, and the release still sends the off
+    const since = await press();
+    out.held = button().textContent;
+    const hb = heartbeats(since);
+    out.heartbeatTimers = hb.length;
+    if (hb.length) hb[0][1].fn();
+    await flush();
+    release("pointerup");
+    await flush();
+    out.posts = posts;
+    out.labelAfter = button().textContent;
+    out.hbCleared = heartbeats(since).every(([, t]) => t.cleared);
+    out.tx = audioCalls.tx;
     console.log(JSON.stringify(out));
     return;
   }
