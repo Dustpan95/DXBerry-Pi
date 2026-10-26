@@ -450,7 +450,8 @@ test_vfo_page_refusal_shows_reason_and_fix_and_rolls_back() {
   local j; j=$(svf_page refuse 2> "$TEST_TMP/p.err") || { _fail "station_vfo_page.js failed: $(cat "$TEST_TMP/p.err")"; return; }
   assert_eq "$(jq -r '.cwPressedAtOnce' <<< "$j")" "true"
   assert_eq "$(jq -r '.refusedPressed' <<< "$j")" "false"
-  assert_eq "$(jq -r '.refusedNotice[0]' <<< "$j")" "bad: this radio has no mode CW modes: USB LSB."
+  # the reason and the fix are two sentences
+  assert_eq "$(jq -r '.refusedNotice[0]' <<< "$j")" "bad: this radio has no mode CW. Modes: USB LSB."
 }
 
 test_vfo_page_no_cat_and_unknown_radio() {
@@ -462,7 +463,7 @@ test_vfo_page_no_cat_and_unknown_radio() {
   assert_eq "$(jq -r '.stopCount' <<< "$j")" "1"
   # nothing to claim, and STOP says why the radio refuses (the station's 409)
   assert_eq "$(jq -c '.ownerButtons' <<< "$j")" "[]"
-  assert_eq "$(jq -r '.stopNotice[0]' <<< "$j")" "bad: this radio has no rig control give the radio a rig control port in its settings."
+  assert_eq "$(jq -r '.stopNotice[0]' <<< "$j")" "bad: this radio has no rig control. Give the radio a rig control port in its settings."
   j=$(svf_page missing 2> "$TEST_TMP/p.err") || { _fail "station_vfo_page.js failed: $(cat "$TEST_TMP/p.err")"; return; }
   assert_eq "$(jq -r '.missing' <<< "$j")" "true"
   assert_eq "$(jq -r '.stopCount' <<< "$j")" "0"

@@ -248,7 +248,9 @@
     if (typeof notice === "function") notice(text, kind);
   }
 
-  const failText = (res) => `${res.reason || "The radio did not accept that."}${res.fix ? " " + res.fix + "." : ""}`;
+  // failText RESULT: the reason and the fix as two sentences ("… no rig control. Give the radio …")
+  const capital = (t) => t.charAt(0).toUpperCase() + t.slice(1);
+  const failText = (res) => `${res.reason || "The radio did not accept that."}${res.fix ? ". " + capital(String(res.fix)) + "." : ""}`;
 
   // the rig link or the events socket is down: controls dim, STOP stays
   const linkDown = () => !S.sock || !S.st || !S.st.connected;
