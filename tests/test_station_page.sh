@@ -894,6 +894,10 @@ test_vfo_audio_disabled_with_the_reason() {
   assert_eq "$(jq -r '.pure.none' <<< "$j")" "No browser audio on this radio."
   assert_eq "$(jq -r '.pure.nojs' <<< "$j")" "This page has no browser audio."
   assert_eq "$(jq -r '"[\(.pure.ok)] \(.pure.holder)"' <<< "$j")" "[] WSJT-X"
+  # rc3 fix wave (m9; changes this test): one unavailable answer with no program named leaves a
+  # flowing stream alone, and so does the next good one; the second unavailable answer in a row
+  # stops it (a program taking the card still stops it at once: test_audio_stopped_notice_on_program_start)
+  assert_eq "$(jq -c '[.blip, .afterBlip, .downOnce]' <<< "$j")" '[{"pressed":"true","closed":0,"notices":0},{"pressed":"true","closed":0,"notices":0},{"pressed":"true","closed":0,"notices":0}]'
   # the sound server stops while listening: the audio stops, Listen and Mic are disabled with the
   # station's reason, and taps do nothing; once it is back the page says so in plain words
   assert_eq "$(jq -r '.down | "\(.listenPressed) \(.listenDisabled) \(.micDisabled) \(.why)"' <<< "$j")" "false true true No sound server for ic7300: the server is not running."

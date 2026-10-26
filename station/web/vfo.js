@@ -318,6 +318,7 @@
     armed: false,    // opened as /radio/<name>#listen: the first tap starts the audio
     stoppedFor: "",  // why this page stopped the audio ("card": a program took the sound card,
                      // "audio": the sound server went); the page says so once it is back
+    audioDown: 0,    // answers in a row saying the sound server is gone while this tab uses it
   };
 
   function h(tag, attrs, ...kids) {
@@ -1243,15 +1244,26 @@
       S.found = true;
       build();
       // the radio's audio went away under this tab (a program took the sound card, the sound
-      // server stopped): stop it here and say why, once; say so again when it is back
+      // server stopped): stop it here and say why, once; say so again when it is back. A program
+      // named, or a stream already lost, is acted on at once; a sound server that only one answer
+      // calls gone (a status call that timed out on a busy Pi) may be a blip, so a flowing stream
+      // stops at the second such answer in a row, or sooner by the station's audio-lost.
       const why = audioReason();
+      const holder = cardHolder(S.audio, S.rec, S.owner);
       if (why && (S.listening || S.rx === "lost")) {
-        S.stoppedFor = cardHolder(S.audio, S.rec, S.owner) ? "card" : "audio";
-        stopListen();
-        say(why, "warn");
-      } else if (!why && S.stoppedFor) {
-        say(S.stoppedFor === "card" ? "The sound card is free again: tap Listen to hear the radio." : "Browser audio is back: tap Listen to hear the radio.", "good");
-        S.stoppedFor = "";
+        S.audioDown = holder || S.rx === "lost" ? 2 : S.audioDown + 1;
+        if (S.audioDown >= 2) {
+          S.audioDown = 0;
+          S.stoppedFor = holder ? "card" : "audio";
+          stopListen();
+          say(why, "warn");
+        }
+      } else {
+        S.audioDown = 0;
+        if (!why && S.stoppedFor) {
+          say(S.stoppedFor === "card" ? "The sound card is free again: tap Listen to hear the radio." : "Browser audio is back: tap Listen to hear the radio.", "good");
+          S.stoppedFor = "";
+        }
       }
       paint();
     });

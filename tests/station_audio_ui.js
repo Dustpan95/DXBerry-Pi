@@ -495,10 +495,22 @@ const evNotice = (m) => evs().onmessage({ data: JSON.stringify(m) });
       ok: V.audioWhy(AVAILABLE, { owner: "js8call" }, { kind: "program", label: "JS8Call" }, true),
       holder: V.cardHolder(WSJTX_CARD, null, null),
     };
-    // listening when the sound server stops (no program): the audio stops with the station's words
+    // listening when the sound server stops (no program). One answer that says so (a status call
+    // that timed out on a busy Pi) leaves the stream alone; two in a row stop it with the
+    // station's words
+    const DOWN = { available: false, reason: "no sound server for ic7300: the server is not running" };
+    const flowing = () => ({ pressed: snap().listenPressed, closed: sigs()[0].closed, notices: notices.length });
     click(q("vfo-listen"));
     await connect(0);
-    st.audio = { available: false, reason: "no sound server for ic7300: the server is not running" };
+    st.audio = DOWN;
+    await advance(5000);
+    out.blip = flowing();
+    st.audio = AVAILABLE;
+    await advance(5000);
+    out.afterBlip = flowing();
+    st.audio = DOWN;
+    await advance(5000);
+    out.downOnce = flowing();
     await advance(5000);
     out.down = snap();
     click(q("vfo-listen"));
