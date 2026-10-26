@@ -81,7 +81,9 @@ func main() {
 	})
 	radioSettings := &httpapi.RadioSettingsAPI{Radios: rw, Settings: &settings.Store{Dir: filepath.Join(*state, "radios")},
 		Probe: httpapi.ManagerProbe(rigs, rig.CapsCache{Dir: *rigCaps})}
-	radioAPI := &httpapi.RadioAPI{Auth: mgr, Radios: rw, Rigs: httpapi.ManagerRigs(rigs), Owners: owners}
+	// a carrier keyed when the service died is owed its unkey at the next start (<state>/keyed)
+	radioAPI := &httpapi.RadioAPI{Auth: mgr, Radios: rw, Rigs: httpapi.ManagerRigs(rigs), Owners: owners,
+		Marks: &rig.KeyedMarks{Dir: filepath.Join(*state, "keyed")}}
 	// a tab's claim ends with its events socket (the page opens it with ?tab=<its token>)
 	st.OnSocket(func(r *http.Request) func() {
 		s, ok := mgr.Session(r)
@@ -139,6 +141,7 @@ func main() {
 	go rw.Run(statusCtx)
 	go rigs.Run(statusCtx)
 	go programs.Run(statusCtx, 2*time.Second)
+	radioAPI.OweMarkedCarriers()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)

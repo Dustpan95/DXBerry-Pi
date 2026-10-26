@@ -71,6 +71,7 @@ type Intents struct {
 	Log    *slog.Logger
 	Ctx    context.Context // ends the unkey retry loop (nil: never)
 	Gone   func() bool     // true once the radio no longer exists; ends the retry loop
+	Marks  *KeyedMarks     // the keyed markers that outlive a crash (nil: none)
 
 	mu       sync.Mutex
 	carrier  chan struct{} // closed to cancel the running carrier timer
@@ -274,6 +275,10 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 	if slices.Contains(dataModes, st.Mode) {
 		return in.refuse("tune", reasonDataMode, "switch to USB or CW to tune")
 	}
+	if err := in.mark(); err != nil {
+		in.log().Error("could not write the keyed marker; not keying", "radio", in.Radio, "error", err)
+		return in.refuse("tune", "the station could not note the carrier before keying", "check the station's storage")
+	}
 	in.Owners.Touch(in.Radio, tab)
 	err := in.Poller.Write(ctx, func(c Commander) error {
 		_, err := c.Do(ctx, "set_ptt", "1")
@@ -289,6 +294,13 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 			in.debt++
 			in.mu.Unlock()
 			in.startRetry("tune")
+		} else {
+			// the radio refused: nothing was keyed by this one
+			in.mu.Lock()
+			if !in.keyed && !in.pending {
+				in.clearMarkLocked()
+			}
+			in.mu.Unlock()
 		}
 		return res
 	}
@@ -385,10 +397,32 @@ func (in *Intents) attemptUnkey(ctx context.Context, intent string, quiet bool) 
 		in.mu.Lock()
 		if in.debt == debt {
 			in.pending, in.keyed = false, false
+			in.clearMarkLocked()
 		}
 		in.mu.Unlock()
 	}
 	return res
+}
+
+// mark writes the keyed marker before a key-on. It counts as a new debt, so an unkey already on
+// the wire cannot clear the marker or the flags of the carrier that follows it.
+func (in *Intents) mark() error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	in.debt++
+	if in.Marks == nil {
+		return nil
+	}
+	return in.Marks.Mark(in.Radio)
+}
+
+func (in *Intents) clearMarkLocked() {
+	if in.Marks == nil {
+		return
+	}
+	if err := in.Marks.Clear(in.Radio); err != nil {
+		in.log().Warn("could not remove the keyed marker", "radio", in.Radio, "error", err)
+	}
 }
 
 func (in *Intents) startRetry(intent string) {
@@ -464,6 +498,17 @@ func (in *Intents) Unkey() {
 	if need {
 		in.unkey("release")
 	}
+}
+
+// Owe owes the radio an unkey and retries it until the radio takes it: a keyed marker from
+// before the service restarted says a carrier of ours may still be up.
+func (in *Intents) Owe() {
+	in.mu.Lock()
+	in.keyed, in.pending = true, true
+	in.debt++
+	in.mu.Unlock()
+	in.log().Warn("the service stopped while this radio may have been keyed; unkeying it", "radio", in.Radio)
+	in.startRetry("restart")
 }
 
 // Owed reports whether a carrier of ours may be up: keyed and not confirmed off, or an unkey

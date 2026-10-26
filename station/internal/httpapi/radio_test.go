@@ -374,3 +374,41 @@ func TestUnkeyAllIsBounded(t *testing.T) {
 		t.Fatalf("UnkeyAll outlived its context: %v", d)
 	}
 }
+
+// A marker left by a service that died while keyed owes its radio an unkey at the next start.
+func TestKeyedMarkerOwesUnkeyAtStart(t *testing.T) {
+	dir := t.TempDir()
+	marks := &rig.KeyedMarks{Dir: dir}
+	for _, n := range []string{"radio1", "gone"} {
+		if err := marks.Mark(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := &rwRig{st: rig.State{Connected: false, Mode: "FM", Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}
+	api := &RadioAPI{Auth: multiAuth{}, Radios: rwRecords{"radio1": {Name: "radio1", Port: 4532}}, Rigs: rwRigs{f},
+		Owners: session.NewOwners(realNow{}), Ctx: context.Background(), Marks: marks}
+	api.OweMarkedCarriers()
+	// a marker for a radio no longer in the records is dropped at once
+	if got := marks.List(); len(got) != 1 || got[0] != "radio1" {
+		t.Fatalf("markers %v", got)
+	}
+	time.Sleep(1200 * time.Millisecond) // a retry period with the link down: nothing is sent
+	f.mu.Lock()
+	if len(f.calls) != 0 {
+		t.Fatalf("sent while down: %v", f.calls)
+	}
+	f.st.Connected = true
+	f.mu.Unlock()
+	deadline := time.Now().Add(4 * time.Second)
+	for len(marks.List()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("marker kept; calls %v", f.calls)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.calls) != 1 || f.calls[0] != "set_ptt 0" {
+		t.Fatalf("calls %v", f.calls)
+	}
+}

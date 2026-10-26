@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -529,5 +531,106 @@ func TestNewDebtDuringAnUnkeyIsNotLost(t *testing.T) {
 		}
 		h.tick(t, path+": the second debt is sent", func() bool { return h.count("set_ptt 0") >= 2 })
 		h.tick(t, path+": nothing owed", func() bool { return !h.in.Pending() && !h.retrying() })
+	}
+}
+
+func markerAt(t *testing.T, dir string) bool {
+	t.Helper()
+	fi, err := os.Stat(filepath.Join(dir, "radio1"))
+	if err != nil {
+		return false
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("marker mode %v", fi.Mode().Perm())
+	}
+	return true
+}
+
+// The keyed marker is on disk from before set_ptt 1 until a set_ptt 0 is confirmed, so a crash
+// in between leaves it for the next start.
+func TestTuneMarksTheCarrierUntilConfirmedOff(t *testing.T) {
+	h := newIxHarness(ixCaps())
+	dir := filepath.Join(t.TempDir(), "keyed")
+	h.in.Marks = &KeyedMarks{Dir: dir}
+	ctx := context.Background()
+	_ = h.own.Claim("radio1", ixHolder("a"))
+	var markedAtKeyOn bool
+	h.rig.mu.Lock()
+	h.rig.afterWrite = func(call string) {
+		if call == "set_ptt 1" {
+			markedAtKeyOn = markerAt(t, dir)
+		}
+	}
+	h.rig.mu.Unlock()
+	if r := h.in.Tune(ctx, "a", true); !r.OK {
+		t.Fatalf("tune: %+v", r)
+	}
+	if !markedAtKeyOn || !markerAt(t, dir) {
+		t.Fatal("no marker while keyed")
+	}
+	if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("marker dir: %v %v", fi, err)
+	}
+	h.in.Stop(ctx)
+	if markerAt(t, dir) {
+		t.Fatal("marker kept after a confirmed unkey")
+	}
+	// a stop while the link is down keeps the marker until the retry is confirmed
+	h.in.Tune(ctx, "a", true)
+	h.rig.setUp(false)
+	h.in.Stop(ctx)
+	if !markerAt(t, dir) {
+		t.Fatal("marker dropped while the unkey is still owed")
+	}
+	h.rig.setUp(true)
+	h.tick(t, "marker removed after the owed unkey", func() bool { return !h.in.Pending() && !markerAt(t, dir) })
+	// a key-on the radio refused keys nothing and leaves no marker
+	h.rig.mu.Lock()
+	h.rig.failCmd, h.rig.failErr = "set_ptt 1", &RigError{Code: -1}
+	h.rig.mu.Unlock()
+	h.in.Tune(ctx, "a", true)
+	if markerAt(t, dir) {
+		t.Fatal("marker left by a refused key-on")
+	}
+}
+
+func TestTuneRefusedWhenTheMarkerCannotBeWritten(t *testing.T) {
+	h := newIxHarness(ixCaps())
+	file := filepath.Join(t.TempDir(), "keyed")
+	if err := os.WriteFile(file, nil, 0o600); err != nil { // a file where the directory should be
+		t.Fatal(err)
+	}
+	h.in.Marks = &KeyedMarks{Dir: file}
+	_ = h.own.Claim("radio1", ixHolder("a"))
+	r := h.in.Tune(context.Background(), "a", true)
+	ixRefused(t, r, "the station could not note the carrier", "check the station's storage")
+	if h.rig.has("set_ptt 1") {
+		t.Fatal("keyed without a marker")
+	}
+}
+
+func TestOweUnkeysAMarkedRadio(t *testing.T) {
+	h := newIxHarness(ixCaps())
+	dir := t.TempDir()
+	marks := &KeyedMarks{Dir: dir}
+	if err := marks.Mark("radio1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := marks.List(); len(got) != 1 || got[0] != "radio1" {
+		t.Fatalf("list %v", got)
+	}
+	h.in.Marks = marks
+	h.rig.setUp(false)
+	h.in.Owe()
+	h.clock.Advance(3 * time.Second)
+	time.Sleep(20 * time.Millisecond)
+	if h.count("set_ptt 0") != 0 || !markerAt(t, dir) {
+		t.Fatal("sent while down, or the marker went early")
+	}
+	h.rig.setUp(true)
+	h.tick(t, "set_ptt 0 once connected", func() bool { return h.count("set_ptt 0") == 1 })
+	h.tick(t, "marker removed", func() bool { return !markerAt(t, dir) && !h.in.Pending() })
+	if len(marks.List()) != 0 {
+		t.Fatalf("list %v", marks.List())
 	}
 }

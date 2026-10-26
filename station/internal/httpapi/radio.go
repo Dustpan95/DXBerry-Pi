@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"sync"
@@ -59,6 +60,8 @@ type RadioAPI struct {
 	Clock  rig.Clock // nil: real time
 	// Ctx ends the owed-unkey retry loops with the service (nil: they end only when the radio leaves the records).
 	Ctx context.Context
+	// Marks are the keyed markers (nil: none). OweMarkedCarriers reads them at start.
+	Marks *rig.KeyedMarks
 
 	mu      sync.Mutex
 	intents map[string]*rig.Intents
@@ -110,6 +113,25 @@ func (a *RadioAPI) UnkeyAll(ctx context.Context) {
 	select {
 	case <-done:
 	case <-ctx.Done():
+	}
+}
+
+// OweMarkedCarriers owes an unkey to every radio a keyed marker names (call it once at start,
+// with the rig layer running). A marker for a radio no longer in the records is dropped.
+func (a *RadioAPI) OweMarkedCarriers() {
+	if a.Marks == nil {
+		return
+	}
+	for _, name := range a.Marks.List() {
+		rec, ok := a.Radios.Get(name)
+		if !ok {
+			slog.Info("dropping the keyed marker of a radio that is gone", "radio", name)
+			if err := a.Marks.Clear(name); err != nil {
+				slog.Warn("could not remove the keyed marker", "radio", name, "error", err)
+			}
+			continue
+		}
+		a.intentsFor(rec).Owe()
 	}
 }
 
@@ -304,6 +326,7 @@ func (a *RadioAPI) intentsFor(rec radios.Radio) *rig.Intents {
 		Owners: a.Owners,
 		Clock:  a.Clock,
 		Ctx:    a.Ctx,
+		Marks:  a.Marks,
 		Gone: func() bool {
 			_, ok := a.Radios.Get(name)
 			return !ok
