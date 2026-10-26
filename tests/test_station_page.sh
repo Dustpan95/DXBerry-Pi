@@ -908,6 +908,18 @@ test_vfo_audio_disabled_with_the_reason() {
   assert_eq "$(jq -r '.page | "\(.listenDisabled) \(.micDisabled) \(.why)|\(.pttWhy)"' <<< "$j")" "true true This page has no browser audio.|This page has no browser audio."
 }
 
+# rc3 fix wave (m10): the page's own stop is not reported as a failure, and a microphone the Mic
+# button opened is let go when a program takes the sound card while the tab is not listening
+test_vfo_page_stop_is_quiet_and_lets_the_microphone_go() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j k='WSJT-X has the sound card; no browser audio while it runs'
+  j=$(sau_ui pagestop 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -c '.press' <<< "$j")" '{"posts":[],"notices":[],"label":"PTT"}'
+  assert_eq "$(jq -c '.mic' <<< "$j")" '{"notices":[],"stopped":true,"text":"Microphone"}'
+  assert_eq "$(jq -r '.micOpen' <<< "$j")" "Microphone ready"
+  assert_eq "$(jq -c '.taken' <<< "$j")" "{\"stopped\":true,\"text\":\"Microphone\",\"notices\":[\"warn: $k\"]}"
+}
+
 test_vfo_audio_lost_chip_reconnects_the_page() {
   command -v node > /dev/null 2>&1 || return 0
   local j; j=$(sau_ui lost 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }

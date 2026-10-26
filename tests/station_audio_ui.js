@@ -4,7 +4,8 @@
 // Run: node tests/station_audio_ui.js station/web SCENARIO
 //   scenarios: listen (the speaker toggle), mic, program (a program takes the sound card), lost
 //   (the chip), ptt (release events, heartbeat, timer, duck), guard (the banner's flows), hash,
-//   hashbutton, hashnoaudio (the dashboard's #listen), reasons, nojs, dashboard (the Listen link)
+//   hashbutton, hashnoaudio (the dashboard's #listen), reasons, nojs, dashboard (the Listen link),
+//   pagestop (the page's own stop: no stray notice; the Mic button's microphone let go)
 "use strict";
 const fs = require("fs");
 const vm = require("vm");
@@ -524,6 +525,37 @@ const evNotice = (m) => evs().onmessage({ data: JSON.stringify(m) });
     out.back = snap();
   } else if (scenario === "nojs") {
     out.page = snap();
+  } else if (scenario === "pagestop") {
+    // Listen tapped off while a press is still opening: the hold ends, nothing goes to the
+    // station, and the page does not tell the operator off for its own stop
+    press();
+    click(q("vfo-listen"));
+    await flush();
+    out.press = { posts: posts.slice(), notices: notices.slice(), label: button().textContent };
+    // Listen tapped off while the Mic button's prompt is still open: the microphone it grants is
+    // let go, again without a notice
+    click(q("vfo-listen"));
+    await connect(1);
+    const realGum = navigator.mediaDevices.getUserMedia;
+    let grant = null;
+    navigator.mediaDevices.getUserMedia = (c) => { gum.push(c); return new Promise((r) => { grant = r; }); };
+    const late = { id: "late-mic", label: "Headset", enabled: true, stopped: false, stop() { this.stopped = true; } };
+    click(q("vfo-mic"));
+    click(q("vfo-listen"));
+    grant({ getAudioTracks: () => [late] });
+    await flush();
+    out.mic = { notices: notices.slice(), stopped: late.stopped, text: q("vfo-mic").textContent };
+    // a microphone the Mic button opened, not listening: a program taking the sound card lets
+    // it go too (the browser's recording light goes out), with the program's words once
+    navigator.mediaDevices.getUserMedia = realGum;
+    click(q("vfo-mic"));
+    await flush();
+    out.micOpen = q("vfo-mic").textContent;
+    st.owner = { kind: "program", label: "WSJT-X", mine: false };
+    st.rec.owner = "wsjtx";
+    st.audio = WSJTX_CARD;
+    await advance(5000);
+    out.taken = { stopped: micTrack.stopped, text: q("vfo-mic").textContent, notices: notices.slice() };
   }
   out.notices = out.notices || notices;
   console.log(JSON.stringify(out));

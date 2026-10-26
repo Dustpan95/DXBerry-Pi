@@ -757,6 +757,10 @@
   const guardLatched = () => !!(S.guard && S.guard.active && S.guard.latched);
   const pttReason = () => pttWhy(S.owner, S.audio, !!window.dxbAudio) || (guardLatched() ? "SWR guard is latched: see the banner above." : "");
   const pttPost = (body) => dxb.api("POST", `/api/radio/${name}/ptt`, Object.assign({ device: dxb.tab() }, body));
+  // audio.js's words for a listen or a microphone ended by the page's own stop (Listen tapped off,
+  // a program taking the sound card): nothing to tell the operator off for
+  const STOPPED_REASON = "Audio was stopped.";
+  const stoppedHere = (r) => !!r && r.reason === STOPPED_REASON;
 
   // micTX ON: audio.js's microphone and duck for a hold. Its trouble (a Web Audio write that
   // throws) must not keep a hold's heartbeat from starting or its off from going.
@@ -799,7 +803,7 @@
     hold.onDone = Promise.all(waits).then((rs) => {
       const bad = rs.find((r) => !(r && r.ok));
       if (bad || hold.ended) {
-        if (bad) say(failText(bad), "bad");
+        if (bad && !stoppedHere(bad)) say(failText(bad), "bad");
         holdEnd(hold);
         return false;
       }
@@ -951,10 +955,8 @@
     disarm();
     if (S.listening) { stopListen(); return; }
     if (audioReason()) { paint(); return; }
-    startListen().then((r) => { if (!(r && r.ok) && r && r.reason !== STOPPED_REASON) say(failText(r), "bad"); });
+    startListen().then((r) => { if (!(r && r.ok) && !stoppedHere(r)) say(failText(r || {}), "bad"); });
   }
-  // audio.js's words for a listen ended by the page itself (nothing to tell the operator)
-  const STOPPED_REASON = "Audio was stopped.";
 
   function micOpen() {
     if (S.micLabel !== null || S.micAsking || audioReason()) return;
@@ -963,7 +965,7 @@
     window.dxbAudio.openMic().then((r) => {
       S.micAsking = false;
       micReady(r);
-      if (!(r && r.ok)) say(failText(r || {}), "bad");
+      if (!(r && r.ok) && !stoppedHere(r)) say(failText(r || {}), "bad");
       paint();
     });
   }
@@ -1248,9 +1250,11 @@
       // named, or a stream already lost, is acted on at once; a sound server that only one answer
       // calls gone (a status call that timed out on a busy Pi) may be a blip, so a flowing stream
       // stops at the second such answer in a row, or sooner by the station's audio-lost.
+      // A microphone the Mic button opened counts as using the audio too: it is let go with the
+      // rest (the browser's recording light goes out) rather than left open.
       const why = audioReason();
       const holder = cardHolder(S.audio, S.rec, S.owner);
-      if (why && (S.listening || S.rx === "lost")) {
+      if (why && (S.listening || S.rx === "lost" || S.micLabel !== null)) {
         S.audioDown = holder || S.rx === "lost" ? 2 : S.audioDown + 1;
         if (S.audioDown >= 2) {
           S.audioDown = 0;
