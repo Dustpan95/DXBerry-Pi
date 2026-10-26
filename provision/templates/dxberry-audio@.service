@@ -13,7 +13,7 @@ SupplementaryGroups=audio
 UMask=0007
 RuntimeDirectory=dxberry/audio/%i
 RuntimeDirectoryMode=0750
-# the program user's home (DXB_APPS_HOME in apps.sh); the template is not rendered
+# the program user's home (DXB_APPS_HOME in apps.sh); the unit file is copied, not rendered
 Environment=HOME=/var/lib/dxberry-apps
 Environment=XDG_RUNTIME_DIR=/run/dxberry/audio/%i
 ExecStartPre=+/opt/dxberry/bin/dxberry-audio check %i

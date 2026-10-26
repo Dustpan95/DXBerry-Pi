@@ -1,9 +1,11 @@
 #!/bin/bash
 # dxberry-audio: the sound server of one radio (dxberry-audio@RADIO.service), the sink, source and
-# null sink the station's browser audio uses. Design: docs/design/2026-10-25-station-app.md section 8.1 and 15
+# null sink the station's browser audio uses.
+# Design: docs/design/2026-10-25-station-app.md sections 8.1 and 15
 #   run RADIO              the unit's ExecStart: PulseAudio on RADIO's card (sink CARD, source CARD.in,
 #                          null sink CARD.tx) and a native socket, /run/dxberry/audio/RADIO/native
-#   check RADIO            the unit's root ExecStartPre: refuses a radio that is unknown, has no audio device or whose card Graywolf holds
+#   check RADIO            the unit's root ExecStartPre: refuses a radio that is unknown,
+#                          has no audio device, or whose card Graywolf holds
 #   ensure RADIO [--json]  start the unit and wait up to 5 s for the socket
 #   stop RADIO [--json]    stop the unit
 #   status RADIO --json    {radio, active, socket, card, present}
@@ -17,7 +19,7 @@ for _m in common config graywolf settings update gps radio rigctld inifile apps 
   source "$DXB_LIB/$_m.sh"
 done
 
-usage() { sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 JSON=0
 
 # say OK REASON: the answer of ensure and stop, in JSON when asked, else on stderr when it failed

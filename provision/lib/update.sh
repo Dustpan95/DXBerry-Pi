@@ -294,7 +294,7 @@ _dxb_update_restart_sessions() {
   local -a units=()
   while IFS= read -r u; do
     [[ $u == dxberry-screen@*.service ]] || continue
-    st=$("$sc" is-active "$u" 2> /dev/null)
+    st=$("$sc" is-active "$u" 2> /dev/null < /dev/null)
     [[ $st == active || $st == activating ]] && units+=("$u")
   done < <("$sc" list-units --all --plain --no-legend 'dxberry-screen@*' 2> /dev/null | awk '{ print $1 }')
   n=${#units[@]}

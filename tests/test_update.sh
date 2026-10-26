@@ -18,6 +18,8 @@ up_env() {
   unset DXB_UPDATE_PROVISION DXB_PROVISION_LOG
   # up_apps_env's systemctl stand-in must not outlive its test
   unset -f systemctl
+  # no update test reaches the real systemctl: a recorder in $TEST_TMP/calls (up_sc, below)
+  export DXB_SYSTEMCTL=up_sc
   export DXB_STATE_DIR=$TEST_TMP/state DXB_LOG_FILE=$TEST_TMP/state/log DXB_RUN_DIR=$TEST_TMP/run \
     DXB_UPDATE_CACHE=$TEST_TMP/state/update-check.json DXB_UPDATE_CONF=$TEST_TMP/state/update.conf \
     DXB_UPDATE_JOB_FILE=$TEST_TMP/run/update-job.json DXB_UPDATE_RESULT=$TEST_TMP/run/update-result.json \
@@ -307,7 +309,10 @@ test_update_apply_dxberry_swaps_the_tree_and_runs_the_new_setup() {
   up_tree "$DXB_OPT" 0.3.0-rc3
   dxb_update_set_prereleases on
   up_release_file 0.3.0-rc4
+  : > "$TEST_TMP/calls"
   assert_ok dxb_update_apply_dxberry > "$TEST_TMP/out" 2>&1
+  # no program session is listed: nothing restarts
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "restart"
   assert_eq "$(cat "$DXB_OPT/VERSION")" "0.3.0-rc4"
   assert_eq "$(cat "$DXB_OPT.prev/VERSION")" "0.3.0-rc3"
   assert_file_contains "$DXB_RELEASE_FILE" "DXBERRY_VERSION=0.3.0-rc4"
