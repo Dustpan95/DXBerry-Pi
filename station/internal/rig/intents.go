@@ -225,8 +225,8 @@ func (in *Intents) Freq(ctx context.Context, hz int64) Result {
 		return in.refuse("freq", fmt.Sprintf("%d is outside this radio's range", hz), rangeFix(caps))
 	}
 	res := in.send(ctx, "freq", func(s *State) { s.Freq = hz }, "set_freq", strconv.FormatInt(hz, 10))
-	if res.OK && in.guard != nil {
-		in.guard.NoteFreq(hz) // a move into another band clears the SWR latch
+	if gd := in.Guard(); res.OK && gd != nil {
+		gd.NoteFreq(hz) // a move into another band clears the SWR latch
 	}
 	return res
 }
@@ -718,8 +718,8 @@ func (in *Intents) ATU(ctx context.Context, tab string) Result {
 	// the latch does not refuse the ATU: it is the way to clear it. Its SWR reads are ignored
 	// for ATUWindow, and a latch is cleared when the tuner reached a match under the limit.
 	res := in.send(ctx, "atu", nil, "set_func", "TUNER", "1")
-	if res.OK && in.guard != nil && in.guard.Active() {
-		in.guard.ATUStarted()
+	if gd := in.Guard(); res.OK && gd != nil && gd.Active() {
+		gd.ATUStarted()
 	}
 	return res
 }
