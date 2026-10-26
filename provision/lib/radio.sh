@@ -279,6 +279,13 @@ dxb_radio_set() {
   local name=$1 opts=$2 cur radio
   cur=$(dxb_radio_get "$name") || return 3
   radio=$(_dxb_radio_build "$opts" "$cur") || return $?
+  # a new audio pin is a different card: record its id (before the rules rename it) as add does;
+  # an unchanged pin keeps the id recorded when the card was first seen
+  if ! jq -e --argjson c "$cur" '(.audio | del(.card_id)) == ($c.audio | del(.card_id))' <<< "$radio" > /dev/null; then
+    radio=$(_dxb_radio_record_card_id "$name" "$radio")
+  else
+    radio=$(jq -c --argjson c "$cur" 'if $c.audio.card_id != null then .audio.card_id = $c.audio.card_id else . end' <<< "$radio")
+  fi
   dxb_radio_save "$(jq -c --arg n "$name" --argjson r "$radio" '.radios[$n] = $r' <<< "$DXB_RADIOS")" || return $?
   dxb_info "radio $name updated"
 }

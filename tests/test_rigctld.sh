@@ -75,6 +75,7 @@ test_rigctld_install_units_and_stop_stale() {
   assert_ok dxb_rigctld_install_units
   # shellcheck disable=SC2016  # checking for the literal, unexpanded $MODEL in the unit file
   assert_file_contains "$DXB_SYSTEMD_DIR/rigctld@.service" 'ExecStart=/usr/bin/rigctld -m $MODEL'
+  assert_file_contains "$DXB_SYSTEMD_DIR/rigctld@.service" 'Before=dxberryd.service'
   assert_file_contains "$DXB_SYSTEMD_DIR/dxberry-radio-hotplug.service" "dxberry-radio hotplug"
   assert_file_contains "$DXB_TMPFILES_DIR/dxberry-radio.conf" "/run/dxberry/rigctld"
   assert_contains "$(cat "$TEST_TMP/calls")" "systemctl daemon-reload"

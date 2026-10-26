@@ -141,6 +141,18 @@ be reached; fldigi follows the same choice unless you changed it inside fldigi. 
 on the DXBerry page. On the command line: `sudo dxberry-app list`, `sudo dxberry-app install fldigi`,
 and `sudo dxberry-logbook get`.
 
+## Release notes for 0.5.0-rc2
+
+- **A live VFO page for each radio:** frequency readout and dial, bands, modes, filter, levels, S-meter
+  and ATU. **Tune** sends a carrier in FM or AM for up to 10 seconds, and **STOP** works from any tab.
+- **One transmitter owner per radio.** A tab takes over the radio to transmit and releases it when done.
+- **Per-radio station settings:** SWR limit and PTT timeout. The guards that use them arrive in the
+  next release.
+- **Re-probe** a radio from its page to read its rig again.
+- **The sound card's name is restored when a radio is removed.**
+- **Tune is refused in SSB, CW and data modes**, since PTT alone makes no carrier there.
+- **Known gap:** nothing on the page yet shows the station's own transmissions (rc3).
+
 ## Release notes for 0.5.0-rc1
 
 - **The station app replaces Cockpit, and the update removes Cockpit.** Log in at the same address with

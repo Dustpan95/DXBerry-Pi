@@ -229,6 +229,17 @@ test_station_site_template_shape() {
   assert_file_not_contains "$t" "proxy_add_x_forwarded_for"
   assert_file_contains "$t" "proxy_read_timeout 1h;"
   assert_file_contains "$t" "client_max_body_size 1m;"
+  # the tab token rides the events URL's query string: that location must not be access-logged,
+  # and must proxy the WebSocket exactly as the catch-all does
+  local ev; ev=$(sed -n '/location = \/api\/events {/,/^    }/p' "$t")
+  assert_contains "$ev" "access_log off;"
+  assert_contains "$ev" "proxy_pass http://127.0.0.1:8090;"
+  assert_contains "$ev" "proxy_http_version 1.1;"
+  assert_contains "$ev" "proxy_read_timeout 1h;"
+  # shellcheck disable=SC2016
+  assert_contains "$ev" 'proxy_set_header Upgrade $http_upgrade;'
+  # shellcheck disable=SC2016
+  assert_contains "$ev" 'proxy_set_header Connection $connection_upgrade;'
   # shellcheck disable=SC2016
   assert_file_contains "$t" 'proxy_set_header Connection $connection_upgrade;'
   # the port the browser used stays in Host, so a WebSocket behind a forwarded port keeps its Origin match

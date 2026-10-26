@@ -62,6 +62,29 @@ test_radio_add_records_the_card_id() {
   assert_contains "$err" "could not read the sound card's id"
 }
 
+test_radio_set_records_the_card_id_for_a_new_audio_pin() {
+  rc_env
+  fx_scene "$DXB_SYSFS_ROOT" two-digirigs
+  printf 'Other\n' > "$DXB_SYSFS_ROOT/class/sound/card2/id"
+  dxb_radio_scan_cache; dxb_radio_load
+  dxb_radio_add chk1 '{"audio":"usb-0:1.3:1.0"}' > /dev/null
+  assert_eq "$(jq -r '.radios.chk1.audio.card_id' <<< "$DXB_RADIOS")" "Device"
+  assert_ok dxb_radio_set chk1 '{"audio":"usb-0:1.1:1.0"}' > /dev/null 2>&1
+  assert_eq "$(jq -r '.radios.chk1.audio.path' <<< "$DXB_RADIOS")" "usb-0:1.1:1.0"
+  assert_eq "$(jq -r '.radios.chk1.audio.card_id' <<< "$DXB_RADIOS")" "Other"
+  assert_eq "$(jq -r '.radios.chk1.audio.card_id' "$DXB_RADIOS_FILE")" "Other"
+}
+
+test_radio_set_keeps_the_card_id_when_audio_is_unchanged() {
+  rc_env
+  rc_added chk1
+  # the card now reads CHK1 (renamed by the rule); the recorded original must survive a set
+  assert_ok dxb_radio_set chk1 '{"label":"Shack"}' > /dev/null 2>&1
+  assert_eq "$(jq -r '.radios.chk1.audio.card_id' <<< "$DXB_RADIOS")" "Device"
+  assert_ok dxb_radio_set chk1 '{"audio":"1"}' > /dev/null 2>&1
+  assert_eq "$(jq -r '.radios.chk1.audio.card_id' <<< "$DXB_RADIOS")" "Device"
+}
+
 test_radio_remove_restores_the_card_id_by_sysfs() {
   rc_env; rc_added chk1
   local rec; rec=$(dxb_radio_get chk1)

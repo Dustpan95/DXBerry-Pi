@@ -2,6 +2,7 @@
 Description=Hamlib rigctld for radio %i (DXBerry-Pi)
 Documentation=file:///opt/dxberry/bin/dxberry-radio
 After=dxberry-radio-hotplug.service
+Before=dxberryd.service
 StartLimitIntervalSec=60
 StartLimitBurst=5
 

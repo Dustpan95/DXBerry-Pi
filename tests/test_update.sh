@@ -592,7 +592,7 @@ test_update_rollback_to_a_tree_with_the_station_leaves_it_alone() (
 )
 
 # up_station_env's stand-ins stay inside those tests' subshells
-test_update_station_env_does_not_leak_into_later_tests() {
+test_update_station_env_does_not_leak_into_later_tests() (
   local v
   # a clean slate, so only a leak from the two tests below can set these
   unset DXB_SYSTEMCTL DXB_NGINX DXB_NGINX_DIR DXB_SYSTEMD_DIR
@@ -601,7 +601,7 @@ test_update_station_env_does_not_leak_into_later_tests() {
   for v in DXB_SYSTEMCTL DXB_NGINX DXB_NGINX_DIR DXB_SYSTEMD_DIR; do
     [[ -z ${!v+x} ]] || _fail "$v leaked: ${!v}"
   done
-}
+)
 
 test_update_rollback_swaps_back_and_forth() {
   up_env; up_provision_stub
