@@ -339,6 +339,11 @@ const evNotice = (m) => evs().onmessage({ data: JSON.stringify(m) });
     // stopping the audio lets the microphone go; the button offers it again
     click(q("vfo-listen"));
     out.released = { stopped: micTrack.stopped, text: q("vfo-mic").textContent, disabled: disabled(q("vfo-mic")) };
+    // refused by the browser: audio.js's reason (a sentence of its own) and its fix, one stop between
+    navigator.mediaDevices.getUserMedia = () => Promise.reject(new Error("NotAllowedError"));
+    click(q("vfo-mic"));
+    await flush();
+    out.refused = notices[notices.length - 1];
   } else if (scenario === "program") {
     click(q("vfo-listen"));
     await connect(0);

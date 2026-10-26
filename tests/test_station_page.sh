@@ -883,6 +883,8 @@ test_vfo_mic_button_shows_the_device() {
   # listening afterwards carries it, idle; stopping the audio releases it and offers it again
   assert_eq "$(jq -c '.onConnection' <<< "$j")" '{"replaced":["mic"],"enabled":false}'
   assert_eq "$(jq -c '.released' <<< "$j")" '{"stopped":true,"text":"Microphone","disabled":false}'
+  # rc3 fix wave: a reason that ends in a full stop gets no second one before the fix
+  assert_eq "$(jq -r '.refused' <<< "$j")" "bad: The microphone was not allowed. Allow the microphone for this page in the browser's settings."
 }
 
 test_vfo_audio_disabled_with_the_reason() {
