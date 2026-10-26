@@ -164,3 +164,38 @@ func TestRadioSettingsSaysWhetherThereIsAnSWRGuard(t *testing.T) {
 		}
 	}
 }
+
+// tunerRigs is swrRigs with an antenna tuner that CAT controls.
+type tunerRigs struct{ swrRigs }
+
+func (r tunerRigs) Caps(n string) (rig.Caps, bool) {
+	c, ok := r.swrRigs.Caps(n)
+	c.SettableFuncs = append(c.SettableFuncs, "TUNER")
+	return c, ok
+}
+
+// Ruling 13 through the real poller hooks: inside an ATU window the reads taken on the tuner's own
+// carrier are ignored, but three over the limit with the station itself transmitting (PTT, Tune)
+// still trip the guard.
+func TestPollerHooksGuardTheStationsKeyingInsideAnATUWindow(t *testing.T) {
+	f := newGuardFixture(true)
+	f.api.Rigs = tunerRigs{swrRigs{f.rig}}
+	f.h("POST", "/api/radio/radio1/claim", `{}`, pttOwner)
+	hooks := f.api.PollerHooks("radio1")
+	hooks.Freq(14074000)
+	if got := f.h("POST", "/api/radio/radio1/atu", `{}`, pttOwner); got != `{"ok":true}` {
+		t.Fatalf("atu: %s", got)
+	}
+	for i := 0; i < 3; i++ {
+		hooks.SWRTx(5.8, true, false) // the tuner's carrier
+	}
+	if g := f.guardView(t, pttOwner); g.Latched {
+		t.Fatalf("the tuner's own carrier tripped the guard: %+v", g)
+	}
+	for i := 0; i < 3; i++ {
+		hooks.SWRTx(5.8, true, true) // the station keying inside the window
+	}
+	if g := f.guardView(t, pttOwner); !g.Active || !g.Latched {
+		t.Fatalf("the station's keying inside the ATU window did not trip the guard: %+v", g)
+	}
+}
