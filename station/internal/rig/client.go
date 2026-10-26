@@ -24,8 +24,10 @@ const (
 	backoffStart      = time.Second
 	backoffMax        = 30 * time.Second
 	stillDownEvery    = 5 * time.Minute
-	queueSize         = 256
-	maxLine           = 64 << 10
+	// urgentBackoffMax caps the reconnect backoff while an unkey is owed to the radio
+	urgentBackoffMax = 3 * time.Second
+	queueSize        = 256
+	maxLine          = 64 << 10
 )
 
 var (
@@ -118,6 +120,8 @@ type Client struct {
 	callbacks []func(bool)
 	events    []bool
 	wake      chan struct{}
+	urgent    bool               // an unkey is owed: the backoff is capped at urgentBackoffMax
+	wakeSleep context.CancelFunc // ends the backoff sleep in progress (nil: none)
 }
 
 // Dial returns at once and connects in the background, retrying with backoff
@@ -160,6 +164,38 @@ func (c *Client) release() { close(c.start) }
 func (c *Client) Close() {
 	c.cancel()
 	<-c.done
+}
+
+// SetUrgent caps the reconnect backoff at urgentBackoffMax while on (an unkey is owed to the
+// radio, so a radio that comes back must be reached within seconds). Turning it on ends a
+// longer backoff sleep already in progress; turning it off restores the normal schedule.
+func (c *Client) SetUrgent(on bool) {
+	c.mu.Lock()
+	was := c.urgent
+	c.urgent = on
+	wake := c.wakeSleep
+	c.mu.Unlock()
+	if on && !was && wake != nil {
+		wake()
+	}
+}
+
+// pause sleeps out a backoff of d (capped while urgent). It returns an error only when the
+// client is closing; SetUrgent(true) cuts it short.
+func (c *Client) pause(d time.Duration) error {
+	c.mu.Lock()
+	if c.urgent {
+		d = min(d, urgentBackoffMax)
+	}
+	sctx, cancel := context.WithCancel(c.ctx)
+	c.wakeSleep = cancel
+	c.mu.Unlock()
+	_ = c.opt.sleep(sctx, d)
+	c.mu.Lock()
+	c.wakeSleep = nil
+	c.mu.Unlock()
+	cancel()
+	return c.ctx.Err()
 }
 
 // Connected reports whether a connection to rigctld is up.
@@ -335,7 +371,7 @@ func (c *Client) run() {
 			}
 			ll.failed(err)
 			c.log.Debug("rigctld dial failed", "addr", c.addr, "err", err, "retry_in", backoff)
-			if c.opt.sleep(c.ctx, backoff) != nil {
+			if c.pause(backoff) != nil {
 				return
 			}
 			backoff = min(backoff*2, backoffMax)
@@ -377,7 +413,7 @@ func (c *Client) sleepDraining(d time.Duration) error {
 			}
 		}
 	}()
-	err := c.opt.sleep(c.ctx, d)
+	err := c.pause(d)
 	close(stop)
 	<-drained
 	return err

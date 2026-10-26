@@ -808,3 +808,101 @@ func TestTranscriptParses(t *testing.T) {
 		t.Fatal("accepted garbage")
 	}
 }
+
+// While an unkey is owed the reconnect backoff is capped at 3 s, so a radio that comes back is
+// unkeyed within seconds; the normal schedule returns when nothing is owed.
+func TestClientUrgentCapsTheBackoff(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := ln.Addr().String()
+	ln.Close()
+	var mu sync.Mutex
+	var got []time.Duration
+	eight := make(chan struct{})
+	more := make(chan struct{})
+	c := dial(addr, nil, options{
+		hold: true,
+		sleep: func(ctx context.Context, d time.Duration) error {
+			mu.Lock()
+			got = append(got, d)
+			n := len(got)
+			mu.Unlock()
+			if n == 8 {
+				close(eight)
+				select {
+				case <-more:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			if n >= 9 {
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			return nil
+		},
+	})
+	defer c.Close()
+	c.SetUrgent(true)
+	c.release()
+	select {
+	case <-eight:
+	case <-time.After(5 * time.Second):
+		t.Fatal("not enough failed dials")
+	}
+	mu.Lock()
+	for i, d := range got {
+		if d > 3*time.Second {
+			t.Fatalf("sleep[%d] = %v while urgent (all %v)", i, d, got)
+		}
+	}
+	mu.Unlock()
+	c.SetUrgent(false)
+	close(more)
+	for i := 0; ; i++ {
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if n >= 9 {
+			break
+		}
+		if i > 1000 {
+			t.Fatal("no sleep after urgency ended")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got[8] != backoffMax {
+		t.Fatalf("sleep after urgency = %v, want the normal %v (all %v)", got[8], backoffMax, got)
+	}
+}
+
+// A debt that starts during a long backoff does not wait it out: the sleep ends and the client
+// dials again at once.
+func TestClientUrgentWakesALongBackoff(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := ln.Addr().String()
+	ln.Close()
+	var n atomic.Int32
+	c := dial(addr, nil, options{
+		sleep: func(ctx context.Context, d time.Duration) error {
+			n.Add(1)
+			<-ctx.Done() // never ends on its own
+			return ctx.Err()
+		},
+	})
+	defer c.Close()
+	for i := 0; n.Load() < 1; i++ {
+		if i > 1000 {
+			t.Fatal("no first sleep")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	c.SetUrgent(true)
+	for i := 0; n.Load() < 2; i++ {
+		if i > 1000 {
+			t.Fatal("the backoff was not cut short")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}

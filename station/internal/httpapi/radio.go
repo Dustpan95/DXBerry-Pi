@@ -156,6 +156,15 @@ func (d dynWriter) Write(ctx context.Context, fn func(rig.Commander) error, opt 
 	return rig.ErrNotConnected
 }
 
+// SetUrgent passes an owed unkey's urgency to the radio's current link.
+func (d dynWriter) SetUrgent(on bool) {
+	if w, ok := d.a.Rigs.Writer(d.name); ok {
+		if u, ok := w.(rig.Urgent); ok {
+			u.SetUrgent(on)
+		}
+	}
+}
+
 // Register adds the radio routes, one pattern per intent. Call it from Config.Routes, so
 // the session gate and the same-origin rule apply.
 func (a *RadioAPI) Register(mux *http.ServeMux) {

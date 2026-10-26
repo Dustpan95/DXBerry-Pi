@@ -724,3 +724,42 @@ func TestStopRacingAKeyOnKeepsItsMarker(t *testing.T) {
 		t.Fatalf("refused key-on left marker %v owed %v", markerAt(t, dir), h.in.Owed())
 	}
 }
+
+// An owed unkey makes the radio's link urgent (a capped reconnect backoff) until it is paid.
+func TestOwedUnkeyMakesTheLinkUrgent(t *testing.T) {
+	h := newIxHarness(ixCaps())
+	ctx := context.Background()
+	_ = h.own.Claim("radio1", ixHolder("a"))
+	h.in.Tune(ctx, "a", true)
+	h.in.Stop(ctx) // paid at once: no urgency
+	if u := h.rig.urgentLog(); len(u) != 0 {
+		t.Fatalf("urgent with nothing owed: %v", u)
+	}
+	h.in.Tune(ctx, "a", true)
+	h.rig.setUp(false)
+	h.in.Stop(ctx)
+	h.tick(t, "urgent while owed", func() bool { u := h.rig.urgentLog(); return len(u) > 0 && u[len(u)-1] })
+	h.rig.setUp(true)
+	h.tick(t, "paid", func() bool { return !h.in.Pending() && !h.retrying() })
+	if u := h.rig.urgentLog(); u[len(u)-1] {
+		t.Fatalf("still urgent after the unkey: %v", u)
+	}
+}
+
+// The poller hands urgency to its rigctld client.
+func TestPollerWriterPassesUrgencyToTheClient(t *testing.T) {
+	c := dial("127.0.0.1:1", nil, options{hold: true})
+	defer c.Close()
+	w := PollerWriter(NewPoller(c, Caps{}, nil, nil))
+	u, ok := w.(Urgent)
+	if !ok {
+		t.Fatal("a poller writer cannot be made urgent")
+	}
+	u.SetUrgent(true)
+	c.mu.Lock()
+	on := c.urgent
+	c.mu.Unlock()
+	if !on {
+		t.Fatal("the client did not become urgent")
+	}
+}

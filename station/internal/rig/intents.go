@@ -30,12 +30,24 @@ type Writer interface {
 	Write(ctx context.Context, fn func(Commander) error, optimistic func(*State)) error
 }
 
+// Urgent is a Writer whose rigctld link can be told an unkey is owed (its reconnect backoff is
+// then capped; see Client.SetUrgent).
+type Urgent interface {
+	SetUrgent(on bool)
+}
+
 // PollerWriter adapts a Poller (whose Write hands out a *Client) to Writer.
 func PollerWriter(p *Poller) Writer { return pollerWriter{p} }
 
 type pollerWriter struct{ p *Poller }
 
 func (w pollerWriter) State() State { return w.p.State() }
+
+func (w pollerWriter) SetUrgent(on bool) {
+	if w.p.client != nil {
+		w.p.client.SetUrgent(on)
+	}
+}
 
 func (w pollerWriter) Write(ctx context.Context, fn func(Commander) error, opt func(*State)) error {
 	return w.p.Write(ctx, func(c *Client) error { return fn(c) }, opt)
@@ -464,6 +476,7 @@ func (in *Intents) startRetry(intent string) {
 	}
 	in.retrying = true
 	in.mu.Unlock()
+	in.setUrgent(true)
 	done := in.closedCh()
 	var ctxDone <-chan struct{}
 	if in.Ctx != nil {
@@ -473,7 +486,8 @@ func (in *Intents) startRetry(intent string) {
 	go func() {
 		// stopRetry ends the loop; it is called with in.mu held, the same hold that read pending,
 		// so a debt that arrives afterwards finds retrying false and starts a loop of its own
-		stopRetry := func() { in.retrying = false; in.mu.Unlock() }
+		// (whose own urgency, re-asserted every round, wins over this loop's late "not urgent")
+		stopRetry := func() { in.retrying = false; in.mu.Unlock(); in.setUrgent(false) }
 		for n := 1; ; n++ {
 			select {
 			case <-tick:
@@ -498,6 +512,7 @@ func (in *Intents) startRetry(intent string) {
 				return
 			}
 			in.mu.Unlock()
+			in.setUrgent(true) // again each round: the radio's poller and client may have been replaced
 			res := in.attemptUnkey(context.Background(), intent, true)
 			switch {
 			case res.OK:
@@ -528,6 +543,13 @@ func (in *Intents) Unkey() {
 	in.mu.Unlock()
 	if need {
 		in.unkey("release")
+	}
+}
+
+// setUrgent tells the radio's link whether an unkey is owed (a capped reconnect backoff).
+func (in *Intents) setUrgent(on bool) {
+	if u, ok := in.Poller.(Urgent); ok {
+		u.SetUrgent(on)
 	}
 }
 

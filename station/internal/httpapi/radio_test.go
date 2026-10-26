@@ -412,3 +412,35 @@ func TestKeyedMarkerOwesUnkeyAtStart(t *testing.T) {
 		t.Fatalf("calls %v", f.calls)
 	}
 }
+
+// urgentRig is an rwRig whose link records urgency.
+type urgentRig struct {
+	rwRig
+	urgent []bool
+}
+
+func (u *urgentRig) SetUrgent(on bool) { u.mu.Lock(); u.urgent = append(u.urgent, on); u.mu.Unlock() }
+
+type urgentRigs struct{ w *urgentRig }
+
+func (r urgentRigs) Writer(n string) (rig.Writer, bool) { return r.w, n == "radio1" }
+func (r urgentRigs) Caps(n string) (rig.Caps, bool)     { return rwRigs{}.Caps(n) }
+
+// The API's writer follows the radio's current link, urgency included.
+func TestOwedUnkeyReachesTheRadiosLinkAsUrgency(t *testing.T) {
+	f := &urgentRig{rwRig: rwRig{st: rig.State{Connected: true, Mode: "FM", Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}}
+	api := &RadioAPI{Auth: multiAuth{}, Radios: rwRecords{"radio1": {Name: "radio1", Port: 4532}}, Rigs: urgentRigs{f}, Owners: session.NewOwners(realNow{}), Ctx: context.Background()}
+	h := New(Config{Listen: "127.0.0.1:0", Auth: multiAuth{}, Routes: api.Register}).Handler
+	hdr := map[string]string{TabHeader: "iPad#a1", "X-Test-Session": "s1"}
+	rwDo(h, "POST", "/api/radio/radio1/claim", `{}`, hdr)
+	rwDo(h, "POST", "/api/radio/radio1/tune", `{"on":true}`, hdr)
+	f.mu.Lock()
+	f.st.Connected = false
+	f.mu.Unlock()
+	rwDo(h, "POST", "/api/radio/radio1/stop", `{}`, hdr) // owed: the link becomes urgent
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.urgent) == 0 || !f.urgent[0] {
+		t.Fatalf("urgency %v", f.urgent)
+	}
+}
