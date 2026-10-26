@@ -226,7 +226,8 @@
   }
 
   // rxLine STATE LEVEL: the speaker's state in words. LEVEL is the received RMS level (0..1), or
-  // null when it cannot be measured; RX_FLOOR (about -50 dBFS) is where "receiving" starts.
+  // null when it cannot be measured; RX_FLOOR (about -50 dBFS) is where "receiving" starts (not
+  // yet set against a real radio's noise floor).
   const RX_FLOOR = 0.003;
   function rxLine(state, level) {
     if (state === "connecting") return "Connecting…";
@@ -971,7 +972,10 @@
     const mic = h("button", { class: "btn vfo-mic", type: "button" }, "Microphone");
     const meter = h("meter", { class: "vfo-rx-level", min: "0", max: "1", value: "0", "aria-label": "Received audio level" });
     const rxText = h("span", { class: "vfo-rx-text" });
-    const rx = h("p", { class: "vfo-rx", "aria-live": "polite" }, meter, rxText);
+    const rx = h("p", { class: "vfo-rx" }, meter, rxText);
+    // a screen reader hears the speaker's state change (connecting, listening, lost), not the
+    // level line flipping between "Receiving" and "no sound" with every poll
+    const live = h("span", { class: "sr-only vfo-rx-state", "aria-live": "polite" });
     const micLine = h("p", { class: "muted hint vfo-mic-line" });
     const why = h("p", { class: "vfo-audio-why", role: "status" });
     listen.addEventListener("click", listenToggle);
@@ -983,6 +987,7 @@
       const text = S.armed && !S.listening && !reason ? "Tap anywhere on the page to start listening." : rxLine(state, S.rxLevel);
       rx.hidden = !text;
       setText(rxText, text);
+      setText(live, rxLine(state, null));
       rx.classList.toggle("is-receiving", text === "Receiving");
       rx.classList.toggle("is-lost", state === "lost");
       meter.hidden = !(state === "on" && S.rxLevel !== null);
@@ -1005,7 +1010,7 @@
       S.rxUpd();
     });
     return h("section", { class: "card vfo-box vfo-audio", "aria-label": "Audio" },
-      h("div", { class: "vfo-audio-btns" }, listen, mic), rx, micLine, why);
+      h("div", { class: "vfo-audio-btns" }, listen, mic), rx, live, micLine, why);
   };
 
   // audio.js's state: the page follows it, including the chip's reconnect

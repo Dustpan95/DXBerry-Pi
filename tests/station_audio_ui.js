@@ -161,7 +161,9 @@ FakeAudioContext.prototype.createGain = function () { const n = new Node("gain")
 FakeAudioContext.prototype.createAnalyser = function () {
   const n = new Node("analyser");
   n.fftSize = 2048;
-  n.getByteTimeDomainData = (b) => { for (let i = 0; i < b.length; i++) b[i] = 128 + Math.round(127 * amp * Math.sin(i / 3)); };
+  // the byte form floors the samples as browsers do (floor(128 * (1 + x)))
+  n.getByteTimeDomainData = (b) => { for (let i = 0; i < b.length; i++) b[i] = Math.max(0, Math.min(255, Math.floor(128 * (1 + amp * Math.sin(i / 3))))); };
+  n.getFloatTimeDomainData = (b) => { for (let i = 0; i < b.length; i++) b[i] = amp * Math.sin(i / 3); };
   return n;
 };
 FakeAudioContext.prototype.createMediaStreamSource = function (s) { const n = new Node("source"); n.stream = s; return n; };
@@ -279,17 +281,28 @@ const evNotice = (m) => evs().onmessage({ data: JSON.stringify(m) });
     // the audio context is made inside the tap itself
     out.contextAtTap = contexts.length;
     out.connecting = snap();
+    const live = () => q("vfo-rx-state").textContent;
+    out.live = { connecting: live() };
     out.urls = sigs().map((s) => s.url);
     await connect(0);
     out.context = { made: contexts.length, state: contexts[0].state };
     out.graph = graph.slice();
     out.muted = audioEl().muted === true;
     out.listening = snap().rx;
+    out.live.listening = live();
     await advance(250);
     out.silent = snap().rx;
+    out.live.silent = live();
+    // a quiet noise floor (about -63 dBFS) is not "receiving"
+    amp = 0.001;
+    await advance(250);
+    out.noise = snap().rx;
     amp = 0.5;
     await advance(250);
     out.receiving = snap().rx;
+    out.live.receiving = live();
+    // only the state is announced: the level line is not a live region
+    out.ariaLive = { line: q("vfo-rx").getAttribute("aria-live"), state: q("vfo-rx-state").getAttribute("aria-live") };
     out.meterUp = Number(q("vfo-rx-level").attrs.value) > 0.5;
     // tapped again: the station is told, everything closes, the audio context sleeps
     click(q("vfo-listen"));

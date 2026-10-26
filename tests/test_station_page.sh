@@ -814,6 +814,9 @@ test_station_audio_duck_by_gain_node() {
   assert_eq "$(jq -r '"\(.gainTXNoMic) \(.gainRX) \(.volTXNoMic)"' <<< "$j")" "0.1 1 1"
   # the receiving level comes from the analyser: nothing before the track, 0 for silence, RMS after
   assert_eq "$(jq -r '"\(.levelBeforeTrack) \(.levelSilent) \(.levelLoud)"' <<< "$j")" "null 0 0.35"
+  # rc3 fix wave (m11): the level is read from the float samples, so a quiet noise floor reads as
+  # what it is (the byte form floors and would read about 0.0055, -45 dBFS)
+  assert_eq "$(jq -r '.levelNoise' <<< "$j")" "0.0007"
   # a lost connection takes its nodes down; the reconnection reuses the one context (still running)
   assert_eq "$(jq -c '.graphAfterLost' <<< "$j")" '["source off","analyser off","gain off"]'
   assert_eq "$(jq -c '.reconnectContext' <<< "$j")" '{"made":1,"resumed":0}'
@@ -836,6 +839,9 @@ test_station_audio_duck_by_gain_node() {
   assert_eq "$(jq -r '"\(.muted) \(.playing) \(.levelSilent) \(.levelLoud)"' <<< "$j")" 'false ["radio"] null null'
   assert_eq "$(jq -c '.tx' <<< "$j")" '{"mic":true,"gain":1,"volume":0.1}'
   assert_eq "$(jq -c '.rx' <<< "$j")" '{"mic":false,"gain":1,"volume":1}'
+  # an analyser without the float form: the bytes still measure the level
+  j=$(node "$DXB_ROOT/tests/station_audio.js" "$SP_WEB/audio.js" bytesonly 2> "$TEST_TMP/sau.err") || { _fail "station_audio.js bytesonly failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -r '"\(.levelSilent) \(.levelLoud)"' <<< "$j")" "0 0.35"
 }
 
 test_vfo_listen_toggle_message_sequence() {
@@ -853,6 +859,11 @@ test_vfo_listen_toggle_message_sequence() {
   assert_eq "$(jq -r '.muted' <<< "$j")" "true"
   # the receiving indicator follows the analyser
   assert_eq "$(jq -r '"\(.listening)|\(.silent)|\(.receiving)|\(.meterUp)"' <<< "$j")" "Listening|Listening, no sound|Receiving|true"
+  # rc3 fix wave (m11): a quiet noise floor is not "Receiving"; only the speaker's state is
+  # announced (a polite live region apart from the level line), not the level's flicker
+  assert_eq "$(jq -r '.noise' <<< "$j")" "Listening, no sound"
+  assert_eq "$(jq -c '.live' <<< "$j")" '{"connecting":"Connecting…","listening":"Listening","silent":"Listening","receiving":"Listening"}'
+  assert_eq "$(jq -c '.ariaLive' <<< "$j")" '{"line":null,"state":"polite"}'
   # tapped again: offer then close on the one socket, socket and peer closed, the context asleep
   assert_eq "$(jq -c '.messages' <<< "$j")" '[["offer","close"]]'
   assert_eq "$(jq -c '.closed' <<< "$j")" '{"socket":1,"pc":1,"context":"suspended"}'

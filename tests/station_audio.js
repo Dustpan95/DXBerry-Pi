@@ -5,6 +5,7 @@
 //   noaudioctx: a browser without Web Audio, where the element's volume ducks instead
 //   nosource: Web Audio that will not take the remote track (createMediaStreamSource throws): the
 //   element plays it and its volume ducks
+//   bytesonly: an analyser with only the byte form of the samples (no getFloatTimeDomainData)
 "use strict";
 const fs = require("fs");
 const vm = require("vm");
@@ -57,7 +58,8 @@ FakePC.prototype.close = function () { this.closed++; };
 function FakeStream() { this.tracks = []; }
 FakeStream.prototype.addTrack = function (t) { this.tracks.push(t.id); };
 
-// Web Audio: every connect is written down as "from>to"; the analyser reads a sine of amplitude amp
+// Web Audio: every connect is written down as "from>to"; the analyser reads a sine of amplitude amp,
+// as floats, or as bytes floored the way browsers store them (floor(128 * (1 + x)))
 const graph = [];
 const contexts = [];
 const gains = [];
@@ -72,7 +74,8 @@ FakeAudioContext.prototype.createGain = function () { const n = new Node("gain")
 FakeAudioContext.prototype.createAnalyser = function () {
   const n = new Node("analyser");
   n.fftSize = 2048;
-  n.getByteTimeDomainData = (b) => { for (let i = 0; i < b.length; i++) b[i] = 128 + Math.round(127 * amp * Math.sin(i / 3)); };
+  n.getByteTimeDomainData = (b) => { for (let i = 0; i < b.length; i++) b[i] = Math.max(0, Math.min(255, Math.floor(128 * (1 + amp * Math.sin(i / 3))))); };
+  if (mode !== "bytesonly") n.getFloatTimeDomainData = (b) => { for (let i = 0; i < b.length; i++) b[i] = amp * Math.sin(i / 3); };
   return n;
 };
 FakeAudioContext.prototype.createMediaStreamSource = function (st) {
@@ -101,7 +104,7 @@ const ctx = {
   dxb: { ws: (p) => new FakeSocket("wss://pi.local" + p), tab: () => "iPhone#tab-1" },
   RTCPeerConnection: FakePC, MediaStream: FakeStream, JSON, Promise, Math, String, encodeURIComponent,
 };
-if (mode === "webaudio" || mode === "nosource") ctx.AudioContext = FakeAudioContext;
+if (mode === "webaudio" || mode === "nosource" || mode === "bytesonly") ctx.AudioContext = FakeAudioContext;
 ctx.window = ctx;
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), ctx);
@@ -153,6 +156,10 @@ if (A.onChange) A.onChange((m) => states.push(m.state));
   amp = 0.5;
   const loud = A.level();
   out.levelLoud = loud === null ? null : Math.round(loud * 100) / 100;
+  // a quiet noise floor, about -63 dBFS: the floats measure it; the floored bytes read -45 dBFS
+  amp = 0.001;
+  const noise = A.level();
+  out.levelNoise = noise === null ? null : Math.round(noise * 10000) / 10000;
   amp = 0;
 
   // ducking without a mic, the mic on the first press only, then PTT

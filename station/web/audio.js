@@ -317,18 +317,28 @@
   }
 
   // level: how loud the radio's audio is (RMS, 0..1) as it arrives, before the duck; null while
-  // there is nothing to measure (no track yet, or no Web Audio)
+  // there is nothing to measure (no track yet, or no Web Audio). The float samples are read where
+  // the browser has them: the byte form floors each sample, so even a quiet noise floor would read
+  // about -45 dBFS there.
   function level() {
     const c = cur;
     if (!c || !c.src || !c.analyser) return null;
-    const buf = new Uint8Array(c.analyser.fftSize);
-    c.analyser.getByteTimeDomainData(buf);
+    const a = c.analyser;
+    const n = a.fftSize;
     let sum = 0;
-    for (let i = 0; i < buf.length; i++) {
-      const x = (buf[i] - 128) / 128;
-      sum += x * x;
+    if (typeof a.getFloatTimeDomainData === "function" && typeof Float32Array === "function") {
+      const buf = new Float32Array(n);
+      a.getFloatTimeDomainData(buf);
+      for (let i = 0; i < n; i++) sum += buf[i] * buf[i];
+    } else {
+      const buf = new Uint8Array(n);
+      a.getByteTimeDomainData(buf);
+      for (let i = 0; i < n; i++) {
+        const x = (buf[i] - 128) / 128;
+        sum += x * x;
+      }
     }
-    return Math.sqrt(sum / buf.length);
+    return Math.sqrt(sum / n);
   }
 
   // micLabel: the name of the microphone in use, as the browser gives it; null when none is open
