@@ -29,7 +29,8 @@ for t in $(declare -F | awk '{print $3}' | grep '^test_' | sort); do
 done
 # Go service tests, only when DXB_GO_TESTS=1 (the test container sets it; the CI "station" job runs Go itself)
 if [[ ${DXB_GO_TESTS:-} == 1 ]] && command -v go > /dev/null; then
-  if ! (cd station && go vet ./... && go test -race ./...); then
+  # nolibopusfile as station/build.sh and CI build it, also where GOFLAGS does not carry it
+  if ! (cd station && go vet -tags=nolibopusfile ./... && go test -race -tags=nolibopusfile ./...); then
     echo "FAIL station (go vet / go test)"
     TESTS_FAILED=$((TESTS_FAILED + 1))
   fi
