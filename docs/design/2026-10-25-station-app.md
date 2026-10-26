@@ -363,9 +363,13 @@ the same for the radio they hand over: a claim by Graywolf stops the server
 before Graywolf starts, and a release starts it once the old owner has let
 go of the card. For a plugged-in radio a program session owns, the session's
 own steps start or stop the server around that session (below), and the
-apply leaves it alone: after a restart of the Pi with that program's window
-not running, the radio has no server, and no browser audio, until the window
-runs or the radio is released (an accepted gap). Presence, hotplug and
+apply leaves it alone: after a restart of the Pi, or an unplug and replug of
+the radio, with that program's window not running, the radio has no server,
+and no browser audio, until the window starts (JS8Call, fldigi, QSSTV) or has
+run and closed (WSJT-X, Pat: the session's prepare stops the server and its
+stopped step starts it), or the radio is released (an accepted gap; an unplug
+stops the server, and a window that was not running leaves no waiting marker
+for the replug to start). Presence, hotplug and
 ownership already live in the radio setup, so the server follows them there;
 stopping it while the radio is unplugged means a replug comes back to a
 fresh server. (The first draft had `dxberryd` start it when a radio was

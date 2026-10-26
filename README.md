@@ -150,8 +150,9 @@ and `sudo dxberry-logbook get`.
 - **Each radio with a sound card gets its own sound server,** started at boot and when the radio is
   added or plugged in, and stopped when it is unplugged or removed. A radio whose sound card Graywolf
   uses has no browser audio. A radio owned by a program gets its sound server from that program's
-  window: if the Pi restarts while the window is not running, that radio has no browser audio until
-  the window runs again or the radio is released.
+  window: if the Pi restarts, or the radio is unplugged and plugged back in, while the window is not
+  running, that radio has no browser audio until the window starts (JS8Call, fldigi, QSSTV) or has run
+  and closed (WSJT-X, Pat), or the radio is released.
 - **Hold-to-talk PTT** for the radio's transmitter owner. The microphone is asked for once (the
   **Microphone** button or the first PTT press) and released when you stop listening; it is used only
   while PTT is held. A press right after **Listen** waits up to two seconds for the browser's audio to
