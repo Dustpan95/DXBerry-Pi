@@ -35,6 +35,10 @@ jobs:
           rm -f provision/bin/dxberryd
   station:
     runs-on: ubuntu-latest
+    env:
+      # hraban/opus without its libopusfile part, as station/build.sh builds it (go vet,
+      # staticcheck and go test read GOFLAGS)
+      GOFLAGS: -tags=nolibopusfile
     defaults:
       run:
         working-directory: station
@@ -53,6 +57,8 @@ jobs:
         run: go test -race ./...
   binary-arm64:
     runs-on: ubuntu-24.04-arm
+    env:
+      GOFLAGS: -tags=nolibopusfile
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -67,7 +73,12 @@ jobs:
       - name: Build dxberryd
         run: bash station/build.sh out/dxberryd
       - name: Show the binary
-        run: file station/out/dxberryd
+        # the Pi installs libopus0 only: a binary that needs libopusfile would not start there
+        run: |
+          file station/out/dxberryd
+          libs=$(ldd station/out/dxberryd)
+          echo "$libs"
+          ! grep -q libopusfile <<< "$libs"
       - uses: actions/upload-artifact@v4
         with:
           name: dxberryd-arm64

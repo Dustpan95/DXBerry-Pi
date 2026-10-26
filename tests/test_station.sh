@@ -474,6 +474,15 @@ test_station_build_stamps_the_given_version() (
   assert_contains "$(cat "$TEST_TMP/go-args")" "-X main.version=$(< "$DXB_ROOT/provision/VERSION")"
 )
 
+# hraban/opus builds its Ogg stream code against libopusfile unless the nolibopusfile tag is set,
+# and the Pi installs libopus0 only: the station build always sets the tag
+test_station_build_leaves_out_libopusfile() (
+  mkdir -p "$TEST_TMP/gobin"
+  printf '#!/bin/bash\necho "$@" > "%s/go-args"\n' "$TEST_TMP" > "$TEST_TMP/gobin/go"; chmod 755 "$TEST_TMP/gobin/go"
+  PATH=$TEST_TMP/gobin:$PATH bash "$DXB_ROOT/station/build.sh" "$TEST_TMP/out" 0.5.0-rc3
+  assert_contains "$(cat "$TEST_TMP/go-args")" "build -tags nolibopusfile "
+)
+
 # the radios' sound server unit goes in beside the app's, and the app is not restarted for it
 test_station_installs_the_audio_unit() {
   sn_env

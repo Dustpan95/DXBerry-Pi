@@ -133,6 +133,25 @@ test_build_ships_the_update_command() {
   assert_contains "$executable" "provision/bin/dxberry-update"
 }
 
+# bt_job WORKFLOW JOB: the lines of one job of a workflow file, from "  JOB:" to the next job.
+bt_job() { awk -v j="  $2:" '$0 == j { on = 1; next } on && /^  [a-z]/ { exit } on' "$1"; }
+
+# hraban/opus builds its Ogg stream code against libopusfile unless the nolibopusfile tag is set,
+# and the Pi installs libopus0 only: every Go job sets the tag (go vet, staticcheck and go test
+# read GOFLAGS), and the jobs that build the binary refuse one that needs libopusfile
+test_build_go_jobs_leave_out_libopusfile() {
+  local j job
+  for j in "ci.yml station" "ci.yml binary-arm64" "release.yml binary"; do
+    job=$(bt_job "$DXB_ROOT/.github/workflows/${j% *}" "${j#* }")
+    if [[ -z $job ]]; then _fail "$j: no such job"; continue; fi
+    assert_contains "$job" "GOFLAGS: -tags=nolibopusfile"
+  done
+  for j in "ci.yml binary-arm64" "release.yml binary"; do
+    job=$(bt_job "$DXB_ROOT/.github/workflows/${j% *}" "${j#* }")
+    assert_contains "$job" "grep -q libopusfile"
+  done
+}
+
 # sudo build-image.sh creates out/ as root; the update file is made by the runner user, so it must
 # come first (the runner then owns out/, and root can still write the image into it) - and the
 # image build hands out/ itself back to the invoking user as well.

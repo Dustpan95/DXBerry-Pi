@@ -7,4 +7,6 @@ cd "$(dirname "$0")" || exit 1
 out=${1:-../provision/bin/dxberryd}
 version=${2:-$(cat ../provision/VERSION)} || exit 1
 [[ -n $version ]] || exit 1
-CGO_ENABLED=1 go build -trimpath -ldflags "-s -w -X main.version=$version" -o "$out" ./cmd/dxberryd
+# nolibopusfile: hraban/opus leaves out its Ogg file streams (cgo pkg-config opusfile), so the binary
+# links libopus only, the one Opus library the Pi installs (libopus0)
+CGO_ENABLED=1 go build -tags nolibopusfile -trimpath -ldflags "-s -w -X main.version=$version" -o "$out" ./cmd/dxberryd
