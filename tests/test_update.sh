@@ -1258,3 +1258,44 @@ test_update_failed_setup_restarts_no_sessions() (
   dxb_update_apply_dxberry > /dev/null 2>&1
   assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl restart"
 )
+
+# A rollback to a tree without the radios' sound servers (rc2) stops them, so the restored tree's
+# sessions (a private PulseAudio, or a program on the raw card) find the cards free, and restarts
+# the running sessions on the restored runner once its setup has run (also when the setup
+# reported failed steps: the stopped servers took those sessions' sound away)
+test_update_rollback_to_a_tree_without_sound_servers_stops_them() (
+  local stop restart
+  up_env; up_provision_stub
+  up_tree "$DXB_OPT" 0.5.0-rc3
+  up_tree "$DXB_OPT.prev" 0.5.0-rc2
+  : > "$DXB_OPT/bin/dxberryd"; : > "$DXB_OPT.prev/bin/dxberryd"
+  rm -f "$DXB_OPT.prev/bin/dxberry-audio"
+  DXB_SYSTEMCTL=up_sc_list
+  : > "$TEST_TMP/calls"
+  assert_ok dxb_update_apply_rollback > "$TEST_TMP/out" 2>&1
+  stop=$(grep -nxF 'systemctl stop dxberry-audio@*' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  restart=$(grep -nxF 'systemctl restart dxberry-screen@wsjtx-radio1.service' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  if [[ -z $stop || -z $restart ]] || (( stop > restart )); then _fail "the servers must stop (call ${stop:-none}) before the sessions restart (call ${restart:-none})"; fi
+  assert_contains "$(cat "$TEST_TMP/provision-ran")" "LIB=$DXB_OPT/lib"
+  echo 1 > "$TEST_TMP/provision-rc"
+  rm -rf "$DXB_OPT" "$DXB_OPT.prev"
+  up_tree "$DXB_OPT" 0.5.0-rc3; up_tree "$DXB_OPT.prev" 0.5.0-rc2
+  : > "$DXB_OPT/bin/dxberryd"; : > "$DXB_OPT.prev/bin/dxberryd"
+  rm -f "$DXB_OPT.prev/bin/dxberry-audio"
+  : > "$TEST_TMP/calls"
+  dxb_update_apply_rollback > /dev/null 2>&1; assert_eq "$?" "8"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl restart dxberry-screen@wsjtx-radio1.service"
+)
+
+# between two trees that both have them, a rollback leaves the servers and the sessions alone
+test_update_rollback_between_trees_with_sound_servers_leaves_them() (
+  up_env; up_provision_stub
+  up_tree "$DXB_OPT" 0.5.0-rc4
+  up_tree "$DXB_OPT.prev" 0.5.0-rc3
+  : > "$DXB_OPT/bin/dxberryd"; : > "$DXB_OPT.prev/bin/dxberryd"
+  DXB_SYSTEMCTL=up_sc_list
+  : > "$TEST_TMP/calls"
+  assert_ok dxb_update_apply_rollback > /dev/null 2>&1
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "dxberry-audio"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "restart dxberry-screen@"
+)

@@ -408,11 +408,12 @@ dxb_update_station_teardown() {
 }
 
 dxb_update_apply_rollback() {
-  local prev=$DXB_OPT.prev next=$DXB_OPT.next
+  local prev=$DXB_OPT.prev next=$DXB_OPT.next had_audio=0 audio_gone=0 prc=0
   if [[ ! -x $prev/bin/dxberry-provision || ! -f $prev/lib/common.sh || ! -f $prev/VERSION ]]; then
     echo "there is no earlier DXBerry to go back to" >&2
     return 6
   fi
+  [[ -e $DXB_OPT/bin/dxberry-audio ]] && had_audio=1
   rm -rf "$next"
   sync
   # the same swap as an update's (dxb_update_apply_dxberry): TERM, INT and HUP ignored until the
@@ -438,8 +439,20 @@ dxb_update_apply_rollback() {
     echo "the earlier DXBerry has no station app; removing it so the earlier web page can take over"
     dxb_update_station_teardown
   fi
+  # the earlier tree predates the radios' sound servers (dxberry-audio@): they would keep the cards
+  # its programs open (a private PulseAudio, or the raw card), so they stop now, and the running
+  # sessions restart on the restored runner after its setup (also after a setup with failed steps:
+  # stopping the servers took those sessions' sound away)
+  if (( had_audio )) && [[ ! -e $DXB_OPT/bin/dxberry-audio ]]; then
+    echo "the earlier DXBerry has no radio sound servers; stopping them so its programs get the sound cards"
+    "${DXB_SYSTEMCTL:-systemctl}" stop 'dxberry-audio@*' > /dev/null 2>&1 < /dev/null \
+      || dxb_warn "could not stop the radios' sound servers (dxberry-audio@); restart the Pi if a program cannot open its sound card"
+    audio_gone=1
+  fi
   echo "DXBerry back to $(head -1 "$DXB_OPT/VERSION"); running the setup"
-  dxb_update_run_provision || { echo "the setup run reported failed steps" >&2; return 8; }
+  dxb_update_run_provision || prc=1
+  (( audio_gone )) && _dxb_update_restart_sessions
+  (( prc )) && { echo "the setup run reported failed steps" >&2; return 8; }
   return 0
 }
 
