@@ -541,6 +541,13 @@ func (a *RadioAPI) PollerHooks(name string) rig.Hooks {
 				g.Read(swr, on)
 			}
 		},
+		// the poller's station-transmit flag (a PTT window or Tune carrier of ours) must reach
+		// the guard: it keeps the ATU window from blinding the guard to our own keying
+		SWRTx: func(swr float64, on, stationTx bool) {
+			if g := a.GuardOf(name); g != nil {
+				g.ReadTx(swr, on, stationTx)
+			}
+		},
 		Freq: func(hz int64) {
 			if g := a.GuardOf(name); g != nil {
 				g.NoteFreq(hz)

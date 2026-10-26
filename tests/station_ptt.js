@@ -1,7 +1,8 @@
 // Runs station/web/vfo.js as the page /radio/ic7300 over a small fake DOM, a fake fetch, fake
 // timers and a fake dxbAudio, presses and releases its PTT button, and prints what it sent.
 // Run: node tests/station_ptt.js station/web SCENARIO
-//   scenarios: release (each release event, the heartbeat), notowner, noaudio, refused, dropped
+//   scenarios: release (each release event, the heartbeat), notowner, noaudio, refused, dropped,
+//   stale, hbrefused, rebuild, pendingmic, docrelease
 "use strict";
 const fs = require("fs");
 const vm = require("vm");
@@ -44,20 +45,23 @@ const doc = {
     if (id.startsWith("vfo-")) return els.vfo ? els.vfo.find((e) => e.attrs.id === id)[0] || null : null;
     return (shell[id] = shell[id] || new El("x"));
   },
-  createElement: (t) => new El(t), querySelectorAll: () => [], addEventListener() {},
+  createElement: (t) => new El(t), querySelectorAll: () => [],
+  addEventListener(t, f) { (docHandlers[t] = docHandlers[t] || []).push(f); },
 };
+const docHandlers = {};
 els.notices = new El("div");
 els.notices.nextSibling = null;
 els.notices.parentNode = { insertBefore(node) { els.vfo = node; } };
 
 const record = { name: "ic7300", label: "IC-7300", owner: "", has_cat: true, ptt: "rigctld" };
 const state = { connected: true, freq: 14074000, mode: "USB", passband: "2400", ptt: false, vfo: "VFOA", split: false, levels: {}, meters: {}, optimistic: {} };
-const caps = { ModelName: "IC-7300", Modes: ["USB", "LSB"], VFOs: ["VFOA", "VFOB"], CanSetPTT: true, SettableLevels: [], SettableFuncs: [], Hidden: [], FreqRanges: [{ Lo: 30000, Hi: 74800000 }] };
+let caps = { ModelName: "IC-7300", Modes: ["USB", "LSB"], VFOs: ["VFOA", "VFOB"], CanSetPTT: true, SettableLevels: [], SettableFuncs: [], Hidden: [], FreqRanges: [{ Lo: 30000, Hi: 74800000 }] };
 const owner = scenario === "notowner" ? { kind: "tab", label: "iPhone", mine: false } : { kind: "tab", label: "iPad", mine: true };
 const audio = scenario === "noaudio" ? { available: false, reason: "no sound server for ic7300: WSJT-X has the sound card" } : { available: true, reason: "" };
 const ptt = { on: false, mine: false, timeout_s: 180, method: "rigctld" };
 
 const posts = []; // the PTT requests, in order: "on", "off", "hb"
+let windows = 0; // the station's window numbers
 const reply = (status, body) => Promise.resolve({ ok: status < 300, status, json: () => Promise.resolve(body) });
 const fetch = (url, opts) => {
   if (opts.method === "GET") return reply(200, { radio: record, state, caps, owner, audio, ptt });
@@ -68,6 +72,8 @@ const fetch = (url, opts) => {
     if (scenario === "refused" && b.on) {
       return reply(200, { ok: false, reason: "the microphone is not open yet", fix: "press PTT again once the browser has asked for the microphone" });
     }
+    if (scenario === "hbrefused" && b.hb) return reply(200, { ok: false, reason: "PTT is not on", fix: "press PTT again" });
+    if (b.on) return reply(200, { ok: true, window: ++windows });
   }
   return reply(200, { ok: true });
 };
@@ -81,6 +87,7 @@ FakeSocket.prototype.send = function (m) { this.sent.push(m); };
 FakeSocket.prototype.close = function () {};
 const audioCalls = { listen: 0, openMic: 0, tx: [] };
 const winHandlers = {};
+let micResolve = null;
 const ctx = {
   document: doc, console, fetch, JSON, Promise, encodeURIComponent, Date, Math, Object, String, Number, Array, Set, WebSocket: FakeSocket,
   location: { pathname: "/radio/ic7300", search: "", hash: "", protocol: "https:", host: "pi.local", assign() {} },
@@ -92,7 +99,11 @@ const ctx = {
   addEventListener(t, f) { (winHandlers[t] = winHandlers[t] || []).push(f); },
   dxbAudio: {
     listen() { audioCalls.listen++; return Promise.resolve({ ok: true }); },
-    openMic() { audioCalls.openMic++; return Promise.resolve({ ok: true }); },
+    openMic() {
+      audioCalls.openMic++;
+      if (scenario === "pendingmic") return new Promise((r) => { micResolve = r; });
+      return Promise.resolve({ ok: true });
+    },
     setTX(on) { audioCalls.tx.push(!!on); },
   },
 };
@@ -150,11 +161,94 @@ function release(kind) {
     console.log(JSON.stringify(out));
     return;
   }
+  const notice = (m) => sockets[0].onmessage({ data: JSON.stringify(Object.assign({ type: "ptt", radio: "ic7300", on: false }, m)) });
+  if (scenario === "stale") {
+    // press 1 opens window 1 and is released; press 2 opens window 2; window 1's late notice
+    // must not end press 2, window 2's own does
+    await press();
+    release("pointerup");
+    await flush();
+    await press();
+    notice({ reason: "released", window: 1 });
+    await flush();
+    out.afterStale = button().textContent;
+    notice({ reason: "heartbeat lost", window: 2 });
+    await flush();
+    out.afterOwn = button().textContent;
+    out.posts = posts;
+    out.notices = ctx.notices;
+    console.log(JSON.stringify(out));
+    return;
+  }
+  if (scenario === "hbrefused") {
+    const since = await press();
+    heartbeats(since)[0][1].fn();
+    await flush();
+    out.posts = posts;
+    out.notices = ctx.notices;
+    out.labelAfter = button().textContent;
+    out.hbCleared = heartbeats(since).every(([, t]) => t.cleared);
+    console.log(JSON.stringify(out));
+    return;
+  }
+  if (scenario === "rebuild") {
+    // the station's answer changes the layout mid-hold: the section is replaced, the hold ends
+    const since = await press();
+    out.held = button().textContent;
+    caps = Object.assign({}, caps, { Modes: ["USB", "LSB", "CW"] });
+    const poll = [...intervals.entries()].find(([id, t]) => id < since && t.ms === 5000);
+    poll[1].fn();
+    await flush();
+    out.posts = posts;
+    out.hbCleared = heartbeats(since).every(([, t]) => t.cleared);
+    out.labelAfter = button().textContent;
+    out.tx = audioCalls.tx;
+    console.log(JSON.stringify(out));
+    return;
+  }
+  if (scenario === "pendingmic") {
+    // released while the browser is still asking for the microphone: nothing goes to the station
+    await press();
+    out.labelPending = button().textContent;
+    release("pointerup");
+    await flush();
+    micResolve({ ok: true });
+    await flush();
+    out.posts = posts;
+    out.tx = audioCalls.tx;
+    out.labelAfter = button().textContent;
+    console.log(JSON.stringify(out));
+    return;
+  }
+  if (scenario === "docrelease") {
+    // a pointer lifted anywhere ends the hold it started; another finger lifting does not
+    await press();
+    for (const f of docHandlers.pointerup || []) f({ pointerId: 2 });
+    await flush();
+    out.otherFinger = button().textContent;
+    for (const f of docHandlers.pointerup || []) f({ pointerId: 1 });
+    await flush();
+    out.afterUp = button().textContent;
+    // the page going to the background ends a hold too
+    await press();
+    doc.hidden = true;
+    for (const f of docHandlers.visibilitychange || []) f({});
+    doc.hidden = false;
+    await flush();
+    out.afterHidden = button().textContent;
+    await press();
+    for (const f of docHandlers.lostpointercapture || []) f({ pointerId: 1 });
+    await flush();
+    out.afterLost = button().textContent;
+    out.posts = posts;
+    console.log(JSON.stringify(out));
+    return;
+  }
   if (scenario === "dropped") {
     const since = await press();
     out.postsBefore = posts.slice();
     out.transmitting = button().textContent;
-    sockets[0].onmessage({ data: JSON.stringify({ type: "ptt", radio: "ic7300", on: false, reason: "heartbeat lost" }) });
+    notice({ reason: "heartbeat lost", window: 1 });
     await flush();
     out.labelAfter = button().textContent;
     out.notices = ctx.notices;

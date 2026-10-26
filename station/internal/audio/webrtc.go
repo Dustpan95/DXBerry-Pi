@@ -158,6 +158,7 @@ type Bridge struct {
 	playGen uint64 // counts pacat starts, so a write error is matched to the pacat it hit
 	retried bool
 	lostFns map[int]func(TabID, string)
+	closeFn map[int]func(TabID)
 	nextFn  int
 	shut    bool
 }
@@ -172,7 +173,7 @@ func NewBridge(radio string, capture *Capture, play *Playback, ports PortRange, 
 	return &Bridge{
 		radio: radio, ports: ports, log: log.With("radio", radio), LostAfter: LostAfter,
 		ctx: ctx, cancel: cancel, tmpl: capture, play: play,
-		conns: map[TabID]*conn{}, allowed: map[TabID]time.Time{}, lostFns: map[int]func(TabID, string){},
+		conns: map[TabID]*conn{}, allowed: map[TabID]time.Time{}, lostFns: map[int]func(TabID, string){}, closeFn: map[int]func(TabID){},
 	}
 }
 
@@ -580,18 +581,42 @@ func (b *Bridge) AddICECandidate(tab TabID, cand Candidate) error {
 		SDPMLineIndex: cand.SDPMLineIndex, UsernameFragment: cand.UsernameFragment})
 }
 
-// Close ends tab's connection, if it has one.
+// Close ends tab's connection, if it has one, and tells the OnClosed subscribers.
 func (b *Bridge) Close(tab TabID) {
 	b.mu.Lock()
 	c := b.conns[tab]
 	delete(b.conns, tab)
 	stop := b.stopCaptureLocked()
+	fns := make([]func(TabID), 0, len(b.closeFn))
+	for _, fn := range b.closeFn {
+		fns = append(fns, fn)
+	}
 	b.mu.Unlock()
 	if c != nil {
 		c.close()
 	}
 	if stop != nil {
 		_ = stop.Close()
+	}
+	if c != nil {
+		for _, fn := range fns {
+			fn(tab)
+		}
+	}
+}
+
+// OnClosed calls fn(tab) when a tab's connection is closed on purpose (Close: the browser
+// stopped its audio or its signalling socket ended). The returned func unsubscribes.
+func (b *Bridge) OnClosed(fn func(tab TabID)) (cancel func()) {
+	b.mu.Lock()
+	id := b.nextFn
+	b.nextFn++
+	b.closeFn[id] = fn
+	b.mu.Unlock()
+	return func() {
+		b.mu.Lock()
+		delete(b.closeFn, id)
+		b.mu.Unlock()
 	}
 }
 

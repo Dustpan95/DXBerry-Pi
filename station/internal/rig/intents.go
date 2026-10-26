@@ -21,6 +21,8 @@ type Result struct {
 	OK     bool   `json:"ok"`
 	Reason string `json:"reason,omitempty"`
 	Fix    string `json:"fix,omitempty"`
+	// Window is the PTT window an accepted "ptt on" opened (its notices carry the same number).
+	Window uint64 `json:"window,omitempty"`
 }
 
 // Writer is a radio's poller as the intents use it: its state, and writes that show their

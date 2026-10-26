@@ -38,6 +38,7 @@ func (b *ptBridge) HasInbound(tab string) bool {
 	return b.inbound[tab]
 }
 func (b *ptBridge) OnLost(fn func(tab, reason string)) func() { return func() {} }
+func (b *ptBridge) OnClosed(fn func(tab string)) func()       { return func() {} }
 func (b *ptBridge) talking(tab string) bool                   { b.mu.Lock(); defer b.mu.Unlock(); return b.allowed[tab] }
 
 type ptServer struct {
@@ -58,6 +59,7 @@ func (s *ptServer) LoadTXLoopback(context.Context, string) (int, error) {
 	s.loaded++
 	return 7, nil
 }
+func (s *ptServer) UnloadStaleTXLoopbacks(context.Context, string) (int, error) { return 0, nil }
 func (s *ptServer) UnloadTXLoopback(context.Context, string, int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -146,7 +148,7 @@ func TestPTTRouteOwnerOnly(t *testing.T) {
 		t.Fatalf("before claim: %s", got)
 	}
 	rwDo(f.h, "POST", "/api/radio/radio1/claim", `{}`, pttOwner)
-	if got := body(rwDo(f.h, "POST", "/api/radio/radio1/ptt", `{"on":true}`, pttOwner)); got != `{"ok":true}` {
+	if got := body(rwDo(f.h, "POST", "/api/radio/radio1/ptt", `{"on":true}`, pttOwner)); !strings.HasPrefix(got, `{"ok":true,"window":`) {
 		t.Fatalf("on: %s", got)
 	}
 	if !f.br.talking("s1|iPad#a1") || f.rig.calls[len(f.rig.calls)-1] != "set_ptt 1" {
@@ -199,7 +201,7 @@ func TestPTTRouteOwnerOnly(t *testing.T) {
 	if f.br.talking("s1|iPad#a1") || f.rig.calls[len(f.rig.calls)-1] != "set_ptt 0" {
 		t.Fatalf("not unkeyed: %v", f.rig.calls)
 	}
-	if got := f.noticeLog(); len(got) != 1 || got[0] != `{"type":"ptt","radio":"radio1","on":false,"reason":"released"}` {
+	if got := f.noticeLog(); len(got) != 1 || got[0] != `{"type":"ptt","radio":"radio1","on":false,"reason":"released","window":1}` {
 		t.Fatalf("notices %v", got)
 	}
 }
@@ -217,7 +219,7 @@ func TestPTTRouteRefusesUntilTheMicIsOpen(t *testing.T) {
 	f.br.mu.Lock()
 	f.br.inbound["s1|iPad#a1"] = true
 	f.br.mu.Unlock()
-	if got := body(rwDo(f.h, "POST", "/api/radio/radio1/ptt", `{"on":true}`, pttOwner)); got != `{"ok":true}` {
+	if got := body(rwDo(f.h, "POST", "/api/radio/radio1/ptt", `{"on":true}`, pttOwner)); !strings.HasPrefix(got, `{"ok":true,"window":`) {
 		t.Fatalf("with the mic: %s", got)
 	}
 	rwDo(f.h, "POST", "/api/radio/radio1/ptt", `{"on":false}`, pttOwner)
@@ -253,7 +255,7 @@ func TestStopRouteEndsPTTAndNamesTheDevice(t *testing.T) {
 	if f.br.talking("s1|iPad#a1") || f.rig.calls[len(f.rig.calls)-1] != "set_ptt 0" {
 		t.Fatalf("stop left PTT: %v", f.rig.calls)
 	}
-	if got := f.noticeLog(); len(got) != 1 || got[0] != `{"type":"ptt","radio":"radio1","on":false,"reason":"STOP from iPhone"}` {
+	if got := f.noticeLog(); len(got) != 1 || got[0] != `{"type":"ptt","radio":"radio1","on":false,"reason":"STOP from iPhone","window":1}` {
 		t.Fatalf("notices %v", got)
 	}
 }
@@ -289,7 +291,7 @@ func TestShutdownEndsPTT(t *testing.T) {
 		}}
 	h := New(Config{Listen: "127.0.0.1:0", Auth: multiAuth{}, Routes: api.Register}).Handler
 	rwDo(h, "POST", "/api/radio/radio1/claim", `{}`, pttOwner)
-	if got := body(rwDo(h, "POST", "/api/radio/radio1/ptt", `{"on":true}`, pttOwner)); got != `{"ok":true}` {
+	if got := body(rwDo(h, "POST", "/api/radio/radio1/ptt", `{"on":true}`, pttOwner)); !strings.HasPrefix(got, `{"ok":true,"window":`) {
 		t.Fatalf("on: %s", got)
 	}
 	// a vox radio owes no unkey, yet shutdown closes its audio path
@@ -321,4 +323,58 @@ func TestPTTRouteWithoutAudio(t *testing.T) {
 	if len(f.calls) != 0 {
 		t.Fatalf("calls %v", f.calls)
 	}
+}
+
+// Every radio record has a rigctld port (provision/lib/radio.sh allocates one on add and rejects a
+// record without one; a radio with no CAT runs rigctld on Hamlib's dummy model), so the manager
+// has a Writer for a vox radio too, even while its dummy rigctld is down: claim, PTT, release and
+// STOP pass the rig-control gate and key nothing through CAT.
+func TestVoxRadioWithADummyRigctldClaimsAndTalks(t *testing.T) {
+	f := &rwRig{st: rig.State{Connected: false, Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}
+	br := &ptBridge{inbound: map[string]bool{"s1|iPad#a1": true}, allowed: map[string]bool{}}
+	srv := &ptServer{ok: true}
+	api := &RadioAPI{Auth: multiAuth{}, Radios: rwRecords{"radio1": {Name: "radio1", Port: 4534, PTT: "vox", Model: 1}}, Rigs: rwRigs{f},
+		Owners: session.NewOwners(realNow{}), Ctx: context.Background(),
+		Audio: func(string) PTTAudio { return PTTAudio{Bridge: br, Server: srv} }}
+	h := New(Config{Listen: "127.0.0.1:0", Auth: multiAuth{}, Routes: api.Register}).Handler
+	if got := body(rwDo(h, "POST", "/api/radio/radio1/claim", `{}`, pttOwner)); got != `{"ok":true}` {
+		t.Fatalf("claim: %s", got)
+	}
+	if got := body(rwDo(h, "POST", "/api/radio/radio1/ptt", `{"on":true}`, pttOwner)); !strings.HasPrefix(got, `{"ok":true,"window":`) {
+		t.Fatalf("on: %s", got)
+	}
+	if !br.talking("s1|iPad#a1") || srv.loaded != 1 {
+		t.Fatal("the audio path did not open")
+	}
+	if got := body(rwDo(h, "POST", "/api/radio/radio1/ptt", `{"on":false}`, pttOwner)); got != `{"ok":true}` {
+		t.Fatalf("off: %s", got)
+	}
+	if got := body(rwDo(h, "POST", "/api/radio/radio1/release", `{}`, pttOwner)); got != `{"ok":true}` {
+		t.Fatalf("release: %s", got)
+	}
+	if br.talking("s1|iPad#a1") || srv.loaded != 0 || len(f.calls) != 0 {
+		t.Fatalf("left open or keyed through CAT: %v", f.calls)
+	}
+}
+
+// The poller's hooks carry all three of the guard's inputs, the station-transmit flag included:
+// a read through SWRTx reaches the radio's guard.
+func TestPollerHooksCarryTheStationTransmitFlag(t *testing.T) {
+	f := newGuardFixture(true)
+	hooks := f.api.PollerHooks("radio1")
+	if hooks.SWR == nil || hooks.SWRTx == nil || hooks.Freq == nil {
+		t.Fatalf("hooks missing: SWR %v SWRTx %v Freq %v", hooks.SWR != nil, hooks.SWRTx != nil, hooks.Freq != nil)
+	}
+	hooks.Freq(14074000)
+	for i := 0; i < 3; i++ {
+		hooks.SWRTx(5.8, true, true)
+	}
+	if g := f.guardView(t, pttOwner); !g.Active || !g.Latched {
+		t.Fatalf("SWRTx reads did not reach the guard: %+v", g)
+	}
+	// a radio the records lack: the hooks are safe to call and do nothing
+	other := f.api.PollerHooks("gone")
+	other.SWR(9, true)
+	other.SWRTx(9, true, true)
+	other.Freq(7074000)
 }

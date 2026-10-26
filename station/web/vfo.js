@@ -686,7 +686,7 @@
     const b = h("button", { class: "btn danger vfo-stop", type: "button" }, "STOP");
     b.addEventListener("click", () => {
       tuneEnd(false);
-      if (S.hold) holdEnd(S.hold, false);
+      if (S.hold) holdEnd(S.hold);
       dxb.api("POST", `/api/radio/${name}/stop`, {}).then((res) => { if (!(res && res.ok)) say(failText(res || {}), "bad"); });
     });
     return h("section", { class: "card vfo-box vfo-stop-box" }, b);
@@ -703,7 +703,11 @@
   const pttReason = () => pttWhy(S.owner, S.audio, !!window.dxbAudio) || (guardLatched() ? "SWR guard is latched: see the banner above." : "");
   const pttPost = (body) => dxb.api("POST", `/api/radio/${name}/ptt`, Object.assign({ device: dxb.tab() }, body));
 
-  function holdEnd(hold, sendOff) {
+  // holdEnd HOLD: the press is over, whatever ended it. The off goes to the station whenever an
+  // on was sent (the station's Off is idempotent and ignores a tab that no longer holds the
+  // transmitter), after the on's answer so the two cannot cross: a hold that ends here never
+  // leaves the radio keyed until the heartbeat lapses.
+  function holdEnd(hold) {
     if (hold.ended) return;
     hold.ended = true;
     if (hold.hb !== null) clearInterval(hold.hb);
@@ -711,8 +715,7 @@
     hold.hb = hold.tick = null;
     if (S.hold === hold) S.hold = null;
     if (window.dxbAudio) window.dxbAudio.setTX(false);
-    // the off follows the on's answer, and only when an on was sent
-    if (sendOff) hold.onDone.then((sent) => { if (sent) pttPost({ on: false }); });
+    hold.onDone.then((sent) => { if (sent) pttPost({ on: false }); });
     paint();
   }
 
@@ -720,7 +723,8 @@
     if (e && e.preventDefault) e.preventDefault();
     if (S.hold || pttReason()) return;
     const A = window.dxbAudio;
-    const hold = { since: Date.now(), ok: false, ended: false, hb: null, tick: null, onDone: null };
+    const hold = { since: Date.now(), ok: false, ended: false, hb: null, tick: null, onDone: null, window: null,
+      pointer: e && e.pointerId !== undefined ? e.pointerId : null };
     S.hold = hold;
     // the radio's audio starts inside the press (the browser lets it play then); the mic is asked for
     const waits = [];
@@ -729,27 +733,30 @@
       waits.push(A.listen(name).then((r) => { if (!(r && r.ok)) S.listening = false; return r; }));
     }
     waits.push(A.openMic());
-    A.setTX(true);
     hold.tick = setInterval(paint, 500);
     paint();
+    // onDone resolves with whether an on went to the station
     hold.onDone = Promise.all(waits).then((rs) => {
       const bad = rs.find((r) => !(r && r.ok));
       if (bad || hold.ended) {
         if (bad) say(failText(bad), "bad");
-        holdEnd(hold, false);
+        holdEnd(hold);
         return false;
       }
       return pttPost({ on: true }).then((res) => {
         if (!(res && res.ok)) {
           say(failText(res || {}), "bad");
-          holdEnd(hold, false);
-          return false;
+          holdEnd(hold);
+          return true;
         }
         if (!hold.ended) {
           hold.ok = true;
+          hold.window = res.window === undefined ? null : res.window;
+          // the microphone goes out only once the station has opened the window
+          A.setTX(true);
           hold.hb = setInterval(() => {
             pttPost({ hb: true }).then((r) => {
-              if (!(r && r.ok) && !hold.ended) { say(failText(r || {}), "bad"); holdEnd(hold, false); }
+              if (!(r && r.ok) && !hold.ended) { say(failText(r || {}), "bad"); holdEnd(hold); }
             });
           }, pure.PTT_HEARTBEAT);
           paint();
@@ -759,14 +766,25 @@
     });
   }
 
-  function pttUp() { if (S.hold) holdEnd(S.hold, true); }
+  function pttUp() { if (S.hold) holdEnd(S.hold); }
 
-  // a notice from the station: PTT dropped (every tab hears it)
+  // pttUpFor EVENT: a pointer released anywhere in the page ends the hold it started (another
+  // finger lifting elsewhere does not)
+  function pttUpFor(e) {
+    const hold = S.hold;
+    if (!hold) return;
+    if (hold.pointer !== null && e && e.pointerId !== undefined && e.pointerId !== hold.pointer) return;
+    holdEnd(hold);
+  }
+
+  // a notice from the station: PTT dropped (every tab hears it). Only the notice about this
+  // tab's own window ends its hold: a late one about the previous press must not end this one.
   function onPTT(m) {
     if (!m || m.radio !== name || m.on !== false) return;
-    if (S.hold && S.hold.ok) holdEnd(S.hold, false);
+    const hold = S.hold;
+    if (hold && hold.ok && (m.window === undefined || hold.window === null || m.window === hold.window)) holdEnd(hold);
     if (m.reason && m.reason !== "released") say(`PTT off: ${m.reason}`, "warn");
-    if (S.ptt) S.ptt.on = false;
+    if (S.ptt && !S.hold) S.ptt.on = false;
     paint();
   }
 
@@ -849,7 +867,7 @@
     S.guard = { active: true, latched: !!m.latched, reason: m.latched ? String(m.reason || "") : "" };
     if (m.latched) {
       if (S.tune) tuneEnd(false);
-      if (S.hold && S.hold.ok) holdEnd(S.hold, false);
+      if (S.hold && S.hold.ok) holdEnd(S.hold);
     }
     say(guardNote(m), m.latched ? "bad" : "good");
     paint();
@@ -899,6 +917,8 @@
     const key = lay.join(",") + "|" + (S.nc ? S.nc.modes.join(",") + S.nc.ranges.length : "");
     if (key === S.layout) return;
     S.layout = key;
+    // the PTT button is about to be replaced: a hold on it ends now (its release would never come)
+    if (S.hold) holdEnd(S.hold);
     S.ownerKey = "";
     S.upd = [];
     S.bands = S.nc ? bandsFromRanges(S.nc.ranges) : [];
@@ -1029,6 +1049,11 @@
     // the release also comes from the window losing focus or the page going away
     window.addEventListener("blur", pttUp);
     window.addEventListener("pagehide", pttUp);
+    // and from a pointer released or lost anywhere in the page, or the page going to the background
+    document.addEventListener("pointerup", pttUpFor);
+    document.addEventListener("pointercancel", pttUpFor);
+    document.addEventListener("lostpointercapture", pttUpFor);
+    document.addEventListener("visibilitychange", () => { if (document.hidden) pttUp(); });
     dxb.events.onOpen(() => { S.sock = true; watch(); loadAll(); });
     dxb.events.onClose(() => { S.sock = false; paint(); });
     if (dxb.events.open) { S.sock = true; watch(); }

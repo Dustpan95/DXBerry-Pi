@@ -54,6 +54,8 @@ type TXBridge interface {
 	// HasInbound reports whether the tab's connection carries its microphone yet.
 	HasInbound(tab string) bool
 	OnLost(fn func(tab, reason string)) (cancel func())
+	// OnClosed is told when a tab's connection is closed on purpose.
+	OnClosed(fn func(tab string)) (cancel func())
 }
 
 // SoundServer is the radios' sound server control as PTT uses it (*audio.ServerControl).
@@ -61,6 +63,8 @@ type SoundServer interface {
 	Available(radio string) (bool, string)
 	LoadTXLoopback(ctx context.Context, radio string) (int, error)
 	UnloadTXLoopback(ctx context.Context, radio string, moduleID int) error
+	// UnloadStaleTXLoopbacks unloads every TX loopback of the radio (one a failed unload left).
+	UnloadStaleTXLoopbacks(ctx context.Context, radio string) (int, error)
 }
 
 // TonePlayer plays stereo s16 frames into <CARD>.tx (*audio.Playback with two channels).
@@ -76,6 +80,7 @@ type PTTNotice struct {
 	Radio  string `json:"radio"`
 	On     bool   `json:"on"`
 	Reason string `json:"reason"`
+	Window uint64 `json:"window"` // the window it is about (On's answer named it)
 }
 
 type pttPhase int
@@ -88,6 +93,7 @@ const (
 
 // window is what one PTT window opened, for its teardown.
 type window struct {
+	id     uint64
 	tab    string
 	method string
 	module int
@@ -104,6 +110,7 @@ type PTT struct {
 	clock    Clock
 	log      *slog.Logger
 	stopLost func()
+	stopShut func()
 
 	// Tone makes the player of the keying tone (digirig_tone); nil refuses PTT on such a radio.
 	Tone func() TonePlayer
@@ -139,15 +146,19 @@ func NewPTT(in *Intents, bridge TXBridge, server SoundServer, settings func() se
 	in.afterUnkey = p.carrierDropped
 	in.mu.Unlock()
 	if bridge != nil {
-		p.stopLost = bridge.OnLost(func(tab, reason string) {
+		// the tab's audio connection ending (lost, or closed on purpose) ends its window, one
+		// still opening included
+		gone := func(tab, why string) {
 			p.mu.Lock()
-			ours := p.phase == pttOn && p.w.tab == tab
+			ours := p.phase != pttOff && p.w.tab == tab
 			p.mu.Unlock()
 			if ours {
-				p.log.Info("PTT dropped: the browser's audio was lost", "radio", in.Radio, "why", reason)
+				p.log.Info("PTT dropped: the browser's audio ended", "radio", in.Radio, "why", why)
 				p.drop("audio lost", true)
 			}
-		})
+		}
+		p.stopLost = bridge.OnLost(gone)
+		p.stopShut = bridge.OnClosed(func(tab string) { gone(tab, "the audio connection was closed") })
 	}
 	return p
 }
@@ -219,9 +230,10 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 		return p.refuse(reasonStopping, "wait for the station to start again")
 	case p.phase == pttOn && p.w.tab == tab:
 		p.lastHB = p.clock.Now()
+		id := p.w.id
 		p.mu.Unlock()
 		p.in.Owners.Touch(p.in.Radio, tab)
-		return Result{OK: true}
+		return Result{OK: true, Window: id}
 	case p.phase == pttOn:
 		p.mu.Unlock()
 		return p.refuse("PTT is already on", "wait until it drops")
@@ -237,7 +249,7 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 	p.phase, p.ended, p.cancel = pttStarting, false, ""
 	p.gen++
 	g := p.gen
-	p.w = window{tab: tab, method: method}
+	p.w = window{id: g, tab: tab, method: method}
 	p.mu.Unlock()
 
 	// abort ends a window that never opened (nothing of the audio side is up yet). Until then the
@@ -276,6 +288,8 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 	}
 	// the audio side: pactl is not tied to the request (a cancelled request must not leave a
 	// half-loaded module behind)
+	// any TX loopback left from before (a failed unload, a crash) goes first: never two
+	p.clearLoopbacks()
 	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), audioWithin)
 	module, err := p.server.LoadTXLoopback(actx, p.in.Radio)
 	cancel()
@@ -283,9 +297,11 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 		if keysRig(method) {
 			p.in.unkey("ptt")
 		}
+		// a load that timed out may still have loaded the module
+		p.clearLoopbacks()
 		return abort(p.refuse("the transmit audio path could not be opened: "+err.Error(), AudioFix))
 	}
-	w := window{tab: tab, method: method, module: module}
+	w := window{id: g, tab: tab, method: method, module: module}
 	if method == "digirig_tone" {
 		t, err := startTone(p.Tone(), func() {
 			p.log.Warn("the keying tone stopped; dropping PTT", "radio", p.in.Radio)
@@ -298,6 +314,11 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 		w.tone = t
 	}
 	p.bridge.SetTXAllowed(tab, true)
+	// the connection may have gone while the window was opening (no OnLost reaches a window
+	// before it is on): no microphone, no window
+	if !p.bridge.HasInbound(tab) {
+		p.drop("audio lost", true)
+	}
 
 	p.mu.Lock()
 	if p.ended {
@@ -319,7 +340,7 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 	p.in.refreshTx()
 	go p.watch(g, done, since, limit)
 	p.log.Info("PTT on", "radio", p.in.Radio, "method", method, "timeout", minSec(limit))
-	return Result{OK: true}
+	return Result{OK: true, Window: g}
 }
 
 // watch ends window g when its heartbeat lapses or its time is up.
@@ -365,6 +386,12 @@ func (p *PTT) Heartbeat(tab string) Result {
 	}
 	p.lastHB = p.clock.Now()
 	p.mu.Unlock()
+	if !p.bridge.HasInbound(tab) {
+		// the tab's audio connection is gone (closed or replaced): its microphone no longer reaches
+		// the radio, so the window must not stay keyed on dead air
+		p.drop("audio lost", true)
+		return Result{Reason: "audio lost", Fix: "tap to reconnect the audio, then press PTT again"}
+	}
 	p.in.Owners.Touch(p.in.Radio, tab)
 	return Result{OK: true}
 }
@@ -456,6 +483,9 @@ func (p *PTT) Close() {
 	if p.stopLost != nil {
 		p.stopLost()
 	}
+	if p.stopShut != nil {
+		p.stopShut()
+	}
 	p.in.mu.Lock()
 	p.in.pttActive, p.in.afterUnkey = nil, nil
 	p.in.mu.Unlock()
@@ -483,7 +513,7 @@ func (p *PTT) dropAt(g uint64, reason string, unkey bool) (bool, Result) {
 		p.mu.Unlock()
 		return false, Result{OK: true}
 	case pttStarting:
-		if g == 0 && !p.ended {
+		if !p.ended {
 			p.ended, p.cancel = true, reason
 		}
 		p.mu.Unlock()
@@ -512,7 +542,7 @@ func (p *PTT) release(w window, unkey bool, reason string) Result {
 	p.in.refreshTx()
 	p.log.Info("PTT off", "radio", p.in.Radio, "reason", reason)
 	if p.notify != nil {
-		p.notify(p.in.Radio, PTTNotice{Type: "ptt", Radio: p.in.Radio, On: false, Reason: reason})
+		p.notify(p.in.Radio, PTTNotice{Type: "ptt", Radio: p.in.Radio, On: false, Reason: reason, Window: w.id})
 	}
 	return res
 }
@@ -525,7 +555,18 @@ func (p *PTT) closeAudio(w window) {
 	ctx, cancel := context.WithTimeout(context.Background(), audioWithin)
 	defer cancel()
 	if err := p.server.UnloadTXLoopback(ctx, p.in.Radio, w.module); err != nil {
-		p.log.Warn("could not unload the TX loopback", "radio", p.in.Radio, "module", w.module, "error", err)
+		p.log.Warn("could not unload the TX loopback; clearing every TX loopback of the radio", "radio", p.in.Radio, "module", w.module, "error", err)
+		p.clearLoopbacks()
+	}
+}
+
+// clearLoopbacks unloads every TX loopback of the radio (a failed unload or a load that timed out
+// may have left one); the next load clears them too.
+func (p *PTT) clearLoopbacks() {
+	ctx, cancel := context.WithTimeout(context.Background(), audioWithin)
+	defer cancel()
+	if _, err := p.server.UnloadStaleTXLoopbacks(ctx, p.in.Radio); err != nil {
+		p.log.Warn("could not clear the TX loopbacks", "radio", p.in.Radio, "error", err)
 	}
 }
 
@@ -547,13 +588,28 @@ func startTone(pl TonePlayer, failed func(), log *slog.Logger) (*toneRun, error)
 		return nil, err
 	}
 	t := &toneRun{pl: pl, cancel: cancel, stop: make(chan struct{}), done: make(chan struct{})}
+	// the first frames are written before the window opens: a player that cannot take them fails
+	// the press instead of opening a window that keys nothing
+	var n int64 // samples played, for the phase
+	frame := make([]int16, 2*toneFrame)
+	for i := 0; i < toneAhead; i++ {
+		n = fillTone(frame, n)
+		if err := pl.Write(frame); err != nil {
+			_ = pl.Close()
+			cancel()
+			return nil, err
+		}
+	}
 	go func() {
 		defer close(t.done)
 		tick := time.NewTicker(20 * time.Millisecond)
 		defer tick.Stop()
-		var n int64 // samples played, for the phase
-		frame := make([]int16, 2*toneFrame)
-		for i := 0; ; i++ {
+		for {
+			select {
+			case <-t.stop:
+				return
+			case <-tick.C:
+			}
 			n = fillTone(frame, n)
 			if err := pl.Write(frame); err != nil {
 				select {
@@ -563,14 +619,6 @@ func startTone(pl TonePlayer, failed func(), log *slog.Logger) (*toneRun, error)
 					go failed()
 				}
 				return
-			}
-			if i < toneAhead-1 {
-				continue
-			}
-			select {
-			case <-t.stop:
-				return
-			case <-tick.C:
 			}
 		}
 	}()

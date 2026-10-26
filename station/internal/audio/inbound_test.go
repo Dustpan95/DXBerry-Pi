@@ -40,3 +40,31 @@ func TestBridgeHasInboundOnceTheBrowserSends(t *testing.T) {
 		t.Fatal("inbound after the connection closed")
 	}
 }
+
+// Closing a tab's connection on purpose tells the OnClosed subscribers (not OnLost's), once,
+// and only for a tab that had a connection.
+func TestBridgeCloseTellsOnClosed(t *testing.T) {
+	b, _ := testBridge(t)
+	closed := make(chan string, 4)
+	lost := make(chan string, 4)
+	defer b.OnClosed(func(tab TabID) { closed <- tab })()
+	defer b.OnLost(func(tab TabID, reason string) { lost <- tab })()
+	b.Close("sess|nobody") // no connection: nothing to tell
+	br := newBrowser(t)
+	br.connect(t, b, "sess|tab1")
+	br.firstRTP(t, 2*time.Second)
+	b.Close("sess|tab1")
+	b.Close("sess|tab1")
+	select {
+	case tab := <-closed:
+		if tab != "sess|tab1" {
+			t.Fatalf("closed %q", tab)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnClosed not told")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if len(closed) != 0 || len(lost) != 0 {
+		t.Fatalf("told again: closed %d lost %d", len(closed), len(lost))
+	}
+}

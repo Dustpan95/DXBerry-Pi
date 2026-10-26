@@ -57,6 +57,18 @@ func (b *ptBridge) OnLost(fn func(tab, reason string)) func() {
 	return func() { b.mu.Lock(); delete(b.lost, id); b.mu.Unlock() }
 }
 
+func (b *ptBridge) OnClosed(fn func(tab string)) func() {
+	return b.OnLost(func(tab, _ string) { fn(tab) })
+}
+
+// close is the bridge's Close: the connection goes (no microphone any more) and OnClosed hears it.
+func (b *ptBridge) close(tab string) {
+	b.mu.Lock()
+	b.inbound[tab] = false
+	b.mu.Unlock()
+	b.lose(tab, "closed")
+}
+
 func (b *ptBridge) lose(tab, reason string) {
 	b.mu.Lock()
 	fns := []func(string, string){}
@@ -71,13 +83,14 @@ func (b *ptBridge) lose(tab, reason string) {
 
 // ptServer is the radio's sound server control.
 type ptServer struct {
-	mu      sync.Mutex
-	ok      bool
-	why     string
-	loadErr error
-	loaded  map[int]bool
-	next    int
-	events  *[]string
+	mu        sync.Mutex
+	ok        bool
+	why       string
+	loadErr   error
+	unloadErr error
+	loaded    map[int]bool
+	next      int
+	events    *[]string
 }
 
 func (s *ptServer) Available(radio string) (bool, string) {
@@ -101,9 +114,22 @@ func (s *ptServer) LoadTXLoopback(ctx context.Context, radio string) (int, error
 func (s *ptServer) UnloadTXLoopback(ctx context.Context, radio string, id int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.unloadErr != nil {
+		*s.events = append(*s.events, "unload failed")
+		return s.unloadErr
+	}
 	delete(s.loaded, id)
 	*s.events = append(*s.events, "unload "+radio)
 	return nil
+}
+
+func (s *ptServer) UnloadStaleTXLoopbacks(ctx context.Context, radio string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := len(s.loaded)
+	s.loaded = map[int]bool{}
+	*s.events = append(*s.events, "clear "+radio)
+	return n, nil
 }
 
 func (s *ptServer) count() int {
@@ -187,6 +213,7 @@ func (l lockedBridge) HasInbound(tab string) bool { return l.h.br.HasInbound(tab
 func (l lockedBridge) OnLost(fn func(tab, reason string)) func() {
 	return l.h.br.OnLost(fn)
 }
+func (l lockedBridge) OnClosed(fn func(tab string)) func() { return l.h.br.OnClosed(fn) }
 
 type lockedServer struct{ h *ptHarness }
 
@@ -195,6 +222,11 @@ func (l lockedServer) LoadTXLoopback(ctx context.Context, radio string) (int, er
 	l.h.mu.Lock()
 	defer l.h.mu.Unlock()
 	return l.h.srv.LoadTXLoopback(ctx, radio)
+}
+func (l lockedServer) UnloadStaleTXLoopbacks(ctx context.Context, radio string) (int, error) {
+	l.h.mu.Lock()
+	defer l.h.mu.Unlock()
+	return l.h.srv.UnloadStaleTXLoopbacks(ctx, radio)
 }
 func (l lockedServer) UnloadTXLoopback(ctx context.Context, radio string, id int) error {
 	l.h.mu.Lock()
@@ -242,12 +274,12 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 func offNotice(reason string) string {
 	b, _ := json.Marshal(reason)
-	return `{"type":"ptt","radio":"radio1","on":false,"reason":` + string(b) + `}`
+	return `{"type":"ptt","radio":"radio1","on":false,"reason":` + string(b) + `,"window":`
 }
 
 func (h *ptHarness) noticed(reason string) bool {
 	for _, n := range h.noticeLog() {
-		if n == offNotice(reason) {
+		if strings.HasPrefix(n, offNotice(reason)) {
 			return true
 		}
 	}
@@ -267,7 +299,7 @@ func TestPTTOnKeysAndAllowsTX(t *testing.T) {
 		if !h.rig.State().PTT || !h.in.Owed() || !markerAt(t, dir) {
 			t.Fatalf("%s: the carrier machinery does not know it is keyed", method)
 		}
-		if got := strings.Join(h.eventLog(), ","); got != "load radio1,tx a on" {
+		if got := strings.Join(h.eventLog(), ","); got != "clear radio1,load radio1,tx a on" {
 			t.Fatalf("%s: audio side %q", method, got)
 		}
 		if !h.br.TXAllowed("a") || h.br.TXAllowed("b") || h.srv.count() != 1 {
@@ -287,10 +319,10 @@ func TestPTTOnKeysAndAllowsTX(t *testing.T) {
 		if h.count("set_ptt 0") != 1 || h.rig.State().PTT || h.in.Owed() || markerAt(t, dir) {
 			t.Fatalf("%s: not unkeyed: %v", method, h.rig.log())
 		}
-		if got := strings.Join(h.eventLog(), ","); got != "load radio1,tx a on,tx a off,unload radio1" {
+		if got := strings.Join(h.eventLog(), ","); got != "clear radio1,load radio1,tx a on,tx a off,unload radio1" {
 			t.Fatalf("%s: audio side after off %q", method, got)
 		}
-		if got := h.noticeLog(); len(got) != 1 || got[0] != offNotice("released") {
+		if got := h.noticeLog(); len(got) != 1 || !strings.HasPrefix(got[0], offNotice("released")) {
 			t.Fatalf("%s: notices %v", method, got)
 		}
 		// off again is idempotent: nothing more is sent, no second notice
@@ -440,7 +472,7 @@ func TestPTTDropsOnStop(t *testing.T) {
 	if h.p.Active() || h.count("set_ptt 0") != 1 || h.br.TXAllowed("a") || h.srv.count() != 0 {
 		t.Fatalf("stop left PTT: %v %v", h.rig.log(), h.eventLog())
 	}
-	if got := h.noticeLog(); len(got) != 1 || got[0] != offNotice("STOP from iPhone") {
+	if got := h.noticeLog(); len(got) != 1 || !strings.HasPrefix(got[0], offNotice("STOP from iPhone")) {
 		t.Fatalf("notices %v", got)
 	}
 	// STOP with no PTT on still unkeys the radio, whatever keyed it
@@ -474,7 +506,7 @@ func TestPTTVoxKeysNothing(t *testing.T) {
 		if len(h.rig.log()) != 0 || h.in.Owed() || markerAt(t, dir) {
 			t.Fatalf("%s: keyed the radio: %v", method, h.rig.log())
 		}
-		if got := strings.Join(h.eventLog(), ","); got != "load radio1,tx a on" {
+		if got := strings.Join(h.eventLog(), ","); got != "clear radio1,load radio1,tx a on" {
 			t.Fatalf("%s: audio path %q", method, got)
 		}
 		if r := h.p.Off("a", "released"); !r.OK {
@@ -695,4 +727,120 @@ func TestPTTStopWhileStartingUndoesIt(t *testing.T) {
 	}
 	h.on(t, "a") // and the next press works
 	h.p.Off("a", "released")
+}
+
+// A tab whose audio connection closes (the signalling socket ended, the page stopped its audio)
+// ends its window at once; a heartbeat that finds no microphone ends it too.
+func TestPTTDropsWhenTheAudioConnectionCloses(t *testing.T) {
+	h := newPTTHarness(t, "rigctld")
+	h.claim(t, "a")
+	h.on(t, "a")
+	h.br.close("a")
+	waitFor(t, "audio lost", func() bool { return h.noticed("audio lost") && !h.p.Active() })
+	if h.count("set_ptt 0") != 1 || h.br.TXAllowed("a") || h.srv.count() != 0 {
+		t.Fatalf("left open: %v %v", h.rig.log(), h.eventLog())
+	}
+	// the microphone gone without any callback: the next heartbeat finds out
+	h.br.mu.Lock()
+	h.br.inbound["a"] = true
+	h.br.mu.Unlock()
+	h.on(t, "a")
+	h.br.mu.Lock()
+	h.br.inbound["a"] = false
+	h.br.mu.Unlock()
+	if r := h.p.Heartbeat("a"); r.OK || r.Reason != "audio lost" {
+		t.Fatalf("heartbeat without a microphone: %+v", r)
+	}
+	if h.p.Active() || h.count("set_ptt 0") != 2 || h.br.TXAllowed("a") {
+		t.Fatalf("still on: %v %v", h.rig.log(), h.eventLog())
+	}
+}
+
+// The microphone going while the window opens: the window is undone, not opened on dead air.
+func TestPTTDropsWhenTheMicGoesWhileOpening(t *testing.T) {
+	h := newPTTHarness(t, "rigctld")
+	h.claim(t, "a")
+	h.rig.mu.Lock()
+	h.rig.beforeDo = func(call string) {
+		if call == "set_ptt 1" {
+			h.br.close("a")
+		}
+	}
+	h.rig.mu.Unlock()
+	r := h.p.On(context.Background(), "a")
+	if r.OK || r.Reason != "PTT was stopped: audio lost" {
+		t.Fatalf("on: %+v", r)
+	}
+	if h.p.Active() || h.rig.State().PTT || h.in.Owed() || h.br.TXAllowed("a") || h.srv.count() != 0 {
+		t.Fatalf("left open: %v %v", h.rig.log(), h.eventLog())
+	}
+}
+
+// failTone is a keying tone player that cannot take a frame.
+type failTone struct{ ptTone }
+
+func (f *failTone) Write([]int16) error { return errors.New("pacat: broken pipe") }
+
+func TestPTTToneFailureWhileOpening(t *testing.T) {
+	h := newPTTHarness(t, "digirig_tone")
+	ft := &failTone{}
+	h.p.Tone = func() TonePlayer { return ft }
+	h.claim(t, "a")
+	r := h.p.On(context.Background(), "a")
+	if r.OK || !strings.Contains(r.Reason, "the keying tone could not be played") {
+		t.Fatalf("on: %+v", r)
+	}
+	ft.mu.Lock()
+	closed := ft.closed
+	ft.mu.Unlock()
+	if h.p.Active() || h.br.TXAllowed("a") || h.srv.count() != 0 || !closed {
+		t.Fatalf("left open: %v", h.eventLog())
+	}
+}
+
+// Every window has its own number: On answers it, a repeated on answers it again, and the drop
+// notice names it, so a page can tell a late notice about its last press from one about this.
+func TestPTTWindowNumbers(t *testing.T) {
+	h := newPTTHarness(t, "rigctld")
+	h.claim(t, "a")
+	first := h.p.On(context.Background(), "a")
+	again := h.p.On(context.Background(), "a")
+	if !first.OK || first.Window == 0 || again.Window != first.Window {
+		t.Fatalf("on %+v, again %+v", first, again)
+	}
+	h.p.Off("a", "released")
+	second := h.p.On(context.Background(), "a")
+	if !second.OK || second.Window == first.Window {
+		t.Fatalf("second window %+v after %+v", second, first)
+	}
+	h.p.Off("a", "released")
+	n := h.noticeLog()
+	want := func(i int, w uint64) string { b, _ := json.Marshal(w); return offNotice("released") + string(b) + "}" }
+	if len(n) != 2 || n[0] != want(0, first.Window) || n[1] != want(1, second.Window) {
+		t.Fatalf("notices %v (windows %d %d)", n, first.Window, second.Window)
+	}
+}
+
+// A loopback that would not unload, or a load that failed after pactl may have loaded it, is
+// cleared with every other TX loopback of the radio.
+func TestPTTClearsLoopbacksAfterAFailedUnloadOrLoad(t *testing.T) {
+	h := newPTTHarness(t, "vox")
+	h.claim(t, "a")
+	h.on(t, "a")
+	h.srv.mu.Lock()
+	h.srv.unloadErr = errors.New("pactl: timed out")
+	h.srv.mu.Unlock()
+	h.p.Off("a", "released")
+	if got := strings.Join(h.eventLog(), ","); got != "clear radio1,load radio1,tx a on,tx a off,unload failed,clear radio1" || h.srv.count() != 0 {
+		t.Fatalf("after a failed unload: %q", got)
+	}
+	h.srv.mu.Lock()
+	h.srv.unloadErr, h.srv.loadErr = nil, errors.New("pactl: timed out")
+	h.srv.mu.Unlock()
+	if r := h.p.On(context.Background(), "a"); r.OK {
+		t.Fatalf("on with a failing load: %+v", r)
+	}
+	if ev := h.eventLog(); ev[len(ev)-1] != "clear radio1" {
+		t.Fatalf("a failed load was not cleared: %v", ev)
+	}
 }

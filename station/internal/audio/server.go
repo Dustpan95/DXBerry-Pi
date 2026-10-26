@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -209,7 +210,8 @@ func runPactl(ctx context.Context, bins map[string]string, env []string, args []
 	return out.String(), nil
 }
 
-// LoadTXLoopback loops <CARD>.tx.monitor into <CARD> and returns the module id.
+// LoadTXLoopback loops <CARD>.tx.monitor into <CARD> and returns the module id. The PTT layer
+// calls UnloadStaleTXLoopbacks first, so there is never more than one.
 func (s *ServerControl) LoadTXLoopback(ctx context.Context, radio string) (int, error) {
 	card := Card(radio)
 	out, err := s.pactlFor(ctx, radio, "load-module", "module-loopback",
@@ -222,6 +224,40 @@ func (s *ServerControl) LoadTXLoopback(ctx context.Context, radio string) (int, 
 		return 0, errors.New("pactl load-module: no module id in " + strconv.Quote(strings.TrimSpace(out)))
 	}
 	return id, nil
+}
+
+// UnloadStaleTXLoopbacks unloads every module-loopback on the radio's sound server whose source
+// is <CARD>.tx.monitor and reports how many went. A module that will not unload is an error after
+// the others were tried.
+func (s *ServerControl) UnloadStaleTXLoopbacks(ctx context.Context, radio string) (int, error) {
+	out, err := s.pactlFor(ctx, radio, "list", "short", "modules")
+	if err != nil {
+		return 0, err
+	}
+	want := "source=" + Card(radio) + ".tx.monitor"
+	n := 0
+	var firstErr error
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Split(line, "\t")
+		if len(f) < 3 || strings.TrimSpace(f[1]) != "module-loopback" || !slices.Contains(strings.Fields(f[2]), want) {
+			continue
+		}
+		id, err := strconv.Atoi(strings.TrimSpace(f[0]))
+		if err != nil {
+			continue
+		}
+		if err := s.UnloadTXLoopback(ctx, radio, id); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		n++
+	}
+	if n > 0 {
+		slog.Info("unloaded old TX loopbacks", "radio", radio, "count", n)
+	}
+	return n, firstErr
 }
 
 // UnloadTXLoopback removes the module LoadTXLoopback returned.
