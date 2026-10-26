@@ -76,6 +76,7 @@ type Intents struct {
 	carrier  chan struct{} // closed to cancel the running carrier timer
 	keyed    bool          // a tune carrier was keyed and not yet confirmed off
 	pending  bool          // set_ptt 0 is owed to the radio
+	debt     uint64        // bumped whenever keyed or pending is set: an unkey clears only the debt it was sent for
 	retrying bool          // a retry loop is running
 	closed   chan struct{} // closed by Close
 }
@@ -285,6 +286,7 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 			// the key-on may have reached the radio: owe the unkey
 			in.mu.Lock()
 			in.keyed, in.pending = true, true
+			in.debt++
 			in.mu.Unlock()
 			in.startRetry("tune")
 		}
@@ -298,6 +300,7 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 	}
 	in.carrier = cancel
 	in.keyed, in.pending = true, false
+	in.debt++
 	in.mu.Unlock()
 	fire := in.clock().At(in.clock().Now().Add(CarrierLimit)) // taken now, not in the goroutine
 	go func() {
@@ -317,10 +320,6 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 		}
 	}()
 	return res
-}
-
-func (in *Intents) ptt0(ctx context.Context, intent string) Result {
-	return in.send(ctx, intent, func(s *State) { s.PTT = false }, "set_ptt", "0")
 }
 
 func (in *Intents) endCarrier() {
@@ -346,39 +345,47 @@ func (in *Intents) unkey(intent string) Result {
 	}
 	in.mu.Lock()
 	in.pending = true
+	in.debt++
 	in.mu.Unlock()
-	res := in.attemptUnkey(intent, false)
-	if !res.OK {
+	res := in.attemptUnkey(context.Background(), intent, false)
+	if !res.OK || in.Pending() {
+		// failed, or a new debt arrived while this one was on the wire
 		in.startRetry(intent)
 	}
 	return res
 }
 
 // attemptUnkey sends set_ptt 0 once. quiet keeps a failure out of the Info log (the retry loop).
-func (in *Intents) attemptUnkey(intent string, quiet bool) Result {
+// A success settles only the debt that stood when it was sent: a key-on that came after keeps
+// its own.
+func (in *Intents) attemptUnkey(ctx context.Context, intent string, quiet bool) Result {
 	if st := in.Poller.State(); !st.Connected {
 		if quiet {
 			return Result{Reason: reasonUnreachable, Fix: fixUnreachable}
 		}
 		return in.refuse(intent, reasonUnreachable, fixUnreachable)
 	}
+	in.mu.Lock()
+	debt := in.debt
+	in.mu.Unlock()
 	var res Result
-	if quiet {
-		err := in.Poller.Write(context.Background(), func(c Commander) error {
-			_, err := c.Do(context.Background(), "set_ptt", "0")
-			return err
-		}, func(s *State) { s.PTT = false })
-		if err != nil {
-			res = Result{Reason: rigFailure(err), Fix: "check the radio and try again"}
-		} else {
-			res = Result{OK: true}
-		}
-	} else {
-		res = in.ptt0(context.Background(), intent)
+	err := in.Poller.Write(ctx, func(c Commander) error {
+		_, err := c.Do(ctx, "set_ptt", "0")
+		return err
+	}, func(s *State) { s.PTT = false })
+	switch {
+	case err == nil:
+		res = Result{OK: true}
+	case quiet:
+		res = Result{Reason: rigFailure(err), Fix: "check the radio and try again"}
+	default:
+		res = in.refuse(intent, rigFailure(err), "check the radio and try again")
 	}
 	if res.OK {
 		in.mu.Lock()
-		in.pending, in.keyed = false, false
+		if in.debt == debt {
+			in.pending, in.keyed = false, false
+		}
 		in.mu.Unlock()
 	}
 	return res
@@ -399,38 +406,49 @@ func (in *Intents) startRetry(intent string) {
 	}
 	tick := in.clock().At(in.clock().Now().Add(RetryEvery))
 	go func() {
-		defer func() {
-			in.mu.Lock()
-			in.retrying = false
-			in.mu.Unlock()
-		}()
+		// stopRetry ends the loop; it is called with in.mu held, the same hold that read pending,
+		// so a debt that arrives afterwards finds retrying false and starts a loop of its own
+		stopRetry := func() { in.retrying = false; in.mu.Unlock() }
 		for n := 1; ; n++ {
 			select {
 			case <-tick:
 			case <-done:
+				in.mu.Lock()
+				stopRetry()
 				return
 			case <-ctxDone:
+				in.mu.Lock()
+				stopRetry()
 				return
 			}
 			if in.Gone != nil && in.Gone() {
 				in.log().Info("radio is gone; giving up the owed unkey", "radio", in.Radio)
+				in.mu.Lock()
+				stopRetry()
 				return
 			}
 			in.mu.Lock()
-			owed := in.pending
-			in.mu.Unlock()
-			if !owed {
+			if !in.pending {
+				stopRetry()
 				return
 			}
-			res := in.attemptUnkey(intent, true)
+			in.mu.Unlock()
+			res := in.attemptUnkey(context.Background(), intent, true)
 			switch {
 			case res.OK:
 				in.log().Info("owed unkey sent", "radio", in.Radio, "attempts", n)
-				return
 			case n%60 == 0:
 				in.log().Info("owed unkey still failing", "radio", in.Radio, "attempts", n, "reason", res.Reason)
 			default:
 				in.log().Debug("owed unkey failed; retrying", "radio", in.Radio, "reason", res.Reason)
+			}
+			if res.OK {
+				in.mu.Lock()
+				if !in.pending {
+					stopRetry()
+					return
+				}
+				in.mu.Unlock() // a new debt came while this one was on the wire: go round again
 			}
 			tick = in.clock().At(in.clock().Now().Add(RetryEvery))
 		}

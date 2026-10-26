@@ -22,6 +22,9 @@ type ixRig struct {
 	// failCmd, when set, fails only that command ("set_ptt 1") with failErr
 	failCmd string
 	failErr error
+	// afterWrite, when set, runs once a write's command has answered, before the intent sees
+	// the answer (outside the lock, so it may send intents of its own)
+	afterWrite func(call string)
 }
 
 func (f *ixRig) setUp(up bool) { f.mu.Lock(); f.st.Connected = up; f.mu.Unlock() }
@@ -38,7 +41,17 @@ func (f *ixRig) Write(ctx context.Context, fn func(Commander) error, opt func(*S
 		opt(&f.st)
 	}
 	f.mu.Unlock()
-	return fn(f)
+	err := fn(f)
+	f.mu.Lock()
+	hook, last := f.afterWrite, ""
+	if len(f.calls) > 0 {
+		last = f.calls[len(f.calls)-1]
+	}
+	f.mu.Unlock()
+	if hook != nil {
+		hook(last)
+	}
+	return err
 }
 
 func (f *ixRig) Do(ctx context.Context, cmd string, args ...string) (Reply, error) {
@@ -433,13 +446,16 @@ func TestRetryLoopEndsOnCloseContextAndGone(t *testing.T) {
 	for name, stop := range map[string]func(h *ixHarness, cancel context.CancelFunc){
 		"close":   func(h *ixHarness, _ context.CancelFunc) { h.in.Close() },
 		"context": func(h *ixHarness, cancel context.CancelFunc) { cancel() },
-		"gone":    func(h *ixHarness, _ context.CancelFunc) {},
+		"gone":    nil, // set below: it needs the case's own flag
 	} {
 		h := newIxHarness(ixCaps())
 		ctx, cancel := context.WithCancel(context.Background())
 		h.in.Ctx = ctx
 		var gone atomic.Bool
 		h.in.Gone = gone.Load
+		if name == "gone" {
+			stop = func(*ixHarness, context.CancelFunc) { gone.Store(true) }
+		}
 		_ = h.own.Claim("radio1", ixHolder("a"))
 		h.in.Tune(context.Background(), "a", true)
 		h.rig.setUp(false)
@@ -448,7 +464,6 @@ func TestRetryLoopEndsOnCloseContextAndGone(t *testing.T) {
 			t.Fatalf("%s: no retry loop", name)
 		}
 		stop(h, cancel)
-		gone.Store(true)
 		deadline := time.Now().Add(3 * time.Second)
 		for h.retrying() {
 			if time.Now().After(deadline) {
@@ -476,5 +491,43 @@ func TestStopOwesNothingWhenNothingIsKeyed(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if h.count("set_ptt 0") != 0 {
 		t.Fatalf("a stray unkey was sent: %v", h.rig.log())
+	}
+}
+
+// A key-on that fails (its fate unknown) while an unkey is on the wire owes a new unkey; the
+// unkey's success must not erase it, and a retry loop must be left to send it.
+func TestNewDebtDuringAnUnkeyIsNotLost(t *testing.T) {
+	for _, path := range []string{"stop", "retry"} {
+		h := newIxHarness(ixCaps())
+		ctx := context.Background()
+		_ = h.own.Claim("radio1", ixHolder("a"))
+		if r := h.in.Tune(ctx, "a", true); !r.OK {
+			t.Fatalf("%s: tune: %+v", path, r)
+		}
+		armed := atomic.Bool{}
+		armed.Store(true)
+		h.rig.mu.Lock()
+		h.rig.afterWrite = func(call string) {
+			if call != "set_ptt 0" || !armed.Swap(false) {
+				return
+			}
+			h.rig.mu.Lock()
+			h.rig.failCmd, h.rig.failErr = "set_ptt 1", ErrDeadline
+			h.rig.mu.Unlock()
+			h.in.Tune(ctx, "a", true) // its key-on times out: a new unkey is owed
+			h.rig.mu.Lock()
+			h.rig.failCmd = ""
+			h.rig.mu.Unlock()
+		}
+		h.rig.mu.Unlock()
+		if path == "retry" {
+			h.rig.setUp(false)
+			h.in.Stop(ctx) // owed, a retry loop runs
+			h.rig.setUp(true)
+		} else {
+			h.in.Stop(ctx)
+		}
+		h.tick(t, path+": the second debt is sent", func() bool { return h.count("set_ptt 0") >= 2 })
+		h.tick(t, path+": nothing owed", func() bool { return !h.in.Pending() && !h.retrying() })
 	}
 }
