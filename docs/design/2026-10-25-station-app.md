@@ -357,13 +357,19 @@ applications spec's "CODEC fallback" test showed).
 Who starts it: the radio setup, not `dxberryd`. `dxberry-radio`'s apply (at
 boot, on hotplug, and after an add, set or remove) starts the server for a
 radio that is present, has an audio device and is owned by no program, and
-stops it for a radio that is unplugged, removed or owned by Graywolf; a
-program session's own steps start or stop it around that session (below),
-and the apply leaves those radios alone. Presence, hotplug and ownership
-already live in the radio setup, so the server follows them there; stopping
-it while the radio is unplugged means a replug comes back to a fresh server.
-(The first draft had `dxberryd` start it when a radio was recorded; rc3
-changed that.)
+stops it for a radio that is unplugged or removed (whoever owns it) or owned
+by Graywolf. `dxberry-radio claim` and `release` run no apply, so they do
+the same for the radio they hand over: a claim by Graywolf stops the server
+before Graywolf starts, and a release starts it once the old owner has let
+go of the card. For a plugged-in radio a program session owns, the session's
+own steps start or stop the server around that session (below), and the
+apply leaves it alone: after a restart of the Pi with that program's window
+not running, the radio has no server, and no browser audio, until the window
+runs or the radio is released (an accepted gap). Presence, hotplug and
+ownership already live in the radio setup, so the server follows them there;
+stopping it while the radio is unplugged means a replug comes back to a
+fresh server. (The first draft had `dxberryd` start it when a radio was
+recorded; rc3 changed that.)
 
 One more object per radio: a null sink `<CARD>.tx` whose monitor is
 loop-backed to `<CARD>` only while PTT is held (module-loopback loaded and
