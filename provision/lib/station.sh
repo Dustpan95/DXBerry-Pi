@@ -166,7 +166,7 @@ _dxb_station_audio_sync() {
 
 # provision_station: never fatal; every problem is a failed step named station and the run goes on.
 provision_station() {
-  local rc cockpit site_new reload=0 unit_changed=0 audio_changed=0 audio_installed=0 want_restart=0 was_active=0 restamp=0 sum='' stamp=$DXB_STATE_DIR/dxberryd.sha256 name msg
+  local rc cockpit site_new reload=0 unit_changed=0 audio_changed=0 audio_installed=0 verr='' want_restart=0 was_active=0 restamp=0 sum='' stamp=$DXB_STATE_DIR/dxberryd.sha256 name msg
   local -a extra
   # the network undo's boot unit is a safety net, not a station feature
   dxb_netsafe_install_unit || dxb_step_failed station "could not install dxberry-config-boot.service"
@@ -216,15 +216,18 @@ provision_station() {
     (( unit_changed )) && want_restart=1
   fi
   (( audio_changed || audio_installed )) && _dxb_station_audio_sync
-  # a binary that cannot load (a library it links is missing: the loader exits 127) is never
-  # started over the running one: the old process keeps serving, and with it Roll back on the
-  # Updates page. Nothing is enabled, restarted or restamped, so the next run tries again.
-  if ! "$DXB_STATION_BIN" -version > /dev/null 2>&1 < /dev/null; then
+  # a binary that cannot load (a library it links is missing: the loader exits 127; or another
+  # architecture) is never started over the running one: the old process keeps serving, and with
+  # it Roll back on the Updates page. Nothing is enabled, restarted or restamped, so the next run
+  # tries again. The failed step quotes the binary's first error line.
+  if ! verr=$("$DXB_STATION_BIN" -version 2>&1 > /dev/null < /dev/null); then
+    verr=${verr%%$'\n'*}; verr=${verr:0:200}
+    [[ -n $verr ]] || verr="dxberryd -version failed"
     if "$DXB_SYSTEMCTL" is-active --quiet "$DXB_STATION_UNIT" 2> /dev/null; then
-      dxb_step_failed station "the new station app cannot start (missing libraries); the running one was kept"
+      dxb_step_failed station "the new station app cannot start ($verr); the running one was kept"
       dxb_status_add "station: the running app was kept (see FAILED STEPS)"
     else
-      dxb_step_failed station "the station app cannot start (missing libraries); it was not started"
+      dxb_step_failed station "the station app cannot start ($verr); it was not started"
       dxb_status_add "station: unavailable (see FAILED STEPS)"
     fi
     return 0

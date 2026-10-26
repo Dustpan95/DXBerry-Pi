@@ -228,14 +228,15 @@ test_station_keeps_the_running_app_when_the_new_one_cannot_load() {
   printf '#!/bin/sh\necho "dxberryd: error while loading shared libraries: libopus.so.0" >&2\nexit 127\n' > "$DXB_STATION_BIN"
   : > "$TEST_TMP/calls"
   sn_run
-  assert_contains "$(cat "$TEST_TMP/failed")" "the new station app cannot start (missing libraries); the running one was kept"
+  # (fix-wave round 2, n5: the failed step quotes the binary's own first error line)
+  assert_contains "$(cat "$TEST_TMP/failed")" "the new station app cannot start (dxberryd: error while loading shared libraries: libopus.so.0); the running one was kept"
   assert_not_contains "$(sn_calls)" "restart dxberryd.service"
   assert_not_contains "$(sn_calls)" "enable --now dxberryd.service"
   assert_eq "$(cat "$TEST_TMP/state/dxberryd.sha256")" "$stamp"
   # nothing running yet (a fresh image): it is not started either
   : > "$TEST_TMP/active"; : > "$TEST_TMP/calls"
   sn_run
-  assert_contains "$(cat "$TEST_TMP/failed")" "the station app cannot start (missing libraries); it was not started"
+  assert_contains "$(cat "$TEST_TMP/failed")" "the station app cannot start (dxberryd: error while loading shared libraries: libopus.so.0); it was not started"
   assert_not_contains "$(sn_calls)" "enable --now dxberryd.service"
 }
 
