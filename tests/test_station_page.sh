@@ -379,6 +379,7 @@ test_vfo_page_files_are_plain() {
   assert_file_contains "$SP_WEB/index.html" '<link rel="stylesheet" href="/vfo.css">'
   assert_file_contains "$SP_WEB/vfo.js" 'anchor.parentNode.insertBefore(root'
   # the dashboard card links to the page
+  # shellcheck disable=SC2016  # the literal is JavaScript, not a shell expansion
   assert_file_contains "$SP_WEB/dashboard.js" 'href: `/radio/${n}`'
   command -v node > /dev/null 2>&1 || return 0
   node --check "$SP_WEB/vfo.js" 2> "$TEST_TMP/node.err" || _fail "vfo.js does not parse: $(cat "$TEST_TMP/node.err")"
