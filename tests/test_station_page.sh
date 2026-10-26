@@ -908,6 +908,19 @@ test_vfo_audio_disabled_with_the_reason() {
   assert_eq "$(jq -r '.page | "\(.listenDisabled) \(.micDisabled) \(.why)|\(.pttWhy)"' <<< "$j")" "true true This page has no browser audio.|This page has no browser audio."
 }
 
+# rc3 fix wave (I2's page side, Task 6 N3): with the microphone already allowed, a press reads
+# "Connecting…" while the audio connects and while the station answers the on (it waits for the
+# browser's first audio); "Opening the microphone…" is kept for the prompt
+# (test_ptt_release_while_the_mic_prompt_is_open)
+test_ptt_label_while_connecting() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sau_ui connecting 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -r '.audioConnecting' <<< "$j")" "Connecting…"
+  assert_eq "$(jq -c '.onPending' <<< "$j")" '{"label":"Connecting…","posts":["on"]}'
+  assert_eq "$(jq -r '.answered' <<< "$j")" "Transmitting"
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["on","off"]'
+}
+
 # rc3 fix wave (m10): the page's own stop is not reported as a failure, and a microphone the Mic
 # button opened is let go when a program takes the sound card while the tab is not listening
 test_vfo_page_stop_is_quiet_and_lets_the_microphone_go() {

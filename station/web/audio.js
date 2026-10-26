@@ -268,7 +268,8 @@
     });
   }
 
-  // openMic: ask for the microphone (the first PTT press); later calls reuse it
+  // openMic: ask for the microphone (the Mic button or the first PTT press); later calls reuse it
+  // until stop() lets it go
   function openMic() {
     if (micAsk) return micAsk;
     if (typeof navigator === "undefined" || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {

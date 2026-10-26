@@ -747,8 +747,9 @@
   };
 
   // ---- PTT -----------------------------------------------------------------------------------
-  // Press and hold: the press opens the microphone (asked for only now, the first time), then
-  // sends "ptt on"; a heartbeat goes every 5 s while held; the release (pointer up or cancel, the
+  // Press and hold: the press opens the microphone (asked for now unless the Mic button already
+  // did) and the radio's audio, then sends "ptt on" (the station answers once the browser's first
+  // audio reaches it); a heartbeat goes every 5 s while held; the release (pointer up or cancel, the
   // window losing focus, the page being hidden) sends "ptt off" exactly once, after the "on" has
   // been answered so the two cannot cross. The station drops PTT by itself when the heartbeat
   // stops, at the radio's timeout, on STOP or when the owner's socket closes, and says so.
@@ -790,13 +791,18 @@
     if (e && e.preventDefault) e.preventDefault();
     if (S.hold || pttReason()) return;
     const A = window.dxbAudio;
-    const hold = { since: Date.now(), ok: false, ended: false, sent: false, hb: null, tick: null, onDone: null, window: null,
-      pointer: e && e.pointerId !== undefined ? e.pointerId : null };
+    const hold = { since: Date.now(), ok: false, ended: false, sent: false, micOK: false, hb: null, tick: null, onDone: null,
+      window: null, pointer: e && e.pointerId !== undefined ? e.pointerId : null };
     S.hold = hold;
     // the radio's audio starts inside the press (the browser lets it play then); the mic is asked for
     const waits = [];
     if (!S.listening) waits.push(startListen());
-    waits.push(A.openMic().then(micReady));
+    waits.push(A.openMic().then((r) => {
+      micReady(r);
+      // from here the press waits for the audio connection and the station's answer
+      if (r && r.ok && !hold.ended) { hold.micOK = true; paint(); }
+      return r;
+    }));
     hold.tick = setInterval(paint, 500);
     paint();
     // onDone resolves with whether an on went to the station
@@ -875,7 +881,7 @@
       const hold = S.hold;
       const reason = hold ? "" : pttReason();
       if (reason) b.setAttribute("disabled", ""); else b.removeAttribute("disabled");
-      setText(b, hold ? (hold.ok ? "Transmitting" : "Opening the microphone…") : "PTT");
+      setText(b, hold ? (hold.ok ? "Transmitting" : hold.micOK ? "Connecting…" : "Opening the microphone…") : "PTT");
       b.classList.toggle("is-on", !!(hold && hold.ok));
       setAttr(b, "aria-pressed", String(!!hold));
       why.hidden = !reason;

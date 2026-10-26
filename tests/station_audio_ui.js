@@ -5,7 +5,8 @@
 //   scenarios: listen (the speaker toggle), mic, program (a program takes the sound card), lost
 //   (the chip), ptt (release events, heartbeat, timer, duck), guard (the banner's flows), hash,
 //   hashbutton, hashnoaudio (the dashboard's #listen), reasons, nojs, dashboard (the Listen link),
-//   pagestop (the page's own stop: no stray notice; the Mic button's microphone let go)
+//   pagestop (the page's own stop: no stray notice; the Mic button's microphone let go),
+//   connecting (the PTT label while the audio connects and the station answers the on)
 "use strict";
 const fs = require("fs");
 const vm = require("vm");
@@ -109,6 +110,8 @@ const posts = []; // the PTT requests, in order: "on", "off", "hb"
 const hbAt = []; // the clock at each heartbeat
 const answers = {}; // intent -> the replies to give, in order (then {ok:true})
 let windows = 0;
+let deferOn = false; // the next "on" is answered only when the test calls answerOn()
+let answerOn = null;
 const reply = (status, body) => Promise.resolve({ ok: status < 300, status, json: () => Promise.resolve(body) });
 const fetch = (url, opts) => {
   const body = opts.body ? JSON.parse(opts.body) : null;
@@ -118,6 +121,10 @@ const fetch = (url, opts) => {
   if (what === "ptt") {
     posts.push(body.hb ? "hb" : body.on ? "on" : "off");
     if (body.hb) hbAt.push(now);
+    if (body.on && deferOn) {
+      deferOn = false;
+      return new Promise((r) => { answerOn = () => r({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, window: ++windows }) }); });
+    }
     if (body.on) return reply(200, { ok: true, window: ++windows });
   }
   if (answers[what] && answers[what].length) return reply(200, answers[what].shift());
@@ -525,6 +532,24 @@ const evNotice = (m) => evs().onmessage({ data: JSON.stringify(m) });
     out.back = snap();
   } else if (scenario === "nojs") {
     out.page = snap();
+  } else if (scenario === "connecting") {
+    // the microphone allowed first (the Mic button); a press then waits for the audio to connect
+    // and for the station's answer to the on (the station waits up to 2 s for the browser's first
+    // audio): the button says Connecting…, not that the microphone is opening
+    click(q("vfo-mic"));
+    await flush();
+    deferOn = true;
+    press();
+    await flush();
+    out.audioConnecting = button().textContent;
+    await connect(0);
+    out.onPending = { label: button().textContent, posts: posts.slice() };
+    answerOn();
+    await flush();
+    out.answered = button().textContent;
+    release("pointerup");
+    await flush();
+    out.posts = posts.slice();
   } else if (scenario === "pagestop") {
     // Listen tapped off while a press is still opening: the hold ends, nothing goes to the
     // station, and the page does not tell the operator off for its own stop
