@@ -109,7 +109,10 @@ type Poller struct {
 	pending atomic.Int32 // writes in progress: no read starts while it is non-zero
 	gen     atomic.Int64 // bumped by every write; a reply that began earlier is stale
 	force   atomic.Bool  // run a full cycle at once
-	wake    chan struct{}
+	// transmitting: the station itself keys the radio (a carrier or a PTT window): SWR and ALC are
+	// read at the transmit cadence even where the radio never reports PTT on CAT (vox, none)
+	transmitting atomic.Bool
+	wake         chan struct{}
 
 	wmu sync.Mutex // serializes writes against each other
 
@@ -120,6 +123,7 @@ type Poller struct {
 	caps     Caps
 	interest Interest
 	subs     []chan State
+	hooks    Hooks
 }
 
 // NewPoller returns a poller for c. Run starts it.
@@ -162,6 +166,46 @@ func (p *Poller) SetCaps(c Caps) {
 	p.publishLocked()
 	p.mu.Unlock()
 	p.nudge()
+}
+
+// SetTransmitting says the station keys the radio itself (on) or no longer does (off). While on,
+// the poller treats the radio as keyed for its SWR/ALC cadence whatever get_ptt answers.
+func (p *Poller) SetTransmitting(on bool) {
+	if p.transmitting.Swap(on) != on {
+		p.nudge()
+	}
+}
+
+// SetHooks installs the callbacks the SWR guard listens on. With an SWR hook the transmit
+// cadence runs at any interest, not only on the VFO page: a program may key the radio with
+// nobody watching, and the guard must still see its SWR.
+func (p *Poller) SetHooks(h Hooks) {
+	p.mu.Lock()
+	p.hooks = h
+	p.mu.Unlock()
+	p.nudge()
+}
+
+// watchesSWR reports whether the transmit cadence has a reason to run below Page interest: a
+// guard is listening and the radio can report SWR.
+func (p *Poller) watchesSWR() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.hooks.SWR == nil {
+		return false
+	}
+	for _, n := range p.caps.ReadableMeters {
+		if n == "SWR" {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *Poller) swrHook() func(float64, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.hooks.SWR
 }
 
 func (p *Poller) nudge() {
@@ -259,10 +303,14 @@ func (p *Poller) Run(ctx context.Context) {
 		if p.force.Swap(false) {
 			lastStart = time.Time{}
 		}
-		if txActive && in != Page {
+		now := p.clock.Now()
+		watch := in == Page || p.watchesSWR()
+		if txActive && !watch {
 			txActive = false
 		}
-		now := p.clock.Now()
+		if !txActive && watch && p.transmitting.Load() {
+			txActive, lastTx = true, now.Add(-txEvery)
+		}
 		mainDue := lastStart.Add(in.period())
 		next, isTx := mainDue, false
 		if txActive && lastTx.Add(txEvery).Before(next) {
@@ -294,7 +342,7 @@ func (p *Poller) Run(ctx context.Context) {
 			continue
 		}
 		lastStart = now
-		if p.mainCycle(ctx, in) && in == Page && p.lastReadPTT() && !txActive {
+		if p.mainCycle(ctx, in) && watch && (p.lastReadPTT() || p.transmitting.Load()) && !txActive {
 			txActive, lastTx = true, now
 		}
 	}
@@ -430,7 +478,7 @@ func (p *Poller) readPTT(ctx context.Context, c *cycle) (on, ok bool) {
 		if s.PTT != on {
 			s.PTT, d = on, true
 		}
-		if !on {
+		if !on && !p.transmitting.Load() {
 			for _, n := range p.caps.ReadableMeters {
 				if isTxMeter(n) {
 					if old, has := s.Meters[n]; has && old != 0 {
@@ -487,6 +535,12 @@ func (p *Poller) mainCycle(ctx context.Context, in Interest) bool {
 					}
 					return d
 				})
+				p.mu.Lock()
+				fh := p.hooks.Freq
+				p.mu.Unlock()
+				if fh != nil {
+					fh(f)
+				}
 			}
 		}
 	}
@@ -569,7 +623,15 @@ func (p *Poller) txCycle(ctx context.Context) bool {
 	caps := p.caps
 	p.mu.Unlock()
 	on, ok := p.readPTT(ctx, c)
-	if !ok || !on {
+	if !ok {
+		return false
+	}
+	on = on || p.transmitting.Load()
+	hook := p.swrHook()
+	if !on {
+		if hook != nil {
+			hook(0, false)
+		}
 		return false
 	}
 	for _, n := range caps.ReadableMeters {
@@ -583,6 +645,9 @@ func (p *Poller) txCycle(ctx context.Context) bool {
 		if got {
 			if v, found := number(r); found {
 				p.store(c, n, v)
+				if n == "SWR" && hook != nil {
+					hook(v, true)
+				}
 			}
 		}
 	}

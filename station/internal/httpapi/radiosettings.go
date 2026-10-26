@@ -54,6 +54,8 @@ type RadioSettingsAPI struct {
 	Radios   RadioRecords
 	Settings *settings.Store
 	Probe    Prober
+	// HasSWRGuard says whether a radio has an SWR guard: it reports SWR over CAT (nil: not said).
+	HasSWRGuard func(name string) bool
 }
 
 // Register adds the routes; call it from Config.Routes so the gate applies.
@@ -67,6 +69,7 @@ type settingsView struct {
 	SWRLimit    float64    `json:"swr_limit"`
 	PTTTimeoutS int        `json:"ptt_timeout_s"`
 	Probed      *time.Time `json:"probed"`
+	SWRGuard    *bool      `json:"swr_guard,omitempty"` // false: this radio has no SWR guard
 }
 
 type settingsBody struct {
@@ -95,6 +98,10 @@ func (a *RadioSettingsAPI) get(w http.ResponseWriter, r *http.Request) {
 	}
 	s := a.Settings.Get(name)
 	v := settingsView{SWRLimit: s.SWRLimit, PTTTimeoutS: s.PTTTimeoutS}
+	if a.HasSWRGuard != nil {
+		has := a.HasSWRGuard(name)
+		v.SWRGuard = &has
+	}
 	if !s.Probed.IsZero() {
 		v.Probed = &s.Probed
 	}

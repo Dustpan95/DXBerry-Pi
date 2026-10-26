@@ -42,6 +42,12 @@ func (b audioBridge) AddICECandidate(tab string, c httpapi.ICECandidate) error {
 	return b.Bridge.AddICECandidate(tab, audio.Candidate(c))
 }
 
+// wireRadioRemoval ends a radio's WebRTC bridge (and every connection on it) when the radio
+// leaves the records.
+func wireRadioRemoval(m *rig.Manager, bridges *audio.Bridges) {
+	m.OnRemoved = bridges.Remove
+}
+
 // version is set at build time (-X main.version=...).
 var version = "dev"
 
@@ -123,6 +129,17 @@ func main() {
 			return p
 		}}
 	}
+	// the SWR guard listens to each radio's poller; the Radios page asks whether a radio has one
+	rigs.OnStart = func(radio string, p *rig.Poller) { p.SetHooks(radioAPI.PollerHooks(radio)) }
+	radioSettings.HasSWRGuard = func(radio string) bool {
+		g := radioAPI.GuardOf(radio)
+		if g == nil {
+			return false
+		}
+		active, _, _ := g.View()
+		return active
+	}
+	wireRadioRemoval(rigs, bridges)
 	runner.OnCall = func(cmd string, args []string) {
 		if status.ChangesState(cmd, args) {
 			st.Poke()

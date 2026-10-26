@@ -331,3 +331,25 @@ func TestManagerCapsKeyFollowsRigControl(t *testing.T) {
 		t.Fatalf("the hamlib entry was overwritten: %+v %v", c, ok)
 	}
 }
+
+func TestManagerTellsOfARemovedRadioButNotAReconnect(t *testing.T) {
+	r := newMgRig(t, radio("hf", 4532, 3073))
+	var mu sync.Mutex
+	var started, removed []string
+	r.m.OnStart = func(name string, p *Poller) { mu.Lock(); started = append(started, name); mu.Unlock() }
+	r.m.OnRemoved = func(name string) { mu.Lock(); removed = append(removed, name); mu.Unlock() }
+	r.run()
+	plEventually(t, "poller", func() bool { _, ok := r.m.Radio("hf"); return ok })
+	r.lst.push(radio("hf", 4540, 3073)) // a new port: reconnected, still there
+	plEventually(t, "restarted", func() bool { mu.Lock(); defer mu.Unlock(); return len(started) == 2 })
+	mu.Lock()
+	if len(removed) != 0 {
+		t.Fatalf("a reconnect was reported as a removal: %v", removed)
+	}
+	mu.Unlock()
+	r.lst.push()
+	plEventually(t, "removal told", func() bool { mu.Lock(); defer mu.Unlock(); return len(removed) == 1 && removed[0] == "hf" })
+	if _, ok := r.m.Radio("hf"); ok {
+		t.Fatal("the removal was told before the poller stopped")
+	}
+}

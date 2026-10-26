@@ -209,6 +209,9 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 	if bad := p.in.owns("ptt", tab); bad != nil {
 		return *bad
 	}
+	if bad := p.in.guardRefusal("ptt"); bad != nil {
+		return *bad
+	}
 	p.mu.Lock()
 	switch {
 	case p.shut:
@@ -313,6 +316,7 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 	p.done = done
 	since, limit := p.lastHB, p.timeout
 	p.mu.Unlock()
+	p.in.refreshTx()
 	go p.watch(g, done, since, limit)
 	p.log.Info("PTT on", "radio", p.in.Radio, "method", method, "timeout", minSec(limit))
 	return Result{OK: true}
@@ -505,6 +509,7 @@ func (p *PTT) release(w window, unkey bool, reason string) Result {
 	}
 	p.bridge.SetTXAllowed(w.tab, false)
 	p.closeAudio(w)
+	p.in.refreshTx()
 	p.log.Info("PTT off", "radio", p.in.Radio, "reason", reason)
 	if p.notify != nil {
 		p.notify(p.in.Radio, PTTNotice{Type: "ptt", Radio: p.in.Radio, On: false, Reason: reason})

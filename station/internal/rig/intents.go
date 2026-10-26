@@ -30,6 +30,12 @@ type Writer interface {
 	Write(ctx context.Context, fn func(Commander) error, optimistic func(*State)) error
 }
 
+// Transmitter is a Writer whose poller can be told the station is keying the radio itself, so it
+// reads SWR and ALC at the transmit cadence even when the radio never reports PTT on CAT.
+type Transmitter interface {
+	SetTransmitting(on bool)
+}
+
 // Urgent is a Writer whose rigctld link can be told an unkey is owed (its reconnect backoff is
 // then capped; see Client.SetUrgent).
 type Urgent interface {
@@ -48,6 +54,8 @@ func (w pollerWriter) SetUrgent(on bool) {
 		w.p.client.SetUrgent(on)
 	}
 }
+
+func (w pollerWriter) SetTransmitting(on bool) { w.p.SetTransmitting(on) }
 
 func (w pollerWriter) Write(ctx context.Context, fn func(Commander) error, opt func(*State)) error {
 	return w.p.Write(ctx, func(c *Client) error { return fn(c) }, opt)
@@ -117,6 +125,8 @@ type Intents struct {
 	// not its own (the carrier machinery dropped the radio's PTT line, so the window ends too)
 	pttActive  func() bool
 	afterUnkey func(intent string)
+
+	guard *Guard // the SWR guard (NewGuard); nil: none
 }
 
 // Close stops the unkey retry loop (the radio left the records or the service is ending).
@@ -212,7 +222,41 @@ func (in *Intents) Freq(ctx context.Context, hz int64) Result {
 	if !caps.InRange(hz) {
 		return in.refuse("freq", fmt.Sprintf("%d is outside this radio's range", hz), rangeFix(caps))
 	}
-	return in.send(ctx, "freq", func(s *State) { s.Freq = hz }, "set_freq", strconv.FormatInt(hz, 10))
+	res := in.send(ctx, "freq", func(s *State) { s.Freq = hz }, "set_freq", strconv.FormatInt(hz, 10))
+	if res.OK && in.guard != nil {
+		in.guard.NoteFreq(hz) // a move into another band clears the SWR latch
+	}
+	return res
+}
+
+// Guard is the radio's SWR guard (nil: none).
+func (in *Intents) Guard() *Guard {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.guard
+}
+
+// guardRefusal is the SWR guard's refusal of a transmit intent, or nil.
+func (in *Intents) guardRefusal(intent string) *Result {
+	in.mu.Lock()
+	gd := in.guard
+	in.mu.Unlock()
+	if gd == nil {
+		return nil
+	}
+	return gd.refusal(intent)
+}
+
+// refreshTx tells the radio's poller whether the station is keying the radio itself (a carrier
+// or a PTT window), so SWR is read at the transmit cadence even where PTT cannot be read.
+func (in *Intents) refreshTx() {
+	in.mu.Lock()
+	on := in.keyed || in.pending
+	in.mu.Unlock()
+	on = on || in.pttOn()
+	if t, ok := in.Poller.(Transmitter); ok {
+		t.SetTransmitting(on)
+	}
 }
 
 func rangeFix(c Caps) string {
@@ -309,6 +353,9 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 	if bad := in.owns("tune", tab); bad != nil {
 		return *bad
 	}
+	if bad := in.guardRefusal("tune"); bad != nil {
+		return *bad
+	}
 	if in.pttOn() {
 		return in.refuse("tune", "PTT is on", "release PTT first")
 	}
@@ -369,6 +416,7 @@ func (in *Intents) keyOn(ctx context.Context, intent string, keyed func()) Resul
 			in.debt++
 			in.keying--
 			in.mu.Unlock()
+			in.refreshTx()
 			in.startRetry(intent)
 		} else {
 			// the radio refused: nothing was keyed by this one
@@ -389,6 +437,7 @@ func (in *Intents) keyOn(ctx context.Context, intent string, keyed func()) Resul
 	in.debt++
 	in.keying--
 	in.mu.Unlock()
+	in.refreshTx()
 	return Result{OK: true}
 }
 
@@ -479,6 +528,7 @@ func (in *Intents) attemptUnkey(ctx context.Context, intent string, quiet bool) 
 			in.clearMarkLocked()
 		}
 		in.mu.Unlock()
+		in.refreshTx()
 	}
 	return res
 }
@@ -663,7 +713,35 @@ func (in *Intents) ATU(ctx context.Context, tab string) Result {
 		return in.refuse("atu", "this radio has no antenna tuner control", "tune with the radio's own tuner button")
 	}
 	in.Owners.Touch(in.Radio, tab)
-	return in.send(ctx, "atu", nil, "set_func", "TUNER", "1")
+	// the latch does not refuse the ATU: it is the way to clear it. Its SWR reads are ignored
+	// for ATUWindow, and a latch is cleared when the tuner reached a match under the limit.
+	res := in.send(ctx, "atu", nil, "set_func", "TUNER", "1")
+	if res.OK && in.guard != nil && in.guard.Active() {
+		in.guard.ATUStarted()
+	}
+	return res
+}
+
+// Override is the owner's confirmed override of the SWR guard: transmit intents are accepted
+// again on the band the radio is on.
+func (in *Intents) Override(tab string) Result {
+	if bad := in.owns("override", tab); bad != nil {
+		return *bad
+	}
+	in.mu.Lock()
+	gd := in.guard
+	in.mu.Unlock()
+	if gd == nil || !gd.Active() {
+		return in.refuse("override", "this radio has no SWR guard", "nothing to override")
+	}
+	device := "a browser"
+	if h, ok := in.Owners.Holder(in.Radio); ok && h.Label != "" {
+		device = h.Label
+	}
+	if gd.g.Latched() {
+		gd.Override(device)
+	}
+	return Result{OK: true}
 }
 
 func (in *Intents) lockRefusal(intent string, err error) Result {

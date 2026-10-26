@@ -46,6 +46,11 @@ type Manager struct {
 	// Dialer opens the connection to a rigctld; tests replace it. The
 	// default dials TCP with Dial.
 	Dialer func(addr string) Conn
+	// OnStart is told each poller the manager makes, before it runs (the SWR guard hooks in).
+	OnStart func(radio string, p *Poller)
+	// OnRemoved is told, after its poller has stopped, of a radio that left the records (not of
+	// one only reconnected for a new port or model): per-radio state elsewhere goes with it.
+	OnRemoved func(radio string)
 
 	w     RadioLister
 	cache CapsCache
@@ -122,8 +127,12 @@ func (m *Manager) reconcile(ctx context.Context, list []radios.Radio) {
 	}
 	m.mu.Lock()
 	var gone []*entry
+	var removed []string
 	for name, e := range m.entries {
 		r, ok := want[name]
+		if !ok {
+			removed = append(removed, name)
+		}
 		if !ok || r.Port != e.radio.Port || r.Model != e.radio.Model || r.Control != e.radio.Control {
 			gone = append(gone, e)
 			delete(m.entries, name)
@@ -134,6 +143,11 @@ func (m *Manager) reconcile(ctx context.Context, list []radios.Radio) {
 	m.mu.Unlock()
 	for _, e := range gone {
 		e.stop()
+	}
+	if m.OnRemoved != nil {
+		for _, name := range removed {
+			m.OnRemoved(name)
+		}
 	}
 	for name, r := range want {
 		m.mu.Lock()
@@ -172,6 +186,9 @@ func (m *Manager) start(parent context.Context, r radios.Radio) {
 		p.client = c
 	}
 	e := &entry{radio: r, name: r.Name, conn: conn, poller: p, cancel: cancel, done: make(chan struct{})}
+	if m.OnStart != nil {
+		m.OnStart(r.Name, p)
+	}
 	model := CapsKey(r)
 	if c, ok := m.cache.Load(model); ok {
 		e.caps, e.have = c, true

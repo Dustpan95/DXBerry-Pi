@@ -653,3 +653,66 @@ func TestPollerAnsweringFollowsReads(t *testing.T) {
 	clk.Advance(10 * time.Second)
 	plEventually(t, "not answering on deadlines", func() bool { return !p.State().Answering })
 }
+
+// A vox or none radio never reports PTT on CAT: the station's own keying (SetTransmitting) has
+// SWR and ALC read at the transmit cadence all the same.
+func TestPollerSetTransmittingReadsSWRWithoutPTT(t *testing.T) {
+	l := txLink()
+	l.set("get_ptt", "PTT: 0")
+	p, clk := startPoller(t, l, meterCaps())
+	p.SetInterest(Page)
+	plEventually(t, "first read", func() bool { return p.State().Freq == 14074000 })
+	clk.Advance(250 * time.Millisecond)
+	settle()
+	if l.count("get_level SWR") != 0 {
+		t.Fatal("SWR read before the station keyed")
+	}
+	p.SetTransmitting(true)
+	plEventually(t, "first SWR read", func() bool { return l.count("get_level SWR") >= 1 })
+	base := l.count("get_level SWR")
+	for i := 1; i <= 5; i++ {
+		clk.Advance(200 * time.Millisecond)
+		want := base + i
+		plEventually(t, "SWR read at 200 ms", func() bool { return l.count("get_level SWR") >= want })
+	}
+	settle()
+	if n := l.count("get_level SWR"); n != base+5 {
+		t.Fatalf("SWR read %d times in 1 s, want 5", n-base)
+	}
+	plEventually(t, "meters kept", func() bool { return p.State().Meters["SWR"] == 1.5 })
+	p.SetTransmitting(false)
+	clk.Advance(200 * time.Millisecond)
+	settle()
+	n := l.count("get_level SWR")
+	for i := 0; i < 3; i++ {
+		clk.Advance(200 * time.Millisecond)
+		settle()
+	}
+	if l.count("get_level SWR") != n {
+		t.Fatal("SWR kept being read after the station unkeyed")
+	}
+}
+
+// With a guard listening, SWR is read while PTT reads on at any interest (a program may key the
+// radio with nobody on the VFO page).
+func TestPollerGuardHookSeesSWRWithoutThePage(t *testing.T) {
+	l := txLink()
+	l.set("get_ptt", "PTT: 1")
+	p, clk := startPoller(t, l, meterCaps())
+	var mu sync.Mutex
+	var seen []float64
+	p.SetHooks(Hooks{SWR: func(swr float64, on bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if on {
+			seen = append(seen, swr)
+		}
+	}})
+	p.SetInterest(Dashboard)
+	plEventually(t, "PTT seen", func() bool { return p.State().PTT })
+	for i := 0; i < 3; i++ {
+		clk.Advance(200 * time.Millisecond)
+		settle()
+	}
+	plEventually(t, "hook reads", func() bool { mu.Lock(); defer mu.Unlock(); return len(seen) >= 3 })
+}

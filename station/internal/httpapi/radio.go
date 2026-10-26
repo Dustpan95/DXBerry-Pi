@@ -214,6 +214,15 @@ func (d dynWriter) SetUrgent(on bool) {
 	}
 }
 
+// SetTransmitting passes the station's own keying to the radio's current poller.
+func (d dynWriter) SetTransmitting(on bool) {
+	if w, ok := d.a.Rigs.Writer(d.name); ok {
+		if t, ok := w.(rig.Transmitter); ok {
+			t.SetTransmitting(on)
+		}
+	}
+}
+
 // Register adds the radio routes, one pattern per intent. Call it from Config.Routes, so
 // the session gate and the same-origin rule apply.
 func (a *RadioAPI) Register(mux *http.ServeMux) {
@@ -298,6 +307,13 @@ func (a *RadioAPI) Register(mux *http.ServeMux) {
 			return p.On(r.Context(), id)
 		}
 		return p.Off(id, "released")
+	})
+	post("override", func(r *http.Request, in *rig.Intents, b *radioBody, s *Session) rig.Result {
+		tab, ok := tabToken(r, b)
+		if !ok {
+			return badBody()
+		}
+		return in.Override(session.TabID(s.ID, tab))
 	})
 	post("claim", func(r *http.Request, in *rig.Intents, b *radioBody, s *Session) rig.Result {
 		tab, ok := tabToken(r, b)
@@ -489,7 +505,48 @@ func (a *RadioAPI) intentsLocked(rec radios.Radio) *rig.Intents {
 		},
 	}
 	a.intents[name] = in
+	limit := func() float64 {
+		if a.Settings != nil {
+			if v := a.Settings(name).SWRLimit; v > 0 {
+				return v
+			}
+		}
+		return settings.DefaultSWRLimit
+	}
+	notify := func(radio string, msg any) {
+		if a.Notify != nil {
+			a.Notify(radio, msg)
+		}
+	}
+	rig.NewGuard(in, limit, notify).Drop = func(reason string) { a.pttOf(name).Drop(reason) }
 	return in
+}
+
+// GuardOf is the radio's SWR guard (nil for a radio the records lack).
+func (a *RadioAPI) GuardOf(name string) *rig.Guard {
+	rec, ok := a.Radios.Get(name)
+	if !ok {
+		return nil
+	}
+	return a.intentsFor(rec).Guard()
+}
+
+// PollerHooks are the callbacks for radio's poller (rig.Manager.OnStart installs them): its SWR
+// reads and frequency go to the radio's guard, found by name on every call so a replaced poller
+// or a rebuilt Intents is followed.
+func (a *RadioAPI) PollerHooks(name string) rig.Hooks {
+	return rig.Hooks{
+		SWR: func(swr float64, on bool) {
+			if g := a.GuardOf(name); g != nil {
+				g.Read(swr, on)
+			}
+		},
+		Freq: func(hz int64) {
+			if g := a.GuardOf(name); g != nil {
+				g.NoteFreq(hz)
+			}
+		},
+	}
 }
 
 func (a *RadioAPI) post(fn func(r *http.Request, in *rig.Intents, b *radioBody, sess *Session) rig.Result) http.HandlerFunc {
@@ -531,6 +588,14 @@ type pttView struct {
 	Method   string `json:"method"`
 }
 
+// guardView is the SWR guard as the page shows it: whether the radio has one (it reports SWR
+// over CAT), whether it is latched, and the words for the banner.
+type guardView struct {
+	Active  bool   `json:"active"`
+	Latched bool   `json:"latched"`
+	Reason  string `json:"reason"`
+}
+
 type ownerView struct {
 	Kind  string `json:"kind"`
 	Label string `json:"label"`
@@ -554,7 +619,11 @@ func (a *RadioAPI) get(w http.ResponseWriter, r *http.Request) {
 		Owner *ownerView   `json:"owner"`
 		Audio audioView    `json:"audio"`
 		PTT   pttView      `json:"ptt"`
+		Guard guardView    `json:"guard"`
 	}{Radio: rec}
+	if g := a.GuardOf(rec.Name); g != nil {
+		out.Guard.Active, out.Guard.Latched, out.Guard.Reason = g.View()
+	}
 	out.Audio.Available, out.Audio.Reason = a.available(rec.Name)
 	on, pttTab, timeout, method := a.pttFor(rec).State()
 	out.PTT = pttView{On: on, TimeoutS: int(timeout / time.Second), Method: method}
