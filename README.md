@@ -148,8 +148,8 @@ and `sudo dxberry-logbook get`.
   dashboard's **Listen** opens the radio's page, and the first tap there starts the sound (a browser
   plays sound only after a tap on the page itself).
 - **Each radio with a sound card gets its own sound server,** started at boot and when the radio is
-  added or plugged in, and stopped when it is unplugged, removed or given to Graywolf. A radio whose
-  sound card Graywolf uses has no browser audio.
+  added or plugged in, and stopped when it is unplugged or removed. A radio whose sound card Graywolf
+  uses has no browser audio.
 - **Hold-to-talk PTT** for the radio's transmitter owner. The microphone is asked for once (the
   **Microphone** button or the first PTT press) and released when you stop listening; it is used only
   while PTT is held. A press right after **Listen** waits up to two seconds for the browser's audio to
