@@ -647,7 +647,7 @@ app_flrig_session() { echo yes; }
 app_flrig_installed() { return "${FLRIG_MISSING:-0}"; }
 app_flrig_label() { echo flrig; }
 app_flrig_unit() { dxb_app_session_unit flrig "$1"; }
-app_flrig_audio() { echo alsa; }
+app_flrig_audio() { echo none; }
 app_flrig_wire_each_start() { echo yes; }
 app_flrig_wire() { echo "flrig wire $1" >> "$TEST_TMP/appcalls"; }
 app_flrig_command() { printf '%s\n' flrig; }

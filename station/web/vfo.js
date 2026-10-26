@@ -203,8 +203,9 @@
   }
 
   // The programs that open the radio's sound card themselves (ALSA): while one runs, the radio's
-  // sound server is stopped and there is no browser audio.
-  const ALSA_PROGRAMS = ["wsjtx", "flrig", "pat"];
+  // sound server is stopped and there is no browser audio. (flrig, the radio's rig control, opens
+  // no audio.)
+  const ALSA_PROGRAMS = ["wsjtx", "pat"];
   // cardHolder AUDIO RECORD OWNER: the program that has the sound card, as the station names it
   // ("no sound server for <radio>: WSJT-X has the sound card"), or "" when none does
   function cardHolder(audio, record, owner) {

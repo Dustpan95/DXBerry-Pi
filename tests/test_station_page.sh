@@ -891,7 +891,9 @@ test_vfo_audio_disabled_with_the_reason() {
   command -v node > /dev/null 2>&1 || return 0
   local j; j=$(sau_ui reasons 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
   assert_eq "$(jq -r '.pure.program' <<< "$j")" "WSJT-X has the sound card; no browser audio while it runs"
-  assert_eq "$(jq -r '.pure.flrig' <<< "$j")" "flrig has the sound card; no browser audio while it runs"
+  # fix-wave round 2 (I-B; changes this test): flrig opens no sound card, so it is never named as
+  # the card's holder
+  assert_eq "$(jq -r '.pure.flrig' <<< "$j")" "No sound server for ic7300: /run/dxberry/audio/ic7300/native is missing."
   assert_eq "$(jq -r '.pure.down' <<< "$j")" "No sound server for ic7300: the server is not running."
   assert_eq "$(jq -r '.pure.none' <<< "$j")" "No browser audio on this radio."
   assert_eq "$(jq -r '.pure.nojs' <<< "$j")" "This page has no browser audio."

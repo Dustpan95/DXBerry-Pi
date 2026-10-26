@@ -17,8 +17,8 @@ app_flrig_kind() { echo rigcontrol; }
 app_flrig_session() { echo yes; }
 app_flrig_label() { echo flrig; }
 app_flrig_multi() { echo yes; }
-# flrig opens no audio
-app_flrig_audio() { echo alsa; }
+# flrig opens no audio: its session leaves the radio's sound server alone
+app_flrig_audio() { echo none; }
 app_flrig_screen() { echo yes; }
 app_flrig_needs_service_restart() { echo no; }
 app_flrig_installed() { dxb_apps_installed flrig; }

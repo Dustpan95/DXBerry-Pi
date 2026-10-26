@@ -373,19 +373,21 @@ from the browser is written with `pacat` into `<CARD>.tx`. Programs keep
 using `<CARD>` and `<CARD>.in`. Latency budget: 100 ms end to end on the
 LAN, measured in the hardware check.
 
-**Programs that open the card themselves.** Three program modules use ALSA
-directly today (`app_<a>_audio` is `alsa` for WSJT-X, flrig and Pat;
-JS8Call, fldigi and QSSTV use the private PulseAudio). A card cannot be held
-by the sound server and opened raw at the same time. Rule: while a session
-of an ALSA program owns the radio, the session's `dxberry-app prepare` step
-stops that radio's sound server before the program starts and its `stopped`
-step starts it again after the session ends (for a PulseAudio program,
-`prepare` starts it); the VFO page says "WSJT-X has the sound card; no
-browser audio while it runs" and keeps tuning and the readout. Pulse
-programs connect to the running server through `PULSE_SERVER`, so the
-browser can listen alongside JS8Call, fldigi and QSSTV. Moving WSJT-X and
-Pat onto the sound server (both support PulseAudio devices) is a later item,
-not this release; the module contract does not change here.
+**Programs that open the card themselves.** Two program modules use ALSA
+directly today (`app_<a>_audio` is `alsa` for WSJT-X and Pat; it is `pulse`
+for JS8Call, fldigi and QSSTV, and `none` for flrig, the radio's rig
+control, which opens no audio: its session leaves the sound server alone).
+A card cannot be held by the sound server and opened raw at the same time.
+Rule: while a session of an ALSA program owns the radio, the session's
+`dxberry-app prepare` step stops that radio's sound server before the
+program starts and its `stopped` step starts it again after the session
+ends (for a PulseAudio program, `prepare` starts it); the VFO page says
+"WSJT-X has the sound card; no browser audio while it runs" and keeps
+tuning and the readout. Pulse programs connect to the running server
+through `PULSE_SERVER`, so the browser can listen alongside JS8Call, fldigi
+and QSSTV. Moving WSJT-X and Pat onto the sound server (both support
+PulseAudio devices) is a later item, not this release; the module contract
+does not change here.
 
 ### 8.2 Codec
 
@@ -745,10 +747,10 @@ Each as: decision — why — cost if wrong.
 15. **Release in three pre-releases: parity, VFO, audio** — never lose a
     feature the Pi has today; each step is testable on hardware alone —
     three hardware checks instead of one.
-16. **The sound server yields to ALSA programs** (WSJT-X, flrig, Pat) and
-    the page says so — a card has one holder; changing those programs'
-    audio is its own change — no browser audio while WSJT-X runs in this
-    release.
+16. **The sound server yields to ALSA programs** (WSJT-X, Pat; flrig opens
+    no audio and leaves it alone) and the page says so — a card has one
+    holder; changing those programs' audio is its own change — no browser
+    audio while WSJT-X runs in this release.
 17. **PTT through rigctld for every keyed method, a dummy-model rigctld for
     CAT-less CM108 or GPIO radios** — one keying path, one guard — a radio
     with no CAT gets a rigctld process it did not have.

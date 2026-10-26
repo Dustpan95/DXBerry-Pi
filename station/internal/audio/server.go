@@ -30,10 +30,11 @@ const (
 var childEnv = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8"}
 
 // programAudio says how a program reaches the sound card: "alsa" programs open the card
-// themselves, so the radio's sound server is stopped while they run.
-var programAudio = map[string]string{"wsjtx": "alsa", "flrig": "alsa", "pat": "alsa"}
+// themselves, so the radio's sound server is stopped while they run. (flrig opens no audio and is
+// never a radio's owner.)
+var programAudio = map[string]string{"wsjtx": "alsa", "pat": "alsa"}
 
-var programNames = map[string]string{"wsjtx": "WSJT-X", "flrig": "flrig", "pat": "Pat", "graywolf": "Graywolf"}
+var programNames = map[string]string{"wsjtx": "WSJT-X", "pat": "Pat", "graywolf": "Graywolf"}
 
 // Bin returns the absolute path of a helper (parec, pacat, pactl) from bins, falling back to /usr/bin.
 func Bin(bins map[string]string, name string) string {

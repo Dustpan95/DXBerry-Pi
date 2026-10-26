@@ -71,7 +71,7 @@ func TestAvailableReasons(t *testing.T) {
 	if ok, why = s.Available("radio1"); ok || why != "no sound server for radio1: WSJT-X has the sound card" {
 		t.Fatalf("got %v %q", ok, why)
 	}
-	for owner, name := range map[string]string{"flrig": "flrig", "pat": "Pat"} {
+	for owner, name := range map[string]string{"pat": "Pat"} {
 		s.Radios = fakeRadios{"radio1": {Name: "radio1", Owner: owner}}
 		if ok, why = s.Available("radio1"); ok || why != "no sound server for radio1: "+name+" has the sound card" {
 			t.Fatalf("%s: %v %q", owner, ok, why)

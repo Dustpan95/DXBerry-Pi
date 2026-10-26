@@ -52,9 +52,14 @@ dxb_screen_envfile() { printf '%s/%s.env\n' "$(_dxb_sessions_dir)" "$1"; }
 dxb_screen_dir() { printf '%s/%s.d\n' "$(_dxb_sessions_dir)" "$1"; }
 
 # ---- what the module says (the module loaded: dxb_app_load) ----------------------------------
-# dxb_screen_audio APP: alsa (the program opens plughw:CARD=<RADIO>,DEV=0 itself) or pulse (it
-# uses the radio's sound server, dxberry-audio@RADIO, which an alsa program makes way for). Default alsa.
-dxb_screen_audio() { local v=alsa; declare -F "app_$1_audio" > /dev/null && v=$("app_$1_audio"); [[ $v == pulse ]] && echo pulse || echo alsa; }
+# dxb_screen_audio APP: alsa (the program opens plughw:CARD=<RADIO>,DEV=0 itself), pulse (it
+# uses the radio's sound server, dxberry-audio@RADIO, which an alsa program makes way for) or none
+# (it opens no audio at all, as flrig: the server is left alone). Default alsa.
+dxb_screen_audio() {
+  local v=alsa
+  declare -F "app_$1_audio" > /dev/null && v=$("app_$1_audio")
+  case $v in pulse|none) echo "$v" ;; *) echo alsa ;; esac
+}
 # dxb_screen_wants_screen APP: yes (an X screen) or no (a program with no window, e.g. a web interface).
 
 # the radio's sound server: its directory (DXB_AUDIO_DIR, default /run/dxberry/audio) and the
@@ -69,10 +74,12 @@ dxb_screen_audio_held() {
 }
 # dxb_screen_audio_prepare APP RADIO: before APP starts on RADIO (the app module loaded): the
 # sound server runs for a program that uses PulseAudio (started, and awaited up to
-# DXB_AUDIO_WAIT_S seconds), and is stopped for one that opens the card itself. A server that does
-# not come up is a warning; the program starts without it. Always 0.
+# DXB_AUDIO_WAIT_S seconds), is stopped for one that opens the card itself, and is left alone for
+# one that opens no audio (flrig). A server that does not come up is a warning; the program starts
+# without it. Always 0.
 dxb_screen_audio_prepare() {
   local a=$1 r=$2 u="dxberry-audio@$2.service" sock i
+  [[ $(dxb_screen_audio "$a") == none ]] && return 0
   dxb_screen_audio_held "$r" && return 0
   if [[ $(dxb_screen_audio "$a") == pulse ]]; then
     # earlier failures first: a replug or an update's restarts can use up the unit's start limit

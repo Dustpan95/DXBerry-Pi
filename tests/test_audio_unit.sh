@@ -171,3 +171,17 @@ test_audio_session_start_clears_the_start_limit_first() (
   dxb_screen_audio_stopped wsjtx radio2
   au_before "systemctl reset-failed dxberry-audio@radio2.service" "systemctl start dxberry-audio@radio2.service"
 )
+
+# flrig is the radio's rig control and opens no sound card: its session neither stops nor starts
+# the radio's sound server (stopping it would take the audio from the radio's owner, or the
+# browser, while flrig runs beside them)
+test_flrig_session_leaves_the_sound_server_alone() (
+  au_env
+  dxb_app_load flrig > /dev/null 2>&1
+  dxb_radio_scan_cache
+  assert_eq "$(dxb_screen_audio flrig)" "none"
+  : > "$TEST_TMP/calls"
+  dxb_screen_audio_prepare flrig radio2
+  dxb_screen_audio_stopped flrig radio2
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "dxberry-audio"
+)

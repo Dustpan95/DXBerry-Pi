@@ -164,9 +164,9 @@ and `sudo dxberry-logbook get`.
   it trusts: with the self-signed certificate still untrusted, listening may work but the microphone
   is refused. Install the station's certificate on the phone (or use a browser that accepts it) before
   using PTT.
-- **WSJT-X, flrig and Pat take the sound card.** While one of them runs there is no browser audio for
-  that radio, and the page says which program has it. JS8Call, fldigi and QSSTV share the card with
-  the browser.
+- **WSJT-X and Pat take the sound card.** While one of them runs there is no browser audio for that
+  radio, and the page says which program has it. JS8Call, fldigi and QSSTV share the card with the
+  browser. flrig (rig control) opens no audio, so browser audio carries on while it runs.
 - **A program that stops while it transmits no longer leaves the radio keyed.** When a program window
   stops (**Stop** on the Programs page, or an update restarting it) on a radio keyed over CAT, the
   radio is unkeyed. flrig's own window is the exception.

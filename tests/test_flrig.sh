@@ -34,7 +34,7 @@ fr_dir() { local f; f=$(app_flrig_settings_file "$1"); echo "${f%/*}"; }
 
 test_flrig_module_facts() {
   fr_env
-  assert_eq "$(app_flrig_kind) $(app_flrig_session) $(app_flrig_label) $(app_flrig_audio) $(app_flrig_screen)" "rigcontrol yes flrig alsa yes"
+  assert_eq "$(app_flrig_kind) $(app_flrig_session) $(app_flrig_label) $(app_flrig_audio) $(app_flrig_screen)" "rigcontrol yes flrig none yes"
   assert_eq "$(app_flrig_wire_each_start)" "yes"
   assert_eq "$(app_flrig_settings_file radio2)" "$DXB_APPS_HOME/.flrig-radio2/flrig.prefs"
   assert_eq "$(app_flrig_command radio2 1)" $'flrig\n--config-dir\n'"$DXB_APPS_HOME/.flrig-radio2/"
