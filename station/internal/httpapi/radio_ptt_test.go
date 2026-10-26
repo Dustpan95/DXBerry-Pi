@@ -60,7 +60,15 @@ func (s *ptServer) LoadTXLoopback(context.Context, string) (int, error) {
 	s.loaded++
 	return 7, nil
 }
-func (s *ptServer) UnloadStaleTXLoopbacks(context.Context, string) (int, error) { return 0, nil }
+
+// UnloadStaleTXLoopbacks unloads every TX loopback, as PTT's teardown does (by source, not number).
+func (s *ptServer) UnloadStaleTXLoopbacks(context.Context, string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.loaded
+	s.loaded = 0
+	return n, nil
+}
 func (s *ptServer) UnloadTXLoopback(context.Context, string, int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

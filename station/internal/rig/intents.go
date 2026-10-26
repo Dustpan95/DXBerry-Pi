@@ -400,10 +400,25 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 // key-on whose fate is unknown owes the radio an unkey (retried until it answers); one the radio
 // refused owes nothing. keyed runs with in.mu held at the moment the carrier becomes ours.
 func (in *Intents) keyOn(ctx context.Context, intent string, keyed func()) Result {
+	if bad := in.markKeyOn(intent); bad != nil {
+		return *bad
+	}
+	return in.keyMarked(ctx, intent, keyed)
+}
+
+// markKeyOn writes the keyed marker of a key-on about to be sent (PTT does it under its own lock,
+// so a shutdown either refuses the press or finds the key-on owed). nil: keyMarked may send it.
+func (in *Intents) markKeyOn(intent string) *Result {
 	if err := in.mark(); err != nil {
 		in.log().Error("could not write the keyed marker; not keying", "radio", in.Radio, "error", err)
-		return in.refuse(intent, "the station could not note the carrier before keying", "check the station's storage")
+		r := in.refuse(intent, "the station could not note the carrier before keying", "check the station's storage")
+		return &r
 	}
+	return nil
+}
+
+// keyMarked sends the set_ptt 1 of a key-on markKeyOn marked, and settles its debt with the answer.
+func (in *Intents) keyMarked(ctx context.Context, intent string, keyed func()) Result {
 	err := in.Poller.Write(ctx, func(c Commander) error {
 		_, err := c.Do(ctx, "set_ptt", "1")
 		return err
@@ -660,20 +675,23 @@ func (in *Intents) Owe() {
 	in.startRetry("restart")
 }
 
-// Owed reports whether a carrier of ours may be up: keyed and not confirmed off, or an unkey
-// still owed.
+// Owed reports whether a carrier of ours may be up: keyed and not confirmed off, an unkey still
+// owed, or a key-on on its way to the radio.
 func (in *Intents) Owed() bool {
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	return in.keyed || in.pending
+	return in.keyed || in.pending || in.keying > 0
 }
 
 // UnkeyNow sends one set_ptt 0 within ctx when a carrier of ours may be up (the service is
-// stopping: no retry loop is left behind). It reports whether nothing is owed any more.
+// stopping: no retry loop is left behind). A key-on still on its way is let answer first, within
+// ctx: a set_ptt 0 that overtook it would leave the radio keyed. It reports whether nothing is
+// owed any more.
 func (in *Intents) UnkeyNow(ctx context.Context) bool {
 	in.endCarrier()
+	in.waitKeyOns(ctx)
 	in.mu.Lock()
-	if !in.keyed && !in.pending {
+	if !in.keyed && !in.pending && in.keying == 0 {
 		in.mu.Unlock()
 		return true
 	}
@@ -687,6 +705,23 @@ func (in *Intents) UnkeyNow(ctx context.Context) bool {
 	}
 	in.log().Warn("could not unkey as the service stops", "radio", in.Radio, "reason", res.Reason)
 	return false
+}
+
+// waitKeyOns returns once no key-on is on its way to the radio, or when ctx ends.
+func (in *Intents) waitKeyOns(ctx context.Context) {
+	for {
+		in.mu.Lock()
+		k := in.keying
+		in.mu.Unlock()
+		if k == 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
 
 // Pending reports whether an unkey is still owed to the radio.

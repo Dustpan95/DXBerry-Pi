@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -188,8 +189,6 @@ func main() {
 	go rigs.Run(statusCtx)
 	go programs.Run(statusCtx, 2*time.Second)
 	radioAPI.OweMarkedCarriers()
-	// a TX loopback left loaded by a crash (the sound server outlives dxberryd) is unloaded now
-	go clearStaleLoopbacks(statusCtx, audioCtl, rw.List())
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
@@ -202,6 +201,9 @@ func main() {
 		bridges.Shutdown()
 		close(done)
 	}()
+	// a TX loopback left loaded by a crash (the sound server outlives dxberryd) is unloaded before
+	// the station takes a request, so the clear can never take a first press's own loopback
+	clearStaleLoopbacks(statusCtx, audioCtl, rw.List())
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
@@ -240,16 +242,23 @@ func ensureCertificate(dir string, runner *cli.CLI) {
 }
 
 // clearStaleLoopbacks unloads the TX loopbacks of every radio whose sound server is up: one left
-// by a crash would loop <CARD>.tx into the card beside the next PTT window's own.
+// by a crash would loop <CARD>.tx into the card beside the next PTT window's own. The radios are
+// cleared at once, each within 5 s, and it returns when all are done.
 func clearStaleLoopbacks(ctx context.Context, ctl *audio.ServerControl, list []radios.Radio) {
+	var wg sync.WaitGroup
 	for _, r := range list {
 		if _, err := os.Stat(ctl.Socket(r.Name)); err != nil {
 			continue // no sound server: nothing loaded
 		}
-		cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		if _, err := ctl.UnloadStaleTXLoopbacks(cctx, r.Name); err != nil {
-			slog.Warn("could not clear old TX loopbacks at start", "radio", r.Name, "error", err)
-		}
-		cancel()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			if _, err := ctl.UnloadStaleTXLoopbacks(cctx, r.Name); err != nil {
+				slog.Warn("could not clear old TX loopbacks at start", "radio", r.Name, "error", err)
+			}
+		}()
 	}
+	wg.Wait()
 }

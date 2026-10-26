@@ -69,8 +69,8 @@ type TXBridge interface {
 type SoundServer interface {
 	Available(radio string) (bool, string)
 	LoadTXLoopback(ctx context.Context, radio string) (int, error)
-	UnloadTXLoopback(ctx context.Context, radio string, moduleID int) error
-	// UnloadStaleTXLoopbacks unloads every TX loopback of the radio (one a failed unload left).
+	// UnloadStaleTXLoopbacks unloads every TX loopback of the radio, found by its source (never
+	// by module number: a sound server that restarted gives the numbers out again).
 	UnloadStaleTXLoopbacks(ctx context.Context, radio string) (int, error)
 }
 
@@ -124,6 +124,12 @@ type PTT struct {
 	// InboundWait bounds how long a press waits for the tab's microphone (0: DefaultInboundWait).
 	InboundWait time.Duration
 
+	// amu serialises the radio's TX loopback: one clear, load or unload at a time. loopback is the
+	// window whose loopback is loaded (0: none of ours).
+	amu      sync.Mutex
+	loopback uint64
+
+	// mu guards the window. Lock order: mu before Intents.mu (On writes the keyed marker under mu).
 	mu       sync.Mutex
 	method   string
 	phase    pttPhase
@@ -261,9 +267,9 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 	p.w = window{id: g, tab: tab, method: method}
 	p.mu.Unlock()
 
-	// abort ends a window that never opened (nothing of the audio side is up yet). Until then the
-	// window stays "starting", even when a drop ended it meanwhile, so no second press can open
-	// another window over this one's half-built audio side.
+	// abort ends a window that never opened (its audio side is not up, or already taken down).
+	// Until then the window stays "starting", even when a drop ended it meanwhile, so no second
+	// press can open another window over this one's half-built audio side.
 	abort := func(res Result) Result {
 		p.mu.Lock()
 		if p.gen == g && p.phase == pttStarting {
@@ -290,24 +296,11 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 		return abort(*bad)
 	}
 	p.in.Owners.Touch(p.in.Radio, tab)
-	if keysRig(method) {
-		if res := p.in.keyOn(ctx, "ptt", nil); !res.OK {
-			return abort(res)
-		}
-	}
-	// the audio side: pactl is not tied to the request (a cancelled request must not leave a
-	// half-loaded module behind)
-	// any TX loopback left from before (a failed unload, a crash) goes first: never two
-	p.clearLoopbacks()
-	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), audioWithin)
-	module, err := p.server.LoadTXLoopback(actx, p.in.Radio)
-	cancel()
+	// the audio side opens before the radio is keyed, so the radio never sits keyed while pactl
+	// works; pactl is not tied to the request (a cancelled request must not leave a half-loaded
+	// module behind)
+	module, err := p.openAudio(ctx, g)
 	if err != nil {
-		if keysRig(method) {
-			p.in.unkey("ptt")
-		}
-		// a load that timed out may still have loaded the module
-		p.clearLoopbacks()
 		return abort(p.refuse("the transmit audio path could not be opened: "+err.Error(), AudioFix))
 	}
 	w := window{id: g, tab: tab, method: method, module: module}
@@ -321,6 +314,35 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 			return abort(p.refuse("the keying tone could not be played: "+err.Error(), AudioFix))
 		}
 		w.tone = t
+	}
+	// the last look before the radio is keyed: a window ended while its audio side opened (STOP,
+	// an off, the owner's socket, shutdown) keys nothing. The keyed marker is written under the
+	// same hold, so a shutdown that comes after this look finds the key-on owed (Intents.Owed).
+	p.mu.Lock()
+	if p.ended || p.shut {
+		reason := p.cancel
+		if reason == "" {
+			reason = reasonStopping
+		}
+		p.phase, p.w = pttOff, window{}
+		p.gen++
+		p.mu.Unlock()
+		p.release(w, false, reason)
+		return p.refuse("PTT was stopped: "+reason, "press PTT again")
+	}
+	if keysRig(method) {
+		if bad := p.in.markKeyOn("ptt"); bad != nil {
+			p.mu.Unlock()
+			p.closeAudio(w)
+			return abort(*bad)
+		}
+	}
+	p.mu.Unlock()
+	if keysRig(method) {
+		if res := p.in.keyMarked(ctx, "ptt", nil); !res.OK {
+			p.closeAudio(w)
+			return abort(res)
+		}
 	}
 	p.bridge.SetTXAllowed(tab, true)
 	// the connection may have gone while the window was opening (no OnLost reaches a window
@@ -348,7 +370,7 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 	p.mu.Unlock()
 	p.in.refreshTx()
 	go p.watch(g, done, since, limit)
-	p.log.Info("PTT on", "radio", p.in.Radio, "method", method, "timeout", minSec(limit))
+	p.log.Info("PTT on", "radio", p.in.Radio, "method", method, "timeout", minSec(limit), "loopback", module)
 	return Result{OK: true, Window: g}
 }
 
@@ -590,22 +612,43 @@ func (p *PTT) release(w window, unkey bool, reason string) Result {
 	return res
 }
 
-// closeAudio stops the keying tone and unloads the window's loopback.
+// openAudio loads window g's TX loopback, any left from before (a failed unload, a crash) cleared
+// first: never two. A load that failed (it may have timed out after loading) is cleared at once.
+func (p *PTT) openAudio(ctx context.Context, g uint64) (int, error) {
+	p.amu.Lock()
+	defer p.amu.Unlock()
+	p.clearLoopbacksLocked()
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), audioWithin)
+	module, err := p.server.LoadTXLoopback(actx, p.in.Radio)
+	cancel()
+	if err != nil {
+		p.clearLoopbacksLocked()
+		p.loopback = 0
+		return 0, err
+	}
+	p.loopback = g
+	return module, nil
+}
+
+// closeAudio stops the keying tone and unloads the window's TX loopback, by its source: the
+// module number may by now be another module's, when the sound server restarted in between. A
+// newer window's open has already cleared this one's loopback and loaded its own: that one stays.
 func (p *PTT) closeAudio(w window) {
 	if w.tone != nil {
 		w.tone.end()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), audioWithin)
-	defer cancel()
-	if err := p.server.UnloadTXLoopback(ctx, p.in.Radio, w.module); err != nil {
-		p.log.Warn("could not unload the TX loopback; clearing every TX loopback of the radio", "radio", p.in.Radio, "module", w.module, "error", err)
-		p.clearLoopbacks()
+	p.amu.Lock()
+	defer p.amu.Unlock()
+	if p.loopback != w.id {
+		return
 	}
+	p.loopback = 0
+	p.clearLoopbacksLocked()
 }
 
-// clearLoopbacks unloads every TX loopback of the radio (a failed unload or a load that timed out
-// may have left one); the next load clears them too.
-func (p *PTT) clearLoopbacks() {
+// clearLoopbacksLocked unloads every TX loopback of the radio (p.amu held); one that will not go
+// is cleared by the next window's open.
+func (p *PTT) clearLoopbacksLocked() {
 	ctx, cancel := context.WithTimeout(context.Background(), audioWithin)
 	defer cancel()
 	if _, err := p.server.UnloadStaleTXLoopbacks(ctx, p.in.Radio); err != nil {

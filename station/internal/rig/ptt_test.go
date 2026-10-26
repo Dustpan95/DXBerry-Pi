@@ -105,9 +105,18 @@ type ptServer struct {
 	why       string
 	loadErr   error
 	unloadErr error
+	clearErr  error
 	loaded    map[int]bool
 	next      int
 	events    *[]string
+}
+
+// restart is the sound server restarting (an ALSA program came and went): its modules are gone
+// and their numbers are given out again.
+func (s *ptServer) restart() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loaded, s.next = map[int]bool{}, 0
 }
 
 func (s *ptServer) Available(radio string) (bool, string) {
@@ -143,6 +152,10 @@ func (s *ptServer) UnloadTXLoopback(ctx context.Context, radio string, id int) e
 func (s *ptServer) UnloadStaleTXLoopbacks(ctx context.Context, radio string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.clearErr != nil {
+		*s.events = append(*s.events, "clear failed")
+		return 0, s.clearErr
+	}
 	n := len(s.loaded)
 	s.loaded = map[int]bool{}
 	*s.events = append(*s.events, "clear "+radio)
@@ -190,6 +203,9 @@ type ptHarness struct {
 	mu     sync.Mutex // the fakes' shared event log and the notices
 	events []string   // bridge and server calls, in order
 	notes  []string
+	// afterTX runs after each TX switch (outside the lock); beforeLoad before each loopback load
+	afterTX    func(tab string, on bool)
+	beforeLoad func()
 }
 
 func newPTTHarness(t *testing.T, method string) *ptHarness {
@@ -224,8 +240,12 @@ type lockedBridge struct{ h *ptHarness }
 
 func (l lockedBridge) SetTXAllowed(tab string, on bool) {
 	l.h.mu.Lock()
-	defer l.h.mu.Unlock()
 	l.h.br.SetTXAllowed(tab, on)
+	hook := l.h.afterTX
+	l.h.mu.Unlock()
+	if hook != nil {
+		hook(tab, on)
+	}
 }
 func (l lockedBridge) HasInbound(tab string) bool { return l.h.br.HasInbound(tab) }
 func (l lockedBridge) OnLost(fn func(tab, reason string)) func() {
@@ -237,6 +257,12 @@ type lockedServer struct{ h *ptHarness }
 
 func (l lockedServer) Available(radio string) (bool, string) { return l.h.srv.Available(radio) }
 func (l lockedServer) LoadTXLoopback(ctx context.Context, radio string) (int, error) {
+	l.h.mu.Lock()
+	hook := l.h.beforeLoad
+	l.h.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	l.h.mu.Lock()
 	defer l.h.mu.Unlock()
 	return l.h.srv.LoadTXLoopback(ctx, radio)
@@ -337,7 +363,7 @@ func TestPTTOnKeysAndAllowsTX(t *testing.T) {
 		if h.count("set_ptt 0") != 1 || h.rig.State().PTT || h.in.Owed() || markerAt(t, dir) {
 			t.Fatalf("%s: not unkeyed: %v", method, h.rig.log())
 		}
-		if got := strings.Join(h.eventLog(), ","); got != "clear radio1,load radio1,tx a on,tx a off,unload radio1" {
+		if got := strings.Join(h.eventLog(), ","); got != "clear radio1,load radio1,tx a on,tx a off,clear radio1" {
 			t.Fatalf("%s: audio side after off %q", method, got)
 		}
 		if got := h.noticeLog(); len(got) != 1 || !strings.HasPrefix(got[0], offNotice("released")) {
@@ -397,7 +423,7 @@ func TestPTTRefusedWithoutSoundServerWhenAudioRequested(t *testing.T) {
 	if len(h.rig.log()) != 0 || len(h.eventLog()) != 0 || h.in.Owed() || h.p.Active() {
 		t.Fatalf("a refused PTT keyed or opened something: %v %v", h.rig.log(), h.eventLog())
 	}
-	// the loopback cannot be loaded after the key-on: the key-on is undone at once
+	// the loopback cannot be loaded: the radio is never keyed (the audio path opens first)
 	h.br.mu.Lock()
 	h.br.inbound["a"] = true
 	h.br.mu.Unlock()
@@ -406,8 +432,8 @@ func TestPTTRefusedWithoutSoundServerWhenAudioRequested(t *testing.T) {
 	if r.OK || !strings.Contains(r.Reason, "No such entity") {
 		t.Fatalf("got %+v", r)
 	}
-	if got := strings.Join(h.rig.log(), ","); got != "set_ptt 1,set_ptt 0" || h.in.Owed() || h.p.Active() || h.br.TXAllowed("a") {
-		t.Fatalf("a failed loopback left the radio keyed: %q %v", got, h.eventLog())
+	if got := strings.Join(h.rig.log(), ","); got != "" || h.in.Owed() || h.p.Active() || h.br.TXAllowed("a") {
+		t.Fatalf("a failed loopback keyed the radio: %q %v", got, h.eventLog())
 	}
 }
 
@@ -839,21 +865,29 @@ func TestPTTWindowNumbers(t *testing.T) {
 	}
 }
 
-// A loopback that would not unload, or a load that failed after pactl may have loaded it, is
-// cleared with every other TX loopback of the radio.
+// A loopback that would not unload is cleared by the next window's open (never two), and a load
+// that failed after pactl may have loaded it is cleared at once.
 func TestPTTClearsLoopbacksAfterAFailedUnloadOrLoad(t *testing.T) {
 	h := newPTTHarness(t, "vox")
 	h.claim(t, "a")
 	h.on(t, "a")
 	h.srv.mu.Lock()
-	h.srv.unloadErr = errors.New("pactl: timed out")
+	h.srv.clearErr = errors.New("pactl: timed out")
 	h.srv.mu.Unlock()
 	h.p.Off("a", "released")
-	if got := strings.Join(h.eventLog(), ","); got != "clear radio1,load radio1,tx a on,tx a off,unload failed,clear radio1" || h.srv.count() != 0 {
+	if got := strings.Join(h.eventLog(), ","); got != "clear radio1,load radio1,tx a on,tx a off,clear failed" || h.srv.count() != 1 {
 		t.Fatalf("after a failed unload: %q", got)
 	}
 	h.srv.mu.Lock()
-	h.srv.unloadErr, h.srv.loadErr = nil, errors.New("pactl: timed out")
+	h.srv.clearErr = nil
+	h.srv.mu.Unlock()
+	h.on(t, "a")
+	if h.srv.count() != 1 {
+		t.Fatalf("the next window left the old loopback beside its own: %v", h.eventLog())
+	}
+	h.p.Off("a", "released")
+	h.srv.mu.Lock()
+	h.srv.loadErr = errors.New("pactl: timed out")
 	h.srv.mu.Unlock()
 	if r := h.p.On(context.Background(), "a"); r.OK {
 		t.Fatalf("on with a failing load: %+v", r)
@@ -931,5 +965,114 @@ func TestPTTWaitsForTheFirstMicrophonePacket(t *testing.T) {
 	cancel()
 	if r := <-res; r.OK || o.p.Active() || len(o.rig.log()) != 0 {
 		t.Fatalf("a cancelled press: %+v %v", r, o.rig.log())
+	}
+}
+
+// The audio path opens before the radio is keyed (it never sits keyed waiting for pactl), and a
+// key-on the radio refuses takes the loopback down again.
+func TestPTTOpensTheAudioPathBeforeKeying(t *testing.T) {
+	h := newPTTHarness(t, "rigctld")
+	h.claim(t, "a")
+	loadedAtKey, txAtKey := -1, true
+	h.rig.mu.Lock()
+	h.rig.beforeDo = func(call string) {
+		if call == "set_ptt 1" {
+			loadedAtKey, txAtKey = h.srv.count(), h.br.TXAllowed("a")
+		}
+	}
+	h.rig.mu.Unlock()
+	h.on(t, "a")
+	if loadedAtKey != 1 || txAtKey {
+		t.Fatalf("at the key-on: %d loopbacks, TX allowed %v (want 1, false)", loadedAtKey, txAtKey)
+	}
+	h.p.Off("a", "released")
+	h.rig.mu.Lock()
+	h.rig.beforeDo, h.rig.failCmd, h.rig.failErr = nil, "set_ptt 1", &RigError{Code: -9}
+	h.rig.mu.Unlock()
+	if r := h.p.On(context.Background(), "a"); r.OK {
+		t.Fatalf("on with a refused key-on: %+v", r)
+	}
+	if h.srv.count() != 0 || h.br.TXAllowed("a") || h.p.Active() || h.in.Owed() {
+		t.Fatalf("a refused key-on left the audio path open: %v %v", h.rig.log(), h.eventLog())
+	}
+}
+
+// A window's teardown never takes a newer window's TX loopback with it, even when the sound
+// server restarted in between and gave the newer loopback the old one's module number.
+func TestPTTTeardownLeavesTheNextWindowsLoopback(t *testing.T) {
+	h := newPTTHarness(t, "vox")
+	h.claim(t, "a")
+	h.on(t, "a")
+	armed := true
+	var next Result
+	h.mu.Lock()
+	h.afterTX = func(tab string, on bool) {
+		if on || !armed {
+			return
+		}
+		armed = false
+		// between the old window's TX switch going off and its unload: the server restarts and
+		// the next press opens
+		h.srv.restart()
+		next = h.p.On(context.Background(), "a")
+	}
+	h.mu.Unlock()
+	h.p.Off("a", "released")
+	if !next.OK || !h.p.Active() || h.srv.count() != 1 || !h.br.TXAllowed("a") {
+		t.Fatalf("the next window lost its loopback: %+v %v", next, h.eventLog())
+	}
+	h.p.Off("a", "released")
+	if h.p.Active() || h.srv.count() != 0 {
+		t.Fatalf("the next window's own teardown: %v", h.eventLog())
+	}
+}
+
+// A shutdown that lands while a press is opening its audio side keys nothing: the press looks
+// again just before the key-on.
+func TestPTTShutdownWhileOpeningKeysNothing(t *testing.T) {
+	h := newPTTHarness(t, "rigctld")
+	h.claim(t, "a")
+	h.mu.Lock()
+	h.beforeLoad = func() { h.p.Shutdown() }
+	h.mu.Unlock()
+	r := h.p.On(context.Background(), "a")
+	if r.OK || r.Reason != "PTT was stopped: the station is stopping" {
+		t.Fatalf("on: %+v", r)
+	}
+	if h.count("set_ptt 1") != 0 || h.srv.count() != 0 || h.p.Active() || h.in.Owed() || h.br.TXAllowed("a") {
+		t.Fatalf("keyed or left open: %v %v", h.rig.log(), h.eventLog())
+	}
+}
+
+// A key-on on its way to the radio is owed: the service's last unkey waits for its answer and
+// unkeys after it, never ahead of it.
+func TestUnkeyNowWaitsForAKeyOnInFlight(t *testing.T) {
+	h := newPTTHarness(t, "rigctld")
+	h.claim(t, "a")
+	var owedDuring bool
+	done := make(chan bool, 1)
+	h.rig.mu.Lock()
+	h.rig.beforeDo = func(call string) {
+		if call != "set_ptt 1" {
+			return
+		}
+		owedDuring = h.in.Owed()
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			done <- h.in.UnkeyNow(ctx)
+		}()
+		time.Sleep(50 * time.Millisecond) // the shutdown's unkey runs while the key-on is out
+	}
+	h.rig.mu.Unlock()
+	h.on(t, "a")
+	if !<-done {
+		t.Fatal("UnkeyNow did not unkey")
+	}
+	if !owedDuring {
+		t.Fatal("a key-on on its way was not owed")
+	}
+	if got := strings.Join(h.rig.log(), ","); got != "set_ptt 1,set_ptt 0" || h.rig.State().PTT {
+		t.Fatalf("the unkey did not follow the key-on: %q", got)
 	}
 }
