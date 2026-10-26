@@ -133,6 +133,11 @@ var allow = map[string][][]string{
 		{"stop", "NAME", "--json"},
 		{"screen", "SESSION", "--json"},
 	},
+	"dxberry-audio": {
+		{"ensure", "NAME", "--json"},
+		{"stop", "NAME", "--json"},
+		{"status", "NAME", "--json"},
+	},
 	"dxberry-logbook": {
 		{"get", "--json"},
 		{"set", "--json"},
