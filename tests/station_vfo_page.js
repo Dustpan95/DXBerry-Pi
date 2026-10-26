@@ -117,6 +117,7 @@ const flush = () => new Promise((r) => setImmediate(r));
   const disabled = () => root.find((e) => e.has("vfo-ctl") && e.attrs.disabled !== undefined);
   out.disabledBefore = disabled().map((e) => e.textContent).sort();
   out.needsHint = root.find((e) => e.has("vfo-needs") && !e.hidden).length;
+  out.tuneHint = (one((e) => e.tag === "p" && e.has("hint") && e.textContent.startsWith("Sends a carrier")) || { textContent: null }).textContent;
   if (scenario === "dummy") {
     const stop = one((e) => e.has("vfo-stop"));
     stop.handlers.click[0]();

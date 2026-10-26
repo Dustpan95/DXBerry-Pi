@@ -109,7 +109,7 @@ type ixHarness struct {
 
 func newIxHarness(caps Caps) *ixHarness {
 	clock := newPlClock()
-	f := &ixRig{st: State{Connected: true, Freq: 14074000, Mode: "USB", VFO: "VFOA",
+	f := &ixRig{st: State{Connected: true, Freq: 146520000, Mode: "FM", VFO: "VFOA",
 		Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}
 	own := session.NewOwners(clock)
 	h := &ixHarness{rig: f, clock: clock, own: own}
@@ -250,13 +250,43 @@ func TestTuneCarrierCappedAt10s(t *testing.T) {
 func TestTuneRefusedInDataMode(t *testing.T) {
 	h := newIxHarness(ixCaps())
 	_ = h.own.Claim("radio1", ixHolder("a"))
-	for _, m := range []string{"PKTUSB", "PKTLSB", "PKTFM", "RTTY", "RTTYR"} {
+	for _, m := range []string{"PKTUSB", "PKTLSB", "PKTFM", "PKTAM", "RTTY", "RTTYR", "FM-D", "AM-D"} {
 		h.rig.st.Mode = m
 		r := h.in.Tune(context.Background(), "a", true)
-		ixRefused(t, r, "a data mode would key the sound card with silence; switch to USB or CW to tune", "switch to USB or CW to tune")
+		if r.OK || r.Reason != "a data mode would key the sound card with silence" || r.Fix != "switch to FM or AM to tune" {
+			t.Fatalf("%s: got %+v", m, r)
+		}
 	}
 	if h.rig.has("set_ptt 1") {
 		t.Fatal("keyed in a data mode")
+	}
+}
+
+// Tune is PTT with no audio: only AM and FM put a carrier on the air that way.
+func TestTuneRefusedInModesWithoutACarrier(t *testing.T) {
+	h := newIxHarness(ixCaps())
+	_ = h.own.Claim("radio1", ixHolder("a"))
+	for _, m := range []string{"USB", "LSB", "CW", "CWR"} {
+		h.rig.st.Mode = m
+		r := h.in.Tune(context.Background(), "a", true)
+		if r.OK || r.Reason != m+" sends no carrier from PTT alone" || r.Fix != "switch to FM or AM to tune" {
+			t.Fatalf("%s: got %+v", m, r)
+		}
+	}
+	if h.rig.has("set_ptt 1") {
+		t.Fatal("keyed in a mode with no carrier")
+	}
+}
+
+func TestTuneKeysInCarrierModes(t *testing.T) {
+	for _, m := range []string{"AM", "AMS", "FM", "FMN", "WFM"} {
+		h := newIxHarness(ixCaps())
+		_ = h.own.Claim("radio1", ixHolder("a"))
+		h.rig.st.Mode = m
+		if r := h.in.Tune(context.Background(), "a", true); !r.OK || !h.rig.has("set_ptt 1") {
+			t.Fatalf("%s: got %+v %v", m, r, h.rig.log())
+		}
+		h.in.Stop(context.Background())
 	}
 }
 

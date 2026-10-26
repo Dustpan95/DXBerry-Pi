@@ -408,6 +408,8 @@ test_vfo_page_draws_a_radio_with_cat() {
   assert_eq "$(jq -r '.chipHiddenBefore' <<< "$j")" "true"
   assert_eq "$(jq -c '.disabledBefore' <<< "$j")" '["ATU","Tune"]'
   assert_eq "$(jq -r '.needsHint' <<< "$j")" "2"
+  # Tune keys a carrier only in FM or AM, and its hint says so
+  assert_eq "$(jq -r '.tuneHint' <<< "$j")" "Sends a carrier for up to 10 seconds (FM or AM)."
   # a tapped mode shows at once and goes to the station with the tab token ...
   assert_eq "$(jq -r '.cwPressedAtOnce' <<< "$j")" "true"
   assert_eq "$(jq -r '.modeCall[0]' <<< "$j")" '/api/radio/ic7300/mode {"mode":"CW"} iPhone#tab-1'

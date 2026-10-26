@@ -60,7 +60,7 @@ func (a rwAuth) Session(r *http.Request) (*Session, bool) {
 }
 
 func radioServer(loggedIn bool) (http.Handler, *rwRig) {
-	f := &rwRig{st: rig.State{Connected: true, Freq: 14074000, Mode: "USB", Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}
+	f := &rwRig{st: rig.State{Connected: true, Freq: 14074000, Mode: "FM", Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}
 	api := &RadioAPI{
 		Auth:   rwAuth{ok: loggedIn},
 		Radios: rwRecords{"radio1": {Name: "radio1", Label: "IC-7300", Port: 4532}},
@@ -199,7 +199,7 @@ func (multiAuth) Session(r *http.Request) (*Session, bool) {
 }
 
 func TestTuneAndATURefuseWithoutTheirOwnTab(t *testing.T) {
-	f := &rwRig{st: rig.State{Connected: true, Mode: "USB", Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}
+	f := &rwRig{st: rig.State{Connected: true, Mode: "FM", Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}
 	owners := session.NewOwners(realNow{})
 	api := &RadioAPI{Auth: multiAuth{}, Radios: rwRecords{"radio1": {Name: "radio1", Port: 4532}}, Rigs: rwRigs{f}, Owners: owners}
 	h := New(Config{Listen: "127.0.0.1:0", Auth: multiAuth{}, Routes: api.Register}).Handler
@@ -253,7 +253,7 @@ func (v *vanishRecords) remove(n string) { v.mu.Lock(); delete(v.m, n); v.mu.Unl
 func (v *vanishRecords) missCount() int  { v.mu.Lock(); defer v.mu.Unlock(); return v.misses }
 
 func TestOwedUnkeyEndsWhenTheRadioLeavesTheRecords(t *testing.T) {
-	f := &rwRig{st: rig.State{Connected: true, Mode: "USB", Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}
+	f := &rwRig{st: rig.State{Connected: true, Mode: "FM", Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}
 	recs := &vanishRecords{m: map[string]radios.Radio{"radio1": {Name: "radio1", Port: 4532}}}
 	api := &RadioAPI{Auth: multiAuth{}, Radios: recs, Rigs: rwRigs{f}, Owners: session.NewOwners(realNow{}), Ctx: context.Background()}
 	h := New(Config{Listen: "127.0.0.1:0", Auth: multiAuth{}, Routes: api.Register}).Handler

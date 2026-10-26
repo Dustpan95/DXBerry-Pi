@@ -56,10 +56,29 @@ const (
 
 	reasonUnreachable = "rig control unreachable; the radio's rigctld is restarting"
 	fixUnreachable    = "wait a few seconds"
-	reasonDataMode    = "a data mode would key the sound card with silence; switch to USB or CW to tune"
+	reasonDataMode    = "a data mode would key the sound card with silence"
+	fixTuneMode       = "switch to FM or AM to tune"
 )
 
-var dataModes = []string{"PKTUSB", "PKTLSB", "PKTFM", "RTTY", "RTTYR"}
+var (
+	dataModes = []string{"PKTUSB", "PKTLSB", "PKTFM", "PKTAM", "RTTY", "RTTYR", "FM-D", "AM-D"}
+	// carrierModes put a carrier on the air from PTT alone, with no audio: the only modes Tune
+	// keys in (owner's ruling 9; SSB has no carrier and CW keys from the key line, not PTT)
+	carrierModes = []string{"AM", "AMS", "FM", "FMN", "WFM"}
+)
+
+// tuneModeRefusal says why Tune cannot key in mode, or "" when it can.
+func tuneModeRefusal(mode string) string {
+	switch {
+	case slices.Contains(carrierModes, mode):
+		return ""
+	case slices.Contains(dataModes, mode):
+		return reasonDataMode
+	case mode == "":
+		return "the radio's mode is not known yet"
+	}
+	return mode + " sends no carrier from PTT alone"
+}
 
 // Intents is everything a browser may ask of one radio.
 type Intents struct {
@@ -272,8 +291,8 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 	if bad := in.owns("tune", tab); bad != nil {
 		return *bad
 	}
-	if slices.Contains(dataModes, st.Mode) {
-		return in.refuse("tune", reasonDataMode, "switch to USB or CW to tune")
+	if why := tuneModeRefusal(st.Mode); why != "" {
+		return in.refuse("tune", why, fixTuneMode)
 	}
 	if err := in.mark(); err != nil {
 		in.log().Error("could not write the keyed marker; not keying", "radio", in.Radio, "error", err)

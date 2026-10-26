@@ -631,7 +631,7 @@
       why.hidden = mine() || !!S.tune;
     });
     return h("section", { class: "card vfo-box" }, h("h3", {}, "Tune"), b, why,
-      h("p", { class: "muted hint" }, "Sends a carrier for up to 10 seconds."));
+      h("p", { class: "muted hint" }, "Sends a carrier for up to 10 seconds (FM or AM)."));
   };
 
   sectionBuilders.stop = () => {
