@@ -143,15 +143,23 @@ and `sudo dxberry-logbook get`.
 
 ## Release notes for 0.5.0-rc3
 
-- **Browser audio:** every radio page has a speaker. Listening works on any tab, for any logged-in user
-  (Opus over WebRTC, one stream per tab). Nothing is recorded or stored.
-- **Hold-to-talk PTT** for the radio's transmitter owner. The microphone is asked for on the first press
-  only. The page sends a heartbeat every 5 seconds, and PTT drops after 7 seconds without one, at the
-  radio's PTT timeout (from the per-radio settings, 180 seconds by default), when the owner's tab
-  closes, on **STOP** from any tab, and on an SWR trip. The SWR limit from the per-radio settings is
-  enforced where the radio can read SWR: three readings in a row over the limit unkey the radio and
-  latch until you change band, tune the ATU, or confirm an override. VOX and "none" radios are never
-  keyed by the page.
+- **Browser audio:** every radio page has a speaker. Any logged-in user can listen, in up to four tabs
+  per login on each radio (Opus over WebRTC, one stream per tab). Nothing is recorded or stored. The
+  dashboard's **Listen** opens the radio's page, and the first tap there starts the sound (a browser
+  plays sound only after a tap on the page itself).
+- **Each radio with a sound card gets its own sound server,** started at boot and when the radio is
+  added or plugged in, and stopped when it is unplugged, removed or given to Graywolf. A radio whose
+  sound card Graywolf uses has no browser audio.
+- **Hold-to-talk PTT** for the radio's transmitter owner. The microphone is asked for once (the
+  **Microphone** button or the first PTT press) and released when you stop listening; it is used only
+  while PTT is held. A press right after **Listen** waits up to two seconds for the browser's audio to
+  reach the station before the radio is keyed. The page sends a heartbeat every 5 seconds, and PTT
+  drops after 7 seconds without one, at the radio's PTT timeout (from the per-radio settings, 180
+  seconds by default), when the owner's tab closes, on **STOP** from any tab, and on an SWR trip. The
+  SWR limit from the per-radio settings is enforced where the radio can read SWR: three readings in a
+  row over the limit unkey the radio and latch until you change band, tune the ATU, or confirm an
+  override. PTT sends no PTT command to VOX and "none" radios; a VOX radio keys itself on the audio the
+  page sends while PTT is held.
 - **Phones need the station's certificate trusted.** A browser only hands out the microphone on a page
   it trusts: with the self-signed certificate still untrusted, listening may work but the microphone
   is refused. Install the station's certificate on the phone (or use a browser that accepts it) before
@@ -159,13 +167,31 @@ and `sudo dxberry-logbook get`.
 - **WSJT-X, flrig and Pat take the sound card.** While one of them runs there is no browser audio for
   that radio, and the page says which program has it. JS8Call, fldigi and QSSTV share the card with
   the browser.
+- **A program that stops while it transmits no longer leaves the radio keyed.** When a program window
+  stops (**Stop** on the Programs page, or an update restarting it) on a radio keyed over CAT, the
+  radio is unkeyed. flrig's own window is the exception.
 - **Firewalls:** audio uses UDP ports 50000 to 50199 on the LAN, host addresses only (no STUN or TURN,
   so no internet is involved). Allow that range between your phone or computer and the Pi.
-- **Two radios at once** each get their own sound server and their own audio stream.
+- **Two radios at once,** each in its own tab, get their own sound server and their own audio stream.
 - **Tune** still works only in FM and AM (since rc2).
-- **An update restarts any running program windows once;** they come back within seconds.
-- **Not yet checked on hardware:** audio quality and latency, the microphone path to a real radio, and
-  the SWR guard against a real mismatch. These are verified before the final 0.5.0 release.
+- **An update restarts any running program windows once;** they come back within seconds. It installs
+  the audio packages (libopus and PulseAudio) when they are missing, refreshing the package lists
+  first. If the new station app still cannot start, the update says so and keeps the running one, so
+  the Updates page and **Roll back** stay reachable.
+- **Not yet checked on hardware:**
+  - listening in a real browser, and audio quality;
+  - latency: from a press to the radio keying, and through the transmit path (a 100 ms budget);
+  - the microphone path to a real radio, and a VOX radio keying on the page's audio;
+  - iPhones: listening in Safari (the radio plays through Web Audio) and the 20 dB duck while you
+    talk;
+  - PTT from Safari on an iPhone, which needs Safari to send audio for a muted microphone;
+  - the keying tone for DigiRig radios set to tone keying (`digirig_tone`: 1 kHz at -6 dBFS on the
+    right channel; your speech goes to both channels);
+  - the "Receiving" line and the level meter against a real radio's noise floor;
+  - the SWR guard against a real mismatch.
+
+  The hardware check before the final 0.5.0 release covers what a radio on a USB sound card can show;
+  the SWR guard and the DigiRig tone need hardware it does not have.
 
 ## Release notes for 0.5.0-rc2
 
