@@ -615,17 +615,18 @@ _dxb_radio_apply() {
 # dxb_audio_sync NAME PRESENT(0|1) [OWNER_KIND]: the radio's sound server, dxberry-audio@NAME
 # (provision/bin/dxberry-audio), runs while the radio is plugged in, has an audio device and no
 # owner: started when it is not running, its earlier failures and start limit cleared first. It is
-# stopped while the radio is absent (a replug comes back to a fresh server), has no audio device,
-# or Graywolf (any owner that is not a session program) has its card. A radio a session program
-# owns is left to that session (dxberry-app prepare and stopped). Nothing is asked before the unit
-# is installed: an update's apply runs before its setup installs it (provision_station syncs the
-# servers then). A start or stop that fails is a warning. Always 0.
+# stopped while the radio is absent or has no audio device, whoever owns the radio (a replug
+# comes back to a fresh server: one left running loses its card for good), and while Graywolf (any
+# owner that is not a session program) has its card. For a present radio a session program owns,
+# the start and stop are that session's (dxberry-app prepare and stopped). Nothing is asked before
+# the unit is installed: an update's apply runs before its setup installs it (provision_station
+# syncs the servers then). A start or stop that fails is a warning. Always 0.
 dxb_audio_sync() {
   local n=$1 present=$2 kind=${3:-} sc=${DXB_SYSTEMCTL:-systemctl} u="dxberry-audio@$1.service" audio why
   _dxb_audio_unit_installed || return 0
   [[ -n $kind ]] || kind=$(dxb_radio_owner_kind "$n")
-  [[ $kind == session ]] && return 0
   audio=$(jq -r --arg n "$n" '.radios[$n].audio != null' <<< "$DXB_RADIOS")
+  if [[ $kind == session ]] && (( present )) && [[ $audio == true ]]; then return 0; fi
   if (( present )) && [[ $kind == none && $audio == true ]]; then
     "$sc" is-active --quiet "$u" 2> /dev/null < /dev/null && return 0
     "$sc" reset-failed "$u" > /dev/null 2>&1 < /dev/null
@@ -634,9 +635,9 @@ dxb_audio_sync() {
     return 0
   fi
   _dxb_audio_running "$u" || return 0
-  if [[ $kind == graywolf ]]; then why="$(jq -r --arg n "$n" '.radios[$n].owner' <<< "$DXB_RADIOS") has the sound card"
-  elif [[ $audio != true ]]; then why="no audio device"
-  else why="radio absent"; fi
+  if [[ $audio != true ]]; then why="no audio device"
+  elif (( ! present )); then why="radio absent"
+  else why="$(jq -r --arg n "$n" '.radios[$n].owner' <<< "$DXB_RADIOS") has the sound card"; fi
   if "$sc" stop "$u" > /dev/null 2>&1 < /dev/null; then dxb_info "radio $n: sound server stopped ($why)"
   else dxb_warn "radio $n: could not stop $u ($why)"; fi
   return 0

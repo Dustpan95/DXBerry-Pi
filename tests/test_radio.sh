@@ -386,6 +386,25 @@ test_apply_stops_the_sound_server_of_an_absent_or_removed_radio() (
   assert_not_contains "$(cat "$TEST_TMP/calls")" "stop dxberry-audio@r1"
 )
 
+# An unplugged radio's server is stopped whoever owns the radio: one started by a PulseAudio
+# program's session (JS8Call, fldigi, QSSTV) would otherwise run on with no card after the card
+# went, and the session's start after the replug would find it still running
+test_apply_stops_a_session_radios_sound_server_when_it_is_unplugged() (
+  radio_env; ra_audio_env; fake_apps; two_radios
+  _dxb_radio_set_owner r1 gamma > /dev/null
+  echo dxberry-audio@r1.service >> "$TEST_TMP/active"    # the session's prepare started it
+  fx_unplug "$DXB_SYSFS_ROOT" r1-audio
+  : > "$TEST_TMP/calls"
+  dxb_radio_apply hotplug > /dev/null 2>&1
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-audio@r1.service"
+  # back again: the apply leaves the start to the session, which now starts a fresh server
+  fx_replug "$DXB_SYSFS_ROOT" r1-audio
+  : > "$TEST_TMP/calls"
+  dxb_radio_apply hotplug > /dev/null 2>&1
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "start dxberry-audio@r1"
+  if grep -qx dxberry-audio@r1.service "$TEST_TMP/active"; then _fail "the old server still runs after the replug"; fi
+)
+
 # An update's apply runs before the setup installs the unit: nothing is asked of a unit that is
 # not there yet (provision_station syncs the servers once it has installed it)
 test_apply_leaves_the_sound_server_alone_until_its_unit_is_installed() (
