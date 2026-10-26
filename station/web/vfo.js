@@ -179,10 +179,11 @@
     return owner.mine ? "You have the transmitter" : `${owner.label} has the transmitter`;
   }
 
-  // ownerActions OWNER: the buttons beside the owner line
-  // On a radio with no rig control nothing can be claimed: every intent would be refused.
-  function ownerActions(owner, noCatRadio) {
-    if (noCatRadio) return [];
+  // ownerActions OWNER NOCAT TALK: the buttons beside the owner line
+  // On a radio with no rig control nothing can be claimed: every intent would be refused, unless
+  // the radio can talk from the browser (TALK: its sound server is up), which PTT needs a claim for.
+  function ownerActions(owner, noCatRadio, talk) {
+    if (noCatRadio && !talk) return [];
     if (!owner) return ["claim"];
     if (owner.kind === "program") return ["open"];
     return [owner.mine ? "release" : "takeover"];
@@ -193,6 +194,25 @@
     return m && NAME_RE.test(m[1]) ? m[1] : null;
   };
 
+  // pttWhy OWNER AUDIO HASAUDIO: why PTT cannot be pressed in this tab, or "" when it can
+  function pttWhy(owner, audio, hasAudio) {
+    if (!hasAudio) return "This page has no browser audio.";
+    if (!audio || !audio.available) return capitalize(String((audio && audio.reason) || "no browser audio on this radio")) + ".";
+    if (!owner || owner.kind !== "tab" || !owner.mine) return "Take the transmitter first.";
+    return "";
+  }
+
+  // minSec MS: a duration as M:SS
+  function minSec(ms) {
+    const s = Math.max(0, Math.floor(Number(ms) / 1000) || 0);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }
+
+  // pttTimer MS TIMEOUT_S: how long PTT has been held, against the radio's PTT timeout
+  const pttTimer = (ms, timeoutS) => `${minSec(ms)} / ${minSec((Number(timeoutS) || 180) * 1000)}`;
+
+  const capitalize = (t) => t.charAt(0).toUpperCase() + t.slice(1);
+
   // levelPercent V: a 0..1 level as a whole percent
   const levelPercent = (v) => Math.round(Math.max(0, Math.min(1, Number(v) || 0)) * 100);
 
@@ -202,6 +222,7 @@
   const pure = {
     BANDS, STEPS, STEP_NAMES, formatFreq, parseFreq, clampFreq, stepFreq, bandsFromRanges, bandOf, modeButtons,
     filterPresets, filterSpan, sUnits, sText, normCaps, noCat, layoutFor, ownerLine, ownerActions, radioFromPath, levelPercent,
+    pttWhy, pttTimer, minSec, PTT_HEARTBEAT: 5000,
     onRadioPage: () => typeof location !== "undefined" && radioFromPath(location.pathname) !== null,
   };
   window.dxbVFO = pure;
@@ -224,6 +245,10 @@
     want: null,      // the frequency the dial is heading for, while one is being sent
     sending: false,
     layout: "", ownerKey: "", step: 1000, tune: null, upd: [], bands: [],
+    audio: null,     // {available, reason}: whether the radio's sound server carries browser audio
+    ptt: null,       // the station's PTT window: {on, mine, timeout_s, method}
+    hold: null,      // this tab's PTT press, while the button is held
+    listening: false, // this page started the radio's audio in this tab
   };
 
   function h(tag, attrs, ...kids) {
@@ -644,9 +669,115 @@
     const b = h("button", { class: "btn danger vfo-stop", type: "button" }, "STOP");
     b.addEventListener("click", () => {
       tuneEnd(false);
+      if (S.hold) holdEnd(S.hold, false);
       dxb.api("POST", `/api/radio/${name}/stop`, {}).then((res) => { if (!(res && res.ok)) say(failText(res || {}), "bad"); });
     });
     return h("section", { class: "card vfo-box vfo-stop-box" }, b);
+  };
+
+  // ---- PTT -----------------------------------------------------------------------------------
+  // Press and hold: the press opens the microphone (asked for only now, the first time), then
+  // sends "ptt on"; a heartbeat goes every 5 s while held; the release (pointer up or cancel, the
+  // window losing focus, the page being hidden) sends "ptt off" exactly once, after the "on" has
+  // been answered so the two cannot cross. The station drops PTT by itself when the heartbeat
+  // stops, at the radio's timeout, on STOP or when the owner's socket closes, and says so.
+  const talkable = () => !!(S.audio && S.audio.available);
+  const pttReason = () => pttWhy(S.owner, S.audio, !!window.dxbAudio);
+  const pttPost = (body) => dxb.api("POST", `/api/radio/${name}/ptt`, Object.assign({ device: dxb.tab() }, body));
+
+  function holdEnd(hold, sendOff) {
+    if (hold.ended) return;
+    hold.ended = true;
+    if (hold.hb !== null) clearInterval(hold.hb);
+    if (hold.tick !== null) clearInterval(hold.tick);
+    hold.hb = hold.tick = null;
+    if (S.hold === hold) S.hold = null;
+    if (window.dxbAudio) window.dxbAudio.setTX(false);
+    // the off follows the on's answer, and only when an on was sent
+    if (sendOff) hold.onDone.then((sent) => { if (sent) pttPost({ on: false }); });
+    paint();
+  }
+
+  function pttDown(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    if (S.hold || pttReason()) return;
+    const A = window.dxbAudio;
+    const hold = { since: Date.now(), ok: false, ended: false, hb: null, tick: null, onDone: null };
+    S.hold = hold;
+    // the radio's audio starts inside the press (the browser lets it play then); the mic is asked for
+    const waits = [];
+    if (!S.listening) {
+      S.listening = true;
+      waits.push(A.listen(name).then((r) => { if (!(r && r.ok)) S.listening = false; return r; }));
+    }
+    waits.push(A.openMic());
+    A.setTX(true);
+    hold.tick = setInterval(paint, 500);
+    paint();
+    hold.onDone = Promise.all(waits).then((rs) => {
+      const bad = rs.find((r) => !(r && r.ok));
+      if (bad || hold.ended) {
+        if (bad) say(failText(bad), "bad");
+        holdEnd(hold, false);
+        return false;
+      }
+      return pttPost({ on: true }).then((res) => {
+        if (!(res && res.ok)) {
+          say(failText(res || {}), "bad");
+          holdEnd(hold, false);
+          return false;
+        }
+        if (!hold.ended) {
+          hold.ok = true;
+          hold.hb = setInterval(() => {
+            pttPost({ hb: true }).then((r) => {
+              if (!(r && r.ok) && !hold.ended) { say(failText(r || {}), "bad"); holdEnd(hold, false); }
+            });
+          }, pure.PTT_HEARTBEAT);
+          paint();
+        }
+        return true;
+      });
+    });
+  }
+
+  function pttUp() { if (S.hold) holdEnd(S.hold, true); }
+
+  // a notice from the station: PTT dropped (every tab hears it)
+  function onPTT(m) {
+    if (!m || m.radio !== name || m.on !== false) return;
+    if (S.hold && S.hold.ok) holdEnd(S.hold, false);
+    if (m.reason && m.reason !== "released") say(`PTT off: ${m.reason}`, "warn");
+    if (S.ptt) S.ptt.on = false;
+    paint();
+  }
+
+  sectionBuilders.ptt = () => {
+    const b = h("button", { class: "btn vfo-ptt", type: "button", "aria-label": "Push to talk: hold to transmit" }, "PTT");
+    const time = h("span", { class: "vfo-ptt-time", hidden: true });
+    const why = h("p", { class: "muted hint vfo-ptt-why", hidden: true });
+    b.addEventListener("pointerdown", (e) => {
+      if (b.setPointerCapture && e && e.pointerId !== undefined) { try { b.setPointerCapture(e.pointerId); } catch (x) { /* not capturable */ } }
+      pttDown(e);
+    });
+    b.addEventListener("pointerup", pttUp);
+    b.addEventListener("pointercancel", pttUp);
+    b.addEventListener("contextmenu", (e) => { if (e && e.preventDefault) e.preventDefault(); });
+    b.addEventListener("keydown", (e) => { if ((e.key === " " || e.key === "Enter") && !e.repeat) pttDown(e); });
+    b.addEventListener("keyup", (e) => { if (e.key === " " || e.key === "Enter") pttUp(); });
+    S.upd.push(() => {
+      const hold = S.hold;
+      const reason = hold ? "" : pttReason();
+      if (reason) b.setAttribute("disabled", ""); else b.removeAttribute("disabled");
+      setText(b, hold ? (hold.ok ? "Transmitting" : "Opening the microphone…") : "PTT");
+      b.classList.toggle("is-on", !!(hold && hold.ok));
+      setAttr(b, "aria-pressed", String(!!hold));
+      why.hidden = !reason;
+      setText(why, reason);
+      time.hidden = !hold;
+      if (hold) setText(time, pttTimer(Date.now() - hold.since, S.ptt && S.ptt.timeout_s));
+    });
+    return h("section", { class: "card vfo-box vfo-ptt-box" }, b, time, why);
   };
 
   // the owner and program sections are redrawn when what they say changes
@@ -666,13 +797,13 @@
 
   function paintOwner() {
     const o = S.owner;
-    const key = JSON.stringify([o, S.rec && S.rec.owner, noCat(S.rec, S.caps)]);
+    const key = JSON.stringify([o, S.rec && S.rec.owner, noCat(S.rec, S.caps), talkable()]);
     const box = document.getElementById("vfo-owner");
     const prog = document.getElementById("vfo-program");
     if (S.ownerKey === key) return;
     S.ownerKey = key;
     if (box) {
-      const acts = ownerActions(o, noCat(S.rec, S.caps)).map((a) => {
+      const acts = ownerActions(o, noCat(S.rec, S.caps), talkable()).map((a) => {
         if (a === "claim") return h("button", { class: "btn small primary", type: "button", onclick: () => ownerCall("claim") }, "Take the transmitter");
         if (a === "release") return h("button", { class: "btn small", type: "button", onclick: () => ownerCall("release") }, "Release");
         if (a === "takeover") return h("button", { class: "btn small", type: "button", onclick: () => ownerCall("takeover") }, "Take over");
@@ -696,10 +827,12 @@
     S.ownerKey = "";
     S.upd = [];
     S.bands = S.nc ? bandsFromRanges(S.nc.ranges) : [];
+    // PTT sits just above STOP, on every radio (its button says why when it cannot be pressed)
+    const secs = lay.flatMap((s) => (s === "stop" ? [sectionBuilders.ptt(), sectionBuilders.stop()] : [sectionBuilders[s]()]));
     root.replaceChildren(h("div", { class: "vfo-head" },
       h("h2", {}, (S.rec && S.rec.label) || name, S.nc && S.nc.modelName ? h("span", { class: "muted" }, ` ${S.nc.modelName}`) : null),
       h("span", { class: "chip", id: "vfo-chip", hidden: true }, "Reconnecting…")),
-      ...lay.map((s) => sectionBuilders[s]()));
+      ...secs);
   }
 
   // ---- keypad --------------------------------------------------------------------------------
@@ -774,6 +907,8 @@
       S.caps = j.caps || S.caps;
       S.nc = normCaps(S.caps);
       S.owner = j.owner || null;
+      S.audio = j.audio || null;
+      S.ptt = j.ptt || null;
       if (j.state && !S.st) S.st = j.state;
       S.found = true;
       build();
@@ -809,6 +944,10 @@
     if (STEPS.includes(saved)) S.step = saved;
     root.append(h("p", { class: "muted" }, "Reading the radio…"));
     dxb.events.on("rig", onRig);
+    dxb.events.on("ptt", onPTT);
+    // the release also comes from the window losing focus or the page going away
+    window.addEventListener("blur", pttUp);
+    window.addEventListener("pagehide", pttUp);
     dxb.events.onOpen(() => { S.sock = true; watch(); loadAll(); });
     dxb.events.onClose(() => { S.sock = false; paint(); });
     if (dxb.events.open) { S.sock = true; watch(); }

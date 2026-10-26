@@ -551,3 +551,74 @@ test_station_audio_stop_releases_a_pending_mic() {
   assert_eq "$(jq -r '.askedAgain' <<< "$j")" "3"
   assert_eq "$(jq -c '.againResult' <<< "$j")" '{"ok":true}'
 }
+
+# ---- PTT on the VFO page: vfo.js's press-and-hold button over fake timers and a fake dxbAudio ----
+# spt_run SCENARIO: what tests/station_ptt.js saw the page send, as JSON
+spt_run() { node "$DXB_ROOT/tests/station_ptt.js" "$SP_WEB" "$1"; }
+
+test_ptt_release_events() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j k; j=$(spt_run release 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -r '.disabled' <<< "$j")" "false"
+  assert_eq "$(jq -r '.label' <<< "$j")" "PTT"
+  # each release (and every other release event after it) sends one off, after the on and heartbeats
+  for k in pointerup pointercancel blur pagehide; do
+    assert_eq "$(jq -r --arg k "$k" '.rounds[$k] | "\(.on) \(.off) \(.order)"' <<< "$j")" "1 1 on,hb,hb,hb,off"
+    assert_eq "$(jq -r --arg k "$k" '.rounds[$k] | "\(.label) \(.labelAfter) \(.timeHidden)"' <<< "$j")" "Transmitting PTT true"
+  done
+  # the held timer shows against the radio's PTT timeout
+  assert_eq "$(jq -r '.rounds.pointerup.time' <<< "$j")" "0:00 / 3:00"
+  # a release before the microphone is ready sends nothing; the radio's audio started once, inside the first press
+  assert_eq "$(jq -r '.quickOrder' <<< "$j")" ""
+  assert_eq "$(jq -r '.audioCalls.listen' <<< "$j")" "1"
+  assert_eq "$(jq -r '.audioCalls.openMic' <<< "$j")" "5"
+  assert_eq "$(jq -c '.audioCalls.tx' <<< "$j")" '[true,false,true,false,true,false,true,false,true,false]'
+}
+
+test_ptt_heartbeat_every_5s() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j k; j=$(spt_run release 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  for k in pointerup pointercancel blur pagehide; do
+    # one 5 s heartbeat timer per press, a heartbeat each period, stopped by the release
+    assert_eq "$(jq -r --arg k "$k" '.rounds[$k] | "\(.heartbeatTimers) \(.hb) \(.hbCleared)"' <<< "$j")" "1 3 true"
+  done
+  assert_file_contains "$SP_WEB/vfo.js" "PTT_HEARTBEAT: 5000"
+}
+
+test_ptt_disabled_with_the_reason() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j
+  j=$(spt_run notowner 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -r '"\(.disabled) \(.why)"' <<< "$j")" "true Take the transmitter first."
+  assert_eq "$(jq -c '[.posts, .audioCalls.listen, .audioCalls.openMic]' <<< "$j")" '[[],0,0]'
+  j=$(spt_run noaudio 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -r '"\(.disabled) \(.why)"' <<< "$j")" "true No sound server for ic7300: WSJT-X has the sound card."
+  assert_eq "$(jq -c '[.posts, .audioCalls.openMic]' <<< "$j")" '[[],0]'
+}
+
+test_ptt_station_refusal_and_drop_end_the_hold() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j
+  # the station refuses the on (the mic is not open yet): its words, no off, the mic closed again
+  j=$(spt_run refused 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["on"]'
+  assert_eq "$(jq -r '.notices[0]' <<< "$j")" "bad: the microphone is not open yet. Press PTT again once the browser has asked for the microphone."
+  assert_eq "$(jq -c '.tx' <<< "$j")" '[true,false]'
+  assert_eq "$(jq -r '.labelAfter' <<< "$j")" "PTT"
+  assert_eq "$(jq -c '.postsAfterRelease' <<< "$j")" '["on"]'
+  # the station drops PTT (its notice on the events socket): the hold ends, the reason shows, no off
+  j=$(spt_run dropped 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -r '"\(.transmitting) \(.labelAfter) \(.hbCleared)"' <<< "$j")" "Transmitting PTT true"
+  assert_eq "$(jq -c '.notices' <<< "$j")" '["warn: PTT off: heartbeat lost"]'
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["on"]'
+  assert_eq "$(jq -c '.tx' <<< "$j")" '[true,false]'
+}
+
+test_ptt_page_files_are_plain() {
+  assert_file_not_contains "$DXB_ROOT/tests/station_ptt.js" "innerHTML"
+  assert_file_not_contains "$SP_WEB/vfo.js" "innerHTML"
+  assert_file_not_contains "$SP_WEB/vfo.js" "setAttribute(\"style\""
+  assert_file_not_contains "$SP_WEB/vfo.js" "fetch("
+  assert_file_contains "$SP_WEB/vfo.js" 'window.addEventListener("pagehide", pttUp)'
+  assert_file_contains "$SP_WEB/vfo.js" 'window.addEventListener("blur", pttUp)'
+}

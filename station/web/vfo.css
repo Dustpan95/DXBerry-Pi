@@ -49,6 +49,16 @@
   color: #fff; background: #b3261e; border-color: #b3261e;
 }
 .vfo-stop:hover { background: #8f1d17; border-color: #8f1d17; }
+.vfo-ptt-box { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.vfo-ptt {
+  flex: 1 1 100%; min-height: 72px; font-size: 22px; font-weight: 700; letter-spacing: 0.06em;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+.vfo-ptt[aria-pressed="true"] { color: var(--accent-text); background: var(--warn); border-color: var(--warn); }
+.vfo-ptt.is-on { color: #fff; background: #b3261e; border-color: #b3261e; }
+.vfo-ptt[disabled] { opacity: 0.55; cursor: not-allowed; }
+.vfo-ptt-time { font-variant-numeric: tabular-nums; font-weight: 600; }
+.vfo-ptt-box > .vfo-ptt-why { flex: 1 1 100%; margin: 0; }
 .vfo-owner { margin: 0 0 8px; font-weight: 600; }
 .vfo-nocat { margin: 0; font-weight: 600; }
 .vfo-why ul { margin: 8px 0 0; padding-left: 20px; }
