@@ -320,16 +320,21 @@ func (c *CLI) path(command string) string {
 	return systemBin[command]
 }
 
-// Run validates the call and runs it under a 60 s deadline, detached from ctx's cancellation
-// (its values stay). The error is a refusal; a command
+// Run validates the call and runs it under a 60 s deadline (or ctx's own deadline when that is
+// earlier), detached from ctx's cancellation (its values stay). The error is a refusal; a command
 // that fails, or cannot start, is a Result with its exit code.
 func (c *CLI) Run(ctx context.Context, call Call) (Result, error) {
 	if err := c.Validate(call); err != nil {
 		return Result{}, err
 	}
 	// A command that started runs to its own end or to the deadline: a browser that went away
-	// (a locked phone, a closed tab) must not cut a radio change off half way.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.Timeout)
+	// (a locked phone, a closed tab) must not cut a radio change off half way. A caller that
+	// bounds its own wait (the audio status check) keeps that bound.
+	timeout := c.Timeout
+	if dl, ok := ctx.Deadline(); ok {
+		timeout = min(timeout, time.Until(dl))
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
 	res, err := c.run(ctx, c.path(call.Command), call.Args, call.Stdin, append([]string(nil), runEnv...))
 	if err != nil {

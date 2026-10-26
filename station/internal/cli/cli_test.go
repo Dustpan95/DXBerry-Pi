@@ -251,6 +251,29 @@ func TestCLITimeoutKillsChild(t *testing.T) {
 	}
 }
 
+// A caller's own deadline earlier than the call's timeout is kept (the audio status check gives
+// 2 s); only the caller's cancellation is dropped.
+func TestCLIHonoursAnEarlierCallerDeadline(t *testing.T) {
+	c := New("/x", func(ctx context.Context, name string, args []string, stdin string, env []string) (Result, error) {
+		return runExec(ctx, "/bin/sh", []string{"-c", "exec sleep 5"}, "", env)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	res, err := c.Run(ctx, Call{Command: "dxberry-status", Args: []string{"--json"}})
+	if took := time.Since(start); err != nil || res.Exit == 0 || !strings.Contains(res.Stderr, "[timed out]") || took > 2*time.Second {
+		t.Fatalf("got %+v %v after %v", res, err, took)
+	}
+	// a later caller deadline does not stretch the call's own timeout
+	c.Timeout = 200 * time.Millisecond
+	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel2()
+	start = time.Now()
+	if res, _ := c.Run(ctx2, Call{Command: "dxberry-status", Args: []string{"--json"}}); res.Exit == 0 || time.Since(start) > 2*time.Second {
+		t.Fatalf("got %+v after %v", res, time.Since(start))
+	}
+}
+
 func TestCLIBackgroundChildKeepsRealExit(t *testing.T) {
 	c := New("/x", func(ctx context.Context, name string, args []string, stdin string, env []string) (Result, error) {
 		return runExec(ctx, "/bin/sh", []string{"-c", "sleep 4 & exit 3"}, "", env)
