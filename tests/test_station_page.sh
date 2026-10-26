@@ -603,6 +603,25 @@ test_ptt_quick_tap_sends_the_off_at_once() {
   assert_eq "$(jq -c '.posts' <<< "$j")" '["on","off","off"]'
   assert_eq "$(jq -r '"\(.labelAfter) \(.hbTimers)"' <<< "$j")" "PTT 0"
   assert_eq "$(jq -c '[.tx[] | select(. == true)]' <<< "$j")" '[]'
+  assert_eq "$(jq -c '.notices' <<< "$j")" '[]'
+}
+
+# rc3 fix-wave round 2 (R2-1): the station answers that quick tap's on with "PTT was stopped:
+# released" (the off the page sent at the release ended the window). The operator let go on
+# purpose, so the page says nothing; the posts and the unkeyed microphone are as for any quick tap
+test_ptt_quick_tap_refused_as_released_shows_no_notice() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(spt_run quicktaprefused 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -c '.notices' <<< "$j")" '[]'
+  assert_eq "$(jq -c '.atRelease' <<< "$j")" '["on","off"]'
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["on","off","off"]'
+  assert_eq "$(jq -r '"\(.labelAfter) \(.hbTimers)"' <<< "$j")" "PTT 0"
+  assert_eq "$(jq -c '[.tx[] | select(. == true)]' <<< "$j")" '[]'
+  # every other reason the station gives for refusing that on still shows, release or not
+  j=$(spt_run quicktapother 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -c '.notices' <<< "$j")" '["bad: PTT was stopped: audio lost. Press PTT again."]'
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["on","off","off"]'
+  assert_eq "$(jq -r '"\(.labelAfter) \(.hbTimers)"' <<< "$j")" "PTT 0"
 }
 
 test_ptt_heartbeat_every_5s() {

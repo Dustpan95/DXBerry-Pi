@@ -3,7 +3,8 @@
 // Run: node tests/station_ptt.js station/web SCENARIO
 //   scenarios: release (each release event, the heartbeat), notowner, noaudio, refused, dropped,
 //   stale, hbrefused, rebuild, pendingmic, docrelease, txthrows (audio.js's setTX throws),
-//   quicktap (released while the station still holds the on)
+//   quicktap (released while the station still holds the on), quicktaprefused (the same tap, the
+//   on then refused "released"), quicktapother (the same tap, the on refused for another reason)
 "use strict";
 const fs = require("fs");
 const vm = require("vm");
@@ -76,7 +77,11 @@ const fetch = (url, opts) => {
     }
     if (scenario === "hbrefused" && b.hb) return reply(200, { ok: false, reason: "PTT is not on", fix: "press PTT again" });
     // quicktap: the station holds the on (it waits for the browser's first microphone packet)
-    if (scenario === "quicktap" && b.on) return new Promise((r) => { onAnswer = () => r({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, window: ++windows }) }); });
+    // the answer is the window (quicktap) or the station's refusal of a window ended while it opened
+    const held = { quicktap: () => ({ ok: true, window: ++windows }),
+      quicktaprefused: () => ({ ok: false, reason: "PTT was stopped: released", fix: "press PTT again" }),
+      quicktapother: () => ({ ok: false, reason: "PTT was stopped: audio lost", fix: "press PTT again" }) }[scenario];
+    if (held && b.on) return new Promise((r) => { onAnswer = () => r({ ok: true, status: 200, json: () => Promise.resolve(held()) }); });
     if (b.on) return reply(200, { ok: true, window: ++windows });
   }
   return reply(200, { ok: true });
@@ -251,9 +256,11 @@ function release(kind) {
     console.log(JSON.stringify(out));
     return;
   }
-  if (scenario === "quicktap") {
+  if (scenario.startsWith("quicktap")) {
     // a tap released while the station still holds the on: the off goes at once (the station
-    // ends a window that is still opening, before it keys the radio), and again after the answer
+    // ends a window that is still opening, before it keys the radio), and again after the answer.
+    // The refused variants answer the on with the station's refusal; the notices show what the
+    // operator is told (nothing for their own release).
     const since = await press();
     out.pending = posts.slice();
     out.labelPending = button().textContent;
@@ -266,6 +273,7 @@ function release(kind) {
     out.labelAfter = button().textContent;
     out.hbTimers = heartbeats(since).filter(([, t]) => !t.cleared).length;
     out.tx = audioCalls.tx;
+    out.notices = ctx.notices;
     console.log(JSON.stringify(out));
     return;
   }

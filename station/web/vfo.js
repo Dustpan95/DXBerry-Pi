@@ -767,6 +767,9 @@
   // a program taking the sound card): nothing to tell the operator off for
   const STOPPED_REASON = "Audio was stopped.";
   const stoppedHere = (r) => !!r && r.reason === STOPPED_REASON;
+  // the station's refusal of an on whose window the page's own release ended while it opened
+  // (ptt.go: "PTT was stopped: " + the release's reason): the operator let go on purpose
+  const RELEASED_REFUSAL = "PTT was stopped: released";
 
   // micTX ON: audio.js's microphone and duck for a hold. Its trouble (a Web Audio write that
   // throws) must not keep a hold's heartbeat from starting or its off from going.
@@ -826,7 +829,9 @@
       return pttPost({ on: true }).then((res) => {
         hold.answered = true;
         if (!(res && res.ok)) {
-          say(failText(res || {}), "bad");
+          // (a hold the operator already let go of is not told off for it; every other refusal,
+          // for any other reason, shows)
+          if (!(hold.ended && res && res.reason === RELEASED_REFUSAL)) say(failText(res || {}), "bad");
           holdEnd(hold);
           return true;
         }
