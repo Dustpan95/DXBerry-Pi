@@ -519,6 +519,37 @@ func TestClientLogsLinkChangesOncePerStreak(t *testing.T) {
 		},
 	})
 	defer c.Close()
+	// arm sets what the sleeper holds on; it is always set before the event it waits for can
+	// happen (before the pump starts, before the server's mode flips), so no sleep slips past
+	arm := func(cond func() bool) {
+		if cond == nil {
+			holdWhen.Store(nil)
+			return
+		}
+		holdWhen.Store(&cond)
+	}
+	await := func(what string) {
+		t.Helper()
+		select {
+		case <-holding:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("never: %s\n%s", what, logs.String())
+		}
+	}
+	resume := func() { release <- struct{}{} }
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for !ok() {
+			if time.Now().After(deadline) {
+				t.Fatalf("never: %s\n%s", what, logs.String())
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+
+	// connections that never answer: one line when the streak starts, one 5 minutes later
+	arm(func() bool { return logs.count("rigctld still down") >= 1 })
 	// a poller's worth of commands: every connection gets one and fails (or answers)
 	pumpCtx, stopPump := context.WithCancel(context.Background())
 	pumped := make(chan struct{})
@@ -530,50 +561,32 @@ func TestClientLogsLinkChangesOncePerStreak(t *testing.T) {
 		}
 	}()
 	defer func() { stopPump(); <-pumped }()
-	holdUntil := func(what string, cond func() bool) {
-		t.Helper()
-		holdWhen.Store(&cond)
-		select {
-		case <-holding:
-		case <-time.After(10 * time.Second):
-			t.Fatalf("never: %s\n%s", what, logs.String())
-		}
-	}
-	resume := func() { holdWhen.Store(nil); release <- struct{}{} }
-
-	// connections that never answer: one line when the streak starts, one 5 minutes later
-	holdUntil("still down", func() bool { return logs.count("rigctld still down") >= 1 })
+	await("still down")
 	if a, b, d, s := logs.count("rigctld connected"), logs.count("rigctld disconnected"), logs.count("rigctld not answering"), logs.count("rigctld still down"); a != 0 || b != 0 || d != 1 || s != 1 {
 		t.Fatalf("connected %d disconnected %d not answering %d still down %d:\n%s", a, b, d, s, logs.String())
 	}
 	if n := logs.count("rigctld connection reset"); n != 0 {
 		t.Fatalf("%d connection reset lines for a link that never answered", n)
 	}
-	// the radio answers, then drops: one connected and one disconnected line
+	// the radio answers (a link that answers never sleeps: no hold), then drops
+	arm(nil)
 	mode.Store(1)
 	resume()
-	waitFor := func(what string, ok func() bool) {
-		t.Helper()
-		deadline := time.Now().Add(10 * time.Second)
-		for !ok() {
-			if time.Now().After(deadline) {
-				t.Fatalf("never: %s\n%s", what, logs.String())
-			}
-			time.Sleep(2 * time.Millisecond)
-		}
-	}
 	waitFor("connected", func() bool { return logs.count("rigctld connected") == 1 })
+	arm(func() bool { return logs.count("rigctld disconnected") >= 1 })
 	mode.Store(0)
-	holdUntil("disconnected", func() bool { return logs.count("rigctld disconnected") >= 1 })
+	await("disconnected")
 	if a, b, s := logs.count("rigctld connected"), logs.count("rigctld disconnected"), logs.count("rigctld still down"); a != 1 || b != 1 || s != 1 {
 		t.Fatalf("connected %d disconnected %d still down %d:\n%s", a, b, s, logs.String())
 	}
 	// a new streak after the drop: dead connections are quiet until 5 minutes have passed
+	arm(func() bool { return logs.count("rigctld still down") >= 2 })
 	resume()
-	holdUntil("still down after the drop", func() bool { return logs.count("rigctld still down") >= 2 })
-	if a, b, d := logs.count("rigctld connected"), logs.count("rigctld disconnected"), logs.count("rigctld not answering"); a != 1 || b != 1 || d != 1 {
-		t.Fatalf("connected %d disconnected %d not answering %d:\n%s", a, b, d, logs.String())
+	await("still down after the drop")
+	if a, b, d, s := logs.count("rigctld connected"), logs.count("rigctld disconnected"), logs.count("rigctld not answering"), logs.count("rigctld still down"); a != 1 || b != 1 || d != 1 || s != 2 {
+		t.Fatalf("connected %d disconnected %d not answering %d still down %d:\n%s", a, b, d, s, logs.String())
 	}
+	arm(nil)
 	resume()
 }
 
