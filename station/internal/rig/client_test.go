@@ -469,16 +469,18 @@ type logBuf struct {
 }
 
 func (l *logBuf) Write(p []byte) (int, error) { l.mu.Lock(); defer l.mu.Unlock(); return l.b.Write(p) }
-func (l *logBuf) count(msg string) int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return strings.Count(l.b.String(), "msg=\""+msg+"\"")
-}
+func (l *logBuf) String() string              { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
+func (l *logBuf) count(msg string) int        { return strings.Count(l.String(), "msg=\""+msg+"\"") }
 
 // A link that keeps failing is logged once when the streak starts and then every 5 minutes;
 // connected and disconnected are logged once per change of a link that answers.
+//
+// The link log's clock only moves when the client sleeps out its backoff (the sleeper adds the
+// backoff to it), so the 5-minute cadence depends on the client's own loop, not on scheduling.
+// The client logs a failure and then sleeps, so a sleeper that holds once the line the test waits
+// for is in the log freezes the counts while the test reads them.
 func TestClientLogsLinkChangesOncePerStreak(t *testing.T) {
-	var mode atomic.Int32 // 0: accept and hang up at once, 1: answer, 2: hang up on a command
+	var mode atomic.Int32 // 0: hang up on every command, 1: answer
 	f := newFake(t, func(n int, line string, w net.Conn) bool {
 		if mode.Load() == 1 {
 			return freqHandler(n, line, w)
@@ -490,59 +492,89 @@ func TestClientLogsLinkChangesOncePerStreak(t *testing.T) {
 		t time.Time
 	}
 	clk.t = time.Unix(1_700_000_000, 0)
-	now := func() time.Time { clk.Lock(); defer clk.Unlock(); return clk.t }
-	advance := func(d time.Duration) { clk.Lock(); clk.t = clk.t.Add(d); clk.Unlock() }
 	logs := &logBuf{}
+	var holdWhen atomic.Pointer[func() bool] // the sleeper holds while this says so
+	release := make(chan struct{})
+	holding := make(chan struct{}) // the sleeper says so each time it starts to hold
 	c := dial(f.addr(), slog.New(slog.NewTextHandler(logs, nil)), options{
 		cmdTimeout: 300 * time.Millisecond,
-		sleep:      func(ctx context.Context, d time.Duration) error { return sleepCtx(ctx, time.Millisecond) },
-		now:        now,
+		now:        func() time.Time { clk.Lock(); defer clk.Unlock(); return clk.t },
+		sleep: func(ctx context.Context, d time.Duration) error {
+			if fn := holdWhen.Load(); fn != nil && (*fn)() {
+				select {
+				case holding <- struct{}{}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			clk.Lock()
+			clk.t = clk.t.Add(d)
+			clk.Unlock()
+			return sleepCtx(ctx, time.Millisecond)
+		},
 	})
 	defer c.Close()
-	// one Do per minute, each on a fresh connection that never answers
-	fail := func(minutes int) {
-		for i := 0; i < minutes; i++ {
-			advance(time.Minute)
-			for { // ErrNotConnected: the Do reached the old, dead connection; try the next one
-				waitConnected(t, c)
-				_, err := c.Do(ctx5(t), "get_freq")
-				if err == nil {
-					t.Fatal("answered")
-				}
-				if !errors.Is(err, ErrNotConnected) {
-					break
-				}
-				time.Sleep(time.Millisecond)
-			}
+	// a poller's worth of commands: every connection gets one and fails (or answers)
+	pumpCtx, stopPump := context.WithCancel(context.Background())
+	pumped := make(chan struct{})
+	go func() {
+		defer close(pumped)
+		for pumpCtx.Err() == nil {
+			c.Do(pumpCtx, "get_freq")
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	defer func() { stopPump(); <-pumped }()
+	holdUntil := func(what string, cond func() bool) {
+		t.Helper()
+		holdWhen.Store(&cond)
+		select {
+		case <-holding:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("never: %s\n%s", what, logs.String())
 		}
 	}
-	fail(7)
+	resume := func() { holdWhen.Store(nil); release <- struct{}{} }
+
+	// connections that never answer: one line when the streak starts, one 5 minutes later
+	holdUntil("still down", func() bool { return logs.count("rigctld still down") >= 1 })
 	if a, b, d, s := logs.count("rigctld connected"), logs.count("rigctld disconnected"), logs.count("rigctld not answering"), logs.count("rigctld still down"); a != 0 || b != 0 || d != 1 || s != 1 {
-		t.Fatalf("connected %d disconnected %d not answering %d still down %d:\n%s", a, b, d, s, logs.b.String())
+		t.Fatalf("connected %d disconnected %d not answering %d still down %d:\n%s", a, b, d, s, logs.String())
 	}
 	if n := logs.count("rigctld connection reset"); n != 0 {
 		t.Fatalf("%d connection reset lines for a link that never answered", n)
 	}
+	// the radio answers, then drops: one connected and one disconnected line
 	mode.Store(1)
-	waitConnected(t, c)
-	for i := 0; ; i++ { // the current connection may be one of the dead ones: retry until answered
-		if _, err := c.Do(ctx5(t), "get_freq"); err == nil {
-			break
+	resume()
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for !ok() {
+			if time.Now().After(deadline) {
+				t.Fatalf("never: %s\n%s", what, logs.String())
+			}
+			time.Sleep(2 * time.Millisecond)
 		}
-		if i > 50 {
-			t.Fatal("never answered")
-		}
-		waitConnected(t, c)
 	}
-	mode.Store(2)
-	c.Do(ctx5(t), "get_freq")
-	fail(3)
-	if a, b := logs.count("rigctld connected"), logs.count("rigctld disconnected"); a != 1 || b != 1 {
-		t.Fatalf("connected %d disconnected %d:\n%s", a, b, logs.b.String())
+	waitFor("connected", func() bool { return logs.count("rigctld connected") == 1 })
+	mode.Store(0)
+	holdUntil("disconnected", func() bool { return logs.count("rigctld disconnected") >= 1 })
+	if a, b, s := logs.count("rigctld connected"), logs.count("rigctld disconnected"), logs.count("rigctld still down"); a != 1 || b != 1 || s != 1 {
+		t.Fatalf("connected %d disconnected %d still down %d:\n%s", a, b, s, logs.String())
 	}
-	if s := logs.count("rigctld still down"); s != 1 {
-		t.Fatalf("still down %d within 5 minutes of the disconnect", s)
+	// a new streak after the drop: dead connections are quiet until 5 minutes have passed
+	resume()
+	holdUntil("still down after the drop", func() bool { return logs.count("rigctld still down") >= 2 })
+	if a, b, d := logs.count("rigctld connected"), logs.count("rigctld disconnected"), logs.count("rigctld not answering"); a != 1 || b != 1 || d != 1 {
+		t.Fatalf("connected %d disconnected %d not answering %d:\n%s", a, b, d, logs.String())
 	}
+	resume()
 }
 
 func TestClientNoStaleCommandAfterReconnect(t *testing.T) {
