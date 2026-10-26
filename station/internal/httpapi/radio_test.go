@@ -286,3 +286,91 @@ func TestOwedUnkeyEndsWhenTheRadioLeavesTheRecords(t *testing.T) {
 		}
 	}
 }
+
+// shutdownRecorder is the HTTP server as StopService sees it; it notes what the radio had been
+// sent when Shutdown was called.
+type shutdownRecorder struct {
+	f      *rwRig
+	called bool
+	before []string
+}
+
+func (s *shutdownRecorder) Shutdown(ctx context.Context) error {
+	s.f.mu.Lock()
+	defer s.f.mu.Unlock()
+	s.called, s.before = true, append([]string{}, s.f.calls...)
+	return nil
+}
+
+func TestUnkeyAllOnShutdown(t *testing.T) {
+	f := &rwRig{st: rig.State{Connected: true, Mode: "FM", Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}
+	api := &RadioAPI{Auth: multiAuth{}, Radios: rwRecords{"radio1": {Name: "radio1", Port: 4532}}, Rigs: rwRigs{f}, Owners: session.NewOwners(realNow{}), Ctx: context.Background()}
+	h := New(Config{Listen: "127.0.0.1:0", Auth: multiAuth{}, Routes: api.Register}).Handler
+	hdr := map[string]string{TabHeader: "iPad#a1", "X-Test-Session": "s1"}
+	rwDo(h, "POST", "/api/radio/radio1/claim", `{}`, hdr)
+	if rec := rwDo(h, "POST", "/api/radio/radio1/tune", `{"on":true}`, hdr); !strings.Contains(rec.Body.String(), `"ok":true`) {
+		t.Fatalf("tune: %q", rec.Body.String())
+	}
+	srv := &shutdownRecorder{f: f}
+	start := time.Now()
+	StopService(srv, time.Second, api)
+	if !srv.called {
+		t.Fatal("the HTTP server was not shut down")
+	}
+	for _, c := range srv.before {
+		if c == "set_ptt 0" {
+			t.Fatalf("unkeyed before the server stopped taking intents: %v", srv.before)
+		}
+	}
+	f.mu.Lock()
+	calls := append([]string{}, f.calls...)
+	f.mu.Unlock()
+	if calls[len(calls)-1] != "set_ptt 0" {
+		t.Fatalf("the shutdown left the carrier keyed: %v", calls)
+	}
+	if time.Since(start) > UnkeyWithin+time.Second {
+		t.Fatalf("the shutdown took %v", time.Since(start))
+	}
+	n := len(calls)
+	StopService(&shutdownRecorder{f: f}, time.Second, api) // nothing is keyed now: nothing is sent
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.calls) != n {
+		t.Fatalf("a second shutdown sent %v", f.calls[n:])
+	}
+}
+
+// a radio that does not answer cannot hold the shutdown longer than UnkeyWithin
+type stuckRig struct{ rwRig }
+
+func (s *stuckRig) Write(ctx context.Context, fn func(rig.Commander) error, opt func(*rig.State)) error {
+	return fn(s)
+}
+func (s *stuckRig) Do(ctx context.Context, cmd string, args ...string) (rig.Reply, error) {
+	if cmd == "set_ptt" && args[0] == "0" {
+		<-ctx.Done()
+		return rig.Reply{}, ctx.Err()
+	}
+	return s.rwRig.Do(ctx, cmd, args...)
+}
+
+type stuckRigs struct{ w *stuckRig }
+
+func (r stuckRigs) Writer(n string) (rig.Writer, bool) { return r.w, n == "radio1" }
+func (r stuckRigs) Caps(n string) (rig.Caps, bool)     { return rwRigs{}.Caps(n) }
+
+func TestUnkeyAllIsBounded(t *testing.T) {
+	f := &stuckRig{rwRig{st: rig.State{Connected: true, Mode: "FM", Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}}
+	api := &RadioAPI{Auth: multiAuth{}, Radios: rwRecords{"radio1": {Name: "radio1", Port: 4532}}, Rigs: stuckRigs{f}, Owners: session.NewOwners(realNow{}), Ctx: context.Background()}
+	h := New(Config{Listen: "127.0.0.1:0", Auth: multiAuth{}, Routes: api.Register}).Handler
+	hdr := map[string]string{TabHeader: "iPad#a1", "X-Test-Session": "s1"}
+	rwDo(h, "POST", "/api/radio/radio1/claim", `{}`, hdr)
+	rwDo(h, "POST", "/api/radio/radio1/tune", `{"on":true}`, hdr)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	api.UnkeyAll(ctx)
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("UnkeyAll outlived its context: %v", d)
+	}
+}

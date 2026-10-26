@@ -466,6 +466,35 @@ func (in *Intents) Unkey() {
 	}
 }
 
+// Owed reports whether a carrier of ours may be up: keyed and not confirmed off, or an unkey
+// still owed.
+func (in *Intents) Owed() bool {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.keyed || in.pending
+}
+
+// UnkeyNow sends one set_ptt 0 within ctx when a carrier of ours may be up (the service is
+// stopping: no retry loop is left behind). It reports whether nothing is owed any more.
+func (in *Intents) UnkeyNow(ctx context.Context) bool {
+	in.endCarrier()
+	in.mu.Lock()
+	if !in.keyed && !in.pending {
+		in.mu.Unlock()
+		return true
+	}
+	in.pending = true
+	in.debt++
+	in.mu.Unlock()
+	res := in.attemptUnkey(ctx, "shutdown", true)
+	if res.OK && !in.Pending() {
+		in.log().Info("carrier unkeyed as the service stops", "radio", in.Radio)
+		return true
+	}
+	in.log().Warn("could not unkey as the service stops", "radio", in.Radio, "reason", res.Reason)
+	return false
+}
+
 // Pending reports whether an unkey is still owed to the radio.
 func (in *Intents) Pending() bool {
 	in.mu.Lock()

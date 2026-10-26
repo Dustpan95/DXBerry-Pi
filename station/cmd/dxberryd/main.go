@@ -145,9 +145,9 @@ func main() {
 	done := make(chan struct{})
 	go func() {
 		<-stop
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(ctx)
+		// no new intents first, then every carrier we keyed or owe is unkeyed (the rig layer
+		// still runs: statusCtx ends only when main returns)
+		httpapi.StopService(srv, 5*time.Second, radioAPI)
 		close(done)
 	}()
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {

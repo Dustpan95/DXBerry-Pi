@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"sync"
+	"time"
 
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/radios"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/rig"
@@ -61,6 +62,55 @@ type RadioAPI struct {
 
 	mu      sync.Mutex
 	intents map[string]*rig.Intents
+}
+
+// UnkeyWithin bounds the unkeys sent as the service stops.
+const UnkeyWithin = 3 * time.Second
+
+// Shutdowner is the HTTP server as StopService needs it (*http.Server).
+type Shutdowner interface {
+	Shutdown(ctx context.Context) error
+}
+
+// StopService is the service's stop: the HTTP server stops taking requests first (so no new
+// intent can key anything; it gets up to within), then every carrier the station keyed or
+// still owes an unkey is unkeyed, within UnkeyWithin. A keyed transmitter left with nobody
+// holding it is the worst state the station can leave.
+func StopService(srv Shutdowner, within time.Duration, a *RadioAPI) {
+	ctx, cancel := context.WithTimeout(context.Background(), within)
+	_ = srv.Shutdown(ctx)
+	cancel()
+	ctx, cancel = context.WithTimeout(context.Background(), UnkeyWithin)
+	defer cancel()
+	a.UnkeyAll(ctx)
+}
+
+// UnkeyAll sends one set_ptt 0, all radios at once, to every radio whose carrier may be up, and
+// returns when they have answered or ctx ends.
+func (a *RadioAPI) UnkeyAll(ctx context.Context) {
+	a.mu.Lock()
+	all := make([]*rig.Intents, 0, len(a.intents))
+	for _, in := range a.intents {
+		all = append(all, in)
+	}
+	a.mu.Unlock()
+	var wg sync.WaitGroup
+	for _, in := range all {
+		if !in.Owed() {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			in.UnkeyNow(ctx)
+		}()
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 // dynWriter resolves the radio's poller on every call, so a reconnected or replaced poller is
