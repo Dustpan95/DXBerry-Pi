@@ -141,6 +141,34 @@ be reached; fldigi follows the same choice unless you changed it inside fldigi. 
 on the DXBerry page. On the command line: `sudo dxberry-app list`, `sudo dxberry-app install fldigi`,
 and `sudo dxberry-logbook get`.
 
+## Release notes for 0.5.0-rc3
+
+- **Browser audio:** every radio page has a speaker. Listening works on any tab, for any logged-in user
+  (Opus over WebRTC, one stream per tab). Nothing is recorded or stored.
+- **Hold-to-talk PTT** for the radio's transmitter owner. The microphone is asked for on the first press
+  only. The page sends a heartbeat every 5 seconds, and PTT drops after 7 seconds without one, at the
+  radio's PTT timeout (from the per-radio settings, 180 seconds by default), when the owner's tab
+  closes, on **STOP** from any tab, and on an SWR trip. The SWR limit from the per-radio settings is
+  enforced where the radio can read SWR: three readings in a row over the limit unkey the radio and
+  latch until you change band, tune the ATU, or confirm an override. VOX and "none" radios are never
+  keyed by the page.
+- **Phones need the station's certificate trusted.** A browser only hands out the microphone on a page
+  it trusts: with the self-signed certificate still untrusted, listening may work but the microphone
+  is refused. Install the station's certificate on the phone (or use a browser that accepts it) before
+  using PTT.
+- **WSJT-X, flrig and Pat take the sound card.** While one of them runs there is no browser audio for
+  that radio, and the page says which program has it. JS8Call, fldigi and QSSTV share the card with
+  the browser.
+- **Firewalls:** audio uses UDP ports 50000 to 50199 on the LAN, host addresses only (no STUN or TURN,
+  so no internet is involved). Allow that range between your phone or computer and the Pi.
+- **Two radios at once** each get their own sound server and their own audio stream.
+- **Tune** still works only in FM and AM (since rc2).
+- **An update restarts any running program windows once;** they come back within seconds.
+- **Not yet checked on hardware:** audio quality and latency, the microphone path to a real radio, and
+  the SWR guard against a real mismatch. These are verified before the final 0.5.0 release.
+- **Known gap:** iPhones ignore the page's volume setting for an audio element, so received audio is
+  not turned down while you talk on an iPhone.
+
 ## Release notes for 0.5.0-rc2
 
 - **A live VFO page for each radio:** frequency readout and dial, bands, modes, filter, levels, S-meter

@@ -173,6 +173,16 @@ provision_station() {
     _dxb_apps_apt install -y --no-install-recommends libpam-runtime > /dev/null 2>&1 \
       || dxb_step_failed station "could not install libpam-runtime"
   fi
+  # the browser audio's runtime: Opus (the app links libopus), the sound server the audio unit
+  # runs, and its parec/pacat/pactl tools. Installed only when missing
+  local -a audio_missing=()
+  for name in libopus0 pulseaudio pulseaudio-utils; do
+    [[ -n $(_dxb_apps_dpkg_version "$name") ]] || audio_missing+=("$name")
+  done
+  if (( ${#audio_missing[@]} )); then
+    _dxb_apps_apt install -y --no-install-recommends "${audio_missing[@]}" > /dev/null 2>&1 \
+      || dxb_step_failed station "could not install ${audio_missing[*]} (browser audio needs them)"
+  fi
   if ! { mkdir -p "$DXB_STATION_TLS" && chmod 700 "$DXB_STATION_TLS"; }; then dxb_step_failed station "could not create $DXB_STATION_TLS"; fi
   _dxb_station_write "$DXB_PAM_DIR/dxberry" pam-dxberry; rc=$?
   _dxb_station_write "$DXB_SYSTEMD_DIR/$DXB_STATION_UNIT" dxberryd.service; rc=$?

@@ -23,7 +23,7 @@ sn_env() {
   : > "$DXB_NGINX_DIR/sites-enabled/default"
   printf '#!/bin/sh\necho 0.5.0-rc1\n' > "$DXB_STATION_BIN"; chmod 755 "$DXB_STATION_BIN"
   echo cert > "$DXB_STATION_TLS/station.crt"; echo key > "$DXB_STATION_TLS/station.key"
-  AP_INSTALLED='nginx libpam-runtime'
+  AP_INSTALLED='nginx libpam-runtime libopus0 pulseaudio pulseaudio-utils'
   # the network undo's boot unit is in place already (its own install reloads systemd when it writes it)
   cp "$DXB_TEMPLATES/dxberry-config-boot.service" "$DXB_NETSAFE_UNIT_FILE"
   DXB_STATUS_LINES=(); DXB_FAILED_STEPS=(); DXB_CFG=([_IP]=10.0.0.90)
@@ -174,6 +174,33 @@ test_station_installs_nginx_and_pam_only_when_missing() {
   sn_env
   sn_run
   assert_not_contains "$(sn_calls)" "apt-get"
+}
+
+test_station_installs_the_audio_runtime_only_when_missing() {
+  sn_env
+  AP_INSTALLED='nginx libpam-runtime pulseaudio'
+  sn_run
+  assert_eq "$(cat "$TEST_TMP/failed")" ""
+  assert_contains "$(sn_calls)" "apt-get install -y --no-install-recommends libopus0 pulseaudio-utils"
+  assert_not_contains "$(sn_calls)" "recommends libopus0 pulseaudio "
+  sn_env
+  sn_run
+  assert_not_contains "$(sn_calls)" "apt-get"
+  # a failed install is a failed step named station, and the run goes on
+  sn_env
+  AP_INSTALLED='nginx libpam-runtime'
+  echo libopus0 > "$TEST_TMP/apt-fail-on"
+  sn_run
+  assert_contains "$(cat "$TEST_TMP/failed")" "libopus0 pulseaudio pulseaudio-utils"
+  assert_contains "$(cat "$TEST_TMP/status")" "station: https://"
+}
+
+test_boot_overrides_install_the_audio_runtime() {
+  local line
+  line=$(grep '^AUTO_SETUP_APT_INSTALLS=' "$DXB_ROOT/boot/dietpi.overrides.txt")
+  assert_contains "$line" " libopus0 "
+  assert_contains "$line" " pulseaudio "
+  assert_contains "$line" " pulseaudio-utils"
 }
 
 test_station_unmasks_logind_and_always_starts_it() {
