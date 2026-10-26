@@ -31,7 +31,9 @@ func trip(t *testing.T, g *SWRGuard, swr float64) {
 
 func TestSWRGuardNeedsThreeFrames(t *testing.T) {
 	g, _ := newLatch()
-	if g.Observe(5.8, true, false) != Quiet || g.Observe(5.8, true, false) != Quiet || g.Latched() {
+	first := g.Observe(5.8, true, false)
+	second := g.Observe(5.8, true, false)
+	if first != Quiet || second != Quiet || g.Latched() {
 		t.Fatal("tripped before three reads")
 	}
 	if g.Observe(2.0, true, false) != Quiet { // a good read starts the count again
