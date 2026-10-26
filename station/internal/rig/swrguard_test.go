@@ -319,6 +319,8 @@ func TestSWRGuardClearsAfterATUWindowWithGoodMatch(t *testing.T) {
 	waitFor(t, "ATU timer", func() bool { return len(h.clock.waiters) > 0 })
 	h.clock.Advance(ATUWindow)
 	waitFor(t, "cleared", func() bool { _, l, _ := h.gd.View(); return !l })
+	// the latch clears first and the notice follows (a tab hears it a moment late, never early)
+	waitFor(t, "clear notice", func() bool { return len(h.noteLog()) >= 2 })
 	notes := h.noteLog()
 	if last := notes[len(notes)-1]; last != `{"type":"guard","radio":"radio1","latched":false,"reason":"ATU tuned to 1.4:1"}` {
 		t.Fatalf("notice %s", last)
