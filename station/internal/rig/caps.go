@@ -224,10 +224,10 @@ const capsMaxAge = 7 * 24 * time.Hour
 
 var modelRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 
-// CapsCache keeps one JSON file per radio model under Dir. The key is the
-// Hamlib model number as a string ("3073"), stored as caps-<model>.json (the
-// station uses <state dir>/rigcaps/). The caller loads before Discover and
-// stores after.
+// CapsCache keeps one JSON file per radio model under Dir. The key is CapsKey:
+// the Hamlib model number as a string ("3073"), or "flrig-3073" for a radio
+// flrig controls, stored as caps-<key>.json (the station uses
+// <state dir>/rigcaps/). The caller loads before Discover and stores after.
 type CapsCache struct{ Dir string }
 
 func (cc CapsCache) path(model string) (string, bool) {
