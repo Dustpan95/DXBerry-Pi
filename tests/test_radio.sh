@@ -405,6 +405,20 @@ test_apply_stops_a_session_radios_sound_server_when_it_is_unplugged() (
   if grep -qx dxberry-audio@r1.service "$TEST_TMP/active"; then _fail "the old server still runs after the replug"; fi
 )
 
+# A release from Graywolf (any program that is not a session program) still running for other
+# radios: Graywolf lets go of the card (its restart, awaited) before the radio's server starts,
+# so the server does not lose the race for the card
+test_release_lets_the_program_settle_before_the_sound_server_starts() (
+  radio_env; ra_audio_env; fake_apps; two_radios
+  dxb_radio_apply > /dev/null
+  assert_ok dxb_radio_claim r1 alpha
+  assert_ok dxb_radio_claim r2 alpha
+  : > "$TEST_TMP/calls"; : > "$TEST_TMP/appcalls"
+  assert_ok dxb_radio_release r1
+  ra_before "systemctl try-restart alpha.service" "systemctl --no-block start dxberry-audio@r1.service"
+  assert_contains "$(appcalls)" "alpha ready"
+)
+
 # An update's apply runs before the setup installs the unit: nothing is asked of a unit that is
 # not there yet (provision_station syncs the servers once it has installed it)
 test_apply_leaves_the_sound_server_alone_until_its_unit_is_installed() (

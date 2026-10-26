@@ -630,7 +630,7 @@ dxb_audio_sync() {
   if (( present )) && [[ $kind == none && $audio == true ]]; then
     "$sc" is-active --quiet "$u" 2> /dev/null < /dev/null && return 0
     "$sc" reset-failed "$u" > /dev/null 2>&1 < /dev/null
-    if "$sc" --no-block start "$u" > /dev/null 2>&1 < /dev/null; then dxb_info "radio $n: sound server started ($u)"
+    if "$sc" --no-block start "$u" > /dev/null 2>&1 < /dev/null; then dxb_info "radio $n: sound server start queued (journalctl -u $u)"
     else dxb_warn "radio $n: could not start $u; the browser has no audio for it"; fi
     return 0
   fi
@@ -1023,7 +1023,9 @@ dxb_radio_release() {
   kind=$(dxb_radio_owner_kind "$name")
   _dxb_radio_let_go "$name" "$cur" || return 6
   [[ $kind == session ]] && _dxb_radio_rigctld_for "$name" none
-  # unowned now: the radio's sound server runs again (no apply runs here)
+  # unowned now: the radio's sound server runs again (no apply runs here), once a program still
+  # running for other radios (Graywolf) has let go of the card: its unwire only queued a restart
+  [[ $kind == session ]] || _dxb_radio_settle "$name" "$cur"
   local present=0
   dxb_radio_present "$name" && present=1
   dxb_audio_sync "$name" "$present"
