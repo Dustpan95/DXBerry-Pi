@@ -218,3 +218,42 @@ func TestSocketRefcountReleasesOnLastClose(t *testing.T) {
 		t.Fatalf("OnDrop calls: %v", dropped)
 	}
 }
+
+// With no answer yet (the first probe after a start fails), the radio's owner program is taken
+// to hold it until a probe succeeds; a failure after an answer keeps that answer.
+func TestProgramHolderHeldWhenNoProbeHasAnswered(t *testing.T) {
+	list := []radios.Radio{{Name: "radio1", Owner: "wsjtx"}}
+	fail, held := true, false
+	probe := func(ctx context.Context, s string) (bool, string, error) {
+		if fail {
+			return false, "", errors.New("timeout")
+		}
+		return held, "WSJT-X", nil
+	}
+	p := NewPrograms(func() []radios.Radio { return list }, probe)
+	o := NewOwners(newClock())
+	o.SetPrograms(p)
+	p.Refresh(context.Background())
+	h, ok := o.Holder("radio1")
+	if !ok || h != (Holder{Kind: "program", ID: "wsjtx", Label: "wsjtx"}) {
+		t.Fatalf("holder with no answer: %+v %v", h, ok)
+	}
+	if err := o.Claim("radio1", tab("a")); !errors.Is(err, ErrProgramOwns) {
+		t.Fatalf("claimed with no answer: %v", err)
+	}
+	p.Refresh(context.Background()) // still failing
+	if err := o.Claim("radio1", tab("a")); !errors.Is(err, ErrProgramOwns) {
+		t.Fatalf("claimed on the second failure: %v", err)
+	}
+	fail = false // the program is not running
+	p.Refresh(context.Background())
+	if err := o.Claim("radio1", tab("a")); err != nil {
+		t.Fatalf("free after an answer: %v", err)
+	}
+	o.Release("radio1", "a")
+	fail = true // a failure after the answer "free" keeps it
+	p.Refresh(context.Background())
+	if _, ok := o.Holder("radio1"); ok {
+		t.Fatal("a failure after an answer changed it")
+	}
+}

@@ -249,21 +249,25 @@ type Programs struct {
 	list  func() []radios.Radio
 	probe Probe
 
-	mu      sync.Mutex
-	holders map[string]Holder
-	failing map[string]bool // radios whose last probe failed (logged once per streak)
+	mu       sync.Mutex
+	holders  map[string]Holder
+	failing  map[string]bool // radios whose last probe failed (logged once per streak)
+	answered map[string]bool // radios a probe has answered for (held or free)
 }
 
 // NewPrograms returns a source that has not looked yet; Refresh or Run fills it.
 func NewPrograms(list func() []radios.Radio, probe Probe) *Programs {
-	return &Programs{list: list, probe: probe, holders: map[string]Holder{}, failing: map[string]bool{}}
+	return &Programs{list: list, probe: probe, holders: map[string]Holder{}, failing: map[string]bool{}, answered: map[string]bool{}}
 }
 
 // Refresh asks about every radio that has an owner and keeps the answers. When a probe cannot
-// tell, the radio keeps the holder it had: a transient failure must not free a transmitter.
+// tell, the radio keeps the answer it had: a transient failure must not free a transmitter. With
+// no answer yet (the first probe after a start fails) the radio's owner program is taken to hold
+// it until a probe succeeds: failing closed.
 func (p *Programs) Refresh(ctx context.Context) {
 	next := map[string]Holder{}
 	failing := map[string]bool{}
+	answered := map[string]bool{}
 	for _, r := range p.list() {
 		if r.Owner == "" {
 			continue
@@ -273,16 +277,22 @@ func (p *Programs) Refresh(ctx context.Context) {
 			failing[r.Name] = true
 			p.mu.Lock()
 			prev, had := p.holders[r.Name]
+			known := p.answered[r.Name]
 			again := p.failing[r.Name]
 			p.mu.Unlock()
 			if !again {
-				slog.Error("could not tell whether a program holds a radio; keeping the last answer", "radio", r.Name, "owner", r.Owner, "error", err, "kept", had)
+				slog.Error("could not tell whether a program holds a radio; keeping the last answer", "radio", r.Name, "owner", r.Owner, "error", err, "kept", had, "answered_before", known)
 			}
-			if had {
+			switch {
+			case had:
 				next[r.Name] = prev
+			case !known:
+				next[r.Name] = Holder{Kind: "program", ID: r.Owner, Label: r.Owner}
 			}
+			answered[r.Name] = known
 			continue
 		}
+		answered[r.Name] = true
 		if held {
 			if label == "" {
 				label = r.Owner
@@ -291,7 +301,7 @@ func (p *Programs) Refresh(ctx context.Context) {
 		}
 	}
 	p.mu.Lock()
-	p.holders, p.failing = next, failing
+	p.holders, p.failing, p.answered = next, failing, answered
 	p.mu.Unlock()
 }
 
