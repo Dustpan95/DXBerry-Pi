@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/audio"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/auth"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/cli"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/httpapi"
@@ -34,6 +35,13 @@ type wallClock struct{}
 
 func (wallClock) Now() time.Time { return time.Now() }
 
+// audioBridge is an audio.Bridge as the signalling socket takes it.
+type audioBridge struct{ *audio.Bridge }
+
+func (b audioBridge) AddICECandidate(tab string, c httpapi.ICECandidate) error {
+	return b.Bridge.AddICECandidate(tab, audio.Candidate(c))
+}
+
 // version is set at build time (-X main.version=...).
 var version = "dev"
 
@@ -45,6 +53,7 @@ func main() {
 	screens := flag.String("screens", "/run/dxberry/screens", "directory of the program windows' unix sockets")
 	rigCaps := flag.String("rigcaps", "", "radio capability cache directory (default <state>/rigcaps)")
 	radiosPath := flag.String("radios", "/var/lib/dxberry/radios.json", "radio records file")
+	audioRun := flag.String("audio-run", audio.DefaultRunDir, "directory of the radios' sound server sockets")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -95,6 +104,12 @@ func main() {
 		owners.SocketOpened(id)
 		return func() { owners.SocketClosed(id) }
 	})
+	// browser audio: one WebRTC bridge per radio on the radio's sound server
+	audioCtl := audio.NewServerControl(runner, *audioRun)
+	audioCtl.Radios = rw
+	bridges := audio.NewBridges(audioCtl, audio.DefaultPorts, slog.Default())
+	audioAPI := &httpapi.AudioAPI{Auth: mgr, Radios: rw, Available: audioCtl.Available, Alive: mgr.Alive,
+		Bridge: func(radio string) (httpapi.AudioBridge, bool) { return audioBridge{bridges.Get(radio)}, true }}
 	runner.OnCall = func(cmd string, args []string) {
 		if status.ChangesState(cmd, args) {
 			st.Poke()
@@ -107,6 +122,7 @@ func main() {
 		st.Register(mux, mgr.Alive)
 		radioAPI.Register(mux)
 		radioSettings.Register(mux)
+		audioAPI.Register(mux)
 		sessionOf := func(r *http.Request) *httpapi.Session {
 			s, _ := mgr.Session(r)
 			return s
@@ -151,6 +167,7 @@ func main() {
 		// no new intents first, then every carrier we keyed or owe is unkeyed (the rig layer
 		// still runs: statusCtx ends only when main returns)
 		httpapi.StopService(srv, 5*time.Second, radioAPI)
+		bridges.Shutdown()
 		close(done)
 	}()
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {

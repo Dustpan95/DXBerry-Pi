@@ -147,7 +147,7 @@ test_station_dashboard_opens_programs_on_the_screen_page() {
 test_station_index_loads_the_page_scripts_in_order() {
   local got
   got=$(grep -oE '<script src="[^"]+"' "$SP_WEB/index.html" | grep -oE '/[a-z.]+' | tr '\n' ' ')
-  assert_eq "$got" "/app.js /dxberry.js /settings.js /updates.js /dashboard.js /programs.js /vfo.js /radiosettings.js "
+  assert_eq "$got" "/app.js /dxberry.js /settings.js /updates.js /dashboard.js /programs.js /audio.js /vfo.js /radiosettings.js "
 }
 
 test_station_pages_parse_together() {
@@ -470,4 +470,75 @@ test_vfo_page_no_cat_and_unknown_radio() {
   j=$(svf_page missing 2> "$TEST_TMP/p.err") || { _fail "station_vfo_page.js failed: $(cat "$TEST_TMP/p.err")"; return; }
   assert_eq "$(jq -r '.missing' <<< "$j")" "true"
   assert_eq "$(jq -r '.stopCount' <<< "$j")" "0"
+}
+
+# ---- browser audio: audio.js over a fake RTCPeerConnection, WebSocket and getUserMedia ----
+# sau_run: what audio.js did in tests/station_audio.js's scenario, as JSON
+sau_run() { node "$DXB_ROOT/tests/station_audio.js" "$SP_WEB/audio.js"; }
+
+test_station_audio_signalling_messages() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sau_run 2> "$TEST_TMP/sau.err") || { _fail "station_audio.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -c '.api' <<< "$j")" '["listen","openMic","setTX","stop"]'
+  assert_eq "$(jq -r '.socketUrl' <<< "$j")" "wss://pi.local/api/audio/ic7300/signal?tab=iPhone%23tab-1"
+  # no ICE servers; one audio transceiver both ways, so the mic joins later without renegotiating
+  assert_eq "$(jq -c '.pcConfig' <<< "$j")" '{"iceServers":[]}'
+  assert_eq "$(jq -c '.transceiver' <<< "$j")" '[["audio","sendrecv"]]'
+  # the offer first; a candidate found before it waits, one after goes at once, the end marker not at all
+  assert_eq "$(jq -r '.sentBeforeOpen' <<< "$j")" "0"
+  assert_eq "$(jq -c '.sent' <<< "$j")" '[{"type":"offer","sdp":"OFFER-0"},{"type":"ice","candidate":{"candidate":"candidate:1 1 udp 1 10.0.0.9 5000 typ host","sdpMid":"0","sdpMLineIndex":0}},{"type":"ice","candidate":{"candidate":"candidate:2 1 udp 1 10.0.0.9 5001 typ host","sdpMid":"0","sdpMLineIndex":0}}]'
+  assert_eq "$(jq -c '.remote' <<< "$j")" '{"type":"answer","sdp":"ANSWER"}'
+  assert_eq "$(jq -c '.addedIce' <<< "$j")" '[{"candidate":"candidate:9 1 udp 1 10.0.0.2 50001 typ host","sdpMid":"0","sdpMLineIndex":0}]'
+  assert_eq "$(jq -c '.listened' <<< "$j")" '{"ok":true}'
+  # the element is started inside the tap and plays the radio's track when it arrives
+  assert_eq "$(jq -r '.playedInTap' <<< "$j")" "1"
+  assert_eq "$(jq -r '.audioAttached' <<< "$j")" "true"
+  assert_eq "$(jq -c '.playing' <<< "$j")" '["radio"]'
+  assert_eq "$(jq -c '.stopped.close' <<< "$j")" '{"type":"close"}'
+}
+
+test_station_audio_mic_only_on_first_press_and_duck() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sau_run 2> "$TEST_TMP/sau.err") || { _fail "station_audio.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -r '.gumBeforeMic' <<< "$j")" "0"
+  assert_eq "$(jq -c '.gum' <<< "$j")" '[{"audio":{"echoCancellation":false,"noiseSuppression":false,"autoGainControl":false}}]'
+  assert_eq "$(jq -c '.mic' <<< "$j")" '{"ok":true}'
+  assert_eq "$(jq -c '.micReplaced' <<< "$j")" '["mic"]'
+  assert_eq "$(jq -r '.micIdle' <<< "$j")" "false"
+  # 20 dB down is a tenth of the amplitude
+  assert_eq "$(jq -c '.duck' <<< "$j")" '{"db":20,"gain":0.1}'
+  assert_eq "$(jq -c '.tx' <<< "$j")" '{"mic":true,"volume":0.1}'
+  assert_eq "$(jq -c '.rx' <<< "$j")" '{"mic":false,"volume":1}'
+  assert_eq "$(jq -r '.volTXNoMic' <<< "$j")" "0.1"
+  assert_eq "$(jq -r '.stopped.mic' <<< "$j")" "true"
+}
+
+test_station_audio_lost_chip_reconnects() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sau_run 2> "$TEST_TMP/sau.err") || { _fail "station_audio.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -c '.lost' <<< "$j")" '{"chipShown":true,"chipText":"audio lost, tap to reconnect","chipTag":"button","chipType":"button","pcClosed":1,"closeSent":{"type":"close"},"socketClosed":1,"elRemoved":true}'
+  assert_eq "$(jq -r '.socketsAfterLost' <<< "$j")" "1"
+  assert_eq "$(jq -c '.reconnect' <<< "$j")" '{"chipHidden":true,"sockets":2,"url":"wss://pi.local/api/audio/ic7300/signal?tab=iPhone%23tab-1","mic":["mic"]}'
+}
+
+test_station_audio_refusals() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sau_run 2> "$TEST_TMP/sau.err") || { _fail "station_audio.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -c '.refused' <<< "$j")" '{"ok":false,"reason":"no sound server for ic7300: WSJT-X has the sound card","fix":"start the radio'"'"'s sound server or stop the program that holds the sound card"}'
+  assert_eq "$(jq -r '.refusedPC' <<< "$j")" "1"
+  assert_eq "$(jq -r '.refusedChip' <<< "$j")" "true"
+  assert_eq "$(jq -r '.closedEarly.reason' <<< "$j")" "The station could not be reached."
+  assert_eq "$(jq -r '.bad.reason' <<< "$j")" "no such radio"
+}
+
+test_station_audio_file_is_plain() {
+  local f=$SP_WEB/audio.js
+  assert_file_not_contains "$f" "innerHTML"
+  assert_file_not_contains "$f" "style"
+  assert_file_not_contains "$f" "fetch("
+  assert_file_not_contains "$f" "cockpit"
+  assert_file_contains "$f" "createTextNode(LOST_TEXT)"
+  assert_file_contains "$SP_WEB/index.html" '<script src="/audio.js"></script>'
+  command -v node > /dev/null 2>&1 || return 0
+  node --check "$f" 2> "$TEST_TMP/node.err" || _fail "audio.js does not parse: $(cat "$TEST_TMP/node.err")"
 }
