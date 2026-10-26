@@ -37,6 +37,8 @@
   // failed: the words for a request that did not come back as an answer.
   const failed = ex => (ex && ex.login ? "Your session has ended; log in again." : "Could not reach the station.");
 
+  const NO_GUARD = "no SWR guard: this radio does not report SWR over CAT";
+
   function section(name) {
     const base = "/api/radio/" + encodeURIComponent(name);
     const swr = numberField("rs-swr", "SWR limit", { min: "1.5", max: "10", step: "0.1", value: "3" },
@@ -48,10 +50,13 @@
     const save = node("button", { id: "rs-save", type: "button" }, "Save station settings");
     const probe = node("button", { id: "rs-reprobe", type: "button" }, "Re-probe capabilities");
     const probed = node("p", { id: "rs-probed", class: "hint muted" });
+    const guard = node("p", { id: "rs-guard", class: "hint muted" });
 
     const load = () => call("GET", base + "/settings").then(s => {
       if (typeof s.swr_limit === "number") swr.input.value = String(s.swr_limit);
       if (typeof s.ptt_timeout_s === "number") ptt.input.value = String(s.ptt_timeout_s);
+      // the station says whether the radio has an SWR guard at all: it needs SWR readable over CAT
+      guard.textContent = s.swr_guard === false ? NO_GUARD : "";
       probed.textContent = s.probed ? `Capabilities last read ${s.probed}.` : "Capabilities not re-read since setup.";
     }, ex => say(ex && ex.login ? failed(ex) : "Could not read the station settings.", true));
     load();
@@ -79,7 +84,7 @@
     });
 
     return node("fieldset", { class: "station-settings" }, node("legend", {}, "Station settings"),
-      swr.box, ptt.box, node("div", { class: "actions" }, save, probe), probed, msg);
+      swr.box, guard, ptt.box, node("div", { class: "actions" }, save, probe), probed, msg);
   }
 
   window.dxbRadioSettings = { section };

@@ -213,6 +213,21 @@
 
   const capitalize = (t) => t.charAt(0).toUpperCase() + t.slice(1);
 
+  // The SWR guard's banner. The station says in GET /api/radio/<name> (and in a "guard" notice)
+  // whether the radio has a guard, whether it is latched, and the words for it.
+  const GUARD_CONFIRM = "Transmit anyway into a bad match? The radio will fold back power.";
+  // guardBanner GUARD HASATU: what the banner shows: hidden unless latched, the station's words,
+  // and the buttons beside them (Run ATU only where the radio has a tuner CAT controls)
+  function guardBanner(g, hasATU) {
+    if (!g || !g.active || !g.latched) return { hidden: true, text: "", buttons: [] };
+    return { hidden: false, text: String(g.reason || "SWR guard: transmitting is refused"), buttons: hasATU ? ["atu", "override"] : ["override"] };
+  }
+  // guardNote NOTICE: the words a "guard" notice puts in the page's notice line
+  function guardNote(m) {
+    if (m.latched) return `${m.reason}${m.note ? ". " + capitalize(String(m.note)) + "." : ""}`;
+    return `SWR guard cleared: ${m.reason}.`;
+  }
+
   // levelPercent V: a 0..1 level as a whole percent
   const levelPercent = (v) => Math.round(Math.max(0, Math.min(1, Number(v) || 0)) * 100);
 
@@ -222,7 +237,7 @@
   const pure = {
     BANDS, STEPS, STEP_NAMES, formatFreq, parseFreq, clampFreq, stepFreq, bandsFromRanges, bandOf, modeButtons,
     filterPresets, filterSpan, sUnits, sText, normCaps, noCat, layoutFor, ownerLine, ownerActions, radioFromPath, levelPercent,
-    pttWhy, pttTimer, minSec, PTT_HEARTBEAT: 5000,
+    pttWhy, pttTimer, minSec, PTT_HEARTBEAT: 5000, guardBanner, guardNote, GUARD_CONFIRM,
     onRadioPage: () => typeof location !== "undefined" && radioFromPath(location.pathname) !== null,
   };
   window.dxbVFO = pure;
@@ -247,6 +262,7 @@
     layout: "", ownerKey: "", step: 1000, tune: null, upd: [], bands: [],
     audio: null,     // {available, reason}: whether the radio's sound server carries browser audio
     ptt: null,       // the station's PTT window: {on, mine, timeout_s, method}
+    guard: null,     // the SWR guard: {active, latched, reason}
     hold: null,      // this tab's PTT press, while the button is held
     listening: false, // this page started the radio's audio in this tab
   };
@@ -637,6 +653,7 @@
 
   sectionBuilders.tune = () => {
     const b = ctl(h("button", { class: "btn small", type: "button" }, "Tune"));
+    b.dataset.tx = "1"; // dimmed while the SWR guard is latched
     const why = h("p", { class: "muted hint vfo-needs" }, "Take the transmitter first.");
     b.addEventListener("click", () => {
       if (S.tune) { tuneEnd(true); return; }
@@ -682,7 +699,8 @@
   // been answered so the two cannot cross. The station drops PTT by itself when the heartbeat
   // stops, at the radio's timeout, on STOP or when the owner's socket closes, and says so.
   const talkable = () => !!(S.audio && S.audio.available);
-  const pttReason = () => pttWhy(S.owner, S.audio, !!window.dxbAudio);
+  const guardLatched = () => !!(S.guard && S.guard.active && S.guard.latched);
+  const pttReason = () => pttWhy(S.owner, S.audio, !!window.dxbAudio) || (guardLatched() ? "SWR guard is latched: see the banner above." : "");
   const pttPost = (body) => dxb.api("POST", `/api/radio/${name}/ptt`, Object.assign({ device: dxb.tab() }, body));
 
   function holdEnd(hold, sendOff) {
@@ -754,6 +772,7 @@
 
   sectionBuilders.ptt = () => {
     const b = h("button", { class: "btn vfo-ptt", type: "button", "aria-label": "Push to talk: hold to transmit" }, "PTT");
+    b.dataset.tx = "1";
     const time = h("span", { class: "vfo-ptt-time", hidden: true });
     const why = h("p", { class: "muted hint vfo-ptt-why", hidden: true });
     b.addEventListener("pointerdown", (e) => {
@@ -779,6 +798,62 @@
     });
     return h("section", { class: "card vfo-box vfo-ptt-box" }, b, time, why);
   };
+
+  // ---- the SWR guard's banner ----------------------------------------------------------------
+  let overrideDialog = null;
+  function openOverride() {
+    if (!overrideDialog) {
+      overrideDialog = h("dialog", { "aria-label": "Override the SWR guard" },
+        h("p", { class: "vfo-guard-ask" }, GUARD_CONFIRM),
+        h("div", { class: "actions" },
+          h("button", { class: "btn", type: "button", onclick: () => overrideDialog.close() }, "Cancel"),
+          h("button", { class: "btn danger", type: "button", onclick: () => { overrideDialog.close(); sendOverride(); } }, "Transmit anyway")));
+      document.body.append(overrideDialog);
+    }
+    if (overrideDialog.showModal) overrideDialog.showModal();
+  }
+
+  function sendOverride() {
+    dxb.api("POST", `/api/radio/${name}/override`, claimBody()).then((res) => {
+      if (!(res && res.ok)) { say(failText(res || {}), "bad"); return; }
+      if (S.guard) S.guard.latched = false;
+      paint();
+    });
+  }
+
+  const hasATU = () => !!(S.nc && S.nc.settableFuncs.includes("TUNER"));
+
+  function guardSection() {
+    const text = h("p", { class: "vfo-guard-text", role: "alert" });
+    const atu = h("button", { class: "btn small", type: "button", onclick: () => {
+      dxb.api("POST", `/api/radio/${name}/atu`, claimBody()).then((res) => { if (!(res && res.ok)) say(failText(res || {}), "bad"); });
+    } }, "Run ATU");
+    const ov = h("button", { class: "btn small danger", type: "button", onclick: openOverride }, "Override");
+    const box = h("section", { class: "card vfo-box vfo-guard", hidden: true }, text, h("div", { class: "actions" }, atu, ov));
+    S.upd.push(() => {
+      const b = guardBanner(S.guard, hasATU());
+      box.hidden = b.hidden;
+      setText(text, b.text);
+      atu.hidden = !b.buttons.includes("atu");
+      for (const e of [atu, ov]) {
+        // both are the owner's: the station refuses anyone else
+        if (!mine() || dimmed()) e.setAttribute("disabled", ""); else e.removeAttribute("disabled");
+      }
+    });
+    return box;
+  }
+
+  // a notice from the station: the SWR guard latched or cleared (every tab hears it)
+  function onGuard(m) {
+    if (!m || m.radio !== name) return;
+    S.guard = { active: true, latched: !!m.latched, reason: m.latched ? String(m.reason || "") : "" };
+    if (m.latched) {
+      if (S.tune) tuneEnd(false);
+      if (S.hold && S.hold.ok) holdEnd(S.hold, false);
+    }
+    say(guardNote(m), m.latched ? "bad" : "good");
+    paint();
+  }
 
   // the owner and program sections are redrawn when what they say changes
   sectionBuilders.owner = () => h("section", { class: "card vfo-box", id: "vfo-owner" });
@@ -832,6 +907,7 @@
     root.replaceChildren(h("div", { class: "vfo-head" },
       h("h2", {}, (S.rec && S.rec.label) || name, S.nc && S.nc.modelName ? h("span", { class: "muted" }, ` ${S.nc.modelName}`) : null),
       h("span", { class: "chip", id: "vfo-chip", hidden: true }, "Reconnecting…")),
+      guardSection(),
       ...secs);
   }
 
@@ -884,9 +960,12 @@
       setText(chip, quiet() ? "the radio is not answering" : "Reconnecting…");
     }
     const hasCtl = !!S.st && !!S.st.connected;
+    // Tune and PTT (PTT through its own reason) are dimmed while the SWR guard is latched; the ATU
+    // is the way out, so it is not
+    const gl = guardLatched();
     for (const e of root.querySelectorAll(".vfo-ctl")) {
       // ATU and Tune are also held back until this tab has the transmitter (set by their updaters)
-      if (down || !hasCtl || e.dataset.needs) e.setAttribute("disabled", ""); else e.removeAttribute("disabled");
+      if (down || !hasCtl || e.dataset.needs || (gl && e.dataset.tx)) e.setAttribute("disabled", ""); else e.removeAttribute("disabled");
     }
   }
 
@@ -909,6 +988,7 @@
       S.owner = j.owner || null;
       S.audio = j.audio || null;
       S.ptt = j.ptt || null;
+      S.guard = j.guard || null;
       if (j.state && !S.st) S.st = j.state;
       S.found = true;
       build();
@@ -945,6 +1025,7 @@
     root.append(h("p", { class: "muted" }, "Reading the radio…"));
     dxb.events.on("rig", onRig);
     dxb.events.on("ptt", onPTT);
+    dxb.events.on("guard", onGuard);
     // the release also comes from the window losing focus or the page going away
     window.addEventListener("blur", pttUp);
     window.addEventListener("pagehide", pttUp);

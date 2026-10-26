@@ -622,3 +622,51 @@ test_ptt_page_files_are_plain() {
   assert_file_contains "$SP_WEB/vfo.js" 'window.addEventListener("pagehide", pttUp)'
   assert_file_contains "$SP_WEB/vfo.js" 'window.addEventListener("blur", pttUp)'
 }
+
+# ---- the SWR guard's banner (rc3 Task 5) --------------------------------------------------------
+# sgd_run SCENARIO: what tests/station_guard.js saw the page show and send, as JSON
+sgd_run() { node "$DXB_ROOT/tests/station_guard.js" "$SP_WEB" "$1"; }
+
+test_guard_banner_texts() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j k="SWR guard: 5.8:1 against 3.0:1; tune the antenna, change band, or override"
+  j=$(sgd_run latched 2> "$TEST_TMP/sgd.err") || { _fail "station_guard.js failed: $(cat "$TEST_TMP/sgd.err")"; return; }
+  # the banner shows the station's words, with Run ATU and Override; Tune and PTT are dimmed
+  assert_eq "$(jq -r '"\(.start.hidden) \(.start.atuShown) \(.start.overrideShown) \(.start.tuneDisabled) \(.start.pttDisabled)"' <<< "$j")" "false true true true true"
+  assert_eq "$(jq -r '.start.text' <<< "$j")" "$k"
+  # Override asks first, in the page: Cancel sends nothing
+  assert_eq "$(jq -r '.dialogText' <<< "$j")" "Transmit anyway into a bad match? The radio will fold back power."
+  assert_eq "$(jq -r '"\(.dialogOpen) \(.postsAfterCancel) \(.dialogOpenAfterCancel)"' <<< "$j")" "true 0 false"
+  # Run ATU and the confirmed override go to the station with this tab's token
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["atu:iPad#tab-1","override:iPad#tab-1"]'
+  # hidden again once the latch is clear, Tune and PTT usable
+  assert_eq "$(jq -r '"\(.afterOverride.hidden) \(.afterOverride.tuneDisabled) \(.afterOverride.pttDisabled)"' <<< "$j")" "true false false"
+  # a latch notice from the station brings the banner back; a clear notice hides it
+  assert_eq "$(jq -r '"\(.relatched.hidden) \(.relatched.text)"' <<< "$j")" "false $k"
+  assert_eq "$(jq -r '.cleared.hidden' <<< "$j")" "true"
+  assert_eq "$(jq -c '.notices' <<< "$j")" "[\"bad: $k. WSJT-X may key again; Stop WSJT-X to end it.\",\"good: SWR guard cleared: band changed.\"]"
+}
+
+test_guard_banner_hidden_unless_latched() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j
+  j=$(sgd_run clear 2> "$TEST_TMP/sgd.err") || { _fail "station_guard.js failed: $(cat "$TEST_TMP/sgd.err")"; return; }
+  assert_eq "$(jq -r '"\(.start.hidden) \(.start.tuneDisabled) \(.start.pttDisabled)"' <<< "$j")" "true false false"
+  j=$(sgd_run noguard 2> "$TEST_TMP/sgd.err") || { _fail "station_guard.js failed: $(cat "$TEST_TMP/sgd.err")"; return; }
+  assert_eq "$(jq -r '.start.hidden' <<< "$j")" "true"
+  # no tuner: Override only
+  j=$(sgd_run noatu 2> "$TEST_TMP/sgd.err") || { _fail "station_guard.js failed: $(cat "$TEST_TMP/sgd.err")"; return; }
+  assert_eq "$(jq -r '"\(.start.hidden) \(.start.atuShown) \(.start.overrideShown)"' <<< "$j")" "false false true"
+  # a notice about another radio changes nothing here
+  j=$(sgd_run notice 2> "$TEST_TMP/sgd.err") || { _fail "station_guard.js failed: $(cat "$TEST_TMP/sgd.err")"; return; }
+  assert_eq "$(jq -r '"\(.start.hidden) \(.after.hidden) \(.otherRadio)"' <<< "$j")" "true false false"
+}
+
+test_guard_page_files_are_plain() {
+  assert_file_not_contains "$DXB_ROOT/tests/station_guard.js" "innerHTML"
+  assert_file_not_contains "$SP_WEB/vfo.js" "innerHTML"
+  assert_file_not_contains "$SP_WEB/vfo.js" "window.confirm"
+  assert_file_not_contains "$SP_WEB/vfo.js" " confirm("
+  assert_file_contains "$SP_WEB/vfo.js" "Transmit anyway into a bad match? The radio will fold back power."
+  assert_file_contains "$SP_WEB/radiosettings.js" "no SWR guard: this radio does not report SWR over CAT"
+}
