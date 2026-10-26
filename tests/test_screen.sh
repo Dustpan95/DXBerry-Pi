@@ -205,6 +205,32 @@ test_screen_present_and_stopped_leave_a_session_waiting_for_its_radio() {
   sc_app stopped nonsense; assert_eq "$?" "0"
 }
 
+# A program killed during a TX period (an update's session restart, Stop: TERM, then KILL) leaves
+# rigctld holding the PTT it last set, with nobody holding the transmitter: stopped sends the
+# radio's rigctld a T 0 when the radio is keyed over CAT. Not for a VOX or "none" radio, an absent
+# one, or flrig (the radio's rig control, not a program that keys).
+test_screen_stopped_unkeys_a_radio_keyed_over_cat() (
+  sc_env; sc_owned radio2 gamma
+  printf '#!/bin/bash\necho "rigctl $*" >> "$TEST_TMP/rigctl-calls"\n' > "$TEST_TMP/bin/rigctl"
+  chmod 755 "$TEST_TMP/bin/rigctl"
+  export DXB_RIGCTL=$TEST_TMP/bin/rigctl
+  : > "$TEST_TMP/rigctl-calls"
+  assert_ok sc_app stopped gamma-radio2
+  assert_eq "$(cat "$TEST_TMP/rigctl-calls")" "rigctl -m 2 -r 127.0.0.1:4534 T 0"
+  local m
+  for m in vox none; do
+    sc_set_ptt radio2 "$m"; : > "$TEST_TMP/rigctl-calls"
+    assert_ok sc_app stopped gamma-radio2
+    assert_eq "$(cat "$TEST_TMP/rigctl-calls")" ""
+  done
+  sc_set_ptt radio2 rigctld; sc_unplug radio2; : > "$TEST_TMP/rigctl-calls"
+  assert_ok sc_app stopped gamma-radio2
+  assert_eq "$(cat "$TEST_TMP/rigctl-calls")" ""
+  sc_replug radio2; sc_flrig_module; sc_set_control radio2 flrig; : > "$TEST_TMP/rigctl-calls"
+  assert_ok sc_app stopped flrig-radio2
+  assert_eq "$(cat "$TEST_TMP/rigctl-calls")" ""
+)
+
 # prepare writes the session's environment (0640 root:dxbscreen) in root's own sessions
 # directory and makes a fresh private directory (0700 dxbapps) that it writes nothing into; the
 # screens directory (the sockets) it never touches.

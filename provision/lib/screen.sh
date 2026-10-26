@@ -422,9 +422,30 @@ dxb_screen_stopped() {
   dxb_app_load "${ar% *}" > /dev/null 2>&1
   for u in $(_dxb_screen_companions "${ar% *}" "$r"); do "$DXB_SYSTEMCTL" stop "$u" || dxb_warn "$1: could not stop $u"; done
   rm -rf "$(dxb_screen_dir "$1")"
+  _dxb_screen_unkey "${ar% *}" "$r"
   dxb_screen_audio_stopped "${ar% *}" "$r"
   dxb_radio_get "$r" > /dev/null 2>&1 || return 0
   dxb_radio_present "$r" || dxb_screen_mark_waiting "$1"
+  return 0
+}
+
+# _dxb_screen_unkey APP RADIO: after APP ended on RADIO, a radio keyed over CAT (ptt cat:
+# rigctld, cm108, gpio) gets a T 0 through its rigctld. A program ended during a TX period (TERM,
+# then KILL: an update's session restart, Stop) leaves rigctld holding the PTT it last set, with
+# nobody holding the transmitter. Not for flrig (the radio's rig control, not a program that keys)
+# nor an absent radio. Best effort: a warning when rigctld does not take it.
+_dxb_screen_unkey() {
+  local a=$1 r=$2 w
+  [[ $(dxb_app_kind "$a") == rigcontrol ]] && return 0
+  [[ -n ${DXB_RADIOS:-} ]] || dxb_radio_load || return 0
+  dxb_radio_present "$r" 2> /dev/null || return 0
+  w=$(dxb_apps_wiring "$r" 2> /dev/null) || return 0
+  [[ $(jq -r .ptt <<< "$w") == cat ]] || return 0
+  if timeout 3 "${DXB_RIGCTL:-rigctl}" -m 2 -r "$(jq -r .rigctld <<< "$w")" T 0 > /dev/null 2>&1 < /dev/null; then
+    dxb_info "$a on $r: the radio was unkeyed after the program ended"
+  else
+    dxb_warn "$a on $r: could not unkey the radio after the program ended (its rigctld did not answer)"
+  fi
   return 0
 }
 
