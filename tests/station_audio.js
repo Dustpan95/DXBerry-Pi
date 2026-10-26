@@ -1,8 +1,10 @@
 // Loads station/web/audio.js over a stub DOM, a fake RTCPeerConnection, a fake WebSocket, a fake
 // AudioContext and a fake getUserMedia, and prints what it did: the signalling messages, the
 // microphone, the 20 dB duck on the Web Audio gain, the lost chip and its reconnect.
-// Run: node tests/station_audio.js station/web/audio.js [noaudioctx]   (prints one JSON object)
+// Run: node tests/station_audio.js station/web/audio.js [noaudioctx|nosource]   (prints one JSON object)
 //   noaudioctx: a browser without Web Audio, where the element's volume ducks instead
+//   nosource: Web Audio that will not take the remote track (createMediaStreamSource throws): the
+//   element plays it and its volume ducks
 "use strict";
 const fs = require("fs");
 const vm = require("vm");
@@ -73,7 +75,10 @@ FakeAudioContext.prototype.createAnalyser = function () {
   n.getByteTimeDomainData = (b) => { for (let i = 0; i < b.length; i++) b[i] = 128 + Math.round(127 * amp * Math.sin(i / 3)); };
   return n;
 };
-FakeAudioContext.prototype.createMediaStreamSource = function (st) { const n = new Node("source"); n.stream = st; return n; };
+FakeAudioContext.prototype.createMediaStreamSource = function (st) {
+  if (mode === "nosource") throw new Error("this track cannot go into Web Audio");
+  const n = new Node("source"); n.stream = st; return n;
+};
 const gain = () => (gains.length ? gains[gains.length - 1].gain.value : null);
 
 let micTrack = null;
@@ -96,7 +101,7 @@ const ctx = {
   dxb: { ws: (p) => new FakeSocket("wss://pi.local" + p), tab: () => "iPhone#tab-1" },
   RTCPeerConnection: FakePC, MediaStream: FakeStream, JSON, Promise, Math, String, encodeURIComponent,
 };
-if (mode === "webaudio") ctx.AudioContext = FakeAudioContext;
+if (mode === "webaudio" || mode === "nosource") ctx.AudioContext = FakeAudioContext;
 ctx.window = ctx;
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), ctx);
@@ -112,6 +117,8 @@ if (A.onChange) A.onChange((m) => states.push(m.state));
 
   // listen: the element plays inside the tap, before any network; the mic is not asked for
   const listening = A.listen("ic7300");
+  // the audio context exists before listen returns: inside the tap, not at the answer
+  out.contextAtTap = contexts.length;
   const s = sockets[0];
   const pc = pcs[0];
   const audioEl = els.find((e) => e.tag === "audio");

@@ -565,6 +565,8 @@ test_ptt_release_events() {
   assert_eq "$(jq -r '.label' <<< "$j")" "PTT"
   # each release (and every other release event after it) sends one off, after the on and heartbeats
   for k in pointerup pointercancel blur pagehide; do
+    # rc3 fix wave (m12): the event under test alone ends the hold and sends the off
+    assert_eq "$(jq -r --arg k "$k" '.rounds[$k] | "\(.labelAtRelease) \(.offAtRelease)"' <<< "$j")" "PTT 1"
     assert_eq "$(jq -r --arg k "$k" '.rounds[$k] | "\(.on) \(.off) \(.order)"' <<< "$j")" "1 1 on,hb,hb,hb,off"
     assert_eq "$(jq -r --arg k "$k" '.rounds[$k] | "\(.label) \(.labelAfter) \(.timeHidden)"' <<< "$j")" "Transmitting PTT true"
   done
@@ -580,6 +582,7 @@ test_ptt_release_events() {
   # (the gain) with the duck shown and the microphone live; released, one off, full gain, mic idle
   j=$(sau_ui ptt 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
   for k in pointerup pointercancel blur pagehide; do
+    assert_eq "$(jq -r --arg k "$k" '.rounds[$k] | "\(.labelAtRelease) \(.offAtRelease)"' <<< "$j")" "PTT 1"
     assert_eq "$(jq -r --arg k "$k" '.rounds[$k] | "\(.on) \(.off) \(.first) \(.last) \(.label)"' <<< "$j")" "1 1 on off Transmitting"
     assert_eq "$(jq -c --arg k "$k" '.rounds[$k].held' <<< "$j")" '{"gain":0.1,"mic":true,"duck":"Radio audio down 20 dB while you talk"}'
     assert_eq "$(jq -c --arg k "$k" '.rounds[$k].after' <<< "$j")" '{"gain":1,"mic":false,"duckShown":false,"label":"PTT","timeShown":false}'
@@ -802,6 +805,9 @@ test_station_audio_duck_by_gain_node() {
   # the audio context is made inside the tap; the radio's track goes source > analyser > gain > out,
   # and the element (kept to start the remote track) is muted so the gain is what is heard
   assert_eq "$(jq -r '.contextInTap' <<< "$j")" "1"
+  # rc3 fix wave (m12): counted the moment listen returns, so a context made later (at the
+  # socket's open or the answer, outside the gesture) would fail here
+  assert_eq "$(jq -r '.contextAtTap' <<< "$j")" "1"
   assert_eq "$(jq -c '.graph' <<< "$j")" '["analyser>gain","gain>destination","source>analyser"]'
   assert_eq "$(jq -r '.muted' <<< "$j")" "true"
   # 20 dB down is a gain of a tenth while transmitting, 1 again after
@@ -823,6 +829,13 @@ test_station_audio_duck_by_gain_node() {
   assert_eq "$(jq -c '.tx' <<< "$j")" '{"mic":true,"gain":null,"volume":0.1}'
   assert_eq "$(jq -c '.rx' <<< "$j")" '{"mic":false,"gain":null,"volume":1}'
   assert_eq "$(jq -r '"\(.muted) \(.levelLoud)"' <<< "$j")" "false null"
+  # rc3 fix wave (m12): Web Audio that will not take the track: the gain leaves the path, the
+  # element is unmuted and plays it, its volume ducks, and there is no level to show
+  j=$(node "$DXB_ROOT/tests/station_audio.js" "$SP_WEB/audio.js" nosource 2> "$TEST_TMP/sau.err") || { _fail "station_audio.js nosource failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -c '.graph' <<< "$j")" '["analyser>gain","gain>destination","gain off"]'
+  assert_eq "$(jq -r '"\(.muted) \(.playing) \(.levelSilent) \(.levelLoud)"' <<< "$j")" 'false ["radio"] null null'
+  assert_eq "$(jq -c '.tx' <<< "$j")" '{"mic":true,"gain":1,"volume":0.1}'
+  assert_eq "$(jq -c '.rx' <<< "$j")" '{"mic":false,"gain":1,"volume":1}'
 }
 
 test_vfo_listen_toggle_message_sequence() {
@@ -832,6 +845,8 @@ test_vfo_listen_toggle_message_sequence() {
   # tapped: the signalling socket opens with the tab token, the button is pressed, connecting
   assert_eq "$(jq -c '.urls' <<< "$j")" '["wss://pi.local/api/audio/ic7300/signal?tab=iPad%23tab-1"]'
   assert_eq "$(jq -r '"\(.connecting.listenPressed) \(.connecting.rx)"' <<< "$j")" "true Connecting…"
+  # rc3 fix wave (m12): the audio context exists the moment the tap's handler returns
+  assert_eq "$(jq -r '.contextAtTap' <<< "$j")" "1"
   # answered: one audio context, the graph through the gain, the element muted
   assert_eq "$(jq -c '.context' <<< "$j")" '{"made":1,"state":"running"}'
   assert_eq "$(jq -c '.graph' <<< "$j")" '["analyser>gain","gain>destination","source>analyser"]'

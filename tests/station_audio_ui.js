@@ -276,6 +276,8 @@ const evNotice = (m) => evs().onmessage({ data: JSON.stringify(m) });
     // the speaker: a toggle that opens the radio's audio, never the microphone
     out.before = snap();
     click(q("vfo-listen"));
+    // the audio context is made inside the tap itself
+    out.contextAtTap = contexts.length;
     out.connecting = snap();
     out.urls = sigs().map((s) => s.url);
     await connect(0);
@@ -391,6 +393,11 @@ const evNotice = (m) => evs().onmessage({ data: JSON.stringify(m) });
       r.hb = posts.filter((p) => p === "hb").length;
       r.hbEvery = [...new Set(hbAt.slice(1).map((t, i) => t - hbAt[i]))];
       release(kind);
+      // this event alone ended the hold (holdEnd paints at once) and sent the off ...
+      r.labelAtRelease = button().textContent;
+      await flush();
+      r.offAtRelease = posts.filter((p) => p === "off").length;
+      // ... and every release event after it sends nothing more
       for (const other of ["pointerup", "pointercancel", "blur", "pagehide"]) release(other);
       await flush();
       r.off = posts.filter((p) => p === "off").length;

@@ -293,7 +293,11 @@ function release(kind) {
     await flush();
     r.hb = count("hb");
     release(kind);
-    // and every other release event after it: still one off
+    // this event alone ends the hold (holdEnd paints at once) and sends the off ...
+    r.labelAtRelease = button().textContent;
+    await flush();
+    r.offAtRelease = count("off");
+    // ... and every other release event after it: still one off
     for (const other of ["pointerup", "pointercancel", "blur", "pagehide"]) release(other);
     await flush();
     r.off = count("off");
