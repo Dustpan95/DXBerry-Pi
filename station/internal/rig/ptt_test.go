@@ -212,6 +212,7 @@ func newPTTHarness(t *testing.T, method string) *ptHarness {
 		h.mu.Unlock()
 	}, ix.clock, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	h.p.Tone = func() TonePlayer { return h.tone }
+	h.p.InboundWait = 50 * time.Millisecond // a refused press answers quickly in the tests
 	// the owner lock's drop path, as RadioAPI.Register wires it
 	ix.own.OnDrop(func(string) { h.p.OwnerGone(); ix.in.Unkey() })
 	return h
@@ -859,5 +860,76 @@ func TestPTTClearsLoopbacksAfterAFailedUnloadOrLoad(t *testing.T) {
 	}
 	if ev := h.eventLog(); ev[len(ev)-1] != "clear radio1" {
 		t.Fatalf("a failed load was not cleared: %v", ev)
+	}
+}
+
+func (h *ptHarness) setInbound(tab string, on bool) {
+	h.br.mu.Lock()
+	h.br.inbound[tab] = on
+	h.br.mu.Unlock()
+}
+
+// The first press right after Listen or Microphone reaches the station before the browser's first
+// microphone packet (ICE and DTLS are still on their way): the press waits for it, up to
+// InboundWait, instead of refusing at once.
+func TestPTTWaitsForTheFirstMicrophonePacket(t *testing.T) {
+	h := newPTTHarness(t, "rigctld")
+	h.p.InboundWait = 2 * time.Second
+	h.claim(t, "a")
+	h.setInbound("a", false)
+	go func() { time.Sleep(300 * time.Millisecond); h.setInbound("a", true) }()
+	start := time.Now()
+	h.on(t, "a")
+	if took := time.Since(start); took < 250*time.Millisecond {
+		t.Fatalf("on answered after %v, before the microphone was there", took)
+	}
+	if h.count("set_ptt 1") != 1 || !h.br.TXAllowed("a") {
+		t.Fatalf("not keyed: %v %v", h.rig.log(), h.eventLog())
+	}
+	h.p.Off("a", "released")
+
+	// the microphone never comes: refused with the same words once the wait is over
+	n := newPTTHarness(t, "rigctld")
+	n.p.InboundWait = 150 * time.Millisecond
+	n.claim(t, "a")
+	n.setInbound("a", false)
+	start = time.Now()
+	r := n.p.On(context.Background(), "a")
+	if r.OK || r.Reason != reasonMicClosed || r.Fix != fixMicClosed || time.Since(start) < 150*time.Millisecond {
+		t.Fatalf("got %+v after %v", r, time.Since(start))
+	}
+	if len(n.rig.log()) != 0 || len(n.eventLog()) != 0 || n.p.Active() || n.in.Owed() {
+		t.Fatalf("a refused press keyed or opened something: %v %v", n.rig.log(), n.eventLog())
+	}
+	n.setInbound("a", true)
+	n.on(t, "a") // and the next press works
+	n.p.Off("a", "released")
+
+	// an off while the press waits: the press ends at once, nothing keyed, nothing loaded
+	o := newPTTHarness(t, "rigctld")
+	o.p.InboundWait = 5 * time.Second
+	o.claim(t, "a")
+	o.setInbound("a", false)
+	res := make(chan Result, 1)
+	go func() { res <- o.p.On(context.Background(), "a") }()
+	waitFor(t, "the press waiting", o.p.Active)
+	start = time.Now()
+	if r := o.p.Off("a", "released"); !r.OK {
+		t.Fatalf("off: %+v", r)
+	}
+	r = <-res
+	if r.OK || r.Reason != "PTT was stopped: released" || time.Since(start) > time.Second {
+		t.Fatalf("got %+v after %v", r, time.Since(start))
+	}
+	if len(o.rig.log()) != 0 || len(o.eventLog()) != 0 || o.p.Active() || o.in.Owed() {
+		t.Fatalf("the waiting press keyed or opened something: %v %v", o.rig.log(), o.eventLog())
+	}
+	// the request going away ends the wait too
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { res <- o.p.On(ctx, "a") }()
+	waitFor(t, "the press waiting", o.p.Active)
+	cancel()
+	if r := <-res; r.OK || o.p.Active() || len(o.rig.log()) != 0 {
+		t.Fatalf("a cancelled press: %+v %v", r, o.rig.log())
 	}
 }

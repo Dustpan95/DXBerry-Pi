@@ -31,7 +31,14 @@ const (
 	ToneLevel = 0.5 // of full scale (-6 dBFS)
 )
 
+// DefaultInboundWait is how long a press waits for its tab's first microphone packet. The page
+// sends "on" once its audio connection is set up, which is before the browser's first packet
+// arrives (ICE and DTLS are still on their way), so the first press after Listen or Microphone
+// would otherwise be refused nearly every time.
+const DefaultInboundWait = 2 * time.Second
+
 const (
+	inboundPoll = 20 * time.Millisecond
 	audioWithin = 5 * time.Second // a pactl call made for PTT
 	toneFrame   = 960             // stereo pairs per 20 ms frame at 48 kHz
 	toneRate    = 48000
@@ -114,6 +121,8 @@ type PTT struct {
 
 	// Tone makes the player of the keying tone (digirig_tone); nil refuses PTT on such a radio.
 	Tone func() TonePlayer
+	// InboundWait bounds how long a press waits for the tab's microphone (0: DefaultInboundWait).
+	InboundWait time.Duration
 
 	mu       sync.Mutex
 	method   string
@@ -277,8 +286,8 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 	if ok, why := p.server.Available(p.in.Radio); !ok {
 		return abort(p.refuse(why, AudioFix))
 	}
-	if !p.bridge.HasInbound(tab) {
-		return abort(p.refuse(reasonMicClosed, fixMicClosed))
+	if bad := p.waitInbound(ctx, tab); bad != nil {
+		return abort(*bad)
 	}
 	p.in.Owners.Touch(p.in.Radio, tab)
 	if keysRig(method) {
@@ -341,6 +350,40 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 	go p.watch(g, done, since, limit)
 	p.log.Info("PTT on", "radio", p.in.Radio, "method", method, "timeout", minSec(limit))
 	return Result{OK: true, Window: g}
+}
+
+// waitInbound waits, up to InboundWait (real time), for the tab's microphone to reach the station,
+// for a window still starting. It gives up at once when the window is ended meanwhile (an off,
+// STOP, the owner's socket, shutdown) or the request goes away. nil: the microphone is there.
+func (p *PTT) waitInbound(ctx context.Context, tab string) *Result {
+	wait := p.InboundWait
+	if wait <= 0 {
+		wait = DefaultInboundWait
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		if p.bridge.HasInbound(tab) {
+			return nil
+		}
+		p.mu.Lock()
+		ended, reason := p.ended, p.cancel
+		p.mu.Unlock()
+		var r Result
+		switch left := time.Until(deadline); {
+		case ended:
+			r = p.refuse("PTT was stopped: "+reason, "press PTT again")
+		case left <= 0:
+			r = p.refuse(reasonMicClosed, fixMicClosed)
+		default:
+			select {
+			case <-ctx.Done():
+				r = p.refuse("PTT was stopped: the press was cancelled", "press PTT again")
+			case <-time.After(min(inboundPoll, left)):
+				continue
+			}
+		}
+		return &r
+	}
 }
 
 // watch ends window g when its heartbeat lapses or its time is up.

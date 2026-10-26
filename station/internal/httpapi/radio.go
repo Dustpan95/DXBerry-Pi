@@ -72,6 +72,8 @@ type RadioAPI struct {
 	Settings func(radio string) settings.RadioSettings
 	// Notify sends a notice to every tab (nil: none are sent).
 	Notify rig.Notifier
+	// PTTInboundWait bounds how long a PTT press waits for the tab's microphone (0: rig's default).
+	PTTInboundWait time.Duration
 
 	mu      sync.Mutex
 	intents map[string]*rig.Intents
@@ -438,7 +440,7 @@ func (a *RadioAPI) pttFor(rec radios.Radio) *rig.PTT {
 		conf = func() settings.RadioSettings { return a.Settings(name) }
 	}
 	p := rig.NewPTT(in, au.Bridge, au.Server, conf, rec.PTT, a.Notify, a.Clock, nil)
-	p.Tone = au.Tone
+	p.Tone, p.InboundWait = au.Tone, a.PTTInboundWait
 	if a.ptts == nil {
 		a.ptts = map[string]*rig.PTT{}
 	}

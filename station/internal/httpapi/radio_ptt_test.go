@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/radios"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/rig"
@@ -95,9 +96,10 @@ func newPTTFixture(loggedIn bool) *pttFixture {
 	api := &RadioAPI{
 		Auth: auth, Radios: rwRecords{"radio1": {Name: "radio1", Port: 4532, PTT: "rigctld"}}, Rigs: rwRigs{f.rig},
 		Owners: session.NewOwners(realNow{}), Ctx: context.Background(),
-		Audio:     func(string) PTTAudio { return PTTAudio{Bridge: f.br, Server: f.srv} },
-		Available: f.srv.Available,
-		Settings:  func(string) settings.RadioSettings { return settings.Defaults() },
+		Audio:          func(string) PTTAudio { return PTTAudio{Bridge: f.br, Server: f.srv} },
+		Available:      f.srv.Available,
+		Settings:       func(string) settings.RadioSettings { return settings.Defaults() },
+		PTTInboundWait: 50 * time.Millisecond,
 		Notify: func(radio string, msg any) {
 			b, _ := json.Marshal(msg)
 			f.mu.Lock()
