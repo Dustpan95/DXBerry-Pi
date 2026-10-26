@@ -139,3 +139,35 @@ test_audio_ensure_and_stop() (
   "$AU_BIN" ensure nope > /dev/null 2>&1; assert_eq "$?" "4"
   "$AU_BIN" ensure > /dev/null 2>&1; assert_eq "$?" "2"
 )
+
+# stop needs only a valid name: the server of a radio already removed from the record can still be
+# stopped
+test_audio_stop_works_for_a_radio_not_in_the_record() (
+  au_env
+  assert_ok "$AU_BIN" stop gone
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-audio@gone.service"
+  assert_eq "$("$AU_BIN" stop gone --json | jq -r .ok)" "true"
+  "$AU_BIN" stop 'Bad!' > /dev/null 2>&1; assert_eq "$?" "2"
+)
+
+# au_before A B: call A was made before call B (both made)
+au_before() {
+  local a b
+  a=$(grep -nxF -- "$1" "$TEST_TMP/calls" | head -1 | cut -d: -f1); b=$(grep -nxF -- "$2" "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  if [[ -z $a || -z $b ]] || (( a > b )); then _fail "'$1' (call ${a:-none}) must come before '$2' (call ${b:-none})"; fi
+}
+
+# a session's start of the server clears its earlier failures first: a replug, or an update's
+# session restarts, can use up the unit's start limit
+test_audio_session_start_clears_the_start_limit_first() (
+  au_env
+  dxb_app_load js8call > /dev/null 2>&1
+  : > "$TEST_TMP/calls"
+  dxb_screen_audio_prepare js8call radio2
+  au_before "systemctl reset-failed dxberry-audio@radio2.service" "systemctl start dxberry-audio@radio2.service"
+  dxb_app_load wsjtx > /dev/null 2>&1
+  dxb_radio_scan_cache
+  : > "$TEST_TMP/calls"
+  dxb_screen_audio_stopped wsjtx radio2
+  au_before "systemctl reset-failed dxberry-audio@radio2.service" "systemctl start dxberry-audio@radio2.service"
+)

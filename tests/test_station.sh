@@ -483,6 +483,33 @@ test_station_build_leaves_out_libopusfile() (
   assert_contains "$(cat "$TEST_TMP/go-args")" "build -tags nolibopusfile "
 )
 
+# An update's radio apply runs before this step installs the sound server unit and its packages:
+# once the unit is written (or the packages installed) and systemd has read it, every radio's
+# server is brought in line; not again when nothing changed
+test_station_syncs_the_sound_servers_once_the_unit_is_in() (
+  local sync reload
+  dxb_audio_sync_all() { echo "audio sync" >> "$TEST_TMP/calls"; }
+  sn_env
+  sn_run
+  sync=$(grep -n '^audio sync$' "$TEST_TMP/calls" | cut -d: -f1)
+  reload=$(grep -n 'daemon-reload' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  if [[ -z $sync || -z $reload ]] || (( sync < reload )); then _fail "the sync (call ${sync:-none}) must follow the daemon-reload (call ${reload:-none})"; fi
+  : > "$TEST_TMP/calls"
+  sn_run
+  assert_not_contains "$(sn_calls)" "audio sync"
+  # the packages just installed: the servers can start now
+  AP_INSTALLED='nginx libpam-runtime'
+  : > "$TEST_TMP/calls"
+  sn_run
+  assert_contains "$(sn_calls)" "audio sync"
+  # no station binary yet: the unit is still installed and the servers synced
+  sn_env
+  rm -f "$DXB_STATION_BIN" "$DXB_SYSTEMD_DIR/dxberry-audio@.service"
+  : > "$TEST_TMP/calls"
+  sn_run
+  assert_contains "$(sn_calls)" "audio sync"
+)
+
 # the radios' sound server unit goes in beside the app's, and the app is not restarted for it
 test_station_installs_the_audio_unit() {
   sn_env

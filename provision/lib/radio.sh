@@ -554,9 +554,12 @@ _dxb_radio_apply() {
     # a radio leaving flrig control: flrig lets go of the CAT port before rigctld takes it back
     [[ $(jq -r '.rig.control // "hamlib"' <<< "$r") == flrig ]] || _dxb_radio_apply_flrig "$n" "$r" "$present"
     dxb_rigctld_sync "$n" "$r" "$present" "${kinds[$n]}" || rc=6
+    dxb_audio_sync "$n" "$present" "${kinds[$n]}"
   done
   # shellcheck disable=SC2046
   dxb_rigctld_stop_all_except $(dxb_radio_names)
+  # shellcheck disable=SC2046
+  dxb_audio_stop_all_except $(dxb_radio_names)
   dxb_radio_write_state || rc=6
   for n in $(dxb_radio_names); do
     r=$(dxb_radio_get "$n")
@@ -606,6 +609,75 @@ _dxb_radio_apply() {
     fi
   done
   return $rc
+}
+
+# ---- the radios' sound servers (design 8.1) ---------------------------------------------------
+# dxb_audio_sync NAME PRESENT(0|1) [OWNER_KIND]: the radio's sound server, dxberry-audio@NAME
+# (provision/bin/dxberry-audio), runs while the radio is plugged in, has an audio device and no
+# owner: started when it is not running, its earlier failures and start limit cleared first. It is
+# stopped while the radio is absent (a replug comes back to a fresh server), has no audio device,
+# or Graywolf (any owner that is not a session program) has its card. A radio a session program
+# owns is left to that session (dxberry-app prepare and stopped). Nothing is asked before the unit
+# is installed: an update's apply runs before its setup installs it (provision_station syncs the
+# servers then). A start or stop that fails is a warning. Always 0.
+dxb_audio_sync() {
+  local n=$1 present=$2 kind=${3:-} sc=${DXB_SYSTEMCTL:-systemctl} u="dxberry-audio@$1.service" audio why
+  _dxb_audio_unit_installed || return 0
+  [[ -n $kind ]] || kind=$(dxb_radio_owner_kind "$n")
+  [[ $kind == session ]] && return 0
+  audio=$(jq -r --arg n "$n" '.radios[$n].audio != null' <<< "$DXB_RADIOS")
+  if (( present )) && [[ $kind == none && $audio == true ]]; then
+    "$sc" is-active --quiet "$u" 2> /dev/null < /dev/null && return 0
+    "$sc" reset-failed "$u" > /dev/null 2>&1 < /dev/null
+    if "$sc" --no-block start "$u" > /dev/null 2>&1 < /dev/null; then dxb_info "radio $n: sound server started ($u)"
+    else dxb_warn "radio $n: could not start $u; the browser has no audio for it"; fi
+    return 0
+  fi
+  _dxb_audio_running "$u" || return 0
+  if [[ $kind == graywolf ]]; then why="$(jq -r --arg n "$n" '.radios[$n].owner' <<< "$DXB_RADIOS") has the sound card"
+  elif [[ $audio != true ]]; then why="no audio device"
+  else why="radio absent"; fi
+  if "$sc" stop "$u" > /dev/null 2>&1 < /dev/null; then dxb_info "radio $n: sound server stopped ($why)"
+  else dxb_warn "radio $n: could not stop $u ($why)"; fi
+  return 0
+}
+
+# dxb_audio_stop_all_except NAME...: stop the sound servers of radios that left the record.
+dxb_audio_stop_all_except() {
+  local u n sc=${DXB_SYSTEMCTL:-systemctl} keep=" $* "
+  _dxb_audio_unit_installed || return 0
+  while IFS= read -r u; do
+    [[ $u =~ ^dxberry-audio@([a-z][a-z0-9-]*)\.service$ ]] || continue
+    n=${BASH_REMATCH[1]}
+    [[ $keep == *" $n "* ]] && continue
+    if "$sc" stop "$u" > /dev/null 2>&1 < /dev/null; then dxb_info "radio $n: sound server stopped (radio no longer in the record)"
+    else dxb_warn "radio $n: could not stop $u (radio no longer in the record)"; fi
+  done < <("$sc" list-units --all --plain --no-legend 'dxberry-audio@*' 2> /dev/null < /dev/null | awk '$3 != "inactive" && $3 != "failed" { print $1 }')
+  return 0
+}
+
+# dxb_audio_sync_all: dxb_audio_sync for every radio in the record, and the servers of radios that
+# left it stopped (provision_station, once it has installed the unit). Always 0.
+dxb_audio_sync_all() {
+  local n present
+  dxb_radio_load || return 0
+  dxb_radio_scan_cache
+  for n in $(dxb_radio_names); do
+    present=0; dxb_radio_present "$n" && present=1
+    dxb_audio_sync "$n" "$present"
+  done
+  # shellcheck disable=SC2046
+  dxb_audio_stop_all_except $(dxb_radio_names)
+  return 0
+}
+
+_dxb_audio_unit_installed() { [[ -f ${DXB_SYSTEMD_DIR:-/etc/systemd/system}/dxberry-audio@.service ]]; }
+# _dxb_audio_running UNIT: 0 when UNIT runs, or is starting or restarting
+_dxb_audio_running() {
+  case $("${DXB_SYSTEMCTL:-systemctl}" is-active "$1" 2> /dev/null < /dev/null) in
+    active|activating|reloading|deactivating) return 0 ;;
+  esac
+  return 1
 }
 
 # _dxb_radio_apply_flrig NAME RADIO_JSON PRESENT(0|1): flrig is a radio's rig control, not its owner
@@ -925,10 +997,13 @@ dxb_radio_claim() {
   _dxb_radio_set_owner "$name" "$app" || return 6
   # a session program had rigctld key cm108/gpio PTT: hand that back before Graywolf opens the HID
   (( from_session )) && _dxb_radio_rigctld_for "$name" graywolf
+  # the radio's sound server lets go of the card before the program opens it (no apply runs here)
+  dxb_audio_sync "$name" 1
   if ! dxb_app_start "$app" || ! dxb_app_wire "$app" "$name"; then
     dxb_app_unwire "$app" "$name"
     _dxb_radio_set_owner "$name" ""
     dxb_app_stop_if_idle "$app"
+    dxb_audio_sync "$name" 1
     dxb_error "radio $name: $app could not take it; left released"
     return 5
   fi
@@ -947,6 +1022,10 @@ dxb_radio_release() {
   kind=$(dxb_radio_owner_kind "$name")
   _dxb_radio_let_go "$name" "$cur" || return 6
   [[ $kind == session ]] && _dxb_radio_rigctld_for "$name" none
+  # unowned now: the radio's sound server runs again (no apply runs here)
+  local present=0
+  dxb_radio_present "$name" && present=1
+  dxb_audio_sync "$name" "$present"
   dxb_info "radio $name released"
 }
 

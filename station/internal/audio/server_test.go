@@ -198,3 +198,14 @@ func TestTwoRadiosIsolatedSinks(t *testing.T) {
 		t.Fatal("captures share a server or source")
 	}
 }
+
+// A radio Graywolf owns has no sound server on purpose (the radio apply stops it): the reason says
+// who has the card, in the words the page shows for a program.
+func TestAvailableNamesGraywolfAsTheCardsHolder(t *testing.T) {
+	c, _ := fakeAudioCLI(t, "{}", 0)
+	s, _ := control(t, c, "radio1", "")
+	s.Radios = fakeRadios{"radio1": {Name: "radio1", Owner: "graywolf"}}
+	if ok, why := s.Available("radio1"); ok || why != "no sound server for radio1: Graywolf has the sound card" {
+		t.Fatalf("got %v %q", ok, why)
+	}
+}

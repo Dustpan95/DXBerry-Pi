@@ -7,7 +7,7 @@
 #   check RADIO            the unit's root ExecStartPre: refuses a radio that is unknown,
 #                          has no audio device, or whose card Graywolf holds
 #   ensure RADIO [--json]  start the unit and wait up to 5 s for the socket
-#   stop RADIO [--json]    stop the unit
+#   stop RADIO [--json]    stop the unit (also of a radio no longer in the record)
 #   status RADIO --json    {radio, active, socket, card, present}
 # CARD is the radio's name in capitals. A radio whose card Graywolf holds gets no server.
 # Exit: 0 ok, 1 not root, 2 usage, 4 unknown radio, 6 failed (or Graywolf holds the card).
@@ -117,12 +117,10 @@ cmd_ensure() {
   return 6
 }
 
+# cmd_stop RADIO: the name is checked (main), not the record: a removed radio's server still stops
 cmd_stop() {
-  local rc
   RADIO=$1
   dxb_require_root
-  known "$1" 2> /dev/null; rc=$?
-  if (( rc != 0 )); then say false "no such radio: $1"; return "$rc"; fi
   if "$DXB_SYSTEMCTL" stop "dxberry-audio@$1.service"; then say true; return 0; fi
   say false "could not stop dxberry-audio@$1.service"
   return 6

@@ -33,7 +33,7 @@ var childEnv = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8"}
 // themselves, so the radio's sound server is stopped while they run.
 var programAudio = map[string]string{"wsjtx": "alsa", "flrig": "alsa", "pat": "alsa"}
 
-var programNames = map[string]string{"wsjtx": "WSJT-X", "flrig": "flrig", "pat": "Pat"}
+var programNames = map[string]string{"wsjtx": "WSJT-X", "flrig": "flrig", "pat": "Pat", "graywolf": "Graywolf"}
 
 // Bin returns the absolute path of a helper (parec, pacat, pactl) from bins, falling back to /usr/bin.
 func Bin(bins map[string]string, name string) string {
@@ -128,9 +128,12 @@ func (s *ServerControl) Stop(ctx context.Context, radio string) error {
 	return err
 }
 
+// missing is why the radio has no socket: a program that opens the card itself (ALSA), or
+// Graywolf (the radio apply stops the server of a radio Graywolf owns), has the card; else the
+// socket is simply not there.
 func (s *ServerControl) missing(radio string) string {
 	if s.Radios != nil {
-		if r, ok := s.Radios.Get(radio); ok && programAudio[r.Owner] == "alsa" {
+		if r, ok := s.Radios.Get(radio); ok && (programAudio[r.Owner] == "alsa" || r.Owner == "graywolf") {
 			name := programNames[r.Owner]
 			return fmt.Sprintf("no sound server for %s: %s has the sound card", radio, name)
 		}

@@ -75,6 +75,8 @@ dxb_screen_audio_prepare() {
   local a=$1 r=$2 u="dxberry-audio@$2.service" sock i
   dxb_screen_audio_held "$r" && return 0
   if [[ $(dxb_screen_audio "$a") == pulse ]]; then
+    # earlier failures first: a replug or an update's restarts can use up the unit's start limit
+    "$DXB_SYSTEMCTL" reset-failed "$u" > /dev/null 2>&1
     "$DXB_SYSTEMCTL" start "$u" || { dxb_warn "$a on $r: could not start $u; no sound for it"; return 0; }
     sock=$(dxb_audio_socket "$r")
     for (( i = 0; i < DXB_AUDIO_WAIT_S * 10; i++ )); do [[ -e $sock ]] && return 0; command sleep 0.1; done
@@ -93,6 +95,7 @@ dxb_screen_audio_stopped() {
   [[ -n ${DXB_RADIOS:-} ]] || dxb_radio_load || return 0
   jq -e --arg n "$r" '.radios[$n].audio != null' <<< "$DXB_RADIOS" > /dev/null 2>&1 || return 0
   dxb_radio_present "$r" || return 0
+  "$DXB_SYSTEMCTL" reset-failed "dxberry-audio@$r.service" > /dev/null 2>&1
   "$DXB_SYSTEMCTL" start "dxberry-audio@$r.service" || dxb_warn "$a on $r: could not start dxberry-audio@$r.service again"
   return 0
 }

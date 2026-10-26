@@ -312,6 +312,111 @@ two_radios() {
   dxb_radio_add r1 '{"audio":"3","cat":"4"}' > /dev/null; dxb_radio_add r2 '{"audio":"1","cat":"2"}' > /dev/null
 }
 
+# ra_sc: the systemctl stand-in of the sound server tests: fx_systemctl, whose list-units lists the
+# dxberry-audio@ units it has running. ra_audio_env: the sound server unit is installed, and
+# DXB_SYSTEMCTL is ra_sc (call it in a subshell test). ra_line LINE: the number of LINE's first
+# call (empty when it was not made).
+ra_sc() {
+  if [[ $1 == list-units ]]; then
+    echo "systemctl $*" >> "$TEST_TMP/calls"
+    grep '^dxberry-audio@' "$TEST_TMP/active" 2> /dev/null | awk '{ print $1, "loaded active running x" }'
+    return 0
+  fi
+  fx_systemctl "$@"
+}
+ra_audio_env() {
+  mkdir -p "$DXB_SYSTEMD_DIR" && cp "$DXB_ROOT/provision/templates/dxberry-audio@.service" "$DXB_SYSTEMD_DIR/"
+  DXB_SYSTEMCTL=ra_sc
+}
+ra_line() { grep -nxF -- "$1" "$TEST_TMP/calls" | head -1 | cut -d: -f1; }
+ra_before() {
+  local a b; a=$(ra_line "$1"); b=$(ra_line "$2")
+  if [[ -z $a || -z $b ]] || (( a > b )); then _fail "'$1' (call ${a:-none}) must come before '$2' (call ${b:-none})"; fi
+}
+
+# The radio apply runs each radio's sound server (design 8.1: no program starts it for a radio
+# nobody owns): started for a present, unowned radio with an audio device, its earlier failures
+# and start limit cleared first, and left alone once it runs.
+test_apply_starts_the_sound_server_of_an_unowned_radio() (
+  radio_env; ra_audio_env; two_radios
+  assert_ok dxb_radio_apply
+  ra_before "systemctl reset-failed dxberry-audio@r1.service" "systemctl --no-block start dxberry-audio@r1.service"
+  ra_before "systemctl reset-failed dxberry-audio@r2.service" "systemctl --no-block start dxberry-audio@r2.service"
+  : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_apply
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "start dxberry-audio"
+)
+
+# ... and never for a radio Graywolf (any owner that is not a session program) has, nor for one a
+# session program owns (its session starts and stops the server), one with no audio device or an
+# absent one
+test_apply_starts_no_sound_server_where_it_must_not_run() (
+  radio_env; ra_audio_env; fake_apps; two_radios
+  _dxb_radio_set_owner r1 alpha > /dev/null
+  _dxb_radio_set_owner r2 gamma > /dev/null
+  dxb_radio_apply > /dev/null 2>&1
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "start dxberry-audio"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "dxberry-audio@r2"
+  dxb_radio_save "$(jq -c '.radios.r1.owner = "" | .radios.r1.audio = null' <<< "$DXB_RADIOS")" > /dev/null
+  _dxb_radio_set_owner r2 "" > /dev/null
+  fx_unplug "$DXB_SYSFS_ROOT" r2-audio
+  : > "$TEST_TMP/calls"
+  dxb_radio_apply > /dev/null 2>&1
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "start dxberry-audio"
+)
+
+# A radio that is unplugged or leaves the record has its server stopped: a replug comes back to a
+# fresh server, and a removed radio's server no longer holds the card
+test_apply_stops_the_sound_server_of_an_absent_or_removed_radio() (
+  radio_env; ra_audio_env; two_radios
+  dxb_radio_apply > /dev/null
+  fx_unplug "$DXB_SYSFS_ROOT" r1-audio
+  : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_apply hotplug
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-audio@r1.service"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "stop dxberry-audio@r2"
+  fx_replug "$DXB_SYSFS_ROOT" r1-audio
+  : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_apply hotplug
+  ra_before "systemctl reset-failed dxberry-audio@r1.service" "systemctl --no-block start dxberry-audio@r1.service"
+  dxb_radio_remove r2 > /dev/null
+  : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_apply
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl stop dxberry-audio@r2.service"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "stop dxberry-audio@r1"
+)
+
+# An update's apply runs before the setup installs the unit: nothing is asked of a unit that is
+# not there yet (provision_station syncs the servers once it has installed it)
+test_apply_leaves_the_sound_server_alone_until_its_unit_is_installed() (
+  radio_env; two_radios
+  DXB_SYSTEMCTL=ra_sc
+  assert_ok dxb_radio_apply
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "dxberry-audio"
+)
+
+# A hand-over runs no apply. A claim by Graywolf (any program that is not a session program)
+# stops the radio's server before the program starts, so the program finds its card free; a
+# release, or a claim that failed and left the radio released, starts it again. A session
+# program's claim leaves the server to its session.
+test_claim_and_release_hand_the_sound_card_over() (
+  radio_env; ra_audio_env; fake_apps; two_radios
+  dxb_radio_apply > /dev/null
+  : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_claim r1 alpha
+  ra_before "systemctl stop dxberry-audio@r1.service" "systemctl start alpha.service"
+  : > "$TEST_TMP/calls"
+  assert_ok dxb_radio_release r1
+  ra_before "systemctl reset-failed dxberry-audio@r1.service" "systemctl --no-block start dxberry-audio@r1.service"
+  : > "$TEST_TMP/calls"
+  ALPHA_WIRE_RC=1 dxb_radio_claim r1 alpha > /dev/null 2>&1; assert_eq "$?" "5"
+  ra_before "systemctl stop dxberry-audio@r1.service" "systemctl --no-block start dxberry-audio@r1.service"
+  assert_eq "$(jq -r '.radios.r1.owner' <<< "$DXB_RADIOS")" ""
+  : > "$TEST_TMP/calls"
+  dxb_radio_claim r2 gamma > /dev/null 2>&1
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "dxberry-audio@r2"
+)
+
 test_claim_starts_wires_and_records_owner() {
   radio_env; fake_apps; two_radios
   assert_ok dxb_radio_claim r1 alpha

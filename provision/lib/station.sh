@@ -156,9 +156,17 @@ _dxb_station_cockpit_certs_left() {
   return 1
 }
 
+# _dxb_station_audio_sync: the radios' sound servers brought in line once their unit (or the
+# packages it runs) has just been installed. An update's radio apply ran before this step, when
+# there was no unit to start (radio.sh, dxb_audio_sync).
+_dxb_station_audio_sync() {
+  if declare -F dxb_audio_sync_all > /dev/null; then dxb_audio_sync_all; fi
+  return 0
+}
+
 # provision_station: never fatal; every problem is a failed step named station and the run goes on.
 provision_station() {
-  local rc cockpit site_new reload=0 unit_changed=0 audio_changed=0 want_restart=0 was_active=0 restamp=0 sum='' stamp=$DXB_STATE_DIR/dxberryd.sha256 name msg
+  local rc cockpit site_new reload=0 unit_changed=0 audio_changed=0 audio_installed=0 want_restart=0 was_active=0 restamp=0 sum='' stamp=$DXB_STATE_DIR/dxberryd.sha256 name msg
   local -a extra
   # the network undo's boot unit is a safety net, not a station feature
   dxb_netsafe_install_unit || dxb_step_failed station "could not install dxberry-config-boot.service"
@@ -180,8 +188,8 @@ provision_station() {
     [[ -n $(_dxb_apps_dpkg_version "$name") ]] || audio_missing+=("$name")
   done
   if (( ${#audio_missing[@]} )); then
-    _dxb_apps_apt install -y --no-install-recommends "${audio_missing[@]}" > /dev/null 2>&1 \
-      || dxb_step_failed station "could not install ${audio_missing[*]} (browser audio needs them)"
+    if _dxb_apps_apt install -y --no-install-recommends "${audio_missing[@]}" > /dev/null 2>&1; then audio_installed=1
+    else dxb_step_failed station "could not install ${audio_missing[*]} (browser audio needs them)"; fi
   fi
   if ! { mkdir -p "$DXB_STATION_TLS" && chmod 700 "$DXB_STATION_TLS"; }; then dxb_step_failed station "could not create $DXB_STATION_TLS"; fi
   _dxb_station_write "$DXB_PAM_DIR/dxberry" pam-dxberry; rc=$?
@@ -195,6 +203,7 @@ provision_station() {
   if [[ ! -x $DXB_STATION_BIN ]]; then
     dxb_warn "station: $DXB_STATION_BIN is missing; the station app is not started and Cockpit is left alone"
     (( unit_changed || audio_changed )) && { "$DXB_SYSTEMCTL" daemon-reload > /dev/null 2>&1 || dxb_step_failed station "systemctl daemon-reload failed"; }
+    (( audio_changed || audio_installed )) && _dxb_station_audio_sync
     dxb_status_add "station: unavailable (dxberryd is not installed)"
     return 0
   fi
@@ -203,6 +212,7 @@ provision_station() {
     "$DXB_SYSTEMCTL" daemon-reload > /dev/null 2>&1 || { dxb_step_failed station "systemctl daemon-reload failed"; return 0; }
     (( unit_changed )) && want_restart=1
   fi
+  (( audio_changed || audio_installed )) && _dxb_station_audio_sync
   # a new binary (an update) needs a restart, which enable --now alone never does
   sum=$(sha256sum "$DXB_STATION_BIN" 2> /dev/null | cut -d' ' -f1)
   [[ -f $stamp && $(< "$stamp") == "$sum" ]] || want_restart=1
