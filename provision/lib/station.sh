@@ -188,6 +188,9 @@ provision_station() {
     [[ -n $(_dxb_apps_dpkg_version "$name") ]] || audio_missing+=("$name")
   done
   if (( ${#audio_missing[@]} )); then
+    # the Pi's package lists may be stale (a point release that replaced one of these packages
+    # makes the fetch fail): refreshed first, best effort, as the program installs do
+    _dxb_apps_apt update > /dev/null 2>&1 || dxb_warn "station: apt-get update failed; installing with the package lists already on the Pi"
     if _dxb_apps_apt install -y --no-install-recommends "${audio_missing[@]}" > /dev/null 2>&1; then audio_installed=1
     else dxb_step_failed station "could not install ${audio_missing[*]} (browser audio needs them)"; fi
   fi
@@ -213,6 +216,19 @@ provision_station() {
     (( unit_changed )) && want_restart=1
   fi
   (( audio_changed || audio_installed )) && _dxb_station_audio_sync
+  # a binary that cannot load (a library it links is missing: the loader exits 127) is never
+  # started over the running one: the old process keeps serving, and with it Roll back on the
+  # Updates page. Nothing is enabled, restarted or restamped, so the next run tries again.
+  if ! "$DXB_STATION_BIN" -version > /dev/null 2>&1 < /dev/null; then
+    if "$DXB_SYSTEMCTL" is-active --quiet "$DXB_STATION_UNIT" 2> /dev/null; then
+      dxb_step_failed station "the new station app cannot start (missing libraries); the running one was kept"
+      dxb_status_add "station: the running app was kept (see FAILED STEPS)"
+    else
+      dxb_step_failed station "the station app cannot start (missing libraries); it was not started"
+      dxb_status_add "station: unavailable (see FAILED STEPS)"
+    fi
+    return 0
+  fi
   # a new binary (an update) needs a restart, which enable --now alone never does
   sum=$(sha256sum "$DXB_STATION_BIN" 2> /dev/null | cut -d' ' -f1)
   [[ -f $stamp && $(< "$stamp") == "$sum" ]] || want_restart=1

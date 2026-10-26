@@ -195,6 +195,50 @@ test_station_installs_the_audio_runtime_only_when_missing() {
   assert_contains "$(cat "$TEST_TMP/status")" "station: https://"
 }
 
+# A Pi's package lists may be stale: a point release that replaced one of the audio packages makes
+# the fetch fail. The lists are refreshed first, but only when a package is missing.
+test_station_refreshes_the_package_lists_before_installing_the_audio_runtime() {
+  local up inst
+  sn_env
+  AP_INSTALLED='nginx libpam-runtime'
+  sn_run
+  up=$(grep -n '^apt-get update' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  inst=$(grep -n '^apt-get install -y --no-install-recommends libopus0' "$TEST_TMP/calls" | head -1 | cut -d: -f1)
+  if [[ -z $up || -z $inst ]] || (( up > inst )); then _fail "apt-get update (call ${up:-none}) must come before the install (call ${inst:-none})"; fi
+  # a refresh that fails is a warning: the install still runs with the lists the Pi has
+  sn_env
+  AP_INSTALLED='nginx libpam-runtime'
+  echo update > "$TEST_TMP/apt-fail-on"
+  sn_run
+  assert_contains "$(sn_calls)" "apt-get install -y --no-install-recommends libopus0"
+  assert_contains "$(cat "$TEST_TMP/stderr")" "apt-get update failed"
+  rm -f "$TEST_TMP/apt-fail-on"
+  sn_env
+  sn_run
+  assert_not_contains "$(sn_calls)" "apt-get update"
+}
+
+# A new binary that cannot load (a library it links is missing: exit 127 from the loader) is never
+# started over the running one: the old process keeps serving, and with it Roll back on the
+# Updates page. Nothing is restarted, enabled or restamped.
+test_station_keeps_the_running_app_when_the_new_one_cannot_load() {
+  sn_env
+  sn_run
+  local stamp; stamp=$(cat "$TEST_TMP/state/dxberryd.sha256")
+  printf '#!/bin/sh\necho "dxberryd: error while loading shared libraries: libopus.so.0" >&2\nexit 127\n' > "$DXB_STATION_BIN"
+  : > "$TEST_TMP/calls"
+  sn_run
+  assert_contains "$(cat "$TEST_TMP/failed")" "the new station app cannot start (missing libraries); the running one was kept"
+  assert_not_contains "$(sn_calls)" "restart dxberryd.service"
+  assert_not_contains "$(sn_calls)" "enable --now dxberryd.service"
+  assert_eq "$(cat "$TEST_TMP/state/dxberryd.sha256")" "$stamp"
+  # nothing running yet (a fresh image): it is not started either
+  : > "$TEST_TMP/active"; : > "$TEST_TMP/calls"
+  sn_run
+  assert_contains "$(cat "$TEST_TMP/failed")" "the station app cannot start (missing libraries); it was not started"
+  assert_not_contains "$(sn_calls)" "enable --now dxberryd.service"
+}
+
 test_boot_overrides_install_the_audio_runtime() {
   local line
   line=$(grep '^AUTO_SETUP_APT_INSTALLS=' "$DXB_ROOT/boot/dietpi.overrides.txt")
