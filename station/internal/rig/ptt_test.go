@@ -15,13 +15,15 @@ import (
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/settings"
 )
 
-// ptBridge is the radio's WebRTC bridge as PTT sees it.
+// ptBridge is the radio's WebRTC bridge as PTT sees it. Its OnLost and OnClosed subscribers are
+// kept apart, as the real bridge keeps them: a close is heard only by OnClosed.
 type ptBridge struct {
 	mu      sync.Mutex
 	allowed map[string]bool
 	inbound map[string]bool
 	events  *[]string
 	lost    map[int]func(string, string)
+	closed  map[int]func(string)
 	next    int
 }
 
@@ -58,15 +60,30 @@ func (b *ptBridge) OnLost(fn func(tab, reason string)) func() {
 }
 
 func (b *ptBridge) OnClosed(fn func(tab string)) func() {
-	return b.OnLost(func(tab, _ string) { fn(tab) })
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed == nil {
+		b.closed = map[int]func(string){}
+	}
+	id := b.next
+	b.next++
+	b.closed[id] = fn
+	return func() { b.mu.Lock(); delete(b.closed, id); b.mu.Unlock() }
 }
 
-// close is the bridge's Close: the connection goes (no microphone any more) and OnClosed hears it.
+// close is the bridge's Close: the connection goes (no microphone any more) and only OnClosed
+// hears it.
 func (b *ptBridge) close(tab string) {
 	b.mu.Lock()
 	b.inbound[tab] = false
+	fns := []func(string){}
+	for _, f := range b.closed {
+		fns = append(fns, f)
+	}
 	b.mu.Unlock()
-	b.lose(tab, "closed")
+	for _, f := range fns {
+		f(tab)
+	}
 }
 
 func (b *ptBridge) lose(tab, reason string) {
