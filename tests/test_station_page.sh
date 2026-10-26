@@ -241,6 +241,9 @@ test_radio_settings_form_values() {
   j=$(node "$DXB_ROOT/tests/station_radiosettings.js" "$SP_WEB/radiosettings.js" 2> "$TEST_TMP/rs.err") || { _fail "station_radiosettings.js failed: $(cat "$TEST_TMP/rs.err")"; return; }
   # the defaults show until the station answers, then the saved values
   assert_eq "$(jq -r '.initialSwr + " " + .initialPtt' <<< "$j")" "3 180"
+  # rc2 has no SWR latch and no PTT timer: the hints say so instead of promising a guard
+  assert_eq "$(jq -r '.swrHint' <<< "$j")" "Used by the transmit guards in the next release; this release does not watch SWR yet."
+  assert_eq "$(jq -r '.pttHint' <<< "$j")" "Used by the transmit guards in the next release; this release does not time transmissions yet."
   assert_eq "$(jq -r '.swr + " " + .ptt' <<< "$j")" "2.5 90"
   assert_eq "$(jq -r '[.swrMin, .swrMax, .swrStep, .pttMin, .pttMax] | join(" ")' <<< "$j")" "1.5 10 0.1 30 600"
   assert_eq "$(jq -r '.getCall.method + " " + .getCall.url + " " + .getCall.credentials' <<< "$j")" "GET /api/radio/radio1/settings same-origin"

@@ -1,6 +1,7 @@
 // Per-radio station settings on the Radios page: the SWR limit and the PTT timeout the transmit
-// guards read, and the "Re-probe capabilities" action. dxberry.js puts section(name) into the
-// radio's edit form; the fields save by themselves (they are not part of the dxberry-radio form).
+// guards of the next release read (this one only stores them), and the "Re-probe capabilities"
+// action. dxberry.js puts section(name) into the radio's edit form; the fields save by
+// themselves (they are not part of the dxberry-radio form).
 "use strict";
 (function () {
   function call(method, path, body) {
@@ -39,9 +40,9 @@
   function section(name) {
     const base = "/api/radio/" + encodeURIComponent(name);
     const swr = numberField("rs-swr", "SWR limit", { min: "1.5", max: "10", step: "0.1", value: "3" },
-      "Transmitting stops when the SWR stays above this (1.5 to 10).");
+      "Used by the transmit guards in the next release; this release does not watch SWR yet.");
     const ptt = numberField("rs-ptt", "PTT timeout (seconds)", { min: "30", max: "600", step: "1", value: "180" },
-      "Transmitting stops after this long (30 to 600).");
+      "Used by the transmit guards in the next release; this release does not time transmissions yet.");
     const msg = node("p", { id: "rs-msg", class: "hint muted", role: "status" });
     const say = (text, bad) => { msg.textContent = text; msg.setAttribute("class", bad ? "error" : "hint muted"); };
     const save = node("button", { id: "rs-save", type: "button" }, "Save station settings");

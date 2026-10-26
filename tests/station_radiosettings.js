@@ -40,6 +40,15 @@ const flush = () => new Promise((r) => setImmediate(r));
   const out = {};
   const sec = ctx.window.dxbRadioSettings.section("radio1");
   out.initialSwr = sec.find("rs-swr").value;       // before GET answers: the defaults
+  // the hint under each number field (the field box: label, input, hint)
+  const text = (e) => (typeof e === "string" ? e : e.textContent + e.kids.map(text).join(""));
+  const hintOf = (id) => {
+    const box = (function up(e) { for (const k of e.kids || []) { if (k instanceof Elem && k.kids.includes(sec.find(id))) return k; const f = k instanceof Elem ? up(k) : null; if (f) return f; } return null; })(sec);
+    const p = box ? box.kids.find((k) => k instanceof Elem && k.tag === "p") : null;
+    return p ? text(p) : null;
+  };
+  out.swrHint = hintOf("rs-swr");
+  out.pttHint = hintOf("rs-ptt");
   out.initialPtt = sec.find("rs-ptt").value;
   await flush();
   const swr = sec.find("rs-swr"), ptt = sec.find("rs-ptt"), msg = sec.find("rs-msg");
