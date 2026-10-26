@@ -91,6 +91,17 @@ const flush = () => new Promise((r) => setImmediate(r));
   out.enterSaved = calls.length - before;
   out.enterPrevented = prevented;
 
+  // the "no SWR guard" line follows the settings answer
+  const guardLine = async (reply) => {
+    settingsReply = reply;
+    const sec2 = ctx.window.dxbRadioSettings.section("radio1");
+    await flush();
+    return sec2.find("rs-guard").textContent;
+  };
+  out.guardLineOff = await guardLine({ swr_limit: 3, ptt_timeout_s: 180, probed: null, swr_guard: false });
+  out.guardLineOn = await guardLine({ swr_limit: 3, ptt_timeout_s: 180, probed: null, swr_guard: true });
+  out.guardLineUnsaid = await guardLine({ swr_limit: 3, ptt_timeout_s: 180, probed: null });
+
   // an expired session says so
   httpStatus = 401;
   sec.find("rs-save").listeners.click();

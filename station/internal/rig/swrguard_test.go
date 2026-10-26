@@ -1,8 +1,10 @@
 package rig
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -20,27 +22,27 @@ func newLatch() (*SWRGuard, *plClock) {
 
 func trip(t *testing.T, g *SWRGuard, swr float64) {
 	t.Helper()
-	g.Observe(swr, true)
-	g.Observe(swr, true)
-	if g.Observe(swr, true) != Tripped {
+	g.Observe(swr, true, false)
+	g.Observe(swr, true, false)
+	if g.Observe(swr, true, false) != Tripped {
 		t.Fatalf("no trip at %.1f", swr)
 	}
 }
 
 func TestSWRGuardNeedsThreeFrames(t *testing.T) {
 	g, _ := newLatch()
-	if g.Observe(5.8, true) != Quiet || g.Observe(5.8, true) != Quiet || g.Latched() {
+	if g.Observe(5.8, true, false) != Quiet || g.Observe(5.8, true, false) != Quiet || g.Latched() {
 		t.Fatal("tripped before three reads")
 	}
-	if g.Observe(2.0, true) != Quiet { // a good read starts the count again
+	if g.Observe(2.0, true, false) != Quiet { // a good read starts the count again
 		t.Fatal("a good read tripped")
 	}
-	g.Observe(5.8, true)
-	g.Observe(5.8, true)
+	g.Observe(5.8, true, false)
+	g.Observe(5.8, true, false)
 	if g.Latched() {
 		t.Fatal("the count was not reset by a good read")
 	}
-	if g.Observe(5.8, true) != Tripped || !g.Latched() {
+	if g.Observe(5.8, true, false) != Tripped || !g.Latched() {
 		t.Fatal("the third read in a row did not trip")
 	}
 	if got := g.Reason(); got != guardReason {
@@ -49,7 +51,7 @@ func TestSWRGuardNeedsThreeFrames(t *testing.T) {
 	// exactly at the limit is not over it
 	g2, _ := newLatch()
 	for i := 0; i < 6; i++ {
-		g2.Observe(3.0, true)
+		g2.Observe(3.0, true, false)
 	}
 	if g2.Latched() {
 		t.Fatal("a read at the limit tripped")
@@ -59,14 +61,14 @@ func TestSWRGuardNeedsThreeFrames(t *testing.T) {
 func TestSWRGuardIgnoresWhileRX(t *testing.T) {
 	g, _ := newLatch()
 	for i := 0; i < 10; i++ {
-		if g.Observe(9, false) != Quiet {
+		if g.Observe(9, false, false) != Quiet {
 			t.Fatal("tripped while receiving")
 		}
 	}
-	g.Observe(9, true)
-	g.Observe(9, true)
-	g.Observe(9, false) // receiving: the run is broken
-	g.Observe(9, true)
+	g.Observe(9, true, false)
+	g.Observe(9, true, false)
+	g.Observe(9, false, false) // receiving: the run is broken
+	g.Observe(9, true, false)
 	if g.Latched() {
 		t.Fatal("reads either side of a receive period counted as consecutive")
 	}
@@ -76,12 +78,12 @@ func TestSWRGuardSuppressedAroundATU(t *testing.T) {
 	g, clk := newLatch()
 	g.SuppressAroundATU(30 * time.Second)
 	for i := 0; i < 9; i++ {
-		if g.Observe(8, true) != Quiet {
+		if g.Observe(8, true, false) != Quiet {
 			t.Fatal("tripped inside the ATU window")
 		}
 	}
 	clk.Advance(29 * time.Second)
-	g.Observe(8, true)
+	g.Observe(8, true, false)
 	if g.Latched() {
 		t.Fatal("tripped at 29 s")
 	}
@@ -138,12 +140,12 @@ func TestSWRGuardOverride(t *testing.T) {
 		t.Fatal("still latched after the override")
 	}
 	for i := 0; i < 9; i++ {
-		if g.Observe(6, true) != Quiet {
+		if g.Observe(6, true, false) != Quiet {
 			t.Fatal("tripped on the overridden band")
 		}
 	}
 	g.NoteFreq(14100000) // same band: still overridden
-	if g.Observe(6, true) != Quiet {
+	if g.Observe(6, true, false) != Quiet {
 		t.Fatal("tripped inside the overridden band")
 	}
 	g.NoteFreq(7074000) // another band re-arms
@@ -333,5 +335,144 @@ func TestNoSWRGuardWithoutReadableSWR(t *testing.T) {
 	active, latched, _ := h.gd.View()
 	if active || latched || h.rig.has("set_ptt 0") {
 		t.Fatal("a radio with no SWR meter got a guard")
+	}
+}
+
+// ---- fix round 1 -------------------------------------------------------------------------------
+
+// Out-of-band frequencies (and 0, before the first read) are not band changes.
+func TestSWRGuardOnlyAnotherAmateurBandClears(t *testing.T) {
+	g, _ := newLatch()
+	g.NoteFreq(14074000)
+	trip(t, g, 5.8)
+	for _, hz := range []int64{14350001, 13999999, 0, 14074000, 14000000, 14350000} {
+		if g.NoteFreq(hz) || !g.Latched() {
+			t.Fatalf("%d cleared a 20 m latch", hz)
+		}
+	}
+	if !g.NoteFreq(7000000) || g.Latched() {
+		t.Fatal("the 40 m band edge did not clear it")
+	}
+	// the same through the guard's own state: freq 0 before any read
+	g2, _ := newLatch()
+	g2.NoteFreq(0)
+	g2.NoteFreq(14074000)
+	trip(t, g2, 5.8)
+	g2.NoteFreq(0)
+	if !g2.Latched() {
+		t.Fatal("freq 0 cleared the latch")
+	}
+}
+
+// The ATU window ignores the tuner's own carrier, not a transmission the station makes meanwhile.
+func TestSWRGuardATUWindowDoesNotBlindStationTransmit(t *testing.T) {
+	g, _ := newLatch()
+	g.SuppressAroundATU(30 * time.Second)
+	for i := 0; i < 5; i++ {
+		if g.Observe(8, true, false) != Quiet {
+			t.Fatal("the tuner's carrier tripped")
+		}
+	}
+	g.Observe(8, true, true)
+	g.Observe(8, true, true)
+	if g.Observe(8, true, true) != Tripped {
+		t.Fatal("a PTT inside the window was not guarded")
+	}
+}
+
+func TestSWRGuardOverrideRearmsOnGoodRead(t *testing.T) {
+	g, _ := newLatch()
+	g.NoteFreq(14074000)
+	trip(t, g, 5.8)
+	g.Override()
+	for i := 0; i < 5; i++ {
+		g.Observe(6, true, false)
+	}
+	if g.Latched() {
+		t.Fatal("tripped while overridden")
+	}
+	g.Observe(1.5, true, false) // the match is good: the override is spent
+	trip(t, g, 6)
+}
+
+func TestSWRGuardOverrideRearmsOnReleaseOrNewHolder(t *testing.T) {
+	for _, how := range []string{"release", "takeover"} {
+		h := newGuardHarness(t, swrCaps())
+		h.in.Claim(ixHolder("a"))
+		h.read(5.8, 3)
+		if r := h.in.Override("a"); !r.OK {
+			t.Fatal(r)
+		}
+		h.read(6, 3)
+		if _, l, _ := h.gd.View(); l {
+			t.Fatalf("%s: tripped while overridden", how)
+		}
+		if how == "release" {
+			h.in.Release("a")
+		} else if r := h.in.TakeOver(ixHolder("b")); !r.OK {
+			t.Fatal(r)
+		}
+		h.read(6, 3)
+		if _, l, _ := h.gd.View(); !l {
+			t.Fatalf("%s: the override survived", how)
+		}
+	}
+}
+
+// A last in-window read over the limit leaves the latch set; two ATUs in a row forget the first's
+// reads.
+func TestSWRGuardATUSettledReads(t *testing.T) {
+	h := newGuardHarness(t, swrCaps())
+	h.in.Claim(ixHolder("a"))
+	h.read(5.8, 3)
+	if r := h.in.ATU(context.Background(), "a"); !r.OK {
+		t.Fatal(r)
+	}
+	h.gd.Read(4.0, true)
+	waitFor(t, "ATU timer", func() bool { return len(h.clock.waiters) > 0 })
+	h.clock.Advance(ATUWindow)
+	settle()
+	if _, l, _ := h.gd.View(); !l {
+		t.Fatal("a tuner that left SWR at 4.0 cleared the latch")
+	}
+	g, _ := newLatch()
+	g.SuppressAroundATU(time.Second)
+	g.Observe(1.4, true, false)
+	if _, ok := g.Settled(); !ok {
+		t.Fatal("no settled read")
+	}
+	g.SuppressAroundATU(time.Second)
+	if _, ok := g.Settled(); ok {
+		t.Fatal("the first ATU's read leaked into the second")
+	}
+}
+
+type lockedBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+func (l *lockedBuf) String() string { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
+
+func TestSWRGuardLogLines(t *testing.T) {
+	h := newGuardHarness(t, swrCaps())
+	buf := &lockedBuf{}
+	h.in.Log = slog.New(slog.NewTextHandler(buf, nil))
+	h.in.Claim(ixHolder("a"))
+	h.read(5.8, 3)
+	h.in.Override("a")
+	out := buf.String()
+	for _, want := range []string{
+		`msg="radio radio1: SWR guard tripped 5.8:1 (limit 3.0)"`,
+		`msg="radio radio1: SWR guard overridden by iPad"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log lacks %s:\n%s", want, out)
+		}
 	}
 }

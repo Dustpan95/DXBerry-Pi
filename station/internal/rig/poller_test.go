@@ -716,3 +716,58 @@ func TestPollerGuardHookSeesSWRWithoutThePage(t *testing.T) {
 	}
 	plEventually(t, "hook reads", func() bool { mu.Lock(); defer mu.Unlock(); return len(seen) >= 3 })
 }
+
+// A program keys the radio while nobody watches (interest None): with a guard listening the poller
+// probes get_ptt every second, so the 200 ms cadence starts long before the 10 s main cycle.
+func TestPollerGuardProbesPTTBelowPage(t *testing.T) {
+	l := txLink()
+	l.set("get_ptt", "PTT: 0")
+	p, clk := startPoller(t, l, meterCaps())
+	var mu sync.Mutex
+	var seen []float64
+	p.SetHooks(Hooks{SWR: func(swr float64, on bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if on {
+			seen = append(seen, swr)
+		}
+	}})
+	p.SetInterest(None)
+	plEventually(t, "first probe", func() bool { return l.count("get_ptt") >= 1 })
+	settle()
+	l.set("get_ptt", "PTT: 1")
+	clk.Advance(time.Second) // one probe period, far short of the 10 s main cycle
+	plEventually(t, "PTT found", func() bool { return p.State().PTT })
+	for i := 0; i < 3; i++ {
+		clk.Advance(200 * time.Millisecond)
+		settle()
+	}
+	plEventually(t, "SWR to the hook", func() bool { mu.Lock(); defer mu.Unlock(); return len(seen) >= 3 })
+}
+
+// The hook is told whether the station itself keys the radio.
+func TestPollerHookGetsStationTx(t *testing.T) {
+	l := txLink()
+	l.set("get_ptt", "PTT: 0")
+	p, clk := startPoller(t, l, meterCaps())
+	var mu sync.Mutex
+	var tx []bool
+	p.SetHooks(Hooks{SWRTx: func(swr float64, on, st bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if on {
+			tx = append(tx, st)
+		}
+	}})
+	p.SetInterest(Page)
+	plEventually(t, "first read", func() bool { return p.State().Freq == 14074000 })
+	p.SetTransmitting(true)
+	plEventually(t, "first", func() bool { mu.Lock(); defer mu.Unlock(); return len(tx) >= 1 })
+	clk.Advance(200 * time.Millisecond)
+	plEventually(t, "second", func() bool { mu.Lock(); defer mu.Unlock(); return len(tx) >= 2 })
+	mu.Lock()
+	defer mu.Unlock()
+	if !tx[0] || !tx[1] {
+		t.Fatalf("stationTx %v", tx)
+	}
+}

@@ -39,6 +39,9 @@ const (
 
 const txEvery = 200 * time.Millisecond // SWR/ALC cadence while transmitting
 
+// probeEvery is how often get_ptt is asked below Page interest while an SWR guard listens.
+const probeEvery = time.Second
+
 // missesToQuiet is how many poll cycles in a row with no successful read make a radio "not answering".
 const missesToQuiet = 2
 
@@ -191,7 +194,7 @@ func (p *Poller) SetHooks(h Hooks) {
 func (p *Poller) watchesSWR() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.hooks.SWR == nil {
+	if p.hooks.SWR == nil && p.hooks.SWRTx == nil {
 		return false
 	}
 	for _, n := range p.caps.ReadableMeters {
@@ -202,10 +205,30 @@ func (p *Poller) watchesSWR() bool {
 	return false
 }
 
+// swrHook is the SWR callback with the station's own keying folded in (nil: none listens).
 func (p *Poller) swrHook() func(float64, bool) {
 	p.mu.Lock()
+	h := p.hooks
+	p.mu.Unlock()
+	switch {
+	case h.SWRTx != nil:
+		return func(swr float64, on bool) { h.SWRTx(swr, on, p.transmitting.Load()) }
+	case h.SWR != nil:
+		return h.SWR
+	}
+	return nil
+}
+
+// probesPTT reports whether a guard listens on a radio whose PTT can be read: below Page
+// interest the poller then asks get_ptt every probeEvery, so a radio keyed by a program is
+// found (and its SWR read at the transmit cadence) without waiting for the slow main cycle.
+func (p *Poller) probesPTT() bool {
+	if !p.watchesSWR() {
+		return false
+	}
+	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.hooks.SWR
+	return p.caps.CanGetPTT
 }
 
 func (p *Poller) nudge() {
@@ -285,7 +308,7 @@ func (p *Poller) publishLocked() {
 
 // Run polls until ctx ends.
 func (p *Poller) Run(ctx context.Context) {
-	var lastStart, lastTx time.Time
+	var lastStart, lastTx, lastProbe time.Time
 	txActive := false
 	for ctx.Err() == nil {
 		p.mu.Lock()
@@ -316,6 +339,10 @@ func (p *Poller) Run(ctx context.Context) {
 		if txActive && lastTx.Add(txEvery).Before(next) {
 			next, isTx = lastTx.Add(txEvery), true
 		}
+		isProbe := false
+		if !txActive && in != Page && p.probesPTT() && lastProbe.Add(probeEvery).Before(next) {
+			next, isTx, isProbe = lastProbe.Add(probeEvery), false, true
+		}
 		if next.After(now) {
 			select {
 			case <-ctx.Done():
@@ -331,6 +358,13 @@ func (p *Poller) Run(ctx context.Context) {
 				return
 			case <-p.wake:
 			case <-time.After(5 * time.Millisecond):
+			}
+			continue
+		}
+		if isProbe {
+			lastProbe = now
+			if p.probeCycle(ctx) {
+				txActive, lastTx = true, now.Add(-txEvery)
 			}
 			continue
 		}
@@ -612,6 +646,14 @@ func (p *Poller) mainCycle(ctx context.Context, in Interest) bool {
 		}
 	}
 	return true
+}
+
+// probeCycle asks get_ptt alone and reports whether the radio is keyed.
+func (p *Poller) probeCycle(ctx context.Context) bool {
+	c := &cycle{p: p}
+	defer c.done()
+	on, ok := p.readPTT(ctx, c)
+	return ok && on
 }
 
 // txCycle reads PTT and, while it is on, SWR and ALC. It reports whether the

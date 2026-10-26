@@ -107,10 +107,12 @@ func (g *SWRGuard) reasonLocked() string {
 }
 
 // Observe takes one SWR read. pttOn says the radio was keyed when it was read; reads taken
-// while it receives only reset the count. Inside the ATU window reads are ignored. It returns
+// while it receives only reset the count. Inside the ATU window reads are ignored, unless the
+// station itself is keying (stationTx: a PTT window or Tune carrier): the tuner's own carrier is
+// ignored, a transmission the owner makes meanwhile is guarded normally. It returns
 // Tripped on the third consecutive over-limit read (again on later ones while latched, so a
 // program that keys the radio again is unkeyed again).
-func (g *SWRGuard) Observe(swr float64, pttOn bool) Verdict {
+func (g *SWRGuard) Observe(swr float64, pttOn, stationTx bool) Verdict {
 	lim := g.limit()
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -118,16 +120,17 @@ func (g *SWRGuard) Observe(swr float64, pttOn bool) Verdict {
 		g.over = 0
 		return Quiet
 	}
-	if !g.until.IsZero() && g.clock.Now().Before(g.until) {
+	if !stationTx && !g.until.IsZero() && g.clock.Now().Before(g.until) {
 		g.over = 0
 		g.lastIgn, g.haveIgn = swr, true
 		return Quiet
 	}
-	if g.overridden && g.overBand == g.band {
+	if swr <= lim {
 		g.over = 0
+		g.overridden = false // the match is good again: the override is spent and the guard re-arms
 		return Quiet
 	}
-	if swr <= lim {
+	if g.overridden && g.overBand == g.band {
 		g.over = 0
 		return Quiet
 	}
@@ -140,20 +143,23 @@ func (g *SWRGuard) Observe(swr float64, pttOn bool) Verdict {
 	return Tripped
 }
 
-// NoteFreq tells the guard the radio's frequency. A move into a different band clears the latch
-// and re-arms an override; it reports whether the latch was cleared.
+// NoteFreq tells the guard the radio's frequency. A move into a different amateur band clears
+// the latch and re-arms an override; it reports whether the latch was cleared. A frequency in no
+// band (outside them, or 0 before the first read) is not a band change.
 func (g *SWRGuard) NoteFreq(hz int64) bool {
 	band := BandOf(hz)
 	g.mu.Lock()
-	moved := g.bandKnown && band != g.band
+	defer g.mu.Unlock()
+	if band == "" {
+		return false
+	}
 	g.band, g.bandKnown = band, true
 	if g.overridden && g.overBand != band {
 		g.overridden = false
 	}
-	latched, from := g.latched, g.latchBand
-	g.mu.Unlock()
-	if moved && latched && band != from {
-		return g.ClearForBandChange()
+	if g.latched && band != g.latchBand {
+		g.latched, g.atuArmed, g.over = false, false, 0
+		return true
 	}
 	return false
 }
@@ -211,6 +217,13 @@ func (g *SWRGuard) ClearAfterATU(nextSWR float64) bool {
 	return true
 }
 
+// Rearm ends an override: the guard trips again on the band it was overridden on.
+func (g *SWRGuard) Rearm() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.overridden = false
+}
+
 // Override clears the latch for the band the radio is on now; no trip happens there until the
 // band changes.
 func (g *SWRGuard) Override() {
@@ -237,6 +250,9 @@ type Guard struct {
 
 	// Drop ends a PTT window for a reason (PTT.Drop); nil: no window to end.
 	Drop func(reason string)
+
+	omu      sync.Mutex
+	ovHolder string // who overrode: the override ends when the holder changes or releases
 }
 
 // NewGuard makes in's SWR guard: limit is the radio's SWR limit setting (read on every use).
@@ -287,10 +303,15 @@ func (gd *Guard) cleared(cause string) {
 }
 
 // Read is the poller's hook: one SWR read taken while pttOn (false: the radio is receiving).
-func (gd *Guard) Read(swr float64, pttOn bool) {
+func (gd *Guard) Read(swr float64, pttOn bool) { gd.ReadTx(swr, pttOn, false) }
+
+// ReadTx is Read with stationTx: the station itself keys the radio (a PTT window or Tune
+// carrier), so the ATU window does not blind the guard.
+func (gd *Guard) ReadTx(swr float64, pttOn, stationTx bool) {
 	if !gd.Active() {
 		return
 	}
+	gd.rearmIfHolderChanged()
 	if pttOn {
 		gd.NoteFreq(gd.in.Poller.State().Freq)
 		if gd.g.ATUPending() && gd.g.ClearAfterATU(swr) {
@@ -299,7 +320,7 @@ func (gd *Guard) Read(swr float64, pttOn bool) {
 		}
 	}
 	was := gd.g.Latched()
-	if gd.g.Observe(swr, pttOn) == Tripped {
+	if gd.g.Observe(swr, pttOn, stationTx) == Tripped {
 		gd.tripped(was)
 	}
 }
@@ -309,6 +330,24 @@ func (gd *Guard) NoteFreq(hz int64) {
 	if gd.g.NoteFreq(hz) {
 		gd.cleared("band changed")
 	}
+}
+
+// rearmIfHolderChanged ends an override when the tab that made it no longer holds the radio
+// (it released, or another holder took it).
+func (gd *Guard) rearmIfHolderChanged() {
+	gd.omu.Lock()
+	id := gd.ovHolder
+	gd.omu.Unlock()
+	if id == "" {
+		return
+	}
+	if h, ok := gd.in.Owners.Holder(gd.in.Radio); ok && h.ID == id {
+		return
+	}
+	gd.g.Rearm()
+	gd.omu.Lock()
+	gd.ovHolder = ""
+	gd.omu.Unlock()
 }
 
 func (gd *Guard) tripped(was bool) {
@@ -363,6 +402,11 @@ func (gd *Guard) ATUStarted() {
 // Override is the owner's confirmed override: the latch clears for the band the radio is on.
 func (gd *Guard) Override(device string) {
 	gd.g.Override()
+	if h, ok := gd.in.Owners.Holder(gd.in.Radio); ok {
+		gd.omu.Lock()
+		gd.ovHolder = h.ID
+		gd.omu.Unlock()
+	}
 	gd.in.log().Warn(fmt.Sprintf("radio %s: SWR guard overridden by %s", gd.in.Radio, device))
 	gd.cleared("override by " + device)
 }
@@ -372,11 +416,14 @@ type Hooks struct {
 	// SWR gets every SWR read taken while the radio is keyed, and (0, false) when a transmit
 	// cycle finds it receiving.
 	SWR func(swr float64, pttOn bool)
+	// SWRTx is SWR with stationTx, whether the station itself is keying; the poller calls it in
+	// place of SWR when set.
+	SWRTx func(swr float64, pttOn, stationTx bool)
 	// Freq gets each frequency a read reports.
 	Freq func(hz int64)
 }
 
 // Hooks is the poller's side of the guard.
 func (gd *Guard) Hooks() Hooks {
-	return Hooks{SWR: gd.Read, Freq: gd.NoteFreq}
+	return Hooks{SWR: gd.Read, SWRTx: gd.ReadTx, Freq: gd.NoteFreq}
 }

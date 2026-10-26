@@ -241,9 +241,9 @@ test_radio_settings_form_values() {
   j=$(node "$DXB_ROOT/tests/station_radiosettings.js" "$SP_WEB/radiosettings.js" 2> "$TEST_TMP/rs.err") || { _fail "station_radiosettings.js failed: $(cat "$TEST_TMP/rs.err")"; return; }
   # the defaults show until the station answers, then the saved values
   assert_eq "$(jq -r '.initialSwr + " " + .initialPtt' <<< "$j")" "3 180"
-  # rc2 has no SWR latch and no PTT timer: the hints say so instead of promising a guard
-  assert_eq "$(jq -r '.swrHint' <<< "$j")" "Used by the transmit guards in the next release; this release does not watch SWR yet."
-  assert_eq "$(jq -r '.pttHint' <<< "$j")" "Used by the transmit guards in the next release; this release does not time transmissions yet."
+  # rc3 has the SWR latch and the PTT timeout: the hints say what they do (changed in rc3 Task 5)
+  assert_eq "$(jq -r '.swrHint' <<< "$j")" "Three SWR readings in a row over this limit unkey the radio and latch until you change band, tune the ATU, or override."
+  assert_eq "$(jq -r '.pttHint' <<< "$j")" "Hold-to-talk PTT drops after this long."
   assert_eq "$(jq -r '.swr + " " + .ptt' <<< "$j")" "2.5 90"
   assert_eq "$(jq -r '[.swrMin, .swrMax, .swrStep, .pttMin, .pttMax] | join(" ")' <<< "$j")" "1.5 10 0.1 30 600"
   assert_eq "$(jq -r '.getCall.method + " " + .getCall.url + " " + .getCall.credentials' <<< "$j")" "GET /api/radio/radio1/settings same-origin"
@@ -572,7 +572,8 @@ test_ptt_release_events() {
   assert_eq "$(jq -r '.quickOrder' <<< "$j")" ""
   assert_eq "$(jq -r '.audioCalls.listen' <<< "$j")" "1"
   assert_eq "$(jq -r '.audioCalls.openMic' <<< "$j")" "5"
-  assert_eq "$(jq -c '.audioCalls.tx' <<< "$j")" '[true,false,true,false,true,false,true,false,true,false]'
+  # the microphone goes out only after the station's OK, and stops with every end
+  assert_eq "$(jq -c '.audioCalls.tx' <<< "$j")" '[true,false,true,false,true,false,true,false,false]'
 }
 
 test_ptt_heartbeat_every_5s() {
@@ -599,19 +600,63 @@ test_ptt_disabled_with_the_reason() {
 test_ptt_station_refusal_and_drop_end_the_hold() {
   command -v node > /dev/null 2>&1 || return 0
   local j
-  # the station refuses the on (the mic is not open yet): its words, no off, the mic closed again
+  # the station refuses the on (the mic is not open yet): its words, the mic never let out, and
+  # one off after the answer (an on was sent: the off is idempotent), none at the release
   j=$(spt_run refused 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
-  assert_eq "$(jq -c '.posts' <<< "$j")" '["on"]'
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["on","off"]'
   assert_eq "$(jq -r '.notices[0]' <<< "$j")" "bad: the microphone is not open yet. Press PTT again once the browser has asked for the microphone."
-  assert_eq "$(jq -c '.tx' <<< "$j")" '[true,false]'
+  assert_eq "$(jq -c '.tx' <<< "$j")" '[false]'
   assert_eq "$(jq -r '.labelAfter' <<< "$j")" "PTT"
-  assert_eq "$(jq -c '.postsAfterRelease' <<< "$j")" '["on"]'
-  # the station drops PTT (its notice on the events socket): the hold ends, the reason shows, no off
+  assert_eq "$(jq -c '.postsAfterRelease' <<< "$j")" '["on","off"]'
+  # the station drops PTT (its notice for this window): the hold ends, the reason shows, one off
   j=$(spt_run dropped 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
   assert_eq "$(jq -r '"\(.transmitting) \(.labelAfter) \(.hbCleared)"' <<< "$j")" "Transmitting PTT true"
   assert_eq "$(jq -c '.notices' <<< "$j")" '["warn: PTT off: heartbeat lost"]'
-  assert_eq "$(jq -c '.posts' <<< "$j")" '["on"]'
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["on","off"]'
   assert_eq "$(jq -c '.tx' <<< "$j")" '[true,false]'
+}
+
+test_ptt_notice_for_another_window_keeps_the_hold() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(spt_run stale 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  # the previous press's late "released" leaves this press held; this window's own notice ends it
+  assert_eq "$(jq -r '"\(.afterStale) \(.afterOwn)"' <<< "$j")" "Transmitting PTT"
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["on","off","on","off"]'
+  assert_eq "$(jq -c '.notices' <<< "$j")" '["warn: PTT off: heartbeat lost"]'
+}
+
+test_ptt_refused_heartbeat_sends_off() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(spt_run hbrefused 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["on","hb","off"]'
+  assert_eq "$(jq -c '.notices' <<< "$j")" '["bad: PTT is not on. Press PTT again."]'
+  assert_eq "$(jq -r '"\(.labelAfter) \(.hbCleared)"' <<< "$j")" "PTT true"
+}
+
+test_ptt_rebuilt_section_ends_the_hold() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(spt_run rebuild 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -r '.held' <<< "$j")" "Transmitting"
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["on","off"]'
+  assert_eq "$(jq -r '"\(.labelAfter) \(.hbCleared)"' <<< "$j")" "PTT true"
+  assert_eq "$(jq -c '.tx' <<< "$j")" '[true,false]'
+}
+
+test_ptt_release_while_the_mic_prompt_is_open() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(spt_run pendingmic 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -r '.labelPending' <<< "$j")" "Opening the microphone…"
+  # the prompt answered after the release: no on, no off, the mic never let out
+  assert_eq "$(jq -c '.posts' <<< "$j")" '[]'
+  assert_eq "$(jq -c '.tx' <<< "$j")" '[false]'
+  assert_eq "$(jq -r '.labelAfter' <<< "$j")" "PTT"
+}
+
+test_ptt_page_wide_release() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(spt_run docrelease 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -r '"\(.otherFinger) \(.afterUp) \(.afterHidden) \(.afterLost)"' <<< "$j")" "Transmitting PTT PTT PTT"
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["on","off","on","off","on","off"]'
 }
 
 test_ptt_page_files_are_plain() {
@@ -669,4 +714,13 @@ test_guard_page_files_are_plain() {
   assert_file_not_contains "$SP_WEB/vfo.js" " confirm("
   assert_file_contains "$SP_WEB/vfo.js" "Transmit anyway into a bad match? The radio will fold back power."
   assert_file_contains "$SP_WEB/radiosettings.js" "no SWR guard: this radio does not report SWR over CAT"
+}
+
+test_radio_settings_swr_guard_line() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j
+  j=$(node "$DXB_ROOT/tests/station_radiosettings.js" "$SP_WEB/radiosettings.js" 2> "$TEST_TMP/rs.err") || { _fail "station_radiosettings.js failed: $(cat "$TEST_TMP/rs.err")"; return; }
+  assert_eq "$(jq -r '.guardLineOff' <<< "$j")" "no SWR guard: this radio does not report SWR over CAT"
+  assert_eq "$(jq -r '.guardLineOn' <<< "$j")" ""
+  assert_eq "$(jq -r '.guardLineUnsaid' <<< "$j")" ""
 }
