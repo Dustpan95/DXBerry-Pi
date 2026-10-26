@@ -43,10 +43,15 @@ func (b audioBridge) AddICECandidate(tab string, c httpapi.ICECandidate) error {
 	return b.Bridge.AddICECandidate(tab, audio.Candidate(c))
 }
 
-// wireRadioRemoval ends a radio's WebRTC bridge (and every connection on it) when the radio
-// leaves the records.
-func wireRadioRemoval(m *rig.Manager, bridges *audio.Bridges) {
-	m.OnRemoved = bridges.Remove
+// wireRadioRemoval forgets a radio's PTT and intents (forget: RadioAPI.Forget), then ends its
+// WebRTC bridge (and every connection on it), when the radio leaves the records. Forget comes
+// first: the PTT window closes and lets go of the bridge before the bridge goes, and a radio added
+// again under the same name gets a PTT on its new bridge.
+func wireRadioRemoval(m *rig.Manager, forget func(radio string), bridges *audio.Bridges) {
+	m.OnRemoved = func(radio string) {
+		forget(radio)
+		bridges.Remove(radio)
+	}
 }
 
 // version is set at build time (-X main.version=...).
@@ -140,7 +145,7 @@ func main() {
 		active, _, _ := g.View()
 		return active
 	}
-	wireRadioRemoval(rigs, bridges)
+	wireRadioRemoval(rigs, radioAPI.Forget, bridges)
 	runner.OnCall = func(cmd string, args []string) {
 		if status.ChangesState(cmd, args) {
 			st.Poke()

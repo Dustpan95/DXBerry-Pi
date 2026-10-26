@@ -393,19 +393,23 @@ func (a *RadioAPI) lookup(w http.ResponseWriter, r *http.Request) (radios.Radio,
 	}
 	rec, ok := a.Radios.Get(name)
 	if !ok {
-		a.drop(name)
+		a.Forget(name)
 		writeError(w, http.StatusNotFound, "no such radio")
 		return radios.Radio{}, false
 	}
 	return rec, true
 }
 
-// drop forgets a radio's Intents (the radio left the records) and ends their retry loop.
-func (a *RadioAPI) drop(name string) {
+// Forget drops a radio's Intents and PTT (the radio left the records): its PTT window ends and
+// lets go of the radio's bridge, and the unkey retry loop ends. The rig layer calls it when a
+// radio is removed, before the radio's bridge goes, so a radio added again under the same name
+// gets a PTT on its new bridge; a request for a radio the records lack calls it too.
+func (a *RadioAPI) Forget(name string) {
 	a.mu.Lock()
 	in, p := a.intents[name], a.ptts[name]
 	delete(a.intents, name)
 	delete(a.ptts, name)
+	delete(a.avail, name)
 	a.mu.Unlock()
 	if p != nil {
 		p.Close()

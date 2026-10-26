@@ -388,3 +388,41 @@ func TestPollerHooksCarryTheStationTransmitFlag(t *testing.T) {
 	other.SWRTx(9, true, true)
 	other.Freq(7074000)
 }
+
+// A radio removed and added again under the same name gets a new PTT on its new bridge: Forget
+// (the rig layer's OnRemoved) drops the old PTT, which would otherwise ask the old, shut bridge
+// for the microphone for ever.
+func TestForgottenRadioGetsANewPTT(t *testing.T) {
+	tab := "s1|iPad#a1"
+	old := &ptBridge{inbound: map[string]bool{tab: true}, allowed: map[string]bool{}}
+	var mu sync.Mutex
+	cur := old
+	srv := &ptServer{ok: true}
+	f := &rwRig{st: rig.State{Connected: true, Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}}
+	api := &RadioAPI{Auth: multiAuth{}, Radios: rwRecords{"radio1": {Name: "radio1", Port: 4532, PTT: "vox"}}, Rigs: rwRigs{f},
+		Owners: session.NewOwners(realNow{}), Ctx: context.Background(), PTTInboundWait: 50 * time.Millisecond,
+		Audio: func(string) PTTAudio { mu.Lock(); defer mu.Unlock(); return PTTAudio{Bridge: cur, Server: srv} }}
+	h := New(Config{Listen: "127.0.0.1:0", Auth: multiAuth{}, Routes: api.Register}).Handler
+	rwDo(h, "POST", "/api/radio/radio1/claim", `{}`, pttOwner)
+	if got := body(rwDo(h, "POST", "/api/radio/radio1/ptt", `{"on":true}`, pttOwner)); !strings.HasPrefix(got, `{"ok":true,"window":`) {
+		t.Fatalf("on: %s", got)
+	}
+	rwDo(h, "POST", "/api/radio/radio1/ptt", `{"on":false}`, pttOwner)
+	// the radio leaves the records and comes back: the old bridge is shut, the page's audio is on
+	// a new one
+	nb := &ptBridge{inbound: map[string]bool{tab: true}, allowed: map[string]bool{}}
+	old.mu.Lock()
+	old.inbound = map[string]bool{}
+	old.mu.Unlock()
+	mu.Lock()
+	cur = nb
+	mu.Unlock()
+	api.Forget("radio1")
+	if got := body(rwDo(h, "POST", "/api/radio/radio1/ptt", `{"on":true}`, pttOwner)); !strings.HasPrefix(got, `{"ok":true,"window":`) {
+		t.Fatalf("on after the radio came back: %s", got)
+	}
+	if !nb.talking(tab) || old.talking(tab) {
+		t.Fatal("PTT is not on the new bridge")
+	}
+	rwDo(h, "POST", "/api/radio/radio1/ptt", `{"on":false}`, pttOwner)
+}

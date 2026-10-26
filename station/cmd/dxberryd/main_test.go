@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -46,13 +47,24 @@ func TestRemovedRadioLosesItsBridge(t *testing.T) {
 	m.Dialer = func(string) rig.Conn { return idleConn{} }
 	bridges := audio.NewBridges(audio.NewServerControl(nil, t.TempDir()), audio.DefaultPorts, quiet)
 	t.Cleanup(bridges.Shutdown)
-	wireRadioRemoval(m, bridges)
+	// the radio's PTT and intents are forgotten first, while its bridge is still there: the window
+	// closes and lets go of the bridge before the bridge goes
+	var mu sync.Mutex
+	var forgot []string
+	var b *audio.Bridge
+	wireRadioRemoval(m, func(n string) {
+		mu.Lock()
+		defer mu.Unlock()
+		forgot = append(forgot, fmt.Sprintf("%s %v", n, bridges.Get(n) == b))
+	}, bridges)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { m.Run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
 
-	b := bridges.Get("radio1")
+	mu.Lock()
+	b = bridges.Get("radio1")
+	mu.Unlock()
 	if bridges.Get("radio1") != b {
 		t.Fatal("Get made two bridges")
 	}
@@ -63,5 +75,10 @@ func TestRemovedRadioLosesItsBridge(t *testing.T) {
 			t.Fatal("the radio left the records but kept its bridge")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(forgot) != 1 || forgot[0] != "radio1 true" {
+		t.Fatalf("forgotten %v (want the radio forgotten once, while its bridge was still there)", forgot)
 	}
 }
