@@ -26,7 +26,8 @@ type Conn interface {
 
 // Update is one rig delta for the events socket. Package status declares the
 // same unnamed struct type, so the two meet without importing each other.
-// Link is true when the connection to the radio went up or down.
+// Link is true when the connection to the radio went up or down, or the radio stopped or
+// started answering behind it.
 type Update = struct {
 	Radio string
 	Data  []byte
@@ -238,14 +239,15 @@ func (m *Manager) discover(ctx context.Context, e *entry, model string) {
 func (m *Manager) forward(ctx context.Context, name string, p *Poller) {
 	ch := p.Subscribe()
 	defer p.Unsubscribe(ch)
-	linked := p.State().Connected
+	first := p.State()
+	linked, answering := first.Connected, first.Answering
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case st := <-ch:
-			u := Update{Radio: name, Data: encodeState(st), Link: st.Connected != linked}
-			linked = st.Connected
+			u := Update{Radio: name, Data: encodeState(st), Link: st.Connected != linked || st.Answering != answering}
+			linked, answering = st.Connected, st.Answering
 			m.broadcast(u)
 		}
 	}

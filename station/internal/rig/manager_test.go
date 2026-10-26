@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -268,6 +269,35 @@ func TestManagerBroadcastsDeltas(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatal("no link-change update")
+		}
+	}
+}
+
+// "not answering" goes to every socket, as a link change does
+func TestManagerAnsweringChangeIsALinkUpdate(t *testing.T) {
+	r := newMgRig(t, radio("hf", 4532, 3073))
+	r.tune = func(l *plLink) {
+		for _, k := range []string{"get_freq", "get_mode", "get_vfo", "get_ptt", "get_split_vfo"} {
+			delete(l.reply, k) // rigctld answers, the radio does not: RPRT -1
+		}
+	}
+	r.run()
+	ups, cancel := r.m.Subscribe()
+	defer cancel()
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case u := <-ups:
+			if strings.Contains(string(u.Data), `"answering":false`) {
+				if !u.Link {
+					t.Fatalf("not a link update: %+v", u)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("no answering:false update")
+		case <-time.After(20 * time.Millisecond):
+			r.clk.Advance(10 * time.Second) // the next poll cycle
 		}
 	}
 }

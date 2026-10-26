@@ -252,6 +252,10 @@
 
   // the rig link or the events socket is down: controls dim, STOP stays
   const linkDown = () => !S.sock || !S.st || !S.st.connected;
+  // rigctld is up but the radio behind it does not answer (the station says answering: false)
+  const quiet = () => !linkDown() && S.st.answering === false;
+  // either way the controls dim
+  const dimmed = () => linkDown() || quiet();
 
   function setText(e, t) { if (e.textContent !== t) e.textContent = t; }
   function setAttr(e, k, v) { if (e.getAttribute(k) !== v) e.setAttribute(k, v); }
@@ -369,7 +373,7 @@
     let last = null;
     let acc = 0;
     knob.addEventListener("pointerdown", (e) => {
-      if (linkDown()) return;
+      if (dimmed()) return;
       last = e.clientX;
       acc = 0;
       if (knob.setPointerCapture) { try { knob.setPointerCapture(e.pointerId); } catch (x) { /* not capturable */ } }
@@ -387,13 +391,13 @@
     knob.addEventListener("pointercancel", end);
     knob.addEventListener("wheel", (e) => {
       e.preventDefault();
-      if (linkDown() || !e.deltaY) return;
+      if (dimmed() || !e.deltaY) return;
       const dir = e.deltaY < 0 ? 1 : -1;
       spin(dir, 1);
       move(dir, 1);
     }, { passive: false });
     knob.addEventListener("keydown", (e) => {
-      if (linkDown()) return;
+      if (dimmed()) return;
       const k = { ArrowUp: 1, ArrowRight: 1, PageUp: 10, ArrowDown: -1, ArrowLeft: -1, PageDown: -10 }[e.key];
       if (!k) return;
       e.preventDefault();
@@ -737,10 +741,13 @@
   function paint() {
     paintOwner();
     for (const f of S.upd) f();
-    const down = linkDown();
+    const down = dimmed();
     root.classList.toggle("is-down", down);
     const chip = document.getElementById("vfo-chip");
-    if (chip) chip.hidden = !down;
+    if (chip) {
+      chip.hidden = !down;
+      setText(chip, quiet() ? "the radio is not answering" : "Reconnecting…");
+    }
     const hasCtl = !!S.st && !!S.st.connected;
     for (const e of root.querySelectorAll(".vfo-ctl")) {
       // ATU and Tune are also held back until this tab has the transmitter (set by their updaters)

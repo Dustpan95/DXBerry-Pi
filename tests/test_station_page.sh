@@ -418,6 +418,7 @@ test_vfo_page_draws_a_radio_with_cat() {
   assert_eq "$(jq -r '.cwPressedAfter + " " + .usbPressedAfter' <<< "$j")" "false true"
   # the rig link down: the real chip shows, controls are disabled, STOP is not; recovery undoes it
   assert_eq "$(jq -r '.chipHiddenAfter' <<< "$j")" "false"
+  assert_eq "$(jq -r '.chipTextDown' <<< "$j")" "Reconnecting…"
   assert_eq "$(jq -r '.rootDown' <<< "$j")" "true"
   assert_eq "$(jq -r '.disabledAfterCount > 10' <<< "$j")" "true"
   assert_eq "$(jq -r '.stopCount' <<< "$j")" "1"
@@ -425,8 +426,17 @@ test_vfo_page_draws_a_radio_with_cat() {
   assert_eq "$(jq -r '.stopDisabled' <<< "$j")" "0"
   assert_eq "$(jq -r '.chipHiddenRecovered' <<< "$j")" "true"
   assert_eq "$(jq -c '.disabledRecovered' <<< "$j")" '["ATU","Tune"]'
+  # a radio that does not answer behind rigctld: the chip says so, controls dim, STOP stays
+  assert_eq "$(jq -r '.chipHiddenQuiet' <<< "$j")" "false"
+  assert_eq "$(jq -r '.chipTextQuiet' <<< "$j")" "the radio is not answering"
+  assert_eq "$(jq -r '.rootDownQuiet' <<< "$j")" "true"
+  assert_eq "$(jq -r '.disabledQuietCount > 10' <<< "$j")" "true"
+  assert_eq "$(jq -r '.stopDisabledQuiet' <<< "$j")" "0"
+  assert_eq "$(jq -r '.chipHiddenAnswering' <<< "$j")" "true"
+  assert_eq "$(jq -c '.disabledAnswering' <<< "$j")" '["ATU","Tune"]'
   # the dashboard card follows a rig event in place
   assert_eq "$(jq -r '.dashFreq' <<< "$j")" "14.074.000 Hz USB"
+  assert_eq "$(jq -r '.dashFreqQuiet' <<< "$j")" "not answering"
 }
 
 test_vfo_page_shows_another_device_by_name() {

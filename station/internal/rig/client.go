@@ -23,6 +23,7 @@ const (
 	dialTimeout       = 2 * time.Second
 	backoffStart      = time.Second
 	backoffMax        = 30 * time.Second
+	stillDownEvery    = 5 * time.Minute
 	queueSize         = 256
 	maxLine           = 64 << 10
 )
@@ -68,7 +69,8 @@ func parseRPRT(line string) (int, bool) {
 type options struct {
 	cmdTimeout time.Duration
 	sleep      func(ctx context.Context, d time.Duration) error
-	hold       bool // do not connect until release() (tests)
+	now        func() time.Time // the link log's clock (tests)
+	hold       bool             // do not connect until release() (tests)
 	// beforeEnqueue, if set, runs in Do between the connected check and the
 	// enqueue (tests widen that window with it).
 	beforeEnqueue func(cmd string)
@@ -132,6 +134,9 @@ func dial(addr string, log *slog.Logger, opt options) *Client {
 	if opt.sleep == nil {
 		opt.sleep = sleepCtx
 	}
+	if opt.now == nil {
+		opt.now = time.Now
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Client{
 		addr: addr, log: log, opt: opt,
@@ -187,11 +192,6 @@ func (c *Client) setState(up bool) {
 	}
 	c.events = append(c.events, up)
 	c.mu.Unlock()
-	if up {
-		c.log.Info("rigctld connected", "addr", c.addr)
-	} else {
-		c.log.Warn("rigctld disconnected", "addr", c.addr)
-	}
 	select {
 	case c.wake <- struct{}{}:
 	default:
@@ -274,6 +274,49 @@ func (c *Client) Do(ctx context.Context, cmd string, args ...string) (Reply, err
 	}
 }
 
+// linkLog is the run loop's account of the link for the log: a link is "up" once a command
+// has succeeded on its connection, so a rigctld that accepts and never answers (a radio switched
+// off behind it) is one streak of "down", logged when it starts and every stillDownEvery, not
+// a connected/disconnected pair every few seconds.
+type linkLog struct {
+	c         *Client
+	up        bool      // a command succeeded on the current connection
+	noted     bool      // the start of this down streak is in the log
+	downSince time.Time // when the streak began
+	lastNote  time.Time // the last line about it
+}
+
+// answered is called after each command that succeeded on the current connection.
+func (l *linkLog) answered() {
+	if l.up {
+		return
+	}
+	l.up = true
+	l.c.log.Info("rigctld connected", "addr", l.c.addr)
+}
+
+// failed is called for a dial that failed or a connection that ended. It reports whether the
+// link had been up (the backoff then starts again).
+func (l *linkLog) failed(err error) bool {
+	now := l.c.opt.now()
+	if l.up {
+		l.up, l.noted, l.downSince, l.lastNote = false, true, now, now
+		l.c.log.Warn("rigctld disconnected", "addr", l.c.addr, "error", err)
+		return true
+	}
+	switch {
+	case !l.noted:
+		l.noted, l.lastNote = true, now
+		l.c.log.Warn("rigctld not answering", "addr", l.c.addr, "error", err)
+	case now.Sub(l.lastNote) >= stillDownEvery:
+		l.lastNote = now
+		l.c.log.Warn("rigctld still down", "addr", l.c.addr, "for", now.Sub(l.downSince).Round(time.Second), "error", err)
+	default:
+		l.c.log.Debug("rigctld link still down", "addr", l.c.addr, "error", err)
+	}
+	return false
+}
+
 func (c *Client) run() {
 	defer close(c.done)
 	select {
@@ -282,6 +325,7 @@ func (c *Client) run() {
 		return
 	}
 	backoff := backoffStart
+	ll := &linkLog{c: c, downSince: c.opt.now()}
 	for c.ctx.Err() == nil {
 		d := net.Dialer{Timeout: dialTimeout}
 		conn, err := d.DialContext(c.ctx, "tcp", c.addr)
@@ -289,6 +333,7 @@ func (c *Client) run() {
 			if c.ctx.Err() != nil {
 				return
 			}
+			ll.failed(err)
 			c.log.Debug("rigctld dial failed", "addr", c.addr, "err", err, "retry_in", backoff)
 			if c.opt.sleep(c.ctx, backoff) != nil {
 				return
@@ -296,15 +341,17 @@ func (c *Client) run() {
 			backoff = min(backoff*2, backoffMax)
 			continue
 		}
-		backoff = backoffStart
 		stopClose := context.AfterFunc(c.ctx, func() { conn.Close() })
 		c.setState(true)
-		c.serve(conn)
+		why := c.serve(conn, ll)
 		stopClose()
 		conn.Close()
 		c.setState(false)
 		if c.ctx.Err() != nil {
 			return
+		}
+		if ll.failed(why) {
+			backoff = backoffStart // the connection answered: start again from 1 s
 		}
 		if c.sleepDraining(backoff) != nil {
 			return
@@ -336,13 +383,13 @@ func (c *Client) sleepDraining(d time.Duration) error {
 	return err
 }
 
-// serve runs queued commands on conn until it breaks or the client closes.
-func (c *Client) serve(conn net.Conn) {
+// serve runs queued commands on conn until it breaks or the client closes, and says why it ended.
+func (c *Client) serve(conn net.Conn, ll *linkLog) error {
 	br := bufio.NewReaderSize(conn, maxLine)
 	for {
 		select {
 		case <-c.ctx.Done():
-			return
+			return ErrClosed
 		case r := <-c.reqs:
 			if r.ctx.Err() != nil {
 				continue // caller gave up while queued
@@ -356,9 +403,16 @@ func (c *Client) serve(conn net.Conn) {
 			}
 			reply, err := c.exec(conn, br, r)
 			r.res <- result{reply, err}
+			if err == nil {
+				ll.answered()
+			}
 			if errors.Is(err, ErrDeadline) || errors.Is(err, ErrProtocol) || isConnErr(err) {
-				c.log.Warn("rigctld connection reset", "addr", c.addr, "cmd", r.cmd, "err", err)
-				return
+				lvl := slog.LevelDebug // a link that never answered: its streak has its own lines
+				if ll.up {
+					lvl = slog.LevelWarn
+				}
+				c.log.Log(context.Background(), lvl, "rigctld connection reset", "addr", c.addr, "cmd", r.cmd, "err", err)
+				return err
 			}
 		}
 	}

@@ -39,6 +39,9 @@ const (
 
 const txEvery = 200 * time.Millisecond // SWR/ALC cadence while transmitting
 
+// missesToQuiet is how many poll cycles in a row with no successful read make a radio "not answering".
+const missesToQuiet = 2
+
 func (i Interest) period() time.Duration {
 	switch i {
 	case Page:
@@ -51,9 +54,12 @@ func (i Interest) period() time.Duration {
 
 // State is everything the station knows about one radio's front panel.
 // Optimistic names the fields a write changed that no read has confirmed yet
-// ("freq", "mode", "ptt", "vfo", "split", or a level name).
+// ("freq", "mode", "ptt", "vfo", "split", or a level name). Answering is false once
+// missesToQuiet poll cycles in a row got no successful read: rigctld is up but the radio
+// behind it does not answer (switched off, flrig not running).
 type State struct {
 	Connected  bool               `json:"connected"`
+	Answering  bool               `json:"answering"`
 	Freq       int64              `json:"freq"`
 	Mode       string             `json:"mode"`
 	Passband   string             `json:"passband"`
@@ -109,6 +115,7 @@ type Poller struct {
 
 	mu       sync.Mutex
 	readPTTv bool // the last PTT value a READ reported (st.PTT may hold an optimistic one)
+	misses   int  // poll cycles in a row that tried the radio and got no successful read
 	st       State
 	caps     Caps
 	interest Interest
@@ -130,7 +137,7 @@ func newPoller(l Link, caps Caps, clock Clock, log *slog.Logger) *Poller {
 		log = slog.Default()
 	}
 	p := &Poller{link: l, clock: clock, log: log, wake: make(chan struct{}, 1)}
-	p.st = State{Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}
+	p.st = State{Answering: true, Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}
 	p.setCapsLocked(caps)
 	l.OnState(p.onState) // register first, then read the state
 	p.st.Connected = l.Connected()
@@ -296,7 +303,7 @@ func (p *Poller) Run(ctx context.Context) {
 // read runs one command unless a write is waiting. ok is false when the cycle
 // should stop (write pending, transport failure); a rigctld error just means
 // this field has nothing to report.
-func (p *Poller) read(ctx context.Context, cmd string, args ...string) (rep Reply, got, ok bool) {
+func (p *Poller) read(ctx context.Context, c *cycle, cmd string, args ...string) (rep Reply, got, ok bool) {
 	g := p.gen.Load()
 	if p.pending.Load() > 0 || ctx.Err() != nil {
 		return Reply{}, false, false
@@ -308,10 +315,12 @@ func (p *Poller) read(ctx context.Context, cmd string, args ...string) (rep Repl
 	if err != nil {
 		var re *RigError
 		if errors.As(err, &re) {
+			c.missed = true
 			return Reply{}, false, true
 		}
 		if !errors.Is(err, ErrNotConnected) && ctx.Err() == nil {
-			p.log.Warn("rig read failed", "cmd", cmd, "error", err)
+			c.missed = true
+			p.log.Debug("rig read failed", "cmd", cmd, "error", err)
 		}
 		return Reply{}, false, false
 	}
@@ -349,6 +358,7 @@ type cycle struct {
 	p      *Poller
 	dirty  bool // a value or an Optimistic flag changed
 	gotAny bool // at least one read succeeded
+	missed bool // a read reached the link and failed (the radio's error or no reply)
 }
 
 func (c *cycle) set(fn func(s *State) bool) {
@@ -372,8 +382,20 @@ func confirm(s *State, name string) bool {
 func (c *cycle) done() {
 	p := c.p
 	p.mu.Lock()
-	if c.gotAny {
+	switch {
+	case c.gotAny:
 		p.st.UpdatedAt = p.clock.Now()
+		p.misses = 0
+		if !p.st.Answering {
+			p.st.Answering, c.dirty = true, true
+			p.log.Info("the radio is answering again")
+		}
+	case c.missed:
+		p.misses++
+		if p.misses >= missesToQuiet && p.st.Answering {
+			p.st.Answering, c.dirty = false, true
+			p.log.Warn("the radio is not answering behind rigctld", "cycles", p.misses)
+		}
 	}
 	if c.dirty {
 		p.publishLocked()
@@ -393,7 +415,7 @@ func (p *Poller) lastReadPTT() bool {
 // are zeroed in the same update, at any interest and whatever raced it: the
 // zero depends on the reading, not on the cadence that happened to run.
 func (p *Poller) readPTT(ctx context.Context, c *cycle) (on, ok bool) {
-	r, got, ok := p.read(ctx, "get_ptt")
+	r, got, ok := p.read(ctx, c, "get_ptt")
 	if !got {
 		return false, ok
 	}
@@ -453,7 +475,7 @@ func (p *Poller) mainCycle(ctx context.Context, in Interest) bool {
 	known := p.st.Caps != nil
 	p.mu.Unlock()
 
-	if r, got, ok := p.read(ctx, "get_freq"); !ok {
+	if r, got, ok := p.read(ctx, c, "get_freq"); !ok {
 		return false
 	} else if got {
 		if v, found := field(r, "Frequency", 0); found {
@@ -468,7 +490,7 @@ func (p *Poller) mainCycle(ctx context.Context, in Interest) bool {
 			}
 		}
 	}
-	if r, got, ok := p.read(ctx, "get_mode"); !ok {
+	if r, got, ok := p.read(ctx, c, "get_mode"); !ok {
 		return false
 	} else if got {
 		mode, found := field(r, "Mode", 0)
@@ -484,7 +506,7 @@ func (p *Poller) mainCycle(ctx context.Context, in Interest) bool {
 		}
 	}
 	if !known || caps.CanGetVFO {
-		if r, got, ok := p.read(ctx, "get_vfo"); !ok {
+		if r, got, ok := p.read(ctx, c, "get_vfo"); !ok {
 			return false
 		} else if got {
 			if v, found := field(r, "VFO", 0); found {
@@ -504,7 +526,7 @@ func (p *Poller) mainCycle(ctx context.Context, in Interest) bool {
 		}
 	}
 	if !known || caps.CanGetSplit {
-		if r, got, ok := p.read(ctx, "get_split_vfo"); !ok {
+		if r, got, ok := p.read(ctx, c, "get_split_vfo"); !ok {
 			return false
 		} else if got {
 			if v, found := field(r, "Split", 0); found {
@@ -524,7 +546,7 @@ func (p *Poller) mainCycle(ctx context.Context, in Interest) bool {
 			if isTxMeter(n) {
 				continue
 			}
-			r, got, ok := p.read(ctx, "get_level", n)
+			r, got, ok := p.read(ctx, c, "get_level", n)
 			if !ok {
 				return false
 			}
@@ -554,7 +576,7 @@ func (p *Poller) txCycle(ctx context.Context) bool {
 		if !isTxMeter(n) {
 			continue
 		}
-		r, got, ok := p.read(ctx, "get_level", n)
+		r, got, ok := p.read(ctx, c, "get_level", n)
 		if !ok {
 			return false
 		}

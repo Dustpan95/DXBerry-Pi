@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -382,13 +384,17 @@ func TestClientReconnectBackoff(t *testing.T) {
 	}
 }
 
-func TestClientBackoffResetsAfterConnect(t *testing.T) {
+// The backoff starts again from 1 s only once a command has succeeded on a connection: a
+// rigctld that accepts and then never answers (a radio switched off behind it) must not make
+// the link reconnect every second.
+func TestClientBackoffResetsOnlyAfterAnAnswer(t *testing.T) {
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := ln.Addr().String()
 	ln.Close()
 	var f *fakeServer
 	var mu sync.Mutex
 	var got []time.Duration
+	var conn2 int
 	c := dial(addr, nil, options{
 		cmdTimeout: 300 * time.Millisecond,
 		sleep: func(ctx context.Context, d time.Duration) error {
@@ -397,8 +403,18 @@ func TestClientBackoffResetsAfterConnect(t *testing.T) {
 			if d == 4*time.Second && f == nil {
 				// third failed dial: bring the server up before the retry
 				f = newFakeAt(t, addr, func(n int, line string, w net.Conn) bool {
-					if n == 1 {
-						return false // hang up on the first command
+					switch n {
+					case 1:
+						return false // connects, then hangs up on the first command
+					case 2:
+						mu.Lock()
+						conn2++
+						k := conn2
+						mu.Unlock()
+						if k == 1 {
+							return freqHandler(n, line, w) // answers once ...
+						}
+						return false // ... then hangs up
 					}
 					return freqHandler(n, line, w)
 				})
@@ -408,27 +424,124 @@ func TestClientBackoffResetsAfterConnect(t *testing.T) {
 		},
 	})
 	defer c.Close()
-	waitConnected(t, c)
-	c.Do(ctx5(t), "get_freq") // server hangs up: connection resets
-	for i := 0; i < 400; i++ {
+	connCount := func() int {
 		mu.Lock()
-		n := len(got)
-		mu.Unlock()
-		if n >= 4 {
-			break
+		defer mu.Unlock()
+		if f == nil {
+			return 0
 		}
-		time.Sleep(5 * time.Millisecond)
+		return f.connCount()
 	}
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		for i := 0; !ok(); i++ {
+			if i > 400 {
+				t.Fatalf("never: %s", what)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	waitFor("first connection", func() bool { return connCount() == 1 && c.Connected() })
+	if _, err := c.Do(ctx5(t), "get_freq"); err == nil {
+		t.Fatal("the first connection answered")
+	}
+	waitFor("second connection", func() bool { return connCount() == 2 && c.Connected() })
+	if _, err := c.Do(ctx5(t), "get_freq"); err != nil {
+		t.Fatalf("second connection: %v", err)
+	}
+	c.Do(ctx5(t), "get_freq") // hangs up after the answer
+	waitFor("the sleep after the second connection", func() bool { mu.Lock(); defer mu.Unlock(); return len(got) >= 5 })
 	mu.Lock()
 	defer mu.Unlock()
-	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, time.Second}
-	if len(got) < 4 {
-		t.Fatalf("sleeps = %v", got)
-	}
+	// fails, fails, fails, connects without an answer (no reset: 8 s), answers then drops (1 s)
+	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, time.Second}
 	for i, w := range want {
 		if got[i] != w {
 			t.Fatalf("sleeps = %v, want prefix %v", got, want)
 		}
+	}
+}
+
+// logBuf collects a client's log lines.
+type logBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *logBuf) Write(p []byte) (int, error) { l.mu.Lock(); defer l.mu.Unlock(); return l.b.Write(p) }
+func (l *logBuf) count(msg string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Count(l.b.String(), "msg=\""+msg+"\"")
+}
+
+// A link that keeps failing is logged once when the streak starts and then every 5 minutes;
+// connected and disconnected are logged once per change of a link that answers.
+func TestClientLogsLinkChangesOncePerStreak(t *testing.T) {
+	var mode atomic.Int32 // 0: accept and hang up at once, 1: answer, 2: hang up on a command
+	f := newFake(t, func(n int, line string, w net.Conn) bool {
+		if mode.Load() == 1 {
+			return freqHandler(n, line, w)
+		}
+		return false
+	})
+	var clk struct {
+		sync.Mutex
+		t time.Time
+	}
+	clk.t = time.Unix(1_700_000_000, 0)
+	now := func() time.Time { clk.Lock(); defer clk.Unlock(); return clk.t }
+	advance := func(d time.Duration) { clk.Lock(); clk.t = clk.t.Add(d); clk.Unlock() }
+	logs := &logBuf{}
+	c := dial(f.addr(), slog.New(slog.NewTextHandler(logs, nil)), options{
+		cmdTimeout: 300 * time.Millisecond,
+		sleep:      func(ctx context.Context, d time.Duration) error { return sleepCtx(ctx, time.Millisecond) },
+		now:        now,
+	})
+	defer c.Close()
+	// one Do per minute, each on a fresh connection that never answers
+	fail := func(minutes int) {
+		for i := 0; i < minutes; i++ {
+			advance(time.Minute)
+			for { // ErrNotConnected: the Do reached the old, dead connection; try the next one
+				waitConnected(t, c)
+				_, err := c.Do(ctx5(t), "get_freq")
+				if err == nil {
+					t.Fatal("answered")
+				}
+				if !errors.Is(err, ErrNotConnected) {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}
+	fail(7)
+	if a, b, d, s := logs.count("rigctld connected"), logs.count("rigctld disconnected"), logs.count("rigctld not answering"), logs.count("rigctld still down"); a != 0 || b != 0 || d != 1 || s != 1 {
+		t.Fatalf("connected %d disconnected %d not answering %d still down %d:\n%s", a, b, d, s, logs.b.String())
+	}
+	if n := logs.count("rigctld connection reset"); n != 0 {
+		t.Fatalf("%d connection reset lines for a link that never answered", n)
+	}
+	mode.Store(1)
+	waitConnected(t, c)
+	for i := 0; ; i++ { // the current connection may be one of the dead ones: retry until answered
+		if _, err := c.Do(ctx5(t), "get_freq"); err == nil {
+			break
+		}
+		if i > 50 {
+			t.Fatal("never answered")
+		}
+		waitConnected(t, c)
+	}
+	mode.Store(2)
+	c.Do(ctx5(t), "get_freq")
+	fail(3)
+	if a, b := logs.count("rigctld connected"), logs.count("rigctld disconnected"); a != 1 || b != 1 {
+		t.Fatalf("connected %d disconnected %d:\n%s", a, b, logs.b.String())
+	}
+	if s := logs.count("rigctld still down"); s != 1 {
+		t.Fatalf("still down %d within 5 minutes of the disconnect", s)
 	}
 }
 

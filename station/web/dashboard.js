@@ -26,6 +26,7 @@ const dashboard = { skew: 0, generated: null, timer: null, utc: null, local: nul
 // dashLiveFreq N FALLBACK: the radio's frequency and mode as the last rig event has them
 function dashLiveFreq(n, fallback) {
   const st = dashboard.rig[n];
+  if (st && st.connected && st.answering === false) return "not answering";
   if (!st || !st.connected || !(st.freq > 0)) return fallback;
   return `${window.dxbVFO.formatFreq(st.freq)} Hz${st.mode ? " " + st.mode : ""}`;
 }

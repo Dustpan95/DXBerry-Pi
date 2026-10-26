@@ -153,12 +153,23 @@ const flush = () => new Promise((r) => setImmediate(r));
   // the rig link drops: the chip shows (the real element), controls are disabled, STOP is not
   rig({ ...state, connected: false });
   out.chipHiddenAfter = chip().hidden;
+  out.chipTextDown = chip().textContent;
   out.disabledAfterCount = disabled().length;
   out.rootDown = root.has("is-down");
   out.stopDisabled = root.find((e) => e.has("vfo-stop") && e.attrs.disabled !== undefined).length;
   rig(state);
   out.chipHiddenRecovered = chip().hidden;
   out.disabledRecovered = disabled().map((e) => e.textContent).sort();
+  // connected but the radio behind rigctld does not answer: its own words, the same dimming
+  rig({ ...state, answering: false });
+  out.chipHiddenQuiet = chip().hidden;
+  out.chipTextQuiet = chip().textContent;
+  out.rootDownQuiet = root.has("is-down");
+  out.disabledQuietCount = disabled().length;
+  out.stopDisabledQuiet = root.find((e) => e.has("vfo-stop") && e.attrs.disabled !== undefined).length;
+  rig({ ...state, answering: true });
+  out.chipHiddenAnswering = chip().hidden;
+  out.disabledAnswering = disabled().map((e) => e.textContent).sort();
   // the dashboard card: a rig event changes the frequency text in place
   const live = { dataset: { liveFreq: "ic7300", was: "old" }, textContent: "old" };
   const dctx = { ...ctx, DASH: "-", NAME_RE: /./, PROGRAM_RE: /./, updWatchers: [], last: null, el() {}, kv() {}, badge() {}, btn() {}, num() {}, table() {}, field() {}, choice() {} };
@@ -172,5 +183,7 @@ const flush = () => new Promise((r) => setImmediate(r));
   out.dashFreq = live.textContent;
   dctx.dashOnRig({ type: "rig", radio: "ic7300", data: { connected: false, freq: 14074000, mode: "USB" } });
   out.dashFreqDown = live.textContent;
+  dctx.dashOnRig({ type: "rig", radio: "ic7300", data: { connected: true, answering: false, freq: 14074000, mode: "USB" } });
+  out.dashFreqQuiet = live.textContent;
   console.log(JSON.stringify(out));
 })();

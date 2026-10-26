@@ -605,3 +605,51 @@ func TestPollerSubscribeGetsChanges(t *testing.T) {
 	}
 	p.Unsubscribe(ch)
 }
+
+// A radio that does not answer behind a running rigctld (every read an error) is "not answering"
+// after two cycles with no successful read, and answering again at the first success.
+func TestPollerAnsweringFollowsReads(t *testing.T) {
+	l := newPlLink()
+	saved := l.reply
+	l.reply = map[string][]string{} // every read: RPRT -1, quickly
+	p, clk := startPoller(t, l, Caps{})
+	if !p.State().Answering {
+		t.Fatal("a new poller starts as answering")
+	}
+	ch := p.Subscribe()
+	plEventually(t, "first cycle", func() bool { return l.count("get_split_vfo") == 1 })
+	settle()
+	if !p.State().Answering {
+		t.Fatal("not answering after one cycle")
+	}
+	clk.Advance(10 * time.Second)
+	plEventually(t, "second cycle: not answering", func() bool { return !p.State().Answering })
+	select {
+	case st := <-ch:
+		if st.Answering {
+			t.Fatal("the change was not published")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("nothing published")
+	}
+	if b := encodeState(p.State()); !strings.Contains(string(b), `"answering":false`) {
+		t.Fatalf("wire form %s", b)
+	}
+	l.mu.Lock()
+	l.reply = saved
+	l.mu.Unlock()
+	clk.Advance(10 * time.Second)
+	plEventually(t, "answering again", func() bool { return p.State().Answering })
+	// transport failures count too (a reply that never comes)
+	l.mu.Lock()
+	l.errs["get_freq"] = ErrDeadline
+	l.mu.Unlock()
+	clk.Advance(10 * time.Second)
+	plEventually(t, "third failed get_freq", func() bool { return l.count("get_freq") == 4 })
+	settle()
+	if !p.State().Answering {
+		t.Fatal("not answering after one failed cycle")
+	}
+	clk.Advance(10 * time.Second)
+	plEventually(t, "not answering on deadlines", func() bool { return !p.State().Answering })
+}
