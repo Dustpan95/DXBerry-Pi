@@ -293,6 +293,32 @@ func TestDiscoverAbortsOnTransportError(t *testing.T) {
 	}
 }
 
+// Only "invalid", "not implemented", "rejected" and "not available" mean the radio cannot
+// report a level; a timeout, an I/O or protocol error, or any other code is not a fact about
+// the radio and must not be cached for a week.
+func TestDiscoverRigErrorsThatAreFactsAndThatAreNot(t *testing.T) {
+	for _, code := range []int{-1, -4, -9, -11} {
+		lv := allLevels("1")
+		lv["SWR"] = Reply{RPRT: code}
+		c, err := Discover(context.Background(), &fakeRig{caps: fixture(t, "3073"), levels: lv})
+		if err != nil {
+			t.Fatalf("RPRT %d: %v", code, err)
+		}
+		if why, ok := hiddenWhy(c, "SWR"); !ok || why != "this radio does not report SWR over CAT" {
+			t.Fatalf("RPRT %d: SWR hidden=%v why=%q", code, ok, why)
+		}
+	}
+	for _, code := range []int{-5, -6, -8, -2, -3, -7, -10, -12} {
+		lv := allLevels("1")
+		lv["SWR"] = Reply{RPRT: code}
+		_, err := Discover(context.Background(), &fakeRig{caps: fixture(t, "3073"), levels: lv})
+		var re *RigError
+		if err == nil || !errors.As(err, &re) || re.Code != code {
+			t.Fatalf("RPRT %d: err = %v, want discovery to fail with it", code, err)
+		}
+	}
+}
+
 func TestCapsCacheRoundTripAndAge(t *testing.T) {
 	dir := t.TempDir()
 	cc := CapsCache{Dir: dir}

@@ -163,9 +163,15 @@ func numericReply(r Reply) bool {
 	return false
 }
 
+// notReadable are the rigctld codes that say a level cannot be read: invalid (-1), not
+// implemented (-4), rejected (-9) and not available (-11). Others (timeout -5, I/O -6, protocol
+// -8, ...) say nothing about the radio.
+var notReadable = []int{-1, -4, -9, -11}
+
 // Discover reads the radio's dump_caps and probes which meters it answers. A
-// *RigError from a probe means "not readable"; any other error (deadline,
-// protocol, closed) aborts so the caller can retry later.
+// *RigError from a probe with a notReadable code means "not readable"; any other
+// error (another code, deadline, protocol, closed) aborts so the caller can retry
+// later instead of caching a passing failure as a fact.
 func Discover(ctx context.Context, c Commander) (Caps, error) {
 	rep, err := c.Do(ctx, "dump_caps")
 	if err != nil {
@@ -189,7 +195,7 @@ func Discover(ctx context.Context, c Commander) (Caps, error) {
 		case err == nil && r.RPRT == 0 && numericReply(r):
 			caps.ReadableMeters = append(caps.ReadableMeters, n)
 			continue
-		case err == nil || errors.As(err, &re):
+		case err == nil || errors.As(err, &re) && slices.Contains(notReadable, re.Code):
 			caps.Hidden = append(caps.Hidden, HiddenControl{n, KindMeter, fmt.Sprintf("this radio does not report %s over CAT", n)})
 		default:
 			return Caps{}, fmt.Errorf("rig: get_level %s: %w", n, err)
