@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -450,4 +451,182 @@ func TestBridgeTrickledCandidates(t *testing.T) {
 	if err := b.AddICECandidate("sess|tab1", Candidate{Candidate: "garbage"}); err == nil {
 		t.Fatal("a garbled candidate was taken")
 	}
+}
+
+// syncBuf is a log sink the bridge's goroutines may write concurrently.
+type syncBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+type fakeClock struct{ ns atomic.Int64 }
+
+func newFakeClock() *fakeClock {
+	c := &fakeClock{}
+	c.ns.Store(time.Now().UnixNano())
+	return c
+}
+
+func (c *fakeClock) Now() time.Time          { return time.Unix(0, c.ns.Load()) }
+func (c *fakeClock) Advance(d time.Duration) { c.ns.Add(int64(d)) }
+
+func expectNoLoss(t *testing.T, lost <-chan string, for_ time.Duration) {
+	t.Helper()
+	select {
+	case m := <-lost:
+		t.Fatalf("lost: %s", m)
+	case <-time.After(for_):
+	}
+}
+
+// The tab id carries the session id, which is the login cookie: no log line may hold it.
+func TestBridgeLogsNoSessionID(t *testing.T) {
+	const secret = "c2Vzc2lvbi1jb29raWUtdmFsdWU"
+	b, _ := testBridge(t)
+	var buf syncBuf
+	b.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	b.LostAfter = 300 * time.Millisecond
+	lost := make(chan string, 4)
+	defer b.OnLost(func(tab TabID, reason string) { lost <- reason })()
+	tab := secret + "|iPhone#tab-1"
+	br := newBrowser(t)
+	br.connect(t, b, tab)
+	br.firstRTP(t, 2*time.Second)
+	b.SetTXAllowed(tab, true)
+	select {
+	case <-lost:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no loss")
+	}
+	b.SetTXAllowed(tab, false)
+	out := buf.String()
+	if !strings.Contains(out, "browser audio lost") || !strings.Contains(out, "iPhone") {
+		t.Fatalf("the loss is not logged with the device: %q", out)
+	}
+	if strings.Contains(out, secret) {
+		t.Fatalf("the session id reached the log: %q", out)
+	}
+}
+
+// A tab that reconnects while its PTT has been held past LostAfter gets a fresh connection
+// that is not torn down before it is up.
+func TestBridgeReconnectWhileTXHeldSurvives(t *testing.T) {
+	b, _ := testBridge(t)
+	clk := newFakeClock()
+	b.now = clk.Now
+	lost := make(chan string, 4)
+	defer b.OnLost(func(tab TabID, reason string) { lost <- tab + ": " + reason })()
+	b.SetTXAllowed("sess|tab1", true)
+	defer b.SetTXAllowed("sess|tab1", false)
+	clk.Advance(6 * time.Second)
+	br := newBrowser(t)
+	br.connect(t, b, "sess|tab1")
+	br.firstRTP(t, 2*time.Second)
+	expectNoLoss(t, lost, 1200*time.Millisecond)
+	if b.Listeners() != 1 {
+		t.Fatalf("listeners %d", b.Listeners())
+	}
+	for len(br.rtp) > 0 {
+		<-br.rtp
+	}
+	br.firstRTP(t, 2*time.Second)
+}
+
+// A connection that keeps talking stays up however long PTT is held; one that stops is dropped.
+func TestBridgeTalkingConnectionSurvivesPastLostAfter(t *testing.T) {
+	b, dir := testBridge(t)
+	b.LostAfter = 400 * time.Millisecond
+	lost := make(chan string, 4)
+	defer b.OnLost(func(tab TabID, reason string) { lost <- tab + ": " + reason })()
+	br := newBrowser(t)
+	br.connect(t, b, "sess|tab1")
+	br.firstRTP(t, 2*time.Second)
+	stop := make(chan struct{})
+	wg := br.talk(t, stop)
+	b.SetTXAllowed("sess|tab1", true)
+	defer b.SetTXAllowed("sess|tab1", false)
+	expectNoLoss(t, lost, 1500*time.Millisecond)
+	if b.Listeners() != 1 || fileSize(filepath.Join(dir, "pacat.stdin")) == 0 {
+		t.Fatalf("listeners %d, pacat %d bytes", b.Listeners(), fileSize(filepath.Join(dir, "pacat.stdin")))
+	}
+	close(stop)
+	wg.Wait()
+	select {
+	case <-lost:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a silent transmitting connection was kept")
+	}
+}
+
+// pacat dying again after its one restart drops the transmitting tab, so the PTT layer hears of it.
+func TestBridgeSecondPacatDeathLosesTheTalker(t *testing.T) {
+	b, dir := testBridge(t)
+	dying := filepath.Join(dir, "pacat-dies")
+	if err := os.WriteFile(dying, []byte("#!/bin/bash\necho x >> \"$DXB_FAKE_DIR/pacat.runs\"\nhead -c 4000 > /dev/null\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b.play.Bins = map[string]string{"pacat": dying}
+	lost := make(chan string, 4)
+	defer b.OnLost(func(tab TabID, reason string) { lost <- tab + ": " + reason })()
+	br := newBrowser(t)
+	br.connect(t, b, "sess|tab1")
+	br.firstRTP(t, 2*time.Second)
+	stop := make(chan struct{})
+	wg := br.talk(t, stop)
+	defer func() { close(stop); wg.Wait() }()
+	b.SetTXAllowed("sess|tab1", true)
+	defer b.SetTXAllowed("sess|tab1", false)
+	select {
+	case m := <-lost:
+		if !strings.HasPrefix(m, "sess|tab1: ") || !strings.Contains(m, "transmit") {
+			t.Fatalf("lost %q", m)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pacat died twice and the tab was kept")
+	}
+	runs, _ := os.ReadFile(filepath.Join(dir, "pacat.runs"))
+	if n := strings.Count(string(runs), "x"); n != 2 {
+		t.Fatalf("pacat ran %d times, want 2", n)
+	}
+}
+
+// Removing a radio ends its bridge and every connection; the next Get makes a new one.
+func TestBridgesRemoveClosesEveryConnection(t *testing.T) {
+	bins, env := toneBins(t)
+	sc := NewServerControl(nil, t.TempDir())
+	sc.Bins, sc.Env = bins, env
+	bs := NewBridges(sc, DefaultPorts, testLog(t))
+	t.Cleanup(bs.Shutdown)
+	b := bs.Get("radio1")
+	if bs.Get("radio1") != b {
+		t.Fatal("Get made two bridges for one radio")
+	}
+	b.Loopback = true
+	one, two := newBrowser(t), newBrowser(t)
+	one.connect(t, b, "sess|tab1")
+	two.connect(t, b, "sess|tab2")
+	one.firstRTP(t, 2*time.Second)
+	bs.Remove("radio1")
+	if b.Listeners() != 0 || b.capturing() {
+		t.Fatalf("after Remove: listeners %d, capturing %v", b.Listeners(), b.capturing())
+	}
+	if _, err := b.Connect(context.Background(), newBrowser(t).offer(t), "sess|tab3"); err == nil {
+		t.Fatal("a removed bridge took an offer")
+	}
+	if bs.Get("radio1") == b {
+		t.Fatal("Get returned the removed bridge")
+	}
+	bs.Remove("radio9") // not there: nothing happens
 }

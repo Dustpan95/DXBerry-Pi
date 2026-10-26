@@ -19,6 +19,7 @@
   let lastRadio = null; // what the reconnect chip reconnects to
   let mic = null; // the microphone track, once allowed
   let micAsk = null;
+  let micGen = 0; // stop() moves it on, so a prompt still open when audio stopped is let go
   let tx = false;
   let chip = null;
 
@@ -173,13 +174,18 @@
     if (typeof navigator === "undefined" || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       return Promise.resolve({ ok: false, reason: "This browser has no microphone access here.", fix: "open the station over https" });
     }
+    const gen = ++micGen;
     micAsk = navigator.mediaDevices.getUserMedia(MIC).then((stream) => {
+      if (gen !== micGen) { // stopped while the prompt was open: do not keep the microphone
+        for (const t of stream.getAudioTracks()) t.stop();
+        return { ok: false, reason: "Audio was stopped.", fix: "tap Listen again" };
+      }
       mic = stream.getAudioTracks()[0];
       mic.enabled = tx;
       if (cur && cur.tr) cur.tr.sender.replaceTrack(mic);
       return { ok: true };
     }, () => {
-      micAsk = null;
+      if (gen === micGen) micAsk = null;
       return { ok: false, reason: "The microphone was not allowed.", fix: "allow the microphone for this page in the browser's settings" };
     });
     return micAsk;
@@ -201,6 +207,7 @@
     if (mic) mic.stop();
     mic = null;
     micAsk = null;
+    micGen++;
   }
 
   window.dxbAudio = { listen, openMic, setTX, stop, DUCK_DB, DUCK };

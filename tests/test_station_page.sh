@@ -542,3 +542,12 @@ test_station_audio_file_is_plain() {
   command -v node > /dev/null 2>&1 || return 0
   node --check "$f" 2> "$TEST_TMP/node.err" || _fail "audio.js does not parse: $(cat "$TEST_TMP/node.err")"
 }
+
+test_station_audio_stop_releases_a_pending_mic() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sau_run 2> "$TEST_TMP/sau.err") || { _fail "station_audio.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -r '.raced.stopped' <<< "$j")" "true"
+  assert_eq "$(jq -r '.raced.result.ok' <<< "$j")" "false"
+  assert_eq "$(jq -r '.askedAgain' <<< "$j")" "3"
+  assert_eq "$(jq -c '.againResult' <<< "$j")" '{"ok":true}'
+}

@@ -27,6 +27,7 @@ type fakeBridge struct {
 	lost     map[int]func(tab, reason string)
 	next     int
 	failWith error
+	gate     chan struct{} // when set, Close waits for it
 }
 
 func (f *fakeBridge) Connect(ctx context.Context, offer string, tab string) (string, error) {
@@ -48,6 +49,12 @@ func (f *fakeBridge) AddICECandidate(tab string, c ICECandidate) error {
 }
 
 func (f *fakeBridge) Close(tab string) {
+	f.mu.Lock()
+	gate := f.gate
+	f.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.closed = append(f.closed, tab)
@@ -335,4 +342,97 @@ func TestSignalReconnectKeepsTheNewConnection(t *testing.T) {
 	if m := readMsg(t, c); m["type"] != "audio-lost" {
 		t.Fatalf("lost %v", m)
 	}
+}
+
+func TestSignalCapsConnectionsPerLogin(t *testing.T) {
+	ar := newAudioRig(t, true)
+	var socks []*websocket.Conn
+	for i := 1; i <= 4; i++ {
+		c, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%23"+string(rune('0'+i)), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.CloseNow()
+		sendMsg(t, c, map[string]any{"type": "offer", "sdp": "o"})
+		if m := readMsg(t, c); m["type"] != "answer" {
+			t.Fatalf("tab %d: %v", i, m)
+		}
+		socks = append(socks, c)
+	}
+	// a tab offering again is still one connection
+	sendMsg(t, socks[0], map[string]any{"type": "offer", "sdp": "again"})
+	if m := readMsg(t, socks[0]); m["type"] != "answer" {
+		t.Fatalf("re-offer %v", m)
+	}
+	// another radio is counted on its own
+	other, _, err := ar.dial(t, "/api/audio/radio2/signal?tab=Browser%235", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.CloseNow()
+	sendMsg(t, other, map[string]any{"type": "offer", "sdp": "o"})
+	if m := readMsg(t, other); m["type"] != "answer" {
+		t.Fatalf("radio2 %v", m)
+	}
+	// a fifth tab of the same login on radio1 is refused
+	c, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%235", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	sendMsg(t, c, map[string]any{"type": "offer", "sdp": "o"})
+	m := readMsg(t, c)
+	if len(m) != 3 || m["type"] != "refused" || m["reason"] != "too many audio connections from this login" || m["fix"] != "close other tabs" {
+		t.Fatalf("fifth %v", m)
+	}
+	// one tab leaving makes room
+	_ = socks[1].Close(websocket.StatusNormalClosure, "")
+	waitFor(t, "the slot", func() bool { _, _, closed, _ := ar.bridge.snapshot(); return len(closed) > 0 })
+	c6, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%236", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c6.CloseNow()
+	sendMsg(t, c6, map[string]any{"type": "offer", "sdp": "o"})
+	if m := readMsg(t, c6); m["type"] != "answer" {
+		t.Fatalf("after a tab left %v", m)
+	}
+}
+
+// One tab's slow close does not hold up another tab's offer.
+func TestSignalCloseDoesNotBlockOtherTabs(t *testing.T) {
+	ar := newAudioRig(t, true)
+	gate := make(chan struct{})
+	ar.bridge.mu.Lock()
+	ar.bridge.gate = gate
+	ar.bridge.mu.Unlock()
+	defer func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	}()
+	a, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%231", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.CloseNow()
+	sendMsg(t, a, map[string]any{"type": "offer", "sdp": "a"})
+	readMsg(t, a)
+	sendMsg(t, a, map[string]any{"type": "close"}) // its Close now hangs on the gate
+	time.Sleep(100 * time.Millisecond)
+	b, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%232", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.CloseNow()
+	sendMsg(t, b, map[string]any{"type": "offer", "sdp": "b"})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, data, err := b.Read(ctx)
+	if err != nil || !strings.Contains(string(data), `"answer"`) {
+		t.Fatalf("another tab's offer waited on a close: %v %q", err, data)
+	}
+	close(gate)
 }

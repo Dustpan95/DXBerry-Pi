@@ -119,7 +119,7 @@ const A = ctx.dxbAudio;
   out.volRX = audioEl.volume;
   out.mic = await A.openMic();
   await A.openMic();
-  out.gum = gum;
+  out.gum = gum.slice();
   out.micReplaced = pc.replaced;
   out.micIdle = micTrack.enabled;
   A.setTX(true);
@@ -161,5 +161,21 @@ const A = ctx.dxbAudio;
   await fourth;
   A.stop();
   out.stopped = { mic: micTrack.stopped, pc: pcs[4].closed, socket: sockets[4].closed, close: sockets[4].sent[sockets[4].sent.length - 1] };
+  // stop while the microphone prompt is still open: the track it later grants is stopped at once
+  let grant = null;
+  ctx.navigator.mediaDevices.getUserMedia = (c) => {
+    gum.push(c);
+    return new Promise((r) => { grant = r; });
+  };
+  const late = { id: "late-mic", enabled: true, stopped: false, stop() { this.stopped = true; } };
+  const asking = A.openMic();
+  A.stop();
+  grant({ getAudioTracks: () => [late] });
+  out.raced = { result: await asking, stopped: late.stopped };
+  // the next press asks again
+  const again2 = A.openMic();
+  out.askedAgain = gum.length;
+  grant({ getAudioTracks: () => [{ id: "mic-2", enabled: true, stop() {} }] });
+  out.againResult = await again2;
   console.log(JSON.stringify(out));
 })();

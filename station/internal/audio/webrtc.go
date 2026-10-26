@@ -14,6 +14,8 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
+
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/session"
 )
 
 // TabID names one browser tab: session.TabID(session, tab token). The PTT layer uses the same
@@ -101,7 +103,8 @@ type conn struct {
 	tab     TabID
 	pc      *webrtc.PeerConnection
 	track   *webrtc.TrackLocalStaticSample
-	lastRTP atomic.Int64 // unix nanoseconds of the last packet from the browser
+	lastRTP atomic.Int64 // unix nanoseconds of the last packet from the browser (the add time at first)
+	upAt    atomic.Int64 // unix nanoseconds the link came up (0: not yet)
 	done    chan struct{}
 	once    sync.Once
 }
@@ -131,6 +134,7 @@ type Bridge struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+	now    func() time.Time
 
 	apiOnce sync.Once
 	api     *webrtc.API
@@ -150,6 +154,7 @@ type Bridge struct {
 	cap     *Capture
 	play    *Playback
 	playOn  bool
+	playGen uint64 // counts pacat starts, so a write error is matched to the pacat it hit
 	retried bool
 	lostFns map[int]func(TabID, string)
 	nextFn  int
@@ -257,6 +262,9 @@ func (b *Bridge) Connect(ctx context.Context, offerSDP string, tab TabID) (strin
 		}
 	})
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+		if s == webrtc.PeerConnectionStateConnected {
+			c.upAt.CompareAndSwap(0, b.clock().UnixNano())
+		}
 		if s == webrtc.PeerConnectionStateFailed || s == webrtc.PeerConnectionStateDisconnected {
 			go b.lose(c, "the connection to the browser dropped")
 		}
@@ -299,6 +307,7 @@ func (b *Bridge) add(c *conn) error {
 	}
 	old := b.conns[c.tab]
 	b.conns[c.tab] = c
+	c.lastRTP.Store(b.clock().UnixNano())
 	var err error
 	if b.cap == nil {
 		err = b.startCaptureLocked()
@@ -398,7 +407,7 @@ func (b *Bridge) receive(c *conn, tr *webrtc.TrackRemote) {
 		if err != nil {
 			return
 		}
-		c.lastRTP.Store(time.Now().UnixNano())
+		c.lastRTP.Store(b.clock().UnixNano())
 		if !b.TXAllowed(c.tab) {
 			have = false
 			continue
@@ -411,11 +420,11 @@ func (b *Bridge) receive(c *conn, tr *webrtc.TrackRemote) {
 			if gap := int(d) - 1; gap > 0 && gap <= maxGap {
 				for i := 0; i < gap-1; i++ {
 					if pcm, err := dec.DecodeLost(); err == nil {
-						b.writeTX(pcm)
+						b.writeTX(c.tab, pcm)
 					}
 				}
 				if pcm, err := dec.DecodeFEC(pkt.Payload); err == nil {
-					b.writeTX(pcm)
+					b.writeTX(c.tab, pcm)
 				}
 			}
 		}
@@ -427,32 +436,56 @@ func (b *Bridge) receive(c *conn, tr *webrtc.TrackRemote) {
 		if err != nil {
 			continue
 		}
-		b.writeTX(pcm)
+		b.writeTX(c.tab, pcm)
 	}
 }
 
-func (b *Bridge) writeTX(pcm []int16) {
+// writeTX sends one frame of tab's microphone to the radio, if tab may still transmit. pacat
+// failing is restarted once per transmission; failing again drops the transmitting tabs (their
+// OnLost tells the PTT layer).
+func (b *Bridge) writeTX(tab TabID, pcm []int16) {
 	b.mu.Lock()
-	on := b.playOn
+	_, allowed := b.allowed[tab]
+	on, gen := b.playOn && allowed, b.playGen
 	b.mu.Unlock()
 	if !on {
 		return
 	}
-	if err := b.play.Write(pcm); err != nil {
-		b.txMu.Lock()
-		defer b.txMu.Unlock()
-		b.mu.Lock()
-		retry := b.playOn && !b.retried
-		b.retried = true
+	err := b.play.Write(pcm)
+	if err == nil {
+		return
+	}
+	b.txMu.Lock()
+	b.mu.Lock()
+	if !b.playOn || b.playGen != gen { // revoked or already restarted meanwhile: not a death
 		b.mu.Unlock()
-		if !retry {
-			return
-		}
+		b.txMu.Unlock()
+		return
+	}
+	if !b.retried {
+		b.retried = true
+		b.playGen++
+		b.mu.Unlock()
 		b.log.Warn("transmit audio stopped; restarting it once", "error", err)
 		_ = b.play.Close()
 		if err := b.play.Start(b.ctx); err != nil {
 			b.log.Warn("transmit audio did not restart", "error", err)
 		}
+		b.txMu.Unlock()
+		return
+	}
+	b.playGen++ // one loss per death
+	var talkers []*conn
+	for t := range b.allowed {
+		if c := b.conns[t]; c != nil {
+			talkers = append(talkers, c)
+		}
+	}
+	b.mu.Unlock()
+	b.txMu.Unlock()
+	b.log.Warn("transmit audio stopped again", "error", err)
+	for _, c := range talkers {
+		b.lose(c, "the radio's transmit audio stopped")
 	}
 }
 
@@ -473,14 +506,15 @@ func (b *Bridge) watch(c *conn) {
 		b.mu.Lock()
 		since, ok := b.allowed[c.tab]
 		b.mu.Unlock()
-		if !ok {
+		up := c.upAt.Load()
+		if !ok || up == 0 { // not transmitting, or the link is not up yet (a failed one is lost by its state)
 			continue
 		}
-		last := time.Unix(0, c.lastRTP.Load())
+		last := time.Unix(0, max(c.lastRTP.Load(), up))
 		if last.Before(since) {
 			last = since
 		}
-		if time.Since(last) > b.LostAfter {
+		if b.clock().Sub(last) > b.LostAfter {
 			b.lose(c, "no audio from the browser")
 			return
 		}
@@ -507,7 +541,7 @@ func (b *Bridge) lose(c *conn, reason string) {
 		_ = stop.Close()
 	}
 	if registered {
-		b.log.Info("browser audio lost", "tab", c.tab, "reason", reason)
+		b.log.Info("browser audio lost", "device", deviceLabel(c.tab), "reason", reason)
 		for _, fn := range fns {
 			fn(c.tab, reason)
 		}
@@ -588,7 +622,7 @@ func (b *Bridge) SetTXAllowed(tab TabID, on bool) {
 	b.mu.Lock()
 	if on {
 		if _, ok := b.allowed[tab]; !ok {
-			b.allowed[tab] = time.Now()
+			b.allowed[tab] = b.clock()
 		}
 	} else {
 		delete(b.allowed, tab)
@@ -598,6 +632,7 @@ func (b *Bridge) SetTXAllowed(tab TabID, on bool) {
 	b.playOn = want
 	if start {
 		b.retried = false
+		b.playGen++
 	}
 	b.mu.Unlock()
 	if start {
@@ -677,6 +712,36 @@ func (bs *Bridges) Shutdown() {
 	}
 	bs.mu.Unlock()
 	for _, b := range all {
+		b.Shutdown()
+	}
+}
+
+func (b *Bridge) clock() time.Time {
+	if b.now != nil {
+		return b.now()
+	}
+	return time.Now()
+}
+
+// deviceLabel is the device name of a tab id ("<session>|<device>#<nonce>") for the log: the
+// session part is the login cookie and is never logged.
+func deviceLabel(tab TabID) string {
+	if i := strings.IndexByte(tab, '|'); i >= 0 {
+		tab = tab[i+1:]
+	} else {
+		return "unknown"
+	}
+	return session.TabLabel(tab)
+}
+
+// Remove ends radio's bridge and every connection on it (the radio left the records); a later
+// Get makes a new one.
+func (bs *Bridges) Remove(radio string) {
+	bs.mu.Lock()
+	b := bs.m[radio]
+	delete(bs.m, radio)
+	bs.mu.Unlock()
+	if b != nil {
 		b.Shutdown()
 	}
 }

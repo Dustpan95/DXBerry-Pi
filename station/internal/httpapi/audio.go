@@ -38,6 +38,8 @@ const (
 	audioPollEvery = 5 * time.Second
 	signalLimit    = 64 << 10 // an offer with every candidate is a few kB
 	signalWrite    = 5 * time.Second
+	// MaxAudioPerLogin caps one login's peer connections with one radio.
+	MaxAudioPerLogin = 4
 )
 
 // AudioAPI serves WS /api/audio/{radio}/signal: the browser's offer, the answer, trickled ICE
@@ -54,9 +56,31 @@ type AudioAPI struct {
 	// PollEvery is how often Alive is asked (5 s by default).
 	PollEvery time.Duration
 
-	mu     sync.Mutex
+	mu     sync.Mutex // guards serial, slots and every slot's owner and refs; never held across a bridge call
 	serial uint64
-	owners map[string]uint64 // radio + tab -> the socket that made the tab's current connection
+	slots  map[string]*tabSlot // radio + tab id -> the tab's slot
+}
+
+// tabSlot is one tab's place with one radio. Its own mutex orders the tab's close against its
+// next connect, so a reconnecting tab's new socket is never closed by its old one, without
+// holding up any other tab.
+type tabSlot struct {
+	mu    sync.Mutex
+	radio string
+	login string // the session id (memory only, never logged)
+	owner uint64 // the socket that made the tab's current connection (0: none)
+	refs  int    // sockets on this slot
+}
+
+// connectionsLocked counts login's tabs with a connection to radio, other than skip.
+func (a *AudioAPI) connectionsLocked(radio, login string, skip *tabSlot) int {
+	n := 0
+	for _, sl := range a.slots {
+		if sl != skip && sl.owner != 0 && sl.radio == radio && sl.login == login {
+			n++
+		}
+	}
+	return n
 }
 
 // Register adds the route. Call it from Config.Routes, so the session gate and the same-origin
@@ -142,24 +166,57 @@ func (a *AudioAPI) signal(w http.ResponseWriter, r *http.Request) {
 	id := session.TabID(sess.ID, tab)
 	key := name + "\x00" + id
 	a.mu.Lock()
+	if a.slots == nil {
+		a.slots = map[string]*tabSlot{}
+	}
+	sl := a.slots[key]
+	if sl == nil {
+		sl = &tabSlot{radio: name, login: sess.ID}
+		a.slots[key] = sl
+	}
+	sl.refs++
 	a.serial++
 	me := a.serial
 	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		if sl.refs--; sl.refs == 0 && sl.owner == 0 {
+			delete(a.slots, key)
+		}
+		a.mu.Unlock()
+	}()
 	// mine reports whether this socket made the tab's current connection
 	mine := func() bool {
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		return a.owners[key] == me
+		return sl.owner == me
 	}
 	// release closes the tab's connection only if this socket made it (a reconnecting tab's new
 	// socket may already have replaced it)
 	release := func() {
+		sl.mu.Lock()
+		defer sl.mu.Unlock()
 		a.mu.Lock()
-		defer a.mu.Unlock()
-		if a.owners[key] == me {
-			delete(a.owners, key)
+		was := sl.owner == me
+		if was {
+			sl.owner = 0
+		}
+		a.mu.Unlock()
+		if was {
 			bridge.Close(id)
 		}
+	}
+	// claim makes this socket the tab's connection maker, unless the login has too many
+	claim := func() bool {
+		sl.mu.Lock()
+		defer sl.mu.Unlock()
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if sl.owner == 0 && a.connectionsLocked(name, sess.ID, sl) >= MaxAudioPerLogin {
+			return false
+		}
+		sl.owner = me
+		return true
 	}
 	defer release()
 	stopLost := bridge.OnLost(func(t, reason string) {
@@ -206,12 +263,11 @@ func (a *AudioAPI) signal(w http.ResponseWriter, r *http.Request) {
 				refuse(why)
 				return
 			}
-			a.mu.Lock()
-			if a.owners == nil {
-				a.owners = map[string]uint64{}
+			if !claim() {
+				_ = send(refusal{Type: "refused", Reason: "too many audio connections from this login", Fix: "close other tabs"})
+				_ = ws.Close(websocket.StatusNormalClosure, "too many audio connections")
+				return
 			}
-			a.owners[key] = me
-			a.mu.Unlock()
 			answer, err := bridge.Connect(ctx, m.SDP, id)
 			if err != nil {
 				_ = send(signalNotice{Type: "error", Reason: err.Error(), Fix: "tap to reconnect"})
