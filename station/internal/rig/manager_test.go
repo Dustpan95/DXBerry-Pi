@@ -234,9 +234,10 @@ func TestManagerInterestBeforeAndAfterStart(t *testing.T) {
 
 func TestManagerBroadcastsDeltas(t *testing.T) {
 	r := newMgRig(t, radio("hf", 4532, 3073))
-	r.run()
+	// subscribe before the poller starts: its first update can go out before a later Subscribe
 	ups, cancel := r.m.Subscribe()
 	defer cancel()
+	r.run()
 	var got Update
 	select {
 	case got = <-ups:
@@ -281,9 +282,9 @@ func TestManagerAnsweringChangeIsALinkUpdate(t *testing.T) {
 			delete(l.reply, k) // rigctld answers, the radio does not: RPRT -1
 		}
 	}
-	r.run()
-	ups, cancel := r.m.Subscribe()
+	ups, cancel := r.m.Subscribe() // before the poller starts (see TestManagerBroadcastsDeltas)
 	defer cancel()
+	r.run()
 	deadline := time.After(3 * time.Second)
 	for {
 		select {
