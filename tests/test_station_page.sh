@@ -858,9 +858,12 @@ test_vfo_audio_disabled_with_the_reason() {
   assert_eq "$(jq -r '.pure.none' <<< "$j")" "No browser audio on this radio."
   assert_eq "$(jq -r '.pure.nojs' <<< "$j")" "This page has no browser audio."
   assert_eq "$(jq -r '"[\(.pure.ok)] \(.pure.holder)"' <<< "$j")" "[] WSJT-X"
-  # the sound server is down: Listen and Mic are disabled with the station's reason; taps do nothing
-  assert_eq "$(jq -r '.down | "\(.listenDisabled) \(.micDisabled) \(.why)"' <<< "$j")" "true true No sound server for ic7300: the server is not running."
-  assert_eq "$(jq -r '"\(.downSockets) \(.downGum)"' <<< "$j")" "0 0"
+  # the sound server stops while listening: the audio stops, Listen and Mic are disabled with the
+  # station's reason, and taps do nothing; once it is back the page says so in plain words
+  assert_eq "$(jq -r '.down | "\(.listenPressed) \(.listenDisabled) \(.micDisabled) \(.why)"' <<< "$j")" "false true true No sound server for ic7300: the server is not running."
+  assert_eq "$(jq -r '"\(.downSockets) \(.downGum)"' <<< "$j")" "1 0"
+  assert_eq "$(jq -c '.notices' <<< "$j")" '["warn: No sound server for ic7300: the server is not running.","good: Browser audio is back: tap Listen to hear the radio."]'
+  assert_eq "$(jq -r '"\(.back.listenDisabled) \(.back.why == "")"' <<< "$j")" "false true"
   j=$(sau_ui nojs 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
   assert_eq "$(jq -r '.page | "\(.listenDisabled) \(.micDisabled) \(.why)|\(.pttWhy)"' <<< "$j")" "true true This page has no browser audio.|This page has no browser audio."
 }

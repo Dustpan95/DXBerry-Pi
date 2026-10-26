@@ -315,7 +315,8 @@
     micLabel: null,  // the open microphone's name ("" unnamed), null while none is open
     micAsking: false,
     armed: false,    // opened as /radio/<name>#listen: the first tap starts the audio
-    stoppedFor: "",  // the audio was stopped because of this; said again once it is over
+    stoppedFor: "",  // why this page stopped the audio ("card": a program took the sound card,
+                     // "audio": the sound server went); the page says so once it is back
   };
 
   function h(tag, attrs, ...kids) {
@@ -1230,12 +1231,12 @@
       // server stopped): stop it here and say why, once; say so again when it is back
       const why = audioReason();
       if (why && (S.listening || S.rx === "lost")) {
-        S.stoppedFor = why;
+        S.stoppedFor = cardHolder(S.audio, S.rec, S.owner) ? "card" : "audio";
         stopListen();
         say(why, "warn");
       } else if (!why && S.stoppedFor) {
+        say(S.stoppedFor === "card" ? "The sound card is free again: tap Listen to hear the radio." : "Browser audio is back: tap Listen to hear the radio.", "good");
         S.stoppedFor = "";
-        say("The sound card is free again: tap Listen to hear the radio.", "good");
       }
       paint();
     });

@@ -475,6 +475,9 @@ const evNotice = (m) => evs().onmessage({ data: JSON.stringify(m) });
       ok: V.audioWhy(AVAILABLE, { owner: "js8call" }, { kind: "program", label: "JS8Call" }, true),
       holder: V.cardHolder(WSJTX_CARD, null, null),
     };
+    // listening when the sound server stops (no program): the audio stops with the station's words
+    click(q("vfo-listen"));
+    await connect(0);
     st.audio = { available: false, reason: "no sound server for ic7300: the server is not running" };
     await advance(5000);
     out.down = snap();
@@ -483,6 +486,10 @@ const evNotice = (m) => evs().onmessage({ data: JSON.stringify(m) });
     await flush();
     out.downSockets = sigs().length;
     out.downGum = gum.length;
+    // the server is back: the page says so (not in a program's terms)
+    st.audio = AVAILABLE;
+    await advance(5000);
+    out.back = snap();
   } else if (scenario === "nojs") {
     out.page = snap();
   }

@@ -82,7 +82,6 @@
 .vfo-audio-btns .btn { flex: 1 1 140px; min-height: 48px; font-size: 17px; font-weight: 600; }
 .vfo-listen.is-armed { outline: 3px solid var(--accent); outline-offset: 2px; }
 .vfo-audio > .vfo-rx { display: flex; align-items: center; gap: 10px; margin: 10px 0 0; font-weight: 600; }
-.vfo-rx[hidden] { display: none; }
 .vfo-rx meter { flex: 1 1 auto; min-width: 0; height: 14px; }
 .vfo-rx-text { flex: 0 1 auto; overflow-wrap: anywhere; }
 .vfo-rx.is-receiving .vfo-rx-text { color: var(--good); }
