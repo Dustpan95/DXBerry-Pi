@@ -112,7 +112,8 @@ type PTT struct {
 	method   string
 	phase    pttPhase
 	gen      uint64 // bumped whenever a window opens or ends
-	cancel   string // why a window that was still starting was ended
+	ended    bool   // the window still starting was ended meanwhile; its On undoes it
+	cancel   string // why
 	w        window
 	lastHB   time.Time
 	timeout  time.Duration
@@ -230,17 +231,20 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 		return p.refuse("a tune carrier is up", "wait for it to end, or press STOP")
 	}
 	method := p.method
-	p.phase, p.cancel = pttStarting, ""
+	p.phase, p.ended, p.cancel = pttStarting, false, ""
 	p.gen++
 	g := p.gen
 	p.w = window{tab: tab, method: method}
 	p.mu.Unlock()
 
-	// abort ends a window that never opened (nothing of the audio side is up yet)
+	// abort ends a window that never opened (nothing of the audio side is up yet). Until then the
+	// window stays "starting", even when a drop ended it meanwhile, so no second press can open
+	// another window over this one's half-built audio side.
 	abort := func(res Result) Result {
 		p.mu.Lock()
-		if p.gen == g {
+		if p.gen == g && p.phase == pttStarting {
 			p.phase, p.w = pttOff, window{}
+			p.gen++
 		}
 		p.mu.Unlock()
 		return res
@@ -293,9 +297,11 @@ func (p *PTT) On(ctx context.Context, tab string) Result {
 	p.bridge.SetTXAllowed(tab, true)
 
 	p.mu.Lock()
-	if p.gen != g || p.phase != pttStarting {
+	if p.ended {
 		// ended while it was opening (STOP, the owner's socket, shutdown): undo it all
 		reason := p.cancel
+		p.phase, p.w = pttOff, window{}
+		p.gen++
 		p.mu.Unlock()
 		p.release(w, keysRig(method), reason)
 		return p.refuse("PTT was stopped: "+reason, "press PTT again")
@@ -473,8 +479,9 @@ func (p *PTT) dropAt(g uint64, reason string, unkey bool) (bool, Result) {
 		p.mu.Unlock()
 		return false, Result{OK: true}
 	case pttStarting:
-		p.phase, p.cancel = pttOff, reason
-		p.gen++
+		if g == 0 && !p.ended {
+			p.ended, p.cancel = true, reason
+		}
 		p.mu.Unlock()
 		return false, Result{OK: true}
 	}

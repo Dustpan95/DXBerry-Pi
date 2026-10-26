@@ -657,3 +657,42 @@ func TestPTTTimeoutText(t *testing.T) {
 		}
 	}
 }
+
+// A STOP that lands while PTT is still opening ends it: the window is undone once its key-on has
+// answered, nothing is left keyed or open, and no second press can open a window meanwhile.
+func TestPTTStopWhileStartingUndoesIt(t *testing.T) {
+	h := newPTTHarness(t, "rigctld")
+	h.claim(t, "a")
+	var second Result
+	armed := true
+	h.rig.mu.Lock()
+	h.rig.beforeDo = func(call string) {
+		if call != "set_ptt 1" || !armed {
+			return
+		}
+		armed = false
+		if r := h.p.Stop(context.Background(), "iPhone"); !r.OK {
+			t.Errorf("stop: %+v", r)
+		}
+		second = h.p.On(context.Background(), "a")
+	}
+	h.rig.mu.Unlock()
+	r := h.p.On(context.Background(), "a")
+	if r.OK || r.Reason != "PTT was stopped: STOP from iPhone" {
+		t.Fatalf("on: %+v", r)
+	}
+	if second.OK || second.Reason != "PTT is already starting" {
+		t.Fatalf("a second press while starting: %+v", second)
+	}
+	if h.p.Active() || h.rig.State().PTT || h.in.Owed() || h.br.TXAllowed("a") || h.srv.count() != 0 {
+		t.Fatalf("left open: %v %v", h.rig.log(), h.eventLog())
+	}
+	if got := h.rig.log(); got[len(got)-1] != "set_ptt 0" {
+		t.Fatalf("calls %v", got)
+	}
+	if !h.noticed("STOP from iPhone") {
+		t.Fatalf("notices %v", h.noticeLog())
+	}
+	h.on(t, "a") // and the next press works
+	h.p.Off("a", "released")
+}
