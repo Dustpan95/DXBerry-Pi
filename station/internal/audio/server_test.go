@@ -44,10 +44,11 @@ func control(t *testing.T, c *cli.CLI, radio string, sinks string) (*ServerContr
 func makeSocket(t *testing.T, s *ServerControl, radio string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(s.Socket(radio)), 0o755); err != nil {
-		t.Fatal(err)
+		t.Errorf("makeSocket: %v", err)
+		return
 	}
 	if err := os.WriteFile(s.Socket(radio), nil, 0o600); err != nil {
-		t.Fatal(err)
+		t.Errorf("makeSocket: %v", err)
 	}
 }
 
@@ -62,15 +63,19 @@ func TestAvailableReasons(t *testing.T) {
 	if ok || why != "no sound server for radio1: "+s.Socket("radio1")+" is missing" {
 		t.Fatalf("got %v %q", ok, why)
 	}
-	// the default run directory spelling
-	d := NewServerControl(c, "")
-	if _, why := d.Available("radio1"); why != "no sound server for radio1: /run/dxberry/audio/radio1/native is missing" {
-		t.Fatalf("default: %q", why)
+	if DefaultRunDir != "/run/dxberry/audio" || s.Socket("radio1") != s.runDir+"/radio1/native" {
+		t.Fatalf("socket layout %q %q", DefaultRunDir, s.Socket("radio1"))
 	}
 	// an alsa program owns the card
 	s.Radios = fakeRadios{"radio1": {Name: "radio1", Owner: "wsjtx"}}
 	if ok, why = s.Available("radio1"); ok || why != "no sound server for radio1: WSJT-X has the sound card" {
 		t.Fatalf("got %v %q", ok, why)
+	}
+	for owner, name := range map[string]string{"flrig": "flrig", "pat": "Pat"} {
+		s.Radios = fakeRadios{"radio1": {Name: "radio1", Owner: owner}}
+		if ok, why = s.Available("radio1"); ok || why != "no sound server for radio1: "+name+" has the sound card" {
+			t.Fatalf("%s: %v %q", owner, ok, why)
+		}
 	}
 	s.Radios = fakeRadios{"radio1": {Name: "radio1", Owner: "js8call"}}
 	if ok, why = s.Available("radio1"); ok || !strings.HasSuffix(why, "native is missing") {
@@ -93,8 +98,14 @@ func TestAvailableReasons(t *testing.T) {
 	// the unit reports the card absent
 	c2, _ := fakeAudioCLI(t, `{"radio":"radio1","active":false,"socket":"x","card":"RADIO1","present":false}`, 0)
 	s.cli = c2
-	if ok, _ = s.Available("radio1"); ok {
-		t.Fatal("present=false was available")
+	if ok, why = s.Available("radio1"); ok || why != "no sound server for radio1: the server is not running" {
+		t.Fatalf("present=false: %v %q", ok, why)
+	}
+	// pactl cannot be run
+	s.cli = c
+	s.Bins = map[string]string{"pactl": filepath.Join(dir, "nonexistent")}
+	if ok, why = s.Available("radio1"); ok || !strings.HasPrefix(why, "no sound server for radio1: pactl") {
+		t.Fatalf("pactl failure: %v %q", ok, why)
 	}
 }
 
@@ -121,6 +132,17 @@ func TestEnsureRunsUnitAndWaitsForSocket(t *testing.T) {
 	}
 	if err := s.Ensure(context.Background(), "Bad Name"); err == nil {
 		t.Fatal("bad name accepted")
+	}
+}
+
+func TestStopRunsUnit(t *testing.T) {
+	c, log := fakeAudioCLI(t, "{}", 0)
+	s, _ := control(t, c, "radio1", "")
+	if err := s.Stop(context.Background(), "radio1"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(log); string(b) != "stop radio1 --json\n" {
+		t.Fatalf("argv %q", b)
 	}
 }
 
@@ -152,14 +174,18 @@ func TestTwoRadiosIsolatedSinks(t *testing.T) {
 	c, _ := fakeAudioCLI(t, "{}", 0)
 	a, dirA := control(t, c, "radio1", "")
 	b, dirB := control(t, c, "radio2", "")
+	b.runDir = a.runDir // one run directory, two radios
 	if _, err := a.LoadTXLoopback(context.Background(), "radio1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := b.LoadTXLoopback(context.Background(), "radio2"); err != nil {
 		t.Fatal(err)
 	}
-	if a.Socket("radio1") == b.Socket("radio2") {
+	if a.Socket("radio1") == b.Socket("radio2") || a.Server("radio1") == b.Server("radio2") {
 		t.Fatal("shared socket")
+	}
+	if filepath.Dir(a.Socket("radio1")) == filepath.Dir(b.Socket("radio2")) {
+		t.Fatal("shared socket directory")
 	}
 	ra, _ := os.ReadFile(filepath.Join(dirA, "pactl.argv"))
 	rb, _ := os.ReadFile(filepath.Join(dirB, "pactl.argv"))

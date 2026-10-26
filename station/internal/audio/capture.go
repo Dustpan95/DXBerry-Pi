@@ -175,7 +175,16 @@ func (p *Playback) Start(ctx context.Context) error {
 		return err
 	}
 	p.cmd, p.stdin, p.done = cmd, in, make(chan struct{})
-	go func() { _ = cmd.Wait(); close(p.done) }()
+	done := p.done
+	go func() {
+		_ = cmd.Wait()
+		p.mu.Lock()
+		if p.cmd == cmd { // pacat died by itself: the caller may Start again
+			p.cmd, p.stdin = nil, nil
+		}
+		p.mu.Unlock()
+		close(done)
+	}()
 	return nil
 }
 
@@ -199,7 +208,7 @@ func (p *Playback) Write(frame []int16) error {
 func (p *Playback) Close() error {
 	p.mu.Lock()
 	cmd, in, done := p.cmd, p.stdin, p.done
-	p.stdin = nil
+	p.stdin, p.cmd = nil, nil
 	p.mu.Unlock()
 	if cmd == nil {
 		return nil

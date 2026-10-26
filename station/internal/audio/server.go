@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,8 +21,9 @@ import (
 const DefaultRunDir = "/run/dxberry/audio"
 
 const (
-	pactlTimeout = 5 * time.Second
-	socketWait   = 5 * time.Second
+	pactlTimeout  = 5 * time.Second
+	statusTimeout = 2 * time.Second
+	socketWait    = 5 * time.Second
 )
 
 var childEnv = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8"}
@@ -138,27 +140,32 @@ func (s *ServerControl) missing(radio string) string {
 // Available reports whether browser audio can run for radio: the socket exists and the server
 // lists both <CARD> and <CARD>.tx. When not, reason says why.
 func (s *ServerControl) Available(radio string) (bool, string) {
-	ctx, cancel := context.WithTimeout(context.Background(), pactlTimeout)
-	defer cancel()
 	if _, err := os.Stat(s.Socket(radio)); err != nil {
 		return false, s.missing(radio)
 	}
 	card := Card(radio)
-	if res, err := s.cli.Run(ctx, cli.Call{Command: "dxberry-audio", Args: []string{"status", radio, "--json"}}); err == nil && res.Exit == 0 {
+	sctx, scancel := context.WithTimeout(context.Background(), statusTimeout)
+	res, err := s.cli.Run(sctx, cli.Call{Command: "dxberry-audio", Args: []string{"status", radio, "--json"}})
+	scancel()
+	if err != nil || res.Exit != 0 {
+		slog.Debug("dxberry-audio status failed", "radio", radio, "err", err, "exit", res.Exit, "stderr", res.Stderr)
+	} else {
 		var st struct {
 			Card    string `json:"card"`
 			Present *bool  `json:"present"`
 		}
 		if json.Unmarshal([]byte(res.Stdout), &st) == nil {
 			if st.Present != nil && !*st.Present {
-				return false, s.missing(radio)
+				return false, fmt.Sprintf("no sound server for %s: the server is not running", radio)
 			}
 			if st.Card != "" {
 				card = st.Card
 			}
 		}
 	}
-	out, err := s.pactlFor(ctx, radio, "list", "short", "sinks")
+	pctx, pcancel := context.WithTimeout(context.Background(), pactlTimeout)
+	defer pcancel()
+	out, err := s.pactlFor(pctx, radio, "list", "short", "sinks")
 	if err != nil {
 		return false, fmt.Sprintf("no sound server for %s: %v", radio, err)
 	}

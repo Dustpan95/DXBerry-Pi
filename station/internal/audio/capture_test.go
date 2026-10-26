@@ -20,7 +20,7 @@ func fakeBin(t *testing.T) (map[string]string, string) {
 echo "$@" >> "$DXB_FAKE_DIR/parec.argv"
 echo x >> "$DXB_FAKE_DIR/runs"
 s=""
-for ((i=0;i<DXB_FAKE_SAMPLES;i++)); do s+=$(printf '\\x%02x\\x%02x' $((i&255)) $((i>>8&255))); done
+for ((i=0;i<DXB_FAKE_SAMPLES;i++)); do printf -v b '\\x%02x\\x%02x' $((i&255)) $((i>>8&255)); s+=$b; done
 printf '%b' "$s"
 `,
 		"pacat": `#!/bin/bash
