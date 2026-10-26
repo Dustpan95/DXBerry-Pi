@@ -591,6 +591,20 @@ test_ptt_release_events() {
   assert_eq "$(jq -r '"\(.sockets) \(.gum)"' <<< "$j")" "1 1"
 }
 
+# rc3 fix-wave round 2 (m-A): a quick tap released while the station still holds the on (it waits
+# up to 2 s for the browser's first microphone packet) sends the off at once, so the station ends
+# the window before it keys the radio; the off after the on's answer still goes
+test_ptt_quick_tap_sends_the_off_at_once() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(spt_run quicktap 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -c '.pending' <<< "$j")" '["on"]'
+  assert_eq "$(jq -r '.labelPending' <<< "$j")" "Connecting…"
+  assert_eq "$(jq -c '.atRelease' <<< "$j")" '["on","off"]'
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["on","off","off"]'
+  assert_eq "$(jq -r '"\(.labelAfter) \(.hbTimers)"' <<< "$j")" "PTT 0"
+  assert_eq "$(jq -c '[.tx[] | select(. == true)]' <<< "$j")" '[]'
+}
+
 test_ptt_heartbeat_every_5s() {
   command -v node > /dev/null 2>&1 || return 0
   local j k; j=$(spt_run release 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }

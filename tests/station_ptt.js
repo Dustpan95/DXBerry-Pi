@@ -2,7 +2,8 @@
 // timers and a fake dxbAudio, presses and releases its PTT button, and prints what it sent.
 // Run: node tests/station_ptt.js station/web SCENARIO
 //   scenarios: release (each release event, the heartbeat), notowner, noaudio, refused, dropped,
-//   stale, hbrefused, rebuild, pendingmic, docrelease, txthrows (audio.js's setTX throws)
+//   stale, hbrefused, rebuild, pendingmic, docrelease, txthrows (audio.js's setTX throws),
+//   quicktap (released while the station still holds the on)
 "use strict";
 const fs = require("fs");
 const vm = require("vm");
@@ -62,6 +63,7 @@ const ptt = { on: false, mine: false, timeout_s: 180, method: "rigctld" };
 
 const posts = []; // the PTT requests, in order: "on", "off", "hb"
 let windows = 0; // the station's window numbers
+let onAnswer = null; // quicktap: answers the held on
 const reply = (status, body) => Promise.resolve({ ok: status < 300, status, json: () => Promise.resolve(body) });
 const fetch = (url, opts) => {
   if (opts.method === "GET") return reply(200, { radio: record, state, caps, owner, audio, ptt });
@@ -73,6 +75,8 @@ const fetch = (url, opts) => {
       return reply(200, { ok: false, reason: "the microphone is not open yet", fix: "press PTT again once the browser has asked for the microphone" });
     }
     if (scenario === "hbrefused" && b.hb) return reply(200, { ok: false, reason: "PTT is not on", fix: "press PTT again" });
+    // quicktap: the station holds the on (it waits for the browser's first microphone packet)
+    if (scenario === "quicktap" && b.on) return new Promise((r) => { onAnswer = () => r({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, window: ++windows }) }); });
     if (b.on) return reply(200, { ok: true, window: ++windows });
   }
   return reply(200, { ok: true });
@@ -244,6 +248,24 @@ function release(kind) {
     await flush();
     out.afterLost = button().textContent;
     out.posts = posts;
+    console.log(JSON.stringify(out));
+    return;
+  }
+  if (scenario === "quicktap") {
+    // a tap released while the station still holds the on: the off goes at once (the station
+    // ends a window that is still opening, before it keys the radio), and again after the answer
+    const since = await press();
+    out.pending = posts.slice();
+    out.labelPending = button().textContent;
+    release("pointerup");
+    await flush();
+    out.atRelease = posts.slice();
+    onAnswer();
+    await flush();
+    out.posts = posts;
+    out.labelAfter = button().textContent;
+    out.hbTimers = heartbeats(since).filter(([, t]) => !t.cleared).length;
+    out.tx = audioCalls.tx;
     console.log(JSON.stringify(out));
     return;
   }

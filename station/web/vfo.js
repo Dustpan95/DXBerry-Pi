@@ -779,7 +779,10 @@
   // on was sent (the station's Off is idempotent and ignores a tab that no longer holds the
   // transmitter), after the on's answer so the two cannot cross: a hold that ends here never
   // leaves the radio keyed until the heartbeat lapses. The off is chained before anything else
-  // runs, and an opening that failed part-way still sends it once its on went.
+  // runs, and an opening that failed part-way still sends it once its on went. An on still
+  // unanswered (the station waits for the browser's first microphone packet) gets an off at once
+  // as well: the station ends a window that is still opening before it keys the radio, so a quick
+  // tap never puts a carrier on the air after the release.
   function holdEnd(hold) {
     if (hold.ended) return;
     hold.ended = true;
@@ -787,6 +790,7 @@
     if (hold.tick !== null) clearInterval(hold.tick);
     hold.hb = hold.tick = null;
     if (S.hold === hold) S.hold = null;
+    if (hold.sent && !hold.answered) pttPost({ on: false });
     if (hold.onDone) hold.onDone.then((sent) => sent, () => hold.sent).then((sent) => { if (sent) pttPost({ on: false }); });
     micTX(false);
     paint();
@@ -796,7 +800,7 @@
     if (e && e.preventDefault) e.preventDefault();
     if (S.hold || pttReason()) return;
     const A = window.dxbAudio;
-    const hold = { since: Date.now(), ok: false, ended: false, sent: false, micOK: false, hb: null, tick: null, onDone: null,
+    const hold = { since: Date.now(), ok: false, ended: false, sent: false, answered: false, micOK: false, hb: null, tick: null, onDone: null,
       window: null, pointer: e && e.pointerId !== undefined ? e.pointerId : null };
     S.hold = hold;
     // the radio's audio starts inside the press (the browser lets it play then); the mic is asked for
@@ -820,6 +824,7 @@
       }
       hold.sent = true;
       return pttPost({ on: true }).then((res) => {
+        hold.answered = true;
         if (!(res && res.ok)) {
           say(failText(res || {}), "bad");
           holdEnd(hold);
