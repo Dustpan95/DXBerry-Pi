@@ -707,3 +707,34 @@ func TestEventsSocketHookFiresOnOpenAndClose(t *testing.T) {
 		t.Fatal("hook did not run on close")
 	}
 }
+
+// A notice reaches every open socket at once, whatever the socket watches.
+func TestEventsNotifyReachesEverySocket(t *testing.T) {
+	st, _, ts := rigSetup(t)
+	watcher, bystander := openSock(t, ts), openSock(t, ts)
+	watchMsg(t, watcher, "a", "page")
+	readMsg(t, watcher) // the watched radio's state
+	st.Notify("a", map[string]any{"type": "ptt", "radio": "a", "on": false, "reason": "heartbeat lost"})
+	for name, c := range map[string]*websocket.Conn{"watcher": watcher, "bystander": bystander} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, data, err := c.Read(ctx)
+		cancel()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if string(data) != `{"on":false,"radio":"a","reason":"heartbeat lost","type":"ptt"}` {
+			t.Fatalf("%s got %s", name, data)
+		}
+	}
+	// a socket that closed is not written to, and Notify with no socket open does not block
+	watcher.CloseNow()
+	bystander.CloseNow()
+	eventually(t, "no listeners", func() bool { return st.Listeners() == 0 })
+	done := make(chan struct{})
+	go func() { st.Notify("b", map[string]string{"type": "ptt"}); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Notify blocked with no socket open")
+	}
+}

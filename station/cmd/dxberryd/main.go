@@ -84,15 +84,18 @@ func main() {
 		return res.Stdout, res.Exit, err
 	}))
 	owners.SetPrograms(programs)
+	radioStore := &settings.Store{Dir: filepath.Join(*state, "radios")}
+	radioSettings := &httpapi.RadioSettingsAPI{Radios: rw, Settings: radioStore,
+		Probe: httpapi.ManagerProbe(rigs, rig.CapsCache{Dir: *rigCaps})}
+	// a carrier keyed when the service died is owed its unkey at the next start (<state>/keyed);
+	// PTT notices go to every tab
+	radioAPI := &httpapi.RadioAPI{Auth: mgr, Radios: rw, Rigs: httpapi.ManagerRigs(rigs), Owners: owners,
+		Marks: &rig.KeyedMarks{Dir: filepath.Join(*state, "keyed")}, Settings: radioStore.Get, Notify: st.Notify}
+	// a radio is transmitting while its PTT reads on or a PTT window is open (vox keys no PTT line)
 	owners.SetTransmitting(func(radio string) bool {
 		p, ok := rigs.Radio(radio)
-		return ok && p.State().PTT
+		return ok && p.State().PTT || radioAPI.PTTOn(radio)
 	})
-	radioSettings := &httpapi.RadioSettingsAPI{Radios: rw, Settings: &settings.Store{Dir: filepath.Join(*state, "radios")},
-		Probe: httpapi.ManagerProbe(rigs, rig.CapsCache{Dir: *rigCaps})}
-	// a carrier keyed when the service died is owed its unkey at the next start (<state>/keyed)
-	radioAPI := &httpapi.RadioAPI{Auth: mgr, Radios: rw, Rigs: httpapi.ManagerRigs(rigs), Owners: owners,
-		Marks: &rig.KeyedMarks{Dir: filepath.Join(*state, "keyed")}}
 	// a tab's claim ends with its events socket (the page opens it with ?tab=<its token>)
 	st.OnSocket(func(r *http.Request) func() {
 		s, ok := mgr.Session(r)
@@ -110,6 +113,16 @@ func main() {
 	bridges := audio.NewBridges(audioCtl, audio.DefaultPorts, slog.Default())
 	audioAPI := &httpapi.AudioAPI{Auth: mgr, Radios: rw, Available: audioCtl.Available, Alive: mgr.Alive,
 		Bridge: func(radio string) (httpapi.AudioBridge, bool) { return audioBridge{bridges.Get(radio)}, true }}
+	// PTT: the radio's bridge lets the owner's microphone through, the sound server loops <CARD>.tx
+	// into the card, and a digirig_tone radio is keyed by a stereo tone into <CARD>.tx
+	radioAPI.Available = audioCtl.Available
+	radioAPI.Audio = func(radio string) httpapi.PTTAudio {
+		return httpapi.PTTAudio{Bridge: bridges.Get(radio), Server: audioCtl, Tone: func() rig.TonePlayer {
+			p := audio.NewPlayback(audioCtl.Server(radio), audio.Card(radio)+".tx")
+			p.Bins, p.Env, p.Channels = audioCtl.Bins, audioCtl.Env, 2
+			return p
+		}}
+	}
 	runner.OnCall = func(cmd string, args []string) {
 		if status.ChangesState(cmd, args) {
 			st.Poke()
@@ -164,8 +177,8 @@ func main() {
 	done := make(chan struct{})
 	go func() {
 		<-stop
-		// no new intents first, then every carrier we keyed or owe is unkeyed (the rig layer
-		// still runs: statusCtx ends only when main returns)
+		// no new intents first, then every PTT window is closed and every carrier we keyed or owe
+		// is unkeyed (the rig layer still runs: statusCtx ends only when main returns)
 		httpapi.StopService(srv, 5*time.Second, radioAPI)
 		bridges.Shutdown()
 		close(done)

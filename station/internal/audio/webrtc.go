@@ -105,6 +105,7 @@ type conn struct {
 	track   *webrtc.TrackLocalStaticSample
 	lastRTP atomic.Int64 // unix nanoseconds of the last packet from the browser (the add time at first)
 	upAt    atomic.Int64 // unix nanoseconds the link came up (0: not yet)
+	inbound atomic.Bool  // a packet has come from the browser (its microphone is attached)
 	done    chan struct{}
 	once    sync.Once
 }
@@ -408,6 +409,7 @@ func (b *Bridge) receive(c *conn, tr *webrtc.TrackRemote) {
 			return
 		}
 		c.lastRTP.Store(b.clock().UnixNano())
+		c.inbound.Store(true)
 		if !b.TXAllowed(c.tab) {
 			have = false
 			continue
@@ -612,6 +614,16 @@ func (b *Bridge) TXAllowed(tab TabID) bool {
 	defer b.mu.Unlock()
 	_, ok := b.allowed[tab]
 	return ok
+}
+
+// HasInbound reports whether tab's connection carries the browser's microphone yet: at least one
+// RTP packet has come in on it. The PTT layer refuses to key before then, so the no-audio timer
+// that starts with TX never runs out during the browser's first microphone prompt.
+func (b *Bridge) HasInbound(tab TabID) bool {
+	b.mu.Lock()
+	c := b.conns[tab]
+	b.mu.Unlock()
+	return c != nil && c.inbound.Load()
 }
 
 // SetTXAllowed lets tab's microphone through to the radio, or stops it (the PTT layer's switch).

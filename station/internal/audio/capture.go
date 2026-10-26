@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -140,6 +141,9 @@ func (c *Capture) runOnce(ctx context.Context) error {
 type Playback struct {
 	server, sink string
 
+	// Channels is the number of interleaved channels in each frame (1 when zero; the keying tone
+	// plays in stereo).
+	Channels int
 	// Bins maps pacat to an absolute path (tests point it at a fake).
 	Bins map[string]string
 	// Env is added to the fixed child environment.
@@ -163,8 +167,12 @@ func (p *Playback) Start(ctx context.Context) error {
 	if p.cmd != nil {
 		return errors.New("playback already started")
 	}
+	channels := p.Channels
+	if channels <= 0 {
+		channels = 1
+	}
 	cmd := exec.CommandContext(ctx, Bin(p.Bins, "pacat"), "--playback",
-		"--server="+p.server, "--device="+p.sink, "--format=s16le", "--rate=48000", "--channels=1", "--latency-msec=20")
+		"--server="+p.server, "--device="+p.sink, "--format=s16le", "--rate=48000", "--channels="+strconv.Itoa(channels), "--latency-msec=20")
 	cmd.Env = append(append([]string(nil), childEnv...), p.Env...)
 	cmd.WaitDelay = time.Second
 	in, err := cmd.StdinPipe()

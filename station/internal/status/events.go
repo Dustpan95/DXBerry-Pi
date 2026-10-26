@@ -68,6 +68,46 @@ func (k *sock) level(radio string) int {
 	return k.levels[radio]
 }
 
+// noticeBuffer is how many notices a socket may have waiting for its writer.
+const noticeBuffer = 32
+
+// Notify sends msg, encoded as JSON, to every open events socket now, whatever each one watches:
+// a transient notice such as PTT dropping. radio is the radio it is about (for the log). Each
+// socket's own writer sends it, after what that socket already had queued; a socket too far
+// behind to take it is told in the log, not waited for.
+func (s *Status) Notify(radio string, msg any) {
+	b, err := json.Marshal(msg)
+	if err != nil {
+		slog.Error("a notice cannot be encoded", "radio", radio, "error", err)
+		return
+	}
+	s.nmu.Lock()
+	defer s.nmu.Unlock()
+	for ch := range s.notes {
+		select {
+		case ch <- b:
+		default:
+			slog.Warn("an events socket is too far behind to take a notice", "radio", radio)
+		}
+	}
+}
+
+// subscribeNotes registers one socket's notice queue.
+func (s *Status) subscribeNotes() (<-chan []byte, func()) {
+	ch := make(chan []byte, noticeBuffer)
+	s.nmu.Lock()
+	if s.notes == nil {
+		s.notes = map[chan []byte]struct{}{}
+	}
+	s.notes[ch] = struct{}{}
+	s.nmu.Unlock()
+	return ch, func() {
+		s.nmu.Lock()
+		delete(s.notes, ch)
+		s.nmu.Unlock()
+	}
+}
+
 func (s *Status) addSock(k *sock) {
 	s.smu.Lock()
 	if s.socks == nil {
@@ -224,6 +264,8 @@ func (s *Status) events(w http.ResponseWriter, r *http.Request, alive func(*http
 	ws.SetReadLimit(readLimit)
 	ctx, cancel := context.WithCancel(r.Context())
 	updates, unsubscribe := s.Subscribe()
+	notes, unsubscribeNotes := s.subscribeNotes()
+	defer unsubscribeNotes()
 	readerDone := make(chan struct{})
 	sk := &sock{levels: map[string]int{}}
 	s.addSock(sk)
@@ -292,6 +334,10 @@ func (s *Status) events(w http.ResponseWriter, r *http.Request, alive func(*http
 			return
 		case <-updates:
 			if !send(s.message()) {
+				return
+			}
+		case b := <-notes:
+			if !send(b) {
 				return
 			}
 		case l := <-radioUpdates:

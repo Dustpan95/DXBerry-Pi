@@ -14,6 +14,7 @@ import (
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/radios"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/rig"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/session"
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/settings"
 )
 
 // reRadioName is the radio name pattern; a name that does not match is never looked up.
@@ -62,10 +63,41 @@ type RadioAPI struct {
 	Ctx context.Context
 	// Marks are the keyed markers (nil: none). OweMarkedCarriers reads them at start.
 	Marks *rig.KeyedMarks
+	// Audio is a radio's audio side for PTT (nil: PTT is refused, the station has no browser audio).
+	Audio func(radio string) PTTAudio
+	// Available says whether a radio's sound server can carry browser audio, and why not (the GET
+	// answer's audio field; nil: no browser audio).
+	Available func(radio string) (bool, string)
+	// Settings is a radio's station settings, for its PTT timeout (nil: the defaults).
+	Settings func(radio string) settings.RadioSettings
+	// Notify sends a notice to every tab (nil: none are sent).
+	Notify rig.Notifier
 
 	mu      sync.Mutex
 	intents map[string]*rig.Intents
+	ptts    map[string]*rig.PTT
+	avail   map[string]availAnswer
 }
+
+// PTTAudio is one radio's audio side as PTT needs it: its WebRTC bridge, the sound server
+// control and the keying tone's player (digirig_tone).
+type PTTAudio struct {
+	Bridge rig.TXBridge
+	Server rig.SoundServer
+	Tone   func() rig.TonePlayer
+}
+
+// availAnswer is a cached Available answer: the page asks every few seconds and each answer
+// runs the sound server's status and pactl.
+type availAnswer struct {
+	ok  bool
+	why string
+	at  time.Time
+}
+
+const availFor = 3 * time.Second
+
+const noBrowserAudio = "this station has no browser audio"
 
 // UnkeyWithin bounds the unkeys sent as the service stops.
 const UnkeyWithin = 3 * time.Second
@@ -90,13 +122,30 @@ func StopService(srv Shutdowner, within time.Duration, a *RadioAPI) {
 
 // UnkeyAll sends one set_ptt 0, all radios at once, to every radio whose carrier may be up, and
 // returns when they have answered or ctx ends.
+// Every PTT window is closed first (its loopback unloaded, its tab's microphone stopped), and no
+// new one opens.
 func (a *RadioAPI) UnkeyAll(ctx context.Context) {
 	a.mu.Lock()
 	all := make([]*rig.Intents, 0, len(a.intents))
 	for _, in := range a.intents {
 		all = append(all, in)
 	}
+	ptts := make([]*rig.PTT, 0, len(a.ptts))
+	for _, p := range a.ptts {
+		ptts = append(ptts, p)
+	}
 	a.mu.Unlock()
+	var pw sync.WaitGroup
+	for _, p := range ptts {
+		pw.Add(1)
+		go func() { defer pw.Done(); p.Shutdown() }()
+	}
+	pdone := make(chan struct{})
+	go func() { pw.Wait(); close(pdone) }()
+	select {
+	case <-pdone:
+	case <-ctx.Done():
+	}
 	var wg sync.WaitGroup
 	for _, in := range all {
 		if !in.Owed() {
@@ -171,6 +220,7 @@ func (a *RadioAPI) Register(mux *http.ServeMux) {
 	// a tab's claim ending (release, socket close, idle) ends its carrier
 	a.Owners.OnDrop(func(radio string) {
 		if rec, ok := a.Radios.Get(radio); ok {
+			a.pttFor(rec).OwnerGone()
 			a.intentsFor(rec).Unkey()
 		}
 	})
@@ -227,7 +277,27 @@ func (a *RadioAPI) Register(mux *http.ServeMux) {
 		return in.ATU(r.Context(), session.TabID(s.ID, tab))
 	})
 	post("stop", func(r *http.Request, in *rig.Intents, b *radioBody, _ *Session) rig.Result {
-		return in.Stop(r.Context())
+		device := "a browser"
+		if tab, ok := tabToken(r, b); ok {
+			device = session.TabLabel(tab)
+		}
+		return a.pttOf(in.Radio).Stop(r.Context(), device)
+	})
+	post("ptt", func(r *http.Request, in *rig.Intents, b *radioBody, s *Session) rig.Result {
+		tab, ok := tabToken(r, b)
+		if !ok {
+			return badBody()
+		}
+		id, p := session.TabID(s.ID, tab), a.pttOf(in.Radio)
+		switch {
+		case b.HB != nil && *b.HB:
+			return p.Heartbeat(id)
+		case b.On == nil:
+			return badBody()
+		case *b.On:
+			return p.On(r.Context(), id)
+		}
+		return p.Off(id, "released")
 	})
 	post("claim", func(r *http.Request, in *rig.Intents, b *radioBody, s *Session) rig.Result {
 		tab, ok := tabToken(r, b)
@@ -241,7 +311,11 @@ func (a *RadioAPI) Register(mux *http.ServeMux) {
 		if !ok {
 			return badBody()
 		}
-		return in.Release(session.TabID(s.ID, tab))
+		id := session.TabID(s.ID, tab)
+		if p := a.pttOf(in.Radio); p.Active() {
+			p.Off(id, "the transmitter was released")
+		}
+		return in.Release(id)
 	})
 	post("takeover", func(r *http.Request, in *rig.Intents, b *radioBody, s *Session) rig.Result {
 		tab, ok := tabToken(r, b)
@@ -260,6 +334,7 @@ type radioBody struct {
 	Passband *int     `json:"passband"`
 	VFO      *string  `json:"vfo"`
 	On       *bool    `json:"on"`
+	HB       *bool    `json:"hb"`
 	Name     *string  `json:"name"`
 	Value    *float64 `json:"value"`
 	Device   string   `json:"device"`
@@ -310,9 +385,13 @@ func (a *RadioAPI) lookup(w http.ResponseWriter, r *http.Request) (radios.Radio,
 // drop forgets a radio's Intents (the radio left the records) and ends their retry loop.
 func (a *RadioAPI) drop(name string) {
 	a.mu.Lock()
-	in := a.intents[name]
+	in, p := a.intents[name], a.ptts[name]
 	delete(a.intents, name)
+	delete(a.ptts, name)
 	a.mu.Unlock()
+	if p != nil {
+		p.Close()
+	}
 	if in != nil {
 		in.Close()
 	}
@@ -321,6 +400,74 @@ func (a *RadioAPI) drop(name string) {
 func (a *RadioAPI) intentsFor(rec radios.Radio) *rig.Intents {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.intentsLocked(rec)
+}
+
+// pttFor is the radio's PTT (made with its Intents on first use); it follows the record's PTT method.
+func (a *RadioAPI) pttFor(rec radios.Radio) *rig.PTT {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if p, ok := a.ptts[rec.Name]; ok {
+		p.SetMethod(rec.PTT)
+		return p
+	}
+	in := a.intentsLocked(rec)
+	var au PTTAudio
+	if a.Audio != nil {
+		au = a.Audio(rec.Name)
+	}
+	name := rec.Name
+	var conf func() settings.RadioSettings
+	if a.Settings != nil {
+		conf = func() settings.RadioSettings { return a.Settings(name) }
+	}
+	p := rig.NewPTT(in, au.Bridge, au.Server, conf, rec.PTT, a.Notify, a.Clock, nil)
+	p.Tone = au.Tone
+	if a.ptts == nil {
+		a.ptts = map[string]*rig.PTT{}
+	}
+	a.ptts[name] = p
+	return p
+}
+
+// pttOf is pttFor by name, for a radio the request has already found in the records.
+func (a *RadioAPI) pttOf(name string) *rig.PTT {
+	rec, _ := a.Radios.Get(name)
+	rec.Name = name
+	return a.pttFor(rec)
+}
+
+// PTTOn reports whether a PTT window is open on radio (the owner lock's "transmitting").
+func (a *RadioAPI) PTTOn(radio string) bool {
+	a.mu.Lock()
+	p := a.ptts[radio]
+	a.mu.Unlock()
+	return p != nil && p.Active()
+}
+
+// available is Available, answered from a cache for availFor.
+func (a *RadioAPI) available(radio string) (bool, string) {
+	if a.Available == nil {
+		return false, noBrowserAudio
+	}
+	now := time.Now()
+	a.mu.Lock()
+	c, ok := a.avail[radio]
+	a.mu.Unlock()
+	if ok && now.Sub(c.at) < availFor {
+		return c.ok, c.why
+	}
+	got, why := a.Available(radio)
+	a.mu.Lock()
+	if a.avail == nil {
+		a.avail = map[string]availAnswer{}
+	}
+	a.avail[radio] = availAnswer{ok: got, why: why, at: now}
+	a.mu.Unlock()
+	return got, why
+}
+
+func (a *RadioAPI) intentsLocked(rec radios.Radio) *rig.Intents {
 	if a.intents == nil {
 		a.intents = map[string]*rig.Intents{}
 	}
@@ -370,6 +517,20 @@ func (a *RadioAPI) post(fn func(r *http.Request, in *rig.Intents, b *radioBody, 
 	}
 }
 
+// audioView is whether the radio's sound server can carry browser audio, and why not.
+type audioView struct {
+	Available bool   `json:"available"`
+	Reason    string `json:"reason"`
+}
+
+// pttView is the radio's PTT window as the page shows it.
+type pttView struct {
+	On       bool   `json:"on"`
+	Mine     bool   `json:"mine"`
+	TimeoutS int    `json:"timeout_s"`
+	Method   string `json:"method"`
+}
+
 type ownerView struct {
 	Kind  string `json:"kind"`
 	Label string `json:"label"`
@@ -391,7 +552,15 @@ func (a *RadioAPI) get(w http.ResponseWriter, r *http.Request) {
 		State *rig.State   `json:"state"`
 		Caps  *rig.Caps    `json:"caps"`
 		Owner *ownerView   `json:"owner"`
+		Audio audioView    `json:"audio"`
+		PTT   pttView      `json:"ptt"`
 	}{Radio: rec}
+	out.Audio.Available, out.Audio.Reason = a.available(rec.Name)
+	on, pttTab, timeout, method := a.pttFor(rec).State()
+	out.PTT = pttView{On: on, TimeoutS: int(timeout / time.Second), Method: method}
+	if tab, ok := tabToken(r, nil); ok && on && pttTab == session.TabID(sess.ID, tab) {
+		out.PTT.Mine = true
+	}
 	if rw, ok := a.Rigs.Writer(rec.Name); ok {
 		st := rw.State()
 		st.Caps = nil // the capabilities travel beside the state

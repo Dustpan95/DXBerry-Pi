@@ -112,6 +112,11 @@ type Intents struct {
 	keying   int           // key-ons between their marker write and their answer: the marker is theirs
 	retrying bool          // a retry loop is running
 	closed   chan struct{} // closed by Close
+
+	// set by NewPTT: whether a PTT window is open, and what to tell it after an unkey that was
+	// not its own (the carrier machinery dropped the radio's PTT line, so the window ends too)
+	pttActive  func() bool
+	afterUnkey func(intent string)
 }
 
 // Close stops the unkey retry loop (the radio left the records or the service is ending).
@@ -304,51 +309,24 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 	if bad := in.owns("tune", tab); bad != nil {
 		return *bad
 	}
+	if in.pttOn() {
+		return in.refuse("tune", "PTT is on", "release PTT first")
+	}
 	if why := tuneModeRefusal(st.Mode); why != "" {
 		return in.refuse("tune", why, fixTuneMode)
 	}
-	if err := in.mark(); err != nil {
-		in.log().Error("could not write the keyed marker; not keying", "radio", in.Radio, "error", err)
-		return in.refuse("tune", "the station could not note the carrier before keying", "check the station's storage")
-	}
 	in.Owners.Touch(in.Radio, tab)
-	err := in.Poller.Write(ctx, func(c Commander) error {
-		_, err := c.Do(ctx, "set_ptt", "1")
-		return err
-	}, func(s *State) { s.PTT = true })
-	if err != nil {
-		res := in.refuse("tune", rigFailure(err), "check the radio and try again")
-		var re *RigError
-		if !errors.As(err, &re) {
-			// the key-on may have reached the radio: owe the unkey
-			in.mu.Lock()
-			in.keyed, in.pending = true, true
-			in.debt++
-			in.keying--
-			in.mu.Unlock()
-			in.startRetry("tune")
-		} else {
-			// the radio refused: nothing was keyed by this one
-			in.mu.Lock()
-			in.keying--
-			if !in.keyed && !in.pending {
-				in.clearMarkLocked()
-			}
-			in.mu.Unlock()
+	var cancel chan struct{}
+	res := in.keyOn(ctx, "tune", func() {
+		if in.carrier != nil {
+			close(in.carrier)
 		}
+		cancel = make(chan struct{})
+		in.carrier = cancel
+	})
+	if !res.OK {
 		return res
 	}
-	res := Result{OK: true}
-	cancel := make(chan struct{})
-	in.mu.Lock()
-	if in.carrier != nil {
-		close(in.carrier)
-	}
-	in.carrier = cancel
-	in.keyed, in.pending = true, false
-	in.debt++
-	in.keying--
-	in.mu.Unlock()
 	fire := in.clock().At(in.clock().Now().Add(CarrierLimit)) // taken now, not in the goroutine
 	go func() {
 		select {
@@ -367,6 +345,66 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 		}
 	}()
 	return res
+}
+
+// keyOn is the one key-on path, Tune's and PTT's: the keyed marker first, then set_ptt 1. A
+// key-on whose fate is unknown owes the radio an unkey (retried until it answers); one the radio
+// refused owes nothing. keyed runs with in.mu held at the moment the carrier becomes ours.
+func (in *Intents) keyOn(ctx context.Context, intent string, keyed func()) Result {
+	if err := in.mark(); err != nil {
+		in.log().Error("could not write the keyed marker; not keying", "radio", in.Radio, "error", err)
+		return in.refuse(intent, "the station could not note the carrier before keying", "check the station's storage")
+	}
+	err := in.Poller.Write(ctx, func(c Commander) error {
+		_, err := c.Do(ctx, "set_ptt", "1")
+		return err
+	}, func(s *State) { s.PTT = true })
+	if err != nil {
+		res := in.refuse(intent, rigFailure(err), "check the radio and try again")
+		var re *RigError
+		if !errors.As(err, &re) {
+			// the key-on may have reached the radio: owe the unkey
+			in.mu.Lock()
+			in.keyed, in.pending = true, true
+			in.debt++
+			in.keying--
+			in.mu.Unlock()
+			in.startRetry(intent)
+		} else {
+			// the radio refused: nothing was keyed by this one
+			in.mu.Lock()
+			in.keying--
+			if !in.keyed && !in.pending {
+				in.clearMarkLocked()
+			}
+			in.mu.Unlock()
+		}
+		return res
+	}
+	in.mu.Lock()
+	if keyed != nil {
+		keyed()
+	}
+	in.keyed, in.pending = true, false
+	in.debt++
+	in.keying--
+	in.mu.Unlock()
+	return Result{OK: true}
+}
+
+// pttOn reports whether a PTT window is open on this radio.
+func (in *Intents) pttOn() bool {
+	in.mu.Lock()
+	fn := in.pttActive
+	in.mu.Unlock()
+	return fn != nil && fn()
+}
+
+// carrierUp reports whether a tune carrier's timer is running.
+func (in *Intents) carrierUp() bool {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.carrier != nil
 }
 
 func (in *Intents) endCarrier() {
@@ -398,6 +436,12 @@ func (in *Intents) unkey(intent string) Result {
 	if !res.OK || in.Pending() {
 		// failed, or a new debt arrived while this one was on the wire
 		in.startRetry(intent)
+	}
+	in.mu.Lock()
+	after := in.afterUnkey
+	in.mu.Unlock()
+	if after != nil {
+		after(intent)
 	}
 	return res
 }
@@ -650,7 +694,7 @@ func (in *Intents) Release(id string) Result {
 
 // TakeOver moves the claim to a tab unless the radio is transmitting.
 func (in *Intents) TakeOver(h session.Holder) Result {
-	if in.Poller.State().PTT {
+	if in.Poller.State().PTT || in.pttOn() {
 		if cur, ok := in.Owners.Holder(in.Radio); ok && cur.ID != h.ID {
 			return in.lockRefusal("takeover", session.ErrTransmitting)
 		}

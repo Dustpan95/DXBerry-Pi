@@ -42,6 +42,9 @@ type Status struct {
 	smu   sync.Mutex // guards socks and the order of hub interest updates
 	socks map[*sock]struct{}
 
+	nmu   sync.Mutex // guards notes
+	notes map[chan []byte]struct{}
+
 	mu      sync.Mutex
 	raw     json.RawMessage // the last answer that parsed; nil before the first
 	genAt   time.Time       // when raw was produced
