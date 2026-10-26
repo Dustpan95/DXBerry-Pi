@@ -166,8 +166,6 @@ and `sudo dxberry-logbook get`.
 - **An update restarts any running program windows once;** they come back within seconds.
 - **Not yet checked on hardware:** audio quality and latency, the microphone path to a real radio, and
   the SWR guard against a real mismatch. These are verified before the final 0.5.0 release.
-- **Known gap:** iPhones ignore the page's volume setting for an audio element, so received audio is
-  not turned down while you talk on an iPhone.
 
 ## Release notes for 0.5.0-rc2
 

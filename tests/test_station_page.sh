@@ -479,7 +479,8 @@ sau_run() { node "$DXB_ROOT/tests/station_audio.js" "$SP_WEB/audio.js"; }
 test_station_audio_signalling_messages() {
   command -v node > /dev/null 2>&1 || return 0
   local j; j=$(sau_run 2> "$TEST_TMP/sau.err") || { _fail "station_audio.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
-  assert_eq "$(jq -c '.api' <<< "$j")" '["listen","openMic","setTX","stop"]'
+  # rc3 Task 6: level, micLabel and onChange joined the API (the speaker, mic and lost state on the page)
+  assert_eq "$(jq -c '.api' <<< "$j")" '["level","listen","micLabel","onChange","openMic","setTX","stop"]'
   assert_eq "$(jq -r '.socketUrl' <<< "$j")" "wss://pi.local/api/audio/ic7300/signal?tab=iPhone%23tab-1"
   # no ICE servers; one audio transceiver both ways, so the mic joins later without renegotiating
   assert_eq "$(jq -c '.pcConfig' <<< "$j")" '{"iceServers":[]}'
@@ -507,9 +508,10 @@ test_station_audio_mic_only_on_first_press_and_duck() {
   assert_eq "$(jq -r '.micIdle' <<< "$j")" "false"
   # 20 dB down is a tenth of the amplitude
   assert_eq "$(jq -c '.duck' <<< "$j")" '{"db":20,"gain":0.1}'
-  assert_eq "$(jq -c '.tx' <<< "$j")" '{"mic":true,"volume":0.1}'
-  assert_eq "$(jq -c '.rx' <<< "$j")" '{"mic":false,"volume":1}'
-  assert_eq "$(jq -r '.volTXNoMic' <<< "$j")" "0.1"
+  # rc3 Task 6 (Ruling 8): the duck is the Web Audio gain's, the element's volume stays at 1
+  assert_eq "$(jq -c '.tx' <<< "$j")" '{"mic":true,"gain":0.1,"volume":1}'
+  assert_eq "$(jq -c '.rx' <<< "$j")" '{"mic":false,"gain":1,"volume":1}'
+  assert_eq "$(jq -r '.gainTXNoMic' <<< "$j")" "0.1"
   assert_eq "$(jq -r '.stopped.mic' <<< "$j")" "true"
 }
 
@@ -574,6 +576,16 @@ test_ptt_release_events() {
   assert_eq "$(jq -r '.audioCalls.openMic' <<< "$j")" "5"
   # the microphone goes out only after the station's OK, and stops with every end
   assert_eq "$(jq -c '.audioCalls.tx' <<< "$j")" '[true,false,true,false,true,false,true,false,false]'
+  # rc3 Task 6: the same four releases with the real audio.js: held, the radio's audio is 20 dB down
+  # (the gain) with the duck shown and the microphone live; released, one off, full gain, mic idle
+  j=$(sau_ui ptt 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  for k in pointerup pointercancel blur pagehide; do
+    assert_eq "$(jq -r --arg k "$k" '.rounds[$k] | "\(.on) \(.off) \(.first) \(.last) \(.label)"' <<< "$j")" "1 1 on off Transmitting"
+    assert_eq "$(jq -c --arg k "$k" '.rounds[$k].held' <<< "$j")" '{"gain":0.1,"mic":true,"duck":"Radio audio down 20 dB while you talk"}'
+    assert_eq "$(jq -c --arg k "$k" '.rounds[$k].after' <<< "$j")" '{"gain":1,"mic":false,"duckShown":false,"label":"PTT","timeShown":false}'
+  done
+  # one audio connection and one microphone prompt for all four presses
+  assert_eq "$(jq -r '"\(.sockets) \(.gum)"' <<< "$j")" "1 1"
 }
 
 test_ptt_heartbeat_every_5s() {
@@ -584,6 +596,12 @@ test_ptt_heartbeat_every_5s() {
     assert_eq "$(jq -r --arg k "$k" '.rounds[$k] | "\(.heartbeatTimers) \(.hb) \(.hbCleared)"' <<< "$j")" "1 3 true"
   done
   assert_file_contains "$SP_WEB/vfo.js" "PTT_HEARTBEAT: 5000"
+  # rc3 Task 6: by a fake clock: 65 s held is 13 heartbeats 5 s apart, the timer counts up beside
+  # the radio's configured timeout (120 s here), and nothing more goes after the release
+  j=$(sau_ui ptt 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  for k in pointerup pointercancel blur pagehide; do
+    assert_eq "$(jq -r --arg k "$k" '.rounds[$k] | "\(.hb) \(.hbEvery) \(.time) \(.hbAfter)"' <<< "$j")" "13 [5000] 1:05 / 2:00 0"
+  done
 }
 
 test_ptt_disabled_with_the_reason() {
@@ -690,6 +708,21 @@ test_guard_banner_texts() {
   assert_eq "$(jq -r '"\(.relatched.hidden) \(.relatched.text)"' <<< "$j")" "false $k"
   assert_eq "$(jq -r '.cleared.hidden' <<< "$j")" "true"
   assert_eq "$(jq -c '.notices' <<< "$j")" "[\"bad: $k. WSJT-X may key again; Stop WSJT-X to end it.\",\"good: SWR guard cleared: band changed.\"]"
+  # rc3 Task 6: the flows with the real audio.js. Latched, PTT says why it is dimmed.
+  j=$(sau_ui guard 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -c '.start' <<< "$j")" '{"hidden":false,"pttDisabled":true,"pttWhy":"SWR guard is latched: see the banner above."}'
+  # Run ATU refused: the station's words, the banner stays; a good tune's clear notice hides it
+  assert_eq "$(jq -c '.atuRefused' <<< "$j")" '{"notice":"bad: the tuner did not answer. Try Run ATU again.","hidden":false}'
+  assert_eq "$(jq -c '.atuCleared' <<< "$j")" '{"hidden":true,"pttDisabled":false,"pttWhy":""}'
+  assert_eq "$(jq -c '.atuPosts' <<< "$j")" '["iPad#tab-1","iPad#tab-1"]'
+  # a trip while transmitting ends the hold at once: one off, the RX gain back, the banner up
+  assert_eq "$(jq -c '.tripHeld' <<< "$j")" '{"label":"Transmitting","gain":0.1}'
+  assert_eq "$(jq -c '.tripped' <<< "$j")" '{"label":"PTT","gain":1,"posts":["on","off"],"banner":{"hidden":false,"pttDisabled":true,"pttWhy":"SWR guard is latched: see the banner above."}}'
+  # Override refused leaves the banner; confirmed and accepted, it goes and PTT is back
+  assert_eq "$(jq -c '.overrideRefused' <<< "$j")" '{"notice":"bad: the radio is not answering. Check the radio.","banner":{"hidden":false,"pttDisabled":true,"pttWhy":"SWR guard is latched: see the banner above."}}'
+  assert_eq "$(jq -c '.overridden' <<< "$j")" '{"hidden":true,"pttDisabled":false,"pttWhy":""}'
+  # both are the owner's: on a radio another tab holds they are disabled, and PTT says why
+  assert_eq "$(jq -c '.notOwner' <<< "$j")" '{"hidden":false,"atu":true,"override":true,"pttWhy":"Take the transmitter first."}'
 }
 
 test_guard_banner_hidden_unless_latched() {
@@ -723,4 +756,173 @@ test_radio_settings_swr_guard_line() {
   assert_eq "$(jq -r '.guardLineOff' <<< "$j")" "no SWR guard: this radio does not report SWR over CAT"
   assert_eq "$(jq -r '.guardLineOn' <<< "$j")" ""
   assert_eq "$(jq -r '.guardLineUnsaid' <<< "$j")" ""
+}
+
+# ---- the page's audio: speaker, mic, notices, the lost chip, #listen (rc3 Task 6) -----------------
+# sau_ui SCENARIO: the VFO page with the real app.js, audio.js and vfo.js (tests/station_audio_ui.js)
+sau_ui() { node "$DXB_ROOT/tests/station_audio_ui.js" "$SP_WEB" "$1"; }
+
+test_audio_stopped_notice_on_program_start() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j k='WSJT-X has the sound card; no browser audio while it runs'
+  j=$(sau_ui program 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -r '"\(.listening.listenPressed) \(.listening.rx)"' <<< "$j")" "true Listening"
+  # WSJT-X takes the sound card: the audio stops (the station is told), the page says why once,
+  # Listen and Mic are disabled with the same words, PTT keeps the station's reason
+  assert_eq "$(jq -c '.close' <<< "$j")" '{"type":"close"}'
+  assert_eq "$(jq -r '.closedSocket' <<< "$j")" "1"
+  assert_eq "$(jq -c '.notices' <<< "$j")" "[\"warn: $k\"]"
+  assert_eq "$(jq -r '.noticesLater' <<< "$j")" "1"
+  assert_eq "$(jq -r '.stopped | "\(.listenPressed) \(.listenDisabled) \(.micDisabled) \(.rx == "") \(.chip)"' <<< "$j")" "false true true true false"
+  assert_eq "$(jq -r '.stopped.why' <<< "$j")" "$k"
+  assert_eq "$(jq -r '.stopped.pttWhy' <<< "$j")" "No sound server for ic7300: WSJT-X has the sound card."
+  # the program ends: Listen is offered again, with a word that it is
+  assert_eq "$(jq -r '"\(.freed.listenDisabled) \(.freed.micDisabled) \(.freed.why == "")"' <<< "$j")" "false false true"
+  assert_eq "$(jq -r '.freedNotice' <<< "$j")" "good: The sound card is free again: tap Listen to hear the radio."
+  # the sound server stopping under the stream (audio lost) before any poll: the page asks the
+  # station at once, and the program's words replace the reconnect chip
+  assert_eq "$(jq -r '"\(.chipAtLoss) \(.askedAtOnce) \(.afterLoss.chip) \(.afterLoss.listenPressed)"' <<< "$j")" "true 1 false false"
+  assert_eq "$(jq -r '.afterLoss.why' <<< "$j")" "$k"
+  assert_eq "$(jq -c '.noticesAfterLoss' <<< "$j")" "[\"warn: $k\"]"
+}
+
+test_station_audio_duck_by_gain_node() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sau_run 2> "$TEST_TMP/sau.err") || { _fail "station_audio.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  # the audio context is made inside the tap; the radio's track goes source > analyser > gain > out,
+  # and the element (kept to start the remote track) is muted so the gain is what is heard
+  assert_eq "$(jq -r '.contextInTap' <<< "$j")" "1"
+  assert_eq "$(jq -c '.graph' <<< "$j")" '["analyser>gain","gain>destination","source>analyser"]'
+  assert_eq "$(jq -r '.muted' <<< "$j")" "true"
+  # 20 dB down is a gain of a tenth while transmitting, 1 again after
+  assert_eq "$(jq -r '"\(.gainTXNoMic) \(.gainRX) \(.volTXNoMic)"' <<< "$j")" "0.1 1 1"
+  # the receiving level comes from the analyser: nothing before the track, 0 for silence, RMS after
+  assert_eq "$(jq -r '"\(.levelBeforeTrack) \(.levelSilent) \(.levelLoud)"' <<< "$j")" "null 0 0.35"
+  # a lost connection takes its nodes down; the reconnection reuses the one context (still running)
+  assert_eq "$(jq -c '.graphAfterLost' <<< "$j")" '["source off","analyser off","gain off"]'
+  assert_eq "$(jq -c '.reconnectContext' <<< "$j")" '{"made":1,"resumed":0}'
+  # stop puts the context to sleep and resets the duck: the next connection starts at full gain
+  assert_eq "$(jq -r '"\(.stoppedContext) \(.gainAfterStop)"' <<< "$j")" "suspended 1"
+  # the microphone's device name, once allowed; none after stop
+  assert_eq "$(jq -r '"\(.micLabelBefore) \(.micLabel) \(.micLabelStopped)"' <<< "$j")" "null USB Audio CODEC null"
+  # the states the page follows, in order; a listen replaced before its answer resolves
+  assert_eq "$(jq -c '.states' <<< "$j")" '["connecting","on","lost","connecting","connecting","idle","connecting","idle","connecting","on","idle","connecting","connecting","idle"]'
+  assert_eq "$(jq -r '.replaced.reason' <<< "$j")" "Audio was stopped."
+  # a browser without Web Audio ducks the element's volume instead
+  j=$(node "$DXB_ROOT/tests/station_audio.js" "$SP_WEB/audio.js" noaudioctx 2> "$TEST_TMP/sau.err") || { _fail "station_audio.js noaudioctx failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -c '.tx' <<< "$j")" '{"mic":true,"gain":null,"volume":0.1}'
+  assert_eq "$(jq -c '.rx' <<< "$j")" '{"mic":false,"gain":null,"volume":1}'
+  assert_eq "$(jq -r '"\(.muted) \(.levelLoud)"' <<< "$j")" "false null"
+}
+
+test_vfo_listen_toggle_message_sequence() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sau_ui listen 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -r '.before | "\(.listenText) \(.listenPressed) \(.listenDisabled) \(.rx == "")"' <<< "$j")" "Listen false false true"
+  # tapped: the signalling socket opens with the tab token, the button is pressed, connecting
+  assert_eq "$(jq -c '.urls' <<< "$j")" '["wss://pi.local/api/audio/ic7300/signal?tab=iPad%23tab-1"]'
+  assert_eq "$(jq -r '"\(.connecting.listenPressed) \(.connecting.rx)"' <<< "$j")" "true Connecting…"
+  # answered: one audio context, the graph through the gain, the element muted
+  assert_eq "$(jq -c '.context' <<< "$j")" '{"made":1,"state":"running"}'
+  assert_eq "$(jq -c '.graph' <<< "$j")" '["analyser>gain","gain>destination","source>analyser"]'
+  assert_eq "$(jq -r '.muted' <<< "$j")" "true"
+  # the receiving indicator follows the analyser
+  assert_eq "$(jq -r '"\(.listening)|\(.silent)|\(.receiving)|\(.meterUp)"' <<< "$j")" "Listening|Listening, no sound|Receiving|true"
+  # tapped again: offer then close on the one socket, socket and peer closed, the context asleep
+  assert_eq "$(jq -c '.messages' <<< "$j")" '[["offer","close"]]'
+  assert_eq "$(jq -c '.closed' <<< "$j")" '{"socket":1,"pc":1,"context":"suspended"}'
+  assert_eq "$(jq -r '"\(.stopped.listenPressed) \(.stopped.rx == "") \(.levelTimers)"' <<< "$j")" "false true 0"
+  # once more: a new socket on the same context; the speaker never asked for the microphone
+  assert_eq "$(jq -c '.again' <<< "$j")" '{"sockets":2,"made":1,"state":"running","pressed":"true"}'
+  assert_eq "$(jq -r '.gum' <<< "$j")" "0"
+}
+
+test_vfo_mic_button_shows_the_device() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sau_ui mic 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -r '.before | "\(.micText)|\(.micDisabled)|\(.micLine)"' <<< "$j")" "Microphone|false|The microphone is asked for once and used only while PTT is held."
+  # allowed: the device's name as plain text, and the note that it is used only during PTT
+  assert_eq "$(jq -r '.after | "\(.micText)|\(.micDisabled)|\(.micLine)"' <<< "$j")" "Microphone ready|true|Microphone: USB Audio CODEC <1>. It is used only while PTT is held."
+  assert_eq "$(jq -r '.gum' <<< "$j")" "1"
+  # listening afterwards carries it, idle; stopping the audio releases it and offers it again
+  assert_eq "$(jq -c '.onConnection' <<< "$j")" '{"replaced":["mic"],"enabled":false}'
+  assert_eq "$(jq -c '.released' <<< "$j")" '{"stopped":true,"text":"Microphone","disabled":false}'
+}
+
+test_vfo_audio_disabled_with_the_reason() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sau_ui reasons 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -r '.pure.program' <<< "$j")" "WSJT-X has the sound card; no browser audio while it runs"
+  assert_eq "$(jq -r '.pure.flrig' <<< "$j")" "flrig has the sound card; no browser audio while it runs"
+  assert_eq "$(jq -r '.pure.down' <<< "$j")" "No sound server for ic7300: the server is not running."
+  assert_eq "$(jq -r '.pure.none' <<< "$j")" "No browser audio on this radio."
+  assert_eq "$(jq -r '.pure.nojs' <<< "$j")" "This page has no browser audio."
+  assert_eq "$(jq -r '"[\(.pure.ok)] \(.pure.holder)"' <<< "$j")" "[] WSJT-X"
+  # the sound server is down: Listen and Mic are disabled with the station's reason; taps do nothing
+  assert_eq "$(jq -r '.down | "\(.listenDisabled) \(.micDisabled) \(.why)"' <<< "$j")" "true true No sound server for ic7300: the server is not running."
+  assert_eq "$(jq -r '"\(.downSockets) \(.downGum)"' <<< "$j")" "0 0"
+  j=$(sau_ui nojs 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -r '.page | "\(.listenDisabled) \(.micDisabled) \(.why)|\(.pttWhy)"' <<< "$j")" "true true This page has no browser audio.|This page has no browser audio."
+}
+
+test_vfo_audio_lost_chip_reconnects_the_page() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sau_ui lost 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -r '"\(.holding) \(.gainHeld)"' <<< "$j")" "Transmitting 0.1"
+  # the connection is lost mid-transmission: the hold ends with one off, the chip and the words show
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["on","off"]'
+  assert_eq "$(jq -r '"\(.labelAfter) \(.lost.chip) \(.lost.listenPressed)|\(.lost.rx)"' <<< "$j")" "PTT true false|Audio lost. Tap Listen to reconnect."
+  # the station's PTT notice gives its reason
+  assert_eq "$(jq -c '.notices' <<< "$j")" '["warn: PTT off: audio lost"]'
+  # tapping the chip reconnects; the page follows it (pressed, connecting, then listening, full gain)
+  assert_eq "$(jq -r '"\(.sockets) \(.reconnecting.chip) \(.reconnecting.listenPressed) \(.reconnecting.rx)"' <<< "$j")" "2 false true Connecting…"
+  assert_eq "$(jq -r '"\(.back.rx) \(.gain)"' <<< "$j")" "Listening 1"
+}
+
+test_vfo_listen_hash_waits_for_a_gesture() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j
+  j=$(sau_ui hash 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  # opened from the dashboard's Listen: nothing plays before a tap; the page says to tap
+  assert_eq "$(jq -r '"\(.socketsBefore) \(.armed)|\(.before.rx)"' <<< "$j")" "0 true|Tap anywhere on the page to start listening."
+  # the first tap anywhere starts the audio once, and the hash is dropped
+  assert_eq "$(jq -r '"\(.sockets) \(.after.listenPressed) \(.armedAfter) \(.socketsLater)"' <<< "$j")" "1 true false 1"
+  assert_eq "$(jq -c '.history' <<< "$j")" '["/radio/ic7300"]'
+  # a tap on Listen itself is the button's own: one start, not a start and a stop
+  j=$(sau_ui hashbutton 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -r '"\(.sockets) \(.after.listenPressed) \(.socketsLater)"' <<< "$j")" "1 true 1"
+  # no sound server: the tap starts nothing and the reason shows instead of the prompt
+  j=$(sau_ui hashnoaudio 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  assert_eq "$(jq -r '"\(.armed) \(.before.rx == "") \(.sockets)"' <<< "$j")" "false true 0"
+  assert_eq "$(jq -r '.after.why' <<< "$j")" "WSJT-X has the sound card; no browser audio while it runs"
+}
+
+test_dashboard_listen_button() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(sau_ui dashboard 2> "$TEST_TMP/sau.err") || { _fail "station_audio_ui.js failed: $(cat "$TEST_TMP/sau.err")"; return; }
+  # a radio with a sound card gets Listen, which opens its page with #listen (with or without CAT)
+  assert_eq "$(jq -c '.withAudio' <<< "$j")" '{"href":"/radio/radio2#listen","aria":"Listen to radio2","cls":"btn small"}'
+  assert_eq "$(jq -r '.noCat.href' <<< "$j")" "/radio/radio4#listen"
+  # none without a sound card, and none for Graywolf (it holds the card itself)
+  assert_eq "$(jq -r '"\(.noAudio) \(.graywolf)"' <<< "$j")" "null null"
+}
+
+test_station_audio_ui_files_are_plain() {
+  local f
+  for f in vfo.js audio.js dashboard.js; do
+    assert_file_not_contains "$SP_WEB/$f" "innerHTML"
+    assert_file_not_contains "$SP_WEB/$f" "insertAdjacentHTML"
+    assert_file_not_contains "$SP_WEB/$f" "setAttribute(\"style\""
+  done
+  assert_file_not_contains "$DXB_ROOT/tests/station_audio_ui.js" "innerHTML"
+  assert_file_not_contains "$SP_WEB/vfo.css" "http"
+  # the volume of an element is not what ducks any more (iPhones ignore it): the gain is
+  assert_file_contains "$SP_WEB/audio.js" "createGain()"
+  assert_file_contains "$SP_WEB/audio.js" "createMediaStreamSource("
+  assert_file_not_contains "$DXB_ROOT/README.md" "iPhones ignore the page's volume setting"
+  command -v node > /dev/null 2>&1 || return 0
+  for f in vfo.js audio.js dashboard.js; do
+    node --check "$SP_WEB/$f" 2> "$TEST_TMP/node.err" || _fail "$f does not parse: $(cat "$TEST_TMP/node.err")"
+  done
+  node --check "$DXB_ROOT/tests/station_audio_ui.js" 2> "$TEST_TMP/node.err" || _fail "station_audio_ui.js does not parse: $(cat "$TEST_TMP/node.err")"
 }

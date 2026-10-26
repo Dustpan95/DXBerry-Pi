@@ -202,6 +202,47 @@
     return "";
   }
 
+  // The programs that open the radio's sound card themselves (ALSA): while one runs, the radio's
+  // sound server is stopped and there is no browser audio.
+  const ALSA_PROGRAMS = ["wsjtx", "flrig", "pat"];
+  // cardHolder AUDIO RECORD OWNER: the program that has the sound card, as the station names it
+  // ("no sound server for <radio>: WSJT-X has the sound card"), or "" when none does
+  function cardHolder(audio, record, owner) {
+    if (!audio || audio.available) return "";
+    const m = /(?:^|: )([^:]+) has the sound card$/.exec(String(audio.reason || ""));
+    if (m) return m[1];
+    if (record && ALSA_PROGRAMS.includes(record.owner) && owner && owner.kind === "program" && owner.label) return String(owner.label);
+    return "";
+  }
+
+  // audioWhy AUDIO RECORD OWNER HASAUDIO: why this tab can neither listen nor open the microphone,
+  // or "" when it can
+  function audioWhy(audio, record, owner, hasAudio) {
+    if (!hasAudio) return "This page has no browser audio.";
+    const prog = cardHolder(audio, record, owner);
+    if (prog) return `${prog} has the sound card; no browser audio while it runs`;
+    if (!audio || !audio.available) return capitalize(String((audio && audio.reason) || "no browser audio on this radio")) + ".";
+    return "";
+  }
+
+  // rxLine STATE LEVEL: the speaker's state in words. LEVEL is the received RMS level (0..1), or
+  // null when it cannot be measured; RX_FLOOR (about -50 dBFS) is where "receiving" starts.
+  const RX_FLOOR = 0.003;
+  function rxLine(state, level) {
+    if (state === "connecting") return "Connecting…";
+    if (state === "lost") return "Audio lost. Tap Listen to reconnect.";
+    if (state !== "on") return "";
+    if (level === null || level === undefined) return "Listening";
+    return level >= RX_FLOOR ? "Receiving" : "Listening, no sound";
+  }
+
+  // rxMeter LEVEL: the level meter's position, 0 at -60 dBFS (or nothing) to 1 at full scale
+  function rxMeter(level) {
+    const v = Number(level);
+    if (!(v > 0)) return 0;
+    return Math.max(0, Math.min(1, (20 * Math.log10(v) + 60) / 60));
+  }
+
   // minSec MS: a duration as M:SS
   function minSec(ms) {
     const s = Math.max(0, Math.floor(Number(ms) / 1000) || 0);
@@ -238,6 +279,7 @@
     BANDS, STEPS, STEP_NAMES, formatFreq, parseFreq, clampFreq, stepFreq, bandsFromRanges, bandOf, modeButtons,
     filterPresets, filterSpan, sUnits, sText, normCaps, noCat, layoutFor, ownerLine, ownerActions, radioFromPath, levelPercent,
     pttWhy, pttTimer, minSec, PTT_HEARTBEAT: 5000, guardBanner, guardNote, GUARD_CONFIRM,
+    cardHolder, audioWhy, rxLine, rxMeter, RX_FLOOR,
     onRadioPage: () => typeof location !== "undefined" && radioFromPath(location.pathname) !== null,
   };
   window.dxbVFO = pure;
@@ -265,6 +307,15 @@
     guard: null,     // the SWR guard: {active, latched, reason}
     hold: null,      // this tab's PTT press, while the button is held
     listening: false, // this page started the radio's audio in this tab
+    rx: "idle",      // audio.js's state for it: connecting, on, lost or idle
+    rxLevel: null,   // the received level, smoothed, while listening (null: not measured)
+    rxTimer: null,
+    rxUpd: null,     // repaints the speaker's line (the level poll calls it)
+    speaker: null,   // the Listen button
+    micLabel: null,  // the open microphone's name ("" unnamed), null while none is open
+    micAsking: false,
+    armed: false,    // opened as /radio/<name>#listen: the first tap starts the audio
+    stoppedFor: "",  // the audio was stopped because of this; said again once it is over
   };
 
   function h(tag, attrs, ...kids) {
@@ -699,6 +750,7 @@
   // been answered so the two cannot cross. The station drops PTT by itself when the heartbeat
   // stops, at the radio's timeout, on STOP or when the owner's socket closes, and says so.
   const talkable = () => !!(S.audio && S.audio.available);
+  const audioReason = () => audioWhy(S.audio, S.rec, S.owner, !!window.dxbAudio);
   const guardLatched = () => !!(S.guard && S.guard.active && S.guard.latched);
   const pttReason = () => pttWhy(S.owner, S.audio, !!window.dxbAudio) || (guardLatched() ? "SWR guard is latched: see the banner above." : "");
   const pttPost = (body) => dxb.api("POST", `/api/radio/${name}/ptt`, Object.assign({ device: dxb.tab() }, body));
@@ -728,11 +780,8 @@
     S.hold = hold;
     // the radio's audio starts inside the press (the browser lets it play then); the mic is asked for
     const waits = [];
-    if (!S.listening) {
-      S.listening = true;
-      waits.push(A.listen(name).then((r) => { if (!(r && r.ok)) S.listening = false; return r; }));
-    }
-    waits.push(A.openMic());
+    if (!S.listening) waits.push(startListen());
+    waits.push(A.openMic().then(micReady));
     hold.tick = setInterval(paint, 500);
     paint();
     // onDone resolves with whether an on went to the station
@@ -793,6 +842,9 @@
     b.dataset.tx = "1";
     const time = h("span", { class: "vfo-ptt-time", hidden: true });
     const why = h("p", { class: "muted hint vfo-ptt-why", hidden: true });
+    // while this tab talks, its own copy of the radio's audio is turned down (audio.js's gain)
+    const duckDb = window.dxbAudio && window.dxbAudio.DUCK_DB ? window.dxbAudio.DUCK_DB : 20;
+    const duck = h("span", { class: "badge warn vfo-duck", hidden: true }, `Radio audio down ${duckDb} dB while you talk`);
     b.addEventListener("pointerdown", (e) => {
       if (b.setPointerCapture && e && e.pointerId !== undefined) { try { b.setPointerCapture(e.pointerId); } catch (x) { /* not capturable */ } }
       pttDown(e);
@@ -813,9 +865,170 @@
       setText(why, reason);
       time.hidden = !hold;
       if (hold) setText(time, pttTimer(Date.now() - hold.since, S.ptt && S.ptt.timeout_s));
+      duck.hidden = !(hold && hold.ok && S.listening);
     });
-    return h("section", { class: "card vfo-box vfo-ptt-box" }, b, time, why);
+    return h("section", { class: "card vfo-box vfo-ptt-box" }, b, time, duck, why);
   };
+
+  // ---- the speaker and the microphone ----------------------------------------------------------
+  // Listen plays the radio in this tab (any logged-in tab may, owner or not); it is a toggle. Mic
+  // asks for the microphone once and shows which one the browser gave; it goes out only while PTT
+  // is held. Both say why when the radio has no sound server.
+  const tracked = () => !!(window.dxbAudio && typeof window.dxbAudio.onChange === "function");
+
+  // setListening ON: whether this tab plays the radio; the level is polled meanwhile
+  function setListening(on) {
+    S.listening = !!on;
+    if (S.listening && S.rxTimer === null && window.dxbAudio && typeof window.dxbAudio.level === "function") {
+      S.rxTimer = setInterval(() => {
+        const v = window.dxbAudio.level();
+        const prev = S.rxLevel || 0;
+        // fast up, slower down, so speech does not flicker the indicator
+        S.rxLevel = v === null || v === undefined ? null : v >= prev ? v : prev * 0.5 + v * 0.5;
+        if (S.rxUpd) S.rxUpd();
+      }, 250);
+    } else if (!S.listening && S.rxTimer !== null) {
+      clearInterval(S.rxTimer);
+      S.rxTimer = null;
+    }
+    if (!S.listening) S.rxLevel = null;
+  }
+
+  // startListen: the radio's audio in this tab (call it from a tap); resolves with listen's answer
+  function startListen() {
+    const A = window.dxbAudio;
+    setListening(true);
+    if (!tracked()) S.rx = "on";
+    const p = A.listen(name);
+    return p.then((r) => {
+      // audio.js says what became of it through onChange; without that, the answer does
+      if (!tracked() && !(r && r.ok)) { setListening(false); S.rx = "idle"; }
+      paint();
+      return r;
+    });
+  }
+
+  // stopListen: no more audio here; a PTT hold ends first (its microphone goes with the audio)
+  function stopListen() {
+    if (S.hold) holdEnd(S.hold);
+    setListening(false);
+    S.rx = "idle";
+    S.micLabel = null;
+    if (window.dxbAudio && typeof window.dxbAudio.stop === "function") window.dxbAudio.stop();
+    paint();
+  }
+
+  // micReady RESULT: openMic's answer; the microphone's name is kept for the Mic line
+  function micReady(r) {
+    if (r && r.ok) {
+      const A = window.dxbAudio;
+      S.micLabel = A && typeof A.micLabel === "function" ? String(A.micLabel() || "") : "";
+    }
+    return r;
+  }
+
+  // disarm: the #listen the page was opened with is used up
+  function disarm() {
+    if (!S.armed) return;
+    S.armed = false;
+    try { history.replaceState(null, "", location.pathname + location.search); } catch (e) { /* no history here */ }
+  }
+
+  function listenToggle() {
+    disarm();
+    if (S.listening) { stopListen(); return; }
+    if (audioReason()) { paint(); return; }
+    startListen().then((r) => { if (!(r && r.ok) && r && r.reason !== STOPPED_REASON) say(failText(r), "bad"); });
+  }
+  // audio.js's words for a listen ended by the page itself (nothing to tell the operator)
+  const STOPPED_REASON = "Audio was stopped.";
+
+  function micOpen() {
+    if (S.micLabel !== null || S.micAsking || audioReason()) return;
+    S.micAsking = true;
+    paint();
+    window.dxbAudio.openMic().then((r) => {
+      S.micAsking = false;
+      micReady(r);
+      if (!(r && r.ok)) say(failText(r || {}), "bad");
+      paint();
+    });
+  }
+
+  sectionBuilders.audio = () => {
+    const listen = h("button", { class: "btn vfo-listen", type: "button", "aria-pressed": "false" }, "Listen");
+    const mic = h("button", { class: "btn vfo-mic", type: "button" }, "Microphone");
+    const meter = h("meter", { class: "vfo-rx-level", min: "0", max: "1", value: "0", "aria-label": "Received audio level" });
+    const rxText = h("span", { class: "vfo-rx-text" });
+    const rx = h("p", { class: "vfo-rx", "aria-live": "polite" }, meter, rxText);
+    const micLine = h("p", { class: "muted hint vfo-mic-line" });
+    const why = h("p", { class: "vfo-audio-why", role: "status" });
+    listen.addEventListener("click", listenToggle);
+    mic.addEventListener("click", micOpen);
+    S.speaker = listen;
+    S.rxUpd = () => {
+      const reason = audioReason();
+      const state = S.listening ? (S.rx === "connecting" ? "connecting" : "on") : S.rx === "lost" ? "lost" : "idle";
+      const text = S.armed && !S.listening && !reason ? "Tap anywhere on the page to start listening." : rxLine(state, S.rxLevel);
+      rx.hidden = !text;
+      setText(rxText, text);
+      rx.classList.toggle("is-receiving", text === "Receiving");
+      rx.classList.toggle("is-lost", state === "lost");
+      meter.hidden = !(state === "on" && S.rxLevel !== null);
+      setAttr(meter, "value", rxMeter(S.rxLevel).toFixed(2));
+    };
+    S.upd.push(() => {
+      const reason = audioReason();
+      setAttr(listen, "aria-pressed", String(S.listening));
+      // a playing stream can always be stopped; a new one waits for the reason to go
+      if (reason && !S.listening) listen.setAttribute("disabled", ""); else listen.removeAttribute("disabled");
+      listen.classList.toggle("is-armed", S.armed && !S.listening && !reason);
+      const micOn = S.micLabel !== null;
+      setText(mic, micOn ? "Microphone ready" : S.micAsking ? "Asking for the microphone…" : "Microphone");
+      if (reason || micOn || S.micAsking) mic.setAttribute("disabled", ""); else mic.removeAttribute("disabled");
+      setText(micLine, micOn
+        ? `Microphone: ${S.micLabel || "the browser's default"}. It is used only while PTT is held.`
+        : "The microphone is asked for once and used only while PTT is held.");
+      why.hidden = !reason;
+      setText(why, reason);
+      S.rxUpd();
+    });
+    return h("section", { class: "card vfo-box vfo-audio", "aria-label": "Audio" },
+      h("div", { class: "vfo-audio-btns" }, listen, mic), rx, micLine, why);
+  };
+
+  // audio.js's state: the page follows it, including the chip's reconnect
+  function onAudio(m) {
+    if (!m || (m.radio && m.radio !== name)) return;
+    S.rx = m.state;
+    setListening(m.state === "connecting" || m.state === "on");
+    if (m.state === "lost") {
+      // the microphone went with the connection: a hold ends now (the station drops it too)
+      if (S.hold) holdEnd(S.hold);
+      // a program may have taken the sound card: ask now rather than at the next poll
+      loadAll();
+    }
+    paint();
+  }
+
+  // the dashboard's Listen opens this page as /radio/<name>#listen. A browser plays sound only
+  // from inside a gesture and the navigation is not one here, so the first tap on the page starts
+  // the audio (a tap on Listen itself is Listen's own).
+  function armListen() {
+    if (typeof location === "undefined" || location.hash !== "#listen") return;
+    S.armed = true;
+    const go = (e) => {
+      if (!S.armed) return;
+      const t = e && e.target;
+      if (t && S.speaker && (t === S.speaker || (typeof S.speaker.contains === "function" && S.speaker.contains(t)))) return;
+      // the station has not said yet whether the radio has audio: the next tap tries again
+      if (!S.rec) return;
+      if (!S.listening && !audioReason()) listenToggle();
+      else { disarm(); paint(); }
+    };
+    document.addEventListener("pointerup", go, true);
+    document.addEventListener("keydown", go, true);
+  }
 
   // ---- the SWR guard's banner ----------------------------------------------------------------
   let overrideDialog = null;
@@ -922,8 +1135,9 @@
     S.ownerKey = "";
     S.upd = [];
     S.bands = S.nc ? bandsFromRanges(S.nc.ranges) : [];
-    // PTT sits just above STOP, on every radio (its button says why when it cannot be pressed)
-    const secs = lay.flatMap((s) => (s === "stop" ? [sectionBuilders.ptt(), sectionBuilders.stop()] : [sectionBuilders[s]()]));
+    // the speaker and mic, then PTT, sit just above STOP, on every radio (their buttons say why
+    // when they cannot be pressed)
+    const secs = lay.flatMap((s) => (s === "stop" ? [sectionBuilders.audio(), sectionBuilders.ptt(), sectionBuilders.stop()] : [sectionBuilders[s]()]));
     root.replaceChildren(h("div", { class: "vfo-head" },
       h("h2", {}, (S.rec && S.rec.label) || name, S.nc && S.nc.modelName ? h("span", { class: "muted" }, ` ${S.nc.modelName}`) : null),
       h("span", { class: "chip", id: "vfo-chip", hidden: true }, "Reconnecting…")),
@@ -1012,6 +1226,17 @@
       if (j.state && !S.st) S.st = j.state;
       S.found = true;
       build();
+      // the radio's audio went away under this tab (a program took the sound card, the sound
+      // server stopped): stop it here and say why, once; say so again when it is back
+      const why = audioReason();
+      if (why && (S.listening || S.rx === "lost")) {
+        S.stoppedFor = why;
+        stopListen();
+        say(why, "warn");
+      } else if (!why && S.stoppedFor) {
+        S.stoppedFor = "";
+        say("The sound card is free again: tap Listen to hear the radio.", "good");
+      }
       paint();
     });
   }
@@ -1054,6 +1279,8 @@
     document.addEventListener("pointercancel", pttUpFor);
     document.addEventListener("lostpointercapture", pttUpFor);
     document.addEventListener("visibilitychange", () => { if (document.hidden) pttUp(); });
+    if (tracked()) window.dxbAudio.onChange(onAudio);
+    armListen();
     dxb.events.onOpen(() => { S.sock = true; watch(); loadAll(); });
     dxb.events.onClose(() => { S.sock = false; paint(); });
     if (dxb.events.open) { S.sock = true; watch(); }

@@ -1,10 +1,12 @@
-// Loads station/web/audio.js over a stub DOM, a fake RTCPeerConnection, a fake WebSocket and a
-// fake getUserMedia, and prints what it did: the signalling messages, the microphone, the
-// 20 dB duck, the lost chip and its reconnect.
-// Run: node tests/station_audio.js station/web/audio.js   (prints one JSON object)
+// Loads station/web/audio.js over a stub DOM, a fake RTCPeerConnection, a fake WebSocket, a fake
+// AudioContext and a fake getUserMedia, and prints what it did: the signalling messages, the
+// microphone, the 20 dB duck on the Web Audio gain, the lost chip and its reconnect.
+// Run: node tests/station_audio.js station/web/audio.js [noaudioctx]   (prints one JSON object)
+//   noaudioctx: a browser without Web Audio, where the element's volume ducks instead
 "use strict";
 const fs = require("fs");
 const vm = require("vm");
+const mode = process.argv[3] || "webaudio";
 
 const sockets = [];
 const pcs = [];
@@ -53,6 +55,27 @@ FakePC.prototype.close = function () { this.closed++; };
 function FakeStream() { this.tracks = []; }
 FakeStream.prototype.addTrack = function (t) { this.tracks.push(t.id); };
 
+// Web Audio: every connect is written down as "from>to"; the analyser reads a sine of amplitude amp
+const graph = [];
+const contexts = [];
+const gains = [];
+let amp = 0;
+function Node(kind) { this.kind = kind; }
+Node.prototype.connect = function (n) { graph.push(this.kind + ">" + n.kind); return n; };
+Node.prototype.disconnect = function () { graph.push(this.kind + " off"); };
+function FakeAudioContext() { this.state = "running"; this.destination = new Node("destination"); this.resumed = 0; this.suspended = 0; contexts.push(this); }
+FakeAudioContext.prototype.resume = function () { this.resumed++; this.state = "running"; return Promise.resolve(); };
+FakeAudioContext.prototype.suspend = function () { this.suspended++; this.state = "suspended"; return Promise.resolve(); };
+FakeAudioContext.prototype.createGain = function () { const n = new Node("gain"); n.gain = { value: 1 }; gains.push(n); return n; };
+FakeAudioContext.prototype.createAnalyser = function () {
+  const n = new Node("analyser");
+  n.fftSize = 2048;
+  n.getByteTimeDomainData = (b) => { for (let i = 0; i < b.length; i++) b[i] = 128 + Math.round(127 * amp * Math.sin(i / 3)); };
+  return n;
+};
+FakeAudioContext.prototype.createMediaStreamSource = function (st) { const n = new Node("source"); n.stream = st; return n; };
+const gain = () => (gains.length ? gains[gains.length - 1].gain.value : null);
+
 let micTrack = null;
 const ctx = {
   document: {
@@ -65,7 +88,7 @@ const ctx = {
     mediaDevices: {
       getUserMedia(c) {
         gum.push(c);
-        micTrack = { id: "mic", enabled: true, stopped: false, stop() { this.stopped = true; } };
+        micTrack = { id: "mic", label: "USB Audio CODEC", enabled: true, stopped: false, stop() { this.stopped = true; } };
         return Promise.resolve({ getAudioTracks: () => [micTrack] });
       },
     },
@@ -73,10 +96,13 @@ const ctx = {
   dxb: { ws: (p) => new FakeSocket("wss://pi.local" + p), tab: () => "iPhone#tab-1" },
   RTCPeerConnection: FakePC, MediaStream: FakeStream, JSON, Promise, Math, String, encodeURIComponent,
 };
+if (mode === "webaudio") ctx.AudioContext = FakeAudioContext;
 ctx.window = ctx;
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), ctx);
 const A = ctx.dxbAudio;
+const states = [];
+if (A.onChange) A.onChange((m) => states.push(m.state));
 
 (async () => {
   const out = {};
@@ -109,23 +135,36 @@ const A = ctx.dxbAudio;
   out.listened = await listening;
   out.remote = pc.remote;
   out.addedIce = pc.added;
+  // the audio graph is made inside the tap; the radio's track joins it when it arrives
+  out.contextInTap = contexts.length;
+  out.levelBeforeTrack = A.level();
   pc.ontrack({ track: { id: "radio" } });
   out.playing = audioEl.srcObject.tracks;
+  out.graph = graph.slice();
+  out.muted = audioEl.muted === true;
+  out.levelSilent = A.level();
+  amp = 0.5;
+  const loud = A.level();
+  out.levelLoud = loud === null ? null : Math.round(loud * 100) / 100;
+  amp = 0;
 
   // ducking without a mic, the mic on the first press only, then PTT
   A.setTX(true);
+  out.gainTXNoMic = gain();
   out.volTXNoMic = audioEl.volume;
   A.setTX(false);
-  out.volRX = audioEl.volume;
+  out.gainRX = gain();
+  out.micLabelBefore = A.micLabel();
   out.mic = await A.openMic();
   await A.openMic();
+  out.micLabel = A.micLabel();
   out.gum = gum.slice();
   out.micReplaced = pc.replaced;
   out.micIdle = micTrack.enabled;
   A.setTX(true);
-  out.tx = { mic: micTrack.enabled, volume: audioEl.volume };
+  out.tx = { mic: micTrack.enabled, gain: gain(), volume: audioEl.volume };
   A.setTX(false);
-  out.rx = { mic: micTrack.enabled, volume: audioEl.volume };
+  out.rx = { mic: micTrack.enabled, gain: gain(), volume: audioEl.volume };
 
   // audio lost: the connection goes, the chip shows; tapping it reconnects with the same mic
   s.onmessage({ data: JSON.stringify({ type: "audio-lost" }) });
@@ -133,8 +172,11 @@ const A = ctx.dxbAudio;
   out.lost = { chipShown: !chip.hidden, chipText: chip.text, chipTag: chip.tag, chipType: chip.type, pcClosed: pc.closed, closeSent: s.sent[s.sent.length - 1], socketClosed: s.closed, elRemoved: audioEl.removed };
   s.onclose();
   out.socketsAfterLost = sockets.length;
+  out.graphAfterLost = graph.slice(out.graph.length);
   chip.listeners.click[0]();
   out.reconnect = { chipHidden: chip.hidden, sockets: sockets.length, url: sockets[1].url, mic: pcs[1].replaced };
+  // the reconnection keeps the one audio context (resumed only when it was asleep)
+  out.reconnectContext = { made: contexts.length, resumed: contexts.length ? contexts[0].resumed : null };
 
   // the station refuses: the reason and fix come back, nothing stays open, no chip
   const refusing = A.listen("ic7300");
@@ -159,8 +201,12 @@ const A = ctx.dxbAudio;
   await tick();
   sockets[4].onmessage({ data: JSON.stringify({ type: "answer", sdp: "A4" }) });
   await fourth;
+  // transmitting when audio stops: the next connection starts at full gain
+  A.setTX(true);
   A.stop();
   out.stopped = { mic: micTrack.stopped, pc: pcs[4].closed, socket: sockets[4].closed, close: sockets[4].sent[sockets[4].sent.length - 1] };
+  out.stoppedContext = contexts.length ? contexts[0].state : null;
+  out.micLabelStopped = A.micLabel();
   // stop while the microphone prompt is still open: the track it later grants is stopped at once
   let grant = null;
   ctx.navigator.mediaDevices.getUserMedia = (c) => {
@@ -177,5 +223,12 @@ const A = ctx.dxbAudio;
   out.askedAgain = gum.length;
   grant({ getAudioTracks: () => [{ id: "mic-2", enabled: true, stop() {} }] });
   out.againResult = await again2;
+  // a listen replaced or stopped before its answer resolves (it does not hang)
+  const replaced = A.listen("ic7300");
+  A.listen("ic7300");
+  out.replaced = await replaced;
+  A.stop();
+  out.gainAfterStop = gain();
+  out.states = states;
   console.log(JSON.stringify(out));
 })();

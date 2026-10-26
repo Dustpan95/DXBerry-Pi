@@ -227,6 +227,12 @@ function dashRadioCard(s, n, x) {
   // no Open while a job installs, updates or removes the program
   if (x.owner && state === "running" && !job) acts.push(dashOpenLink(s, n, x, label));
   if (x.cat && DASH_RADIO_RE.test(n)) acts.push(el("a", { class: "btn small", href: `/radio/${n}`, "data-key": `dash:${n}:vfo`, "aria-label": `Open the VFO page of ${n}` }, "Open"));
+  // Listen opens the radio's page, which starts the audio at the first tap there (#listen; a
+  // browser plays sound only from a gesture on the page itself). Graywolf holds its radio's sound
+  // card directly, so such a radio has no browser audio.
+  if (x.audio && x.owner !== "graywolf" && DASH_RADIO_RE.test(n)) {
+    acts.push(el("a", { class: "btn small", href: `/radio/${n}#listen`, "data-key": `dash:${n}:listen`, "aria-label": `Listen to ${n}` }, "Listen"));
+  }
   const flrig = dashProgram(s, "flrig");
   if (x.rig && x.rig.control === "flrig" && flrig && flrig.installed && NAME_RE.test(n)) {
     acts.push(el("a", { class: "btn small", href: DASH_SCREEN + `flrig-${n}`, target: "_blank", rel: "noopener", "data-key": `dash:${n}:flrig` }, "Open flrig"));
