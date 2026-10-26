@@ -97,6 +97,7 @@ type Intents struct {
 	keyed    bool          // a tune carrier was keyed and not yet confirmed off
 	pending  bool          // set_ptt 0 is owed to the radio
 	debt     uint64        // bumped whenever keyed or pending is set: an unkey clears only the debt it was sent for
+	keying   int           // key-ons between their marker write and their answer: the marker is theirs
 	retrying bool          // a retry loop is running
 	closed   chan struct{} // closed by Close
 }
@@ -311,11 +312,13 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 			in.mu.Lock()
 			in.keyed, in.pending = true, true
 			in.debt++
+			in.keying--
 			in.mu.Unlock()
 			in.startRetry("tune")
 		} else {
 			// the radio refused: nothing was keyed by this one
 			in.mu.Lock()
+			in.keying--
 			if !in.keyed && !in.pending {
 				in.clearMarkLocked()
 			}
@@ -332,6 +335,7 @@ func (in *Intents) Tune(ctx context.Context, tab string, on bool) Result {
 	in.carrier = cancel
 	in.keyed, in.pending = true, false
 	in.debt++
+	in.keying--
 	in.mu.Unlock()
 	fire := in.clock().At(in.clock().Now().Add(CarrierLimit)) // taken now, not in the goroutine
 	go func() {
@@ -424,19 +428,27 @@ func (in *Intents) attemptUnkey(ctx context.Context, intent string, quiet bool) 
 }
 
 // mark writes the keyed marker before a key-on. It counts as a new debt, so an unkey already on
-// the wire cannot clear the marker or the flags of the carrier that follows it.
+// the wire cannot clear the flags of the carrier that follows it, and the key-on owns the marker
+// until it has its answer (keying): an unkey that starts later but reaches the radio first must
+// not remove it either. On success the key-on returns with keying raised; Tune lowers it with
+// the key-on's answer.
 func (in *Intents) mark() error {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	in.debt++
-	if in.Marks == nil {
-		return nil
+	if in.Marks != nil {
+		if err := in.Marks.Mark(in.Radio); err != nil {
+			return err
+		}
 	}
-	return in.Marks.Mark(in.Radio)
+	in.keying++
+	return nil
 }
 
+// clearMarkLocked removes the keyed marker, unless a key-on still waits for its answer: that
+// key-on's own path settles the marker (kept if it keyed, removed once nothing is owed).
 func (in *Intents) clearMarkLocked() {
-	if in.Marks == nil {
+	if in.Marks == nil || in.keying > 0 {
 		return
 	}
 	if err := in.Marks.Clear(in.Radio); err != nil {

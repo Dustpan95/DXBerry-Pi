@@ -27,6 +27,19 @@ type ixRig struct {
 	// afterWrite, when set, runs once a write's command has answered, before the intent sees
 	// the answer (outside the lock, so it may send intents of its own)
 	afterWrite func(call string)
+	// beforeDo, when set, runs as a command reaches the rig and before it is recorded or
+	// answered (outside the lock): a key-on that is slow to reach the radio
+	beforeDo func(call string)
+	// urgent records SetUrgent calls
+	urgent []bool
+}
+
+func (f *ixRig) SetUrgent(on bool) { f.mu.Lock(); f.urgent = append(f.urgent, on); f.mu.Unlock() }
+
+func (f *ixRig) urgentLog() []bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]bool{}, f.urgent...)
 }
 
 func (f *ixRig) setUp(up bool) { f.mu.Lock(); f.st.Connected = up; f.mu.Unlock() }
@@ -57,9 +70,16 @@ func (f *ixRig) Write(ctx context.Context, fn func(Commander) error, opt func(*S
 }
 
 func (f *ixRig) Do(ctx context.Context, cmd string, args ...string) (Reply, error) {
+	key := strings.TrimSpace(cmd + " " + strings.Join(args, " "))
+	f.mu.Lock()
+	hook := f.beforeDo
+	f.mu.Unlock()
+	if hook != nil {
+		hook(key)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, strings.TrimSpace(cmd+" "+strings.Join(args, " ")))
+	f.calls = append(f.calls, key)
 	if f.fail != nil {
 		return Reply{}, f.fail
 	}
@@ -662,5 +682,45 @@ func TestOweUnkeysAMarkedRadio(t *testing.T) {
 	h.tick(t, "marker removed", func() bool { return !markerAt(t, dir) && !h.in.Pending() })
 	if len(marks.List()) != 0 {
 		t.Fatalf("list %v", marks.List())
+	}
+}
+
+// A Stop whose set_ptt 0 reaches the radio after Tune wrote its marker but before Tune's own
+// set_ptt 1 must not remove that marker: the carrier that follows still needs it.
+func TestStopRacingAKeyOnKeepsItsMarker(t *testing.T) {
+	h := newIxHarness(ixCaps())
+	dir := t.TempDir()
+	h.in.Marks = &KeyedMarks{Dir: dir}
+	ctx := context.Background()
+	_ = h.own.Claim("radio1", ixHolder("a"))
+	var once sync.Once
+	h.rig.mu.Lock()
+	h.rig.beforeDo = func(call string) {
+		if call == "set_ptt 1" {
+			once.Do(func() { h.in.Stop(ctx) }) // lands while the key-on is on its way
+		}
+	}
+	h.rig.mu.Unlock()
+	if r := h.in.Tune(ctx, "a", true); !r.OK {
+		t.Fatalf("tune: %+v", r)
+	}
+	if got := h.rig.log(); len(got) != 2 || got[0] != "set_ptt 0" || got[1] != "set_ptt 1" {
+		t.Fatalf("calls %v, want the stop's unkey before the key-on", got)
+	}
+	if !markerAt(t, dir) {
+		t.Fatal("the carrier is up with no marker")
+	}
+	h.in.Stop(ctx)
+	if markerAt(t, dir) {
+		t.Fatal("marker kept after the next confirmed unkey")
+	}
+	// the same race with a key-on the radio refuses: nothing is keyed, the marker goes with it
+	once = sync.Once{}
+	h.rig.mu.Lock()
+	h.rig.failCmd, h.rig.failErr = "set_ptt 1", &RigError{Code: -1}
+	h.rig.mu.Unlock()
+	h.in.Tune(ctx, "a", true)
+	if markerAt(t, dir) || h.in.Owed() {
+		t.Fatalf("refused key-on left marker %v owed %v", markerAt(t, dir), h.in.Owed())
 	}
 }
