@@ -285,6 +285,25 @@ dxb_update_apply_graywolf() {
   return $rc
 }
 
+# _dxb_update_restart_sessions: after a DXBerry update's setup run, every program session that is
+# running restarts: an rc2 session still holds the radio's card with its own private PulseAudio,
+# which the radio's sound server (dxberry-audio@) needs; the restarted session gets PULSE_SERVER.
+# A session that does not restart is a warning only. Always 0.
+_dxb_update_restart_sessions() {
+  local sc=${DXB_SYSTEMCTL:-systemctl} u st n=0
+  local -a units=()
+  while IFS= read -r u; do
+    [[ $u == dxberry-screen@*.service ]] || continue
+    st=$("$sc" is-active "$u" 2> /dev/null)
+    [[ $st == active || $st == activating ]] && units+=("$u")
+  done < <("$sc" list-units --all --plain --no-legend 'dxberry-screen@*' 2> /dev/null | awk '{ print $1 }')
+  n=${#units[@]}
+  (( n )) || return 0
+  echo "restarting $n program session(s) for the update"
+  for u in "${units[@]}"; do "$sc" restart "$u" > /dev/null 2>&1 || echo "$u did not restart; start it from the Programs page" >&2; done
+  return 0
+}
+
 dxb_update_apply_dxberry() {
   local info url sha_url name latest dl want new=$DXB_OPT.new prev=$DXB_OPT.prev old=$DXB_OPT.old had_old=0
   info=$(dxb_update_dxberry_info) || { echo "the DXBerry release list could not be read; nothing changed" >&2; return 6; }
@@ -363,6 +382,7 @@ dxb_update_apply_dxberry() {
   fi
   echo "DXBerry $(head -1 "$prev/VERSION" 2> /dev/null) -> $(head -1 "$DXB_OPT/VERSION"); running the setup"
   dxb_update_run_provision || { echo "the setup run reported failed steps" >&2; return 8; }
+  _dxb_update_restart_sessions
   return 0
 }
 

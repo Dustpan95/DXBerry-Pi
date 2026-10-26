@@ -700,5 +700,5 @@ test_pulse_program_gets_PULSE_SERVER() {
   assert_eq "$(cat "$TEST_TMP/pulse-ran" 2> /dev/null)" ""
 }
 test_no_private_pulse_in_session() {
-  assert_eq "$(grep -c 'pulse.sock\|module-alsa-sink\|"\${pa\[@\]}"' "$DXB_ROOT/provision/lib/screen.sh")" "0"
+  assert_eq "$(grep -cF -e pulse.sock -e module-alsa-sink -e '${pa[' "$DXB_ROOT/provision/lib/screen.sh")" "0"
 }

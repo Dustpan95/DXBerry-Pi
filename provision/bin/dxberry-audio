@@ -3,7 +3,7 @@
 # null sink the station's browser audio uses. Design: docs/design/2026-10-25-station-app.md section 8.1 and 15
 #   run RADIO              the unit's ExecStart: PulseAudio on RADIO's card (sink CARD, source CARD.in,
 #                          null sink CARD.tx) and a native socket, /run/dxberry/audio/RADIO/native
-#   check RADIO            the unit's root ExecStartPre: refuses a radio that is unknown or whose card Graywolf holds
+#   check RADIO            the unit's root ExecStartPre: refuses a radio that is unknown, has no audio device or whose card Graywolf holds
 #   ensure RADIO [--json]  start the unit and wait up to 5 s for the socket
 #   stop RADIO [--json]    stop the unit
 #   status RADIO --json    {radio, active, socket, card, present}
@@ -46,6 +46,16 @@ held() {
   return 1
 }
 
+# no_audio RADIO: 0 (message on stderr) when RADIO's record has no audio device: there is no card
+# to serve, and a unit started for it would only fail and restart
+no_audio() {
+  if [[ $(jq -r --arg n "$1" '.radios[$n].audio == null' <<< "$DXB_RADIOS") == true ]]; then
+    echo "radio $1 has no audio device, so it gets no sound server" >&2
+    return 0
+  fi
+  return 1
+}
+
 # card_device RADIO: "CARD DEVICE" from the radio record's wiring; when the record cannot be read
 # (the unit runs as dxbapps, the record is root's) from the name, which is how the wiring makes them
 card_device() {
@@ -75,6 +85,7 @@ cmd_check() {
   known "$1"; rc=$?
   (( rc == 0 )) || return "$rc"
   held "$1" && return 6
+  no_audio "$1" && return 6
   return 0
 }
 
@@ -86,6 +97,10 @@ cmd_ensure() {
   if (( rc != 0 )); then say false "no such radio: $1"; return "$rc"; fi
   if dxb_screen_audio_held "$1"; then
     say false "radio $1: Graywolf holds its sound card, so it gets no sound server"
+    return 6
+  fi
+  if no_audio "$1" 2> /dev/null; then
+    say false "radio $1 has no audio device, so it gets no sound server"
     return 6
   fi
   sock=$(dxb_audio_socket "$1")

@@ -51,6 +51,29 @@ test_audio_unit_renders_for_radio() (
   assert_file_contains "$u" "After=sound.target"
 )
 
+# the production path: as dxbapps the record is unreadable, so the card and device come from the name
+test_audio_run_without_a_readable_record() (
+  au_env
+  local want; "$AU_BIN" run codec; want=$(cat "$TEST_TMP/pulse-argv")
+  : > "$TEST_TMP/pulse-argv"
+  DXB_RADIOS='' DXB_RADIOS_FILE=$TEST_TMP/none/radios.json "$AU_BIN" run codec
+  assert_eq "$(cat "$TEST_TMP/pulse-argv")" "$want"
+  assert_contains "$want" "sink_name=CODEC"
+)
+
+test_audio_check_refuses_what_cannot_be_served() (
+  au_env
+  assert_ok "$AU_BIN" check codec
+  "$AU_BIN" check nope 2> "$TEST_TMP/err"; assert_eq "$?" "4"
+  "$AU_BIN" check gw 2> "$TEST_TMP/err"; assert_eq "$?" "6"
+  assert_contains "$(cat "$TEST_TMP/err")" "Graywolf"
+  jq -c '.radios.codec.audio = null' "$DXB_RADIOS_FILE" > "$TEST_TMP/r.json" && mv "$TEST_TMP/r.json" "$DXB_RADIOS_FILE"
+  "$AU_BIN" check codec 2> "$TEST_TMP/err"; assert_eq "$?" "6"
+  assert_contains "$(cat "$TEST_TMP/err")" "no audio device"
+  "$AU_BIN" ensure codec 2> "$TEST_TMP/err"; assert_eq "$?" "6"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl start"
+)
+
 test_audio_unit_yields_to_alsa_program() (
   au_env
   dxb_app_load wsjtx > /dev/null 2>&1

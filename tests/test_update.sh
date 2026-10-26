@@ -1218,3 +1218,38 @@ test_update_app_normal_path_leaves_no_trap_behind() {
   up_env; up_apps_env
   ( dxb_update_apply_app wsjtx > /dev/null 2>&1; assert_eq "$(trap -p EXIT TERM INT)" "" )
 }
+
+# after the new setup ran, every running program session restarts (an rc2 session still holds the
+# card with its own PulseAudio); stopped ones are left alone
+up_sc_list() {
+  echo "systemctl $*" >> "$TEST_TMP/calls"
+  case $1 in
+    list-units) printf 'dxberry-screen@wsjtx-radio1.service loaded active running x\ndxberry-screen@fldigi-radio2.service loaded active running y\ndxberry-screen@pat-radio3.service loaded inactive dead z\n' ;;
+    is-active) case ${*: -1} in dxberry-screen@pat-radio3.service) echo inactive; return 3 ;; *) echo active ;; esac ;;
+  esac
+  return 0
+}
+test_update_apply_dxberry_restarts_the_running_program_sessions() (
+  up_env; up_provision_stub
+  up_tree "$DXB_OPT" 0.3.0-rc3
+  dxb_update_set_prereleases on
+  up_release_file 0.3.0-rc4
+  DXB_SYSTEMCTL=up_sc_list
+  : > "$TEST_TMP/calls"
+  assert_ok dxb_update_apply_dxberry > "$TEST_TMP/out" 2>&1
+  assert_contains "$(cat "$TEST_TMP/out")" "restarting 2 program session(s) for the update"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl restart dxberry-screen@wsjtx-radio1.service"
+  assert_contains "$(cat "$TEST_TMP/calls")" "systemctl restart dxberry-screen@fldigi-radio2.service"
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "restart dxberry-screen@pat-radio3.service"
+)
+test_update_failed_setup_restarts_no_sessions() (
+  up_env; up_provision_stub
+  up_tree "$DXB_OPT" 0.3.0-rc3
+  dxb_update_set_prereleases on
+  up_release_file 0.3.0-rc4
+  echo 1 > "$TEST_TMP/provision-rc"
+  DXB_SYSTEMCTL=up_sc_list
+  : > "$TEST_TMP/calls"
+  dxb_update_apply_dxberry > /dev/null 2>&1
+  assert_not_contains "$(cat "$TEST_TMP/calls")" "systemctl restart"
+)
