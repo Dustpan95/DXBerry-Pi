@@ -26,6 +26,7 @@ st_env() {
   echo '0.12 0.10 0.09 1/180 4242' > "$DXB_PROC/loadavg"
   printf 'MemTotal:        3884332 kB\nMemFree:          100000 kB\nMemAvailable:    3400000 kB\n' > "$DXB_PROC/meminfo"
   echo '450123.45 1700000.12' > "$DXB_PROC/uptime"
+  mkdir -p "$DXB_PROC/sys/kernel"; echo dxberry-pi > "$DXB_PROC/sys/kernel/hostname"
   echo 0x50000 > "$TEST_TMP/throttled"
   echo 'WIFI (wlan0 holds the address)' > "$TEST_TMP/netwatch"
   printf 'DXBERRY_VERSION=0.3.0-rc1\nDXBERRY_COMMIT=abc1234\n' > "$DXB_RELEASE_FILE"
@@ -124,8 +125,8 @@ st_curl() {
     return 22
   fi
   case $p in
-    /channels) echo '[{"id":3,"name":"VHF APRS","enabled":true,"mode":"aprs"}]' ;;
-    /channels/3/stats) echo '{"channel":3,"rx_frames":6228,"rx_bad_fcs":5044,"tx_frames":1010,"dcd_state":false}' ;;
+    /channels) if [[ -f $TEST_TMP/gw-channels ]]; then cat "$TEST_TMP/gw-channels"; else echo '[{"id":3,"name":"VHF APRS","enabled":true,"mode":"aprs"}]'; fi ;;
+    /channels/*/stats) echo '{"channel":3,"rx_frames":6228,"rx_bad_fcs":5044,"tx_frames":1010,"dcd_state":false}' ;;
     /igate) echo '{"connected":true,"server":"rotate.aprs2.net:14580","callsign":"N0CALL-10","rf_to_is_gated":2719,"is_to_rf_gated":1}' ;;
     /position-log) jq -cn --arg p "$TEST_TMP/run/graywolf/history.db" '{enabled: true, db_path: $p}' ;;
     *) echo '{}' ;;
@@ -139,8 +140,18 @@ st_stubs() {
   systemctl() {
     echo "systemctl $*" >> "$TEST_TMP/calls"
     [[ $1 == show ]] || return 0
-    local f=$TEST_TMP/units/${*: -1}
-    if [[ -f $f ]]; then cat "$f"; else printf 'LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nType=\nUnitFileState=\n'; fi
+    # as the real one: a block of properties per unit, in the order asked, a blank line between
+    # them. No cat here, so the fork test counts one process for the call, as on a Pi.
+    local u l sep=0
+    shift 3
+    for u in "$@"; do
+      (( sep++ )) && echo
+      if [[ -f $TEST_TMP/units/$u ]]; then
+        while IFS= read -r l; do echo "$l"; done < "$TEST_TMP/units/$u"
+      else
+        printf 'LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nType=\nUnitFileState=\n'
+      fi
+    done
   }
   ip() {
     case "$*" in
@@ -151,7 +162,6 @@ st_stubs() {
   }
   df() { printf 'Filesystem 1-blocks Used Available Capacity Mounted on\n/dev/sda2 30000000000 3000000000 27000000000 10%% /\n'; }
   dpkg-query() { case ${*: -1} in graywolf) echo 'installed 0.14.13' ;; *) return 1 ;; esac; }
-  hostname() { echo dxberry-pi; }
 }
 st_run() { ( st_stubs; "$@" ); }
 
@@ -247,6 +257,16 @@ test_status_services_lists_the_station_units_and_each_rigctld() {
   assert_eq "$(jq -c '.units[] | select(.unit == "dxberry-radio-hotplug.service") | [.type, .result]' <<< "$j")" '["oneshot","success"]'
 }
 
+# every unit is listed even when systemctl answers nothing, each with what it did answer otherwise
+test_status_services_without_an_answer_says_unknown() {
+  st_env
+  local j
+  j=$( st_stubs; systemctl() { [[ $1 != show ]]; }; dxb_status_services )
+  assert_eq "$(jq -c '[.units[0] | .unit, .load, .active, .sub, .enabled]' <<< "$j")" '["graywolf.service","unknown","unknown","",""]'
+  assert_eq "$(jq -r '[.units[] | select(.load != "unknown")] | length' <<< "$j")" "0"
+  assert_eq "$(st_run dxb_status_json services | jq -r .services.ok)" "true"
+}
+
 test_status_services_adds_screen_sessions_and_the_web_units_that_exist() {
   st_env
   local l
@@ -255,7 +275,7 @@ test_status_services_adds_screen_sessions_and_the_web_units_that_exist() {
       case $1 in
         list-units) printf '%s\n' 'dxberry-screen@wsjtx-radio2.service loaded active running WSJT-X on radio2' \
           'dxberry-screen@fldigi-radio1.service loaded inactive dead fldigi on radio1' ;;
-        list-unit-files) case ${*: -1} in php*-fpm.service) echo 'php8.4-fpm.service enabled enabled' ;; esac ;;
+        list-unit-files) echo 'php8.4-fpm.service enabled enabled' ;;
       esac
       return 0
     }
@@ -403,6 +423,48 @@ test_status_cli_leaves_the_provision_log_alone() {
   # shellcheck disable=SC2031  # dxberry-status overrides DXB_LOG_FILE only inside the subshell above; this checks the outer value st_env set
   [[ -s $DXB_LOG_FILE ]] && _fail "dxberry-status wrote to $DXB_LOG_FILE"
   return 0
+}
+
+# st_fork_scene: a station a Pi might really be: three radios, three Graywolf channels and a
+# position log with its WAL.
+st_fork_scene() {
+  st_env
+  : > "$DXB_RIGCTLD_RUN_DIR/radio1.env"; : > "$DXB_RIGCTLD_RUN_DIR/radio2.env"; : > "$DXB_RIGCTLD_RUN_DIR/radio3.env"
+  echo '[{"id":1,"name":"VHF"},{"id":2,"name":"UHF"},{"id":3,"name":"HF"}]' > "$TEST_TMP/gw-channels"
+  mkdir -p "$TEST_TMP/run/graywolf"
+  : > "$TEST_TMP/run/graywolf/history.db"; : > "$TEST_TMP/run/graywolf/history.db-wal"; : > "$TEST_TMP/run/graywolf/history.db-shm"
+  printf 'CALLSIGN=W0BTE-10\nLATITUDE=38.9\nLONGITUDE=-94.6\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  echo '{"checked_at":1700000000,"graywolf":{"update":false},"dxberry":{"update":false},"system":{"count":0}}' > "$DXB_STATE_DIR/update-check.json"
+  st_cli --json || _fail "dxberry-status --json failed: $(cat "$TEST_TMP/err")"
+}
+
+# st_forks: the processes one dxberry-status --json started, by the kernel's last-PID counter
+# (field 5 of /proc/loadavg). Whatever else runs on the machine only raises it, so the least of
+# five runs is the answer; a run with the counter wrapping is dropped.
+st_forks() {
+  local a b n best=0 i
+  for i in 1 2 3 4 5; do
+    read -r _ _ _ _ a < /proc/loadavg
+    st_cli --json
+    read -r _ _ _ _ b < /proc/loadavg
+    n=$(( b - a ))
+    if (( n > 0 && (best == 0 || n < best) )); then best=$n; fi
+  done
+  echo "$best"
+}
+
+# With a browser listening the station runs this every 30 s, so what one run forks is what an open
+# page costs a Pi. The commands it calls are stand-ins here (the real dxberry-radio and dxberry-app
+# fork far more by themselves), so this holds status.sh's own forks: 279 before they were cut.
+test_status_cli_stays_under_the_fork_limit() {
+  st_fork_scene
+  local n; n=$(st_forks)
+  (( n > 0 )) || _fail "the process counter did not move"
+  (( n <= 100 )) || _fail "one dxberry-status --json started $n processes (limit 100)"
+  # one systemctl show for all the units (the other is the graywolf part's), however many there are
+  : > "$TEST_TMP/calls"
+  st_cli --json
+  assert_eq "$(grep -c '^systemctl show' "$TEST_TMP/calls")" "2"
 }
 
 # A part can be ok:true (or api_ok:true) and still carry a null where the renderer expects an

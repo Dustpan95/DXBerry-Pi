@@ -4,7 +4,9 @@
 # JSON object, or fails with its reason as the last line on stderr; dxb_status_json runs the parts in
 # parallel and wraps each as {"ok":true,...} or {"ok":false,"error":"..."}, so one source that cannot
 # be read never hides the others. Expects common.sh, config.sh, graywolf.sh, gps.sh and apps.sh to be
-# sourced (config, gps and apps for the station part).
+# sourced (config, gps and apps for the station part). While a browser listens the station runs this
+# every 30 s, so the collectors stay in this shell where they can: every subshell, pipeline and jq is
+# a fork on a Pi (tests/test_status.sh holds a run to a limit).
 
 : "${DXB_PROC:=/proc}"
 : "${DXB_SYSFS_ROOT:=/sys}"
@@ -28,7 +30,8 @@
 DXB_STATUS_PARTS='pi network graywolf radios time release services station apps'
 
 # ---- pi ------------------------------------------------------------------------------------
-# _dxb_status_throttle HEX: vcgencmd get_throttled's bits by name (0-3 now, 16-19 since boot).
+# _dxb_status_throttle HEX VAR: vcgencmd get_throttled's bits by name (0-3 now, 16-19 since boot),
+# as JSON into VAR.
 _dxb_status_throttle() {
   local raw=$1 v n b=()
   [[ $raw =~ ^0x[0-9a-fA-F]+$ ]] || return 1
@@ -36,58 +39,61 @@ _dxb_status_throttle() {
   for n in 0 1 2 3 16 17 18 19; do
     if (( (v >> n) & 1 )); then b+=(true); else b+=(false); fi
   done
-  jq -cn --arg raw "$raw" --argjson b "[$(IFS=,; echo "${b[*]}")]" \
-    '{raw: $raw, under_voltage_now: $b[0], freq_capped_now: $b[1], throttled_now: $b[2], soft_temp_limit_now: $b[3],
-      under_voltage_since_boot: $b[4], freq_capped_since_boot: $b[5], throttled_since_boot: $b[6], soft_temp_limit_since_boot: $b[7]}'
+  printf -v "$2" '{"raw":"%s","under_voltage_now":%s,"freq_capped_now":%s,"throttled_now":%s,"soft_temp_limit_now":%s,"under_voltage_since_boot":%s,"freq_capped_since_boot":%s,"throttled_since_boot":%s,"soft_temp_limit_since_boot":%s}' "$raw" "${b[@]}"
 }
 
 dxb_status_pi() {
-  local model='' temp=null throttle=null raw t l1=null l2=null l3=null mt=null mu=null dt=null du=null up=null
-  [[ -r $DXB_DT_MODEL ]] && model=$(tr -d '\0' < "$DXB_DT_MODEL")
+  local model='' temp=null throttle=null raw t k n total=0 avail=0 l1=null l2=null l3=null mt=null mu=null dt='' du='' up=null
+  [[ -r $DXB_DT_MODEL ]] && IFS= read -r -d '' model < "$DXB_DT_MODEL"
   if [[ -r $DXB_SYSFS_ROOT/class/thermal/thermal_zone0/temp ]] && read -r t < "$DXB_SYSFS_ROOT/class/thermal/thermal_zone0/temp" && [[ $t =~ ^-?[0-9]+$ ]]; then
     temp=$(awk -v t="$t" 'BEGIN { printf "%.1f", t / 1000 }')
   fi
-  if raw=$("$DXB_VCGENCMD" get_throttled 2> /dev/null) && raw=$(_dxb_status_throttle "${raw#throttled=}"); then throttle=$raw; fi
+  raw=$("$DXB_VCGENCMD" get_throttled 2> /dev/null) && _dxb_status_throttle "${raw#throttled=}" throttle
   [[ -r $DXB_PROC/loadavg ]] && read -r l1 l2 l3 _ < "$DXB_PROC/loadavg"
   if [[ -r $DXB_PROC/meminfo ]]; then
-    read -r mt mu < <(awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 }
-      END { if (t) printf "%d %d\n", t * 1024, (t - a) * 1024; else print "null null" }' "$DXB_PROC/meminfo")
+    while read -r k n _; do
+      case $k in MemTotal:) total=$n ;; MemAvailable:) avail=$n ;; esac
+    done < "$DXB_PROC/meminfo"
+    if (( total )); then mt=$(( total * 1024 )) mu=$(( (total - avail) * 1024 )); fi
   fi
-  read -r dt du < <(df -PB1 "$DXB_DF_PATH" 2> /dev/null | awk 'NR == 2 { print $2, $3; ok = 1 } END { if (!ok) print "null null" }')
+  { read -r _; read -r _ dt du _; } < <(df -PB1 "$DXB_DF_PATH" 2> /dev/null)
   if [[ -r $DXB_PROC/uptime ]]; then read -r up _ < "$DXB_PROC/uptime"; up=${up%%.*}; fi
   [[ $up =~ ^[0-9]+$ ]] || up=null
   jq -cn --arg model "$model" --argjson temp "$temp" --argjson throttle "$throttle" --argjson load "[$l1,$l2,$l3]" \
-    --argjson mt "$mt" --argjson mu "$mu" --argjson dt "$dt" --argjson du "$du" --argjson up "$up" \
+    --argjson mt "$mt" --argjson mu "$mu" --argjson dt "${dt:-null}" --argjson du "${du:-null}" --argjson up "$up" \
     '{model: $model, temp_c: $temp, throttle: $throttle, load: $load, mem_total: $mt, mem_used: $mu,
       disk_total: $dt, disk_used: $du, uptime_s: $up}'
 }
 
 # ---- network -------------------------------------------------------------------------------
 dxb_status_network() {
-  local st holder='' line='' addr='' prefix=null gw wifi=null sig ssid
+  local st holder='' line='' addr='' prefix=null gw='' sig=null ssid='' h='' l
   st=$("$DXB_NETWATCH" --status 2> /dev/null) || st=''
   [[ $st =~ \(([a-z0-9]+)\ holds ]] && holder=${BASH_REMATCH[1]}
   st=${st%% *}
   [[ $st =~ ^(ETH|WIFI|NONE)$ ]] || st=unknown
   if [[ -n $holder ]]; then
-    line=$(ip -o -4 addr show dev "$holder" 2> /dev/null | awk '{ print $4; exit }')
+    read -r _ _ _ line _ < <(ip -o -4 addr show dev "$holder" 2> /dev/null)
     addr=${line%/*}
     [[ $line == */* ]] && prefix=${line#*/}
     [[ $prefix =~ ^[0-9]+$ ]] || prefix=null
   fi
-  gw=$(ip -4 route show default 2> /dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }')
+  while read -r l; do
+    if [[ " $l" =~ [[:space:]]via[[:space:]]+([^[:space:]]+) ]]; then gw=${BASH_REMATCH[1]}; break; fi
+  done < <(ip -4 route show default 2> /dev/null)
   if [[ $holder == wlan0 ]]; then
-    # signal first: an SSID may contain spaces, so it takes the rest of the line
-    read -r sig ssid < <("$DXB_IW" dev wlan0 link 2> /dev/null | awk '
-      /^[[:space:]]*SSID: / { s = $0; sub(/^[[:space:]]*SSID: /, "", s) }
-      /^[[:space:]]*signal: / { g = $2 }
-      END { printf "%s %s\n", (g == "" ? "null" : g), s }')
+    while IFS= read -r l; do
+      if [[ $l =~ ^[[:space:]]*SSID:\ (.*)$ ]]; then ssid=${BASH_REMATCH[1]}
+      elif [[ $l =~ ^[[:space:]]*signal:\ +([^[:space:]]*) ]]; then sig=${BASH_REMATCH[1]}
+      fi
+    done < <("$DXB_IW" dev wlan0 link 2> /dev/null)
     [[ $sig =~ ^-?[0-9]+$ ]] || sig=null
-    wifi=$(jq -cn --arg s "${ssid:-}" --argjson g "$sig" '{ssid: $s, signal_dbm: $g}')
+    read -r ssid <<< "$ssid" # spaces at either end are not the name
   fi
-  jq -cn --arg st "$st" --arg i "$holder" --arg a "$addr" --argjson p "$prefix" --arg gw "$gw" --argjson w "$wifi" \
-    --arg h "$(hostname 2> /dev/null)" \
-    '{state: $st, interface: $i, address: $a, prefix: $p, gateway: $gw, wifi: $w, hostname: $h}'
+  [[ -r $DXB_PROC/sys/kernel/hostname ]] && read -r h < "$DXB_PROC/sys/kernel/hostname"
+  jq -cn --arg st "$st" --arg i "$holder" --arg a "$addr" --argjson p "$prefix" --arg gw "$gw" --arg s "$ssid" --argjson g "$sig" --arg h "$h" \
+    '{state: $st, interface: $i, address: $a, prefix: $p, gateway: $gw,
+      wifi: (if $i == "wlan0" then {ssid: $s, signal_dbm: $g} else null end), hostname: $h}'
 }
 
 # ---- time ----------------------------------------------------------------------------------
@@ -95,11 +101,15 @@ dxb_status_network() {
 # 14 leap status. The selected source in -c sources carries "*"; "#" marks a reference clock,
 # which chrony-dxberry.conf names GPS or PPS.
 dxb_status_time() {
-  local tr refid ref stratum sys leap src synced=false off=null
+  local tr refid ref stratum sys leap src=none synced=false off=null mark sel name
   tr=$("$DXB_CHRONYC" -c tracking 2> /dev/null) || { echo "chrony is not answering" >&2; return 1; }
   IFS=, read -r refid ref stratum _ sys _ _ _ _ _ _ _ _ leap <<< "$tr"
   [[ -n $leap && $leap != 'Not synchronised' && $refid != 00000000 ]] && synced=true
-  src=$("$DXB_CHRONYC" -c sources 2> /dev/null | awk -F, '$2 == "*" { print ($1 == "#" ? $3 : "NTP"); found = 1; exit } END { if (!found) print "none" }')
+  while IFS=, read -r mark sel name _; do
+    [[ $sel == '*' ]] || continue
+    if [[ $mark == '#' ]]; then src=$name; else src=NTP; fi
+    break
+  done < <("$DXB_CHRONYC" -c sources 2> /dev/null)
   [[ $stratum =~ ^[0-9]+$ ]] || stratum=null
   [[ $sys =~ ^-?[0-9]*\.?[0-9]+$ ]] && off=$(awk -v o="$sys" 'BEGIN { printf "%.3f", o * 1000 }')
   jq -cn --argjson s "$synced" --arg src "$src" --arg ref "$ref" --argjson st "$stratum" --argjson off "$off" \
@@ -119,17 +129,21 @@ _dxb_status_pkg_version() {
 # (its .error), never false/0: a failed check must not read as "up to date". Reading the cache
 # never runs a check: that is the Updates card's job.
 dxb_status_release() {
-  local v='' c='' s='' cache=${DXB_UPDATE_CACHE:-$DXB_STATE_DIR/update-check.json} u=null
+  local v='' c='' s='' cache=${DXB_UPDATE_CACHE:-$DXB_STATE_DIR/update-check.json} u=null l
   if [[ -r $DXB_RELEASE_FILE ]]; then
-    v=$(sed -n 's/^DXBERRY_VERSION=//p' "$DXB_RELEASE_FILE" | head -1)
-    c=$(sed -n 's/^DXBERRY_COMMIT=//p' "$DXB_RELEASE_FILE" | head -1)
+    while IFS= read -r l || [[ -n $l ]]; do
+      case $l in
+        DXBERRY_VERSION=*) [[ -n $v ]] || v=${l#*=} ;;
+        DXBERRY_COMMIT=*) [[ -n $c ]] || c=${l#*=} ;;
+      esac
+    done < "$DXB_RELEASE_FILE"
   fi
   if [[ -r $cache ]]; then
     u=$(jq -c '{graywolf: (if .graywolf.error then null else .graywolf.update == true end),
       dxberry: (if .dxberry.error then null else .dxberry.update == true end),
       system: (if .system.error then null else .system.count // 0 end), checked_at: (.checked_at // null)}' "$cache" 2> /dev/null) || u=null
   fi
-  [[ -x $DXB_STATION_CMD ]] && s=$("$DXB_STATION_CMD" -version 2> /dev/null | head -1)
+  [[ -x $DXB_STATION_CMD ]] && IFS= read -r s < <("$DXB_STATION_CMD" -version 2> /dev/null)
   jq -cn --arg v "$v" --arg c "$c" --arg g "$(dxb_gw_installed_version)" --arg k "$s" --argjson u "${u:-null}" \
     '{dxberry: $v, dxberry_commit: $c, graywolf: $g, dxberryd: $k, update: $u}'
 }
@@ -137,7 +151,7 @@ dxb_status_release() {
 # ---- services ------------------------------------------------------------------------------
 # The units of console spec section 9.1: one rigctld per radio DXBerry runs (its env file).
 dxb_status_unit_list() {
-  local f n
+  local f n u m=''
   echo graywolf.service
   for f in "$DXB_RIGCTLD_RUN_DIR"/*.env; do
     [[ -f $f ]] || continue
@@ -147,28 +161,30 @@ dxb_status_unit_list() {
   printf '%s\n' gpsd.service chrony.service dxberry-netwatch.service dxberry-radio-hotplug.service dxberry-radio-wire.service dxberryd.service nginx.service
   # the programs: every screen session systemd knows (running or not), the logging bridge and its
   # flush timer, and the web units only where their unit files exist (Wavelog's php-fpm and database; nginx is always listed above)
-  systemctl list-units --all --plain --no-legend 'dxberry-screen@*' 2> /dev/null \
-    | awk '$1 ~ /^dxberry-screen@[A-Za-z0-9_.:-]+\.service$/ {print $1}'
+  while read -r u _; do
+    if [[ $u =~ ^dxberry-screen@[A-Za-z0-9_.:-]+\.service$ ]]; then echo "$u"; fi
+  done < <(systemctl list-units --all --plain --no-legend 'dxberry-screen@*' 2> /dev/null)
   printf '%s\n' dxberry-logbridge.service dxberry-logbook-flush.timer
-  _dxb_status_unit_files 'php*-fpm.service'
-  _dxb_status_unit_files mariadb.service
+  while read -r u _; do
+    case $u in
+      '') ;;
+      mariadb.service) m=$u ;;
+      *) echo "$u" ;;
+    esac
+  done < <(systemctl list-unit-files --no-legend 'php*-fpm.service' mariadb.service 2> /dev/null)
+  [[ -z $m ]] || echo "$m"
 }
 
-# _dxb_status_unit_files PATTERN: the unit files systemd has for PATTERN, one per line.
-_dxb_status_unit_files() {
-  systemctl list-unit-files --no-legend "$1" 2> /dev/null | awk 'NF {print $1}'
-}
-
+# One systemctl for every unit: it answers a block of properties per unit, in the order asked, with
+# a blank line between them, and a block even for a unit that does not exist.
 dxb_status_services() {
-  local u props out='[]'
-  while IFS= read -r u; do
-    props=$(systemctl show -p LoadState,ActiveState,SubState,Result,Type,UnitFileState "$u" 2> /dev/null) || props=''
-    out=$(jq -c --arg u "$u" --arg p "$props" '. + [
-      ($p | split("\n") | map(select(test("=")) | capture("^(?<key>[^=]+)=(?<value>.*)$")) | from_entries) as $m
-      | {unit: $u, load: ($m.LoadState // "unknown"), active: ($m.ActiveState // "unknown"), sub: ($m.SubState // ""),
-         result: ($m.Result // ""), type: ($m.Type // ""), enabled: ($m.UnitFileState // "")}]' <<< "$out")
-  done < <(dxb_status_unit_list)
-  jq -cn --argjson u "$out" '{units: $u}'
+  local units props
+  mapfile -t units < <(dxb_status_unit_list)
+  props=$(systemctl show -p LoadState,ActiveState,SubState,Result,Type,UnitFileState "${units[@]}" 2> /dev/null)
+  jq -cRs '(split("\n\n") | map(split("\n") | map(select(test("=")) | capture("^(?<key>[^=]+)=(?<value>.*)$")) | from_entries)) as $blocks
+    | {units: [$ARGS.positional | to_entries[] | .key as $i | .value as $u | ($blocks[$i] // {}) as $m
+        | {unit: $u, load: ($m.LoadState // "unknown"), active: ($m.ActiveState // "unknown"), sub: ($m.SubState // ""),
+           result: ($m.Result // ""), type: ($m.Type // ""), enabled: ($m.UnitFileState // "")}]}' --args -- "${units[@]}" <<< "$props"
 }
 
 # ---- graywolf ------------------------------------------------------------------------------
@@ -193,74 +209,72 @@ _dxb_status_gw_login() {
   return 1
 }
 
-# _dxb_status_gw_get PATH: GET through the kept session; logs in and retries only when the
-# failure is an authentication failure - curl -f reports an HTTP error as exit 22, with
-# "... error: 401" (a missing/expired session) or "... error: 403" on stderr. Any other failure
-# (a 404, a timeout, ...) is returned as is, its stderr reaching the caller unchanged, so a
-# channel or endpoint that keeps failing never costs a fresh login (a database write) on every
-# refresh.
+# _dxb_status_gw_get PATH VAR: GET through the kept session, the answer into VAR; logs in and
+# retries only when the failure is an authentication failure - curl -f reports an HTTP error as
+# exit 22, with "... error: 401" (a missing/expired session) or "... error: 403" on stderr. Any
+# other failure (a 404, a timeout, ...) is returned as is, so a channel or endpoint that keeps
+# failing never costs a fresh login (a database write) on every refresh. What went wrong is left
+# in the caller's $errf.
 _dxb_status_gw_get() {
-  local out errf rc
-  errf=$(mktemp)
+  local out rc
   out=$(dxb_gw_api GET "$1" 2> "$errf")
   rc=$?
-  if (( rc == 0 )); then
-    printf '%s\n' "$out"
-    rm -f "$errf"
-    return 0
-  fi
   if (( rc == 22 )) && grep -qE 'error: (401|403)\b' "$errf"; then
-    rm -f "$errf"
-    _dxb_status_gw_login || return 1
-    dxb_gw_api GET "$1"
-    return $?
+    _dxb_status_gw_login 2> "$errf" || return 1
+    out=$(dxb_gw_api GET "$1" 2> "$errf")
+    rc=$?
   fi
-  cat "$errf" >&2
-  rm -f "$errf"
+  printf -v "$2" '%s' "$out"
   return "$rc"
 }
 
-# _dxb_status_db_bytes PATH: the history database with its WAL and shared-memory files, or null.
+# _dxb_status_db_bytes PATH VAR: the size of the history database with its WAL and shared-memory
+# files into VAR, or null.
 _dxb_status_db_bytes() {
-  local f total=0 any=0
-  [[ -n $1 ]] || { echo null; return 0; }
+  local f n total=0 files=()
+  printf -v "$2" null
+  [[ -n $1 ]] || return 0
   for f in "$1" "$1-wal" "$1-shm"; do
-    [[ -f $f ]] || continue
-    total=$(( total + $(stat -c %s "$f") )); any=1
+    if [[ -f $f ]]; then files+=("$f"); fi
   done
-  if (( any )); then echo "$total"; else echo null; fi
+  (( ${#files[@]} )) || return 0
+  while read -r n; do total=$(( total + n )); done < <(stat -c %s "${files[@]}")
+  printf -v "$2" '%s' "$total"
 }
 
 dxb_status_graywolf() {
   # shellcheck disable=SC2034  # both are read by dxb_gw_api through bash's dynamic scope
   local DXB_GW_COOKIES=$DXB_STATUS_GW_COOKIES DXB_CURL=$DXB_STATUS_CURL
-  local props active sub result hp port api_ok=false api_err='' ch='[]' list id c stats p ig=null pl=null errf
-  props=$(systemctl show -p ActiveState,SubState,Result graywolf.service 2> /dev/null)
-  active=$(sed -n 's/^ActiveState=//p' <<< "$props")
-  sub=$(sed -n 's/^SubState=//p' <<< "$props")
-  result=$(sed -n 's/^Result=//p' <<< "$props")
+  local l active='' sub='' result='' hp port api_ok=false api_err='' ch='[]' list ids id body stats=() ig='' pl='' path bytes=null errf
+  while IFS= read -r l; do
+    case $l in
+      ActiveState=*) active=${l#*=} ;;
+      SubState=*) sub=${l#*=} ;;
+      Result=*) result=${l#*=} ;;
+    esac
+  done < <(systemctl show -p ActiveState,SubState,Result graywolf.service 2> /dev/null)
   hp=${DXB_GW_API#*://}; hp=${hp%%/*}; port=${hp##*:}
   [[ $port =~ ^[0-9]+$ ]] || port=8080
   if [[ $active != active ]]; then
     api_err='graywolf is not running'
   else
-    mkdir -p "$(dirname "$DXB_GW_COOKIES")" 2> /dev/null
+    [[ -d ${DXB_GW_COOKIES%/*} ]] || mkdir -p "${DXB_GW_COOKIES%/*}" 2> /dev/null
     [[ -f $DXB_GW_COOKIES ]] || ( umask 077; : > "$DXB_GW_COOKIES" )
     errf=$(mktemp)
-    if list=$(_dxb_status_gw_get /channels 2> "$errf") && jq -e 'type == "array"' <<< "$list" > /dev/null 2>&1; then
+    # "ok" first, so the channel ids come with proof that the answer was a list
+    if _dxb_status_gw_get /channels list && ids=$(jq -r 'if type == "array" then "ok", (.[] | .id? | numbers) else empty end' <<< "$list" 2> /dev/null) && [[ $ids == ok* ]]; then
       api_ok=true
-      for id in $(jq -r '.[] | .id | numbers' <<< "$list"); do
-        if ! stats=$(_dxb_status_gw_get "/channels/$id/stats" 2> /dev/null) || ! jq -e 'type == "object"' <<< "$stats" > /dev/null 2>&1; then stats='{}'; fi
-        c=$(jq -c --argjson id "$id" 'map(select(.id == $id)) | .[0]' <<< "$list")
-        ch=$(jq -c --argjson c "$c" --argjson s "$stats" '. + [{id: $c.id, name: ($c.name // ""), enabled: ($c.enabled // true),
-          rx_frames: $s.rx_frames, tx_frames: $s.tx_frames, rx_bad_fcs: $s.rx_bad_fcs}]' <<< "$ch")
+      ch=$list
+      for id in ${ids#ok}; do
+        _dxb_status_gw_get "/channels/$id/stats" body || body=''
+        stats+=("$body")
       done
-      if p=$(_dxb_status_gw_get /igate 2> /dev/null) && jq -e 'type == "object"' <<< "$p" > /dev/null 2>&1; then
-        ig=$(jq -c '{connected: (.connected // false), server: (.server // ""), rf_to_is_gated, is_to_rf_gated}' <<< "$p")
-      fi
-      if p=$(_dxb_status_gw_get /position-log 2> /dev/null) && jq -e 'type == "object"' <<< "$p" > /dev/null 2>&1; then
-        pl=$(jq -c --argjson b "$(_dxb_status_db_bytes "$(jq -r '.db_path // ""' <<< "$p")")" \
-          '{enabled: (.enabled // false), path: (.db_path // ""), bytes: $b}' <<< "$p")
+      _dxb_status_gw_get /igate ig || ig=''
+      if _dxb_status_gw_get /position-log pl; then
+        path=$(jq -r 'if type == "object" then .db_path // "" else empty end' <<< "$pl" 2> /dev/null)
+        _dxb_status_db_bytes "$path" bytes
+      else
+        pl=''
       fi
     else
       api_err=$(grep -v '^[[:space:]]*$' "$errf" | tail -1)
@@ -268,10 +282,16 @@ dxb_status_graywolf() {
     fi
     rm -f "$errf"
   fi
+  # the answers are read here, in one pass: one that is not a JSON object counts as no answer
   jq -cn --arg a "$active" --arg s "$sub" --arg r "$result" --arg v "$(dxb_gw_installed_version)" --argjson port "$port" \
-    --argjson ok "$api_ok" --arg e "$api_err" --argjson ig "$ig" --argjson ch "$ch" --argjson pl "$pl" \
-    '{active: $a, sub: $s, result: $r, version: $v, web_port: $port, api_ok: $ok, api_error: $e,
-      igate: $ig, channels: $ch, position_log: $pl}'
+    --argjson ok "$api_ok" --arg e "$api_err" --arg ch "$ch" --arg ig "$ig" --arg pl "$pl" --argjson b "$bytes" '
+    def object: (try fromjson catch null) | if type == "object" then . else null end;
+    ($ig | object) as $i | ($pl | object) as $l | [$ch | fromjson | .[] | select(.id? | numbers)] as $c
+    | {active: $a, sub: $s, result: $r, version: $v, web_port: $port, api_ok: $ok, api_error: $e,
+       igate: (if $i then $i | {connected: (.connected // false), server: (.server // ""), rf_to_is_gated, is_to_rf_gated} else null end),
+       channels: [range($c | length) as $n | $c[$n] as $x | (($ARGS.positional[$n] // "") | object // {}) as $y
+         | {id: $x.id, name: ($x.name // ""), enabled: ($x.enabled // true), rx_frames: $y.rx_frames, tx_frames: $y.tx_frames, rx_bad_fcs: $y.rx_bad_fcs}],
+       position_log: (if $l then {enabled: ($l.enabled // false), path: ($l.db_path // ""), bytes: $b} else null end)}' --args -- "${stats[@]}"
 }
 
 # ---- radios --------------------------------------------------------------------------------
@@ -298,24 +318,20 @@ dxb_status_station() {
 # _dxb_status_piece WHAT CMD ARGS...: CMD's JSON answer, run under a timeout
 # (DXB_STATUS_APPS_TIMEOUT seconds, 20 by default; killed 5 s after that), or {"error": why} - its
 # last line on stderr without the log timestamp, or what went wrong in words (WHAT names the piece:
-# "the program list"; the page shows this text, so it names no command).
+# "the program list"; the page shows this text, so it names no command). Runs in the background of
+# dxb_status_apps, inside its $dir.
 _dxb_status_piece() {
-  local what=$1 t=${DXB_STATUS_APPS_TIMEOUT:-20} out errf rc e
+  local what=$1 t=${DXB_STATUS_APPS_TIMEOUT:-20} out errf=$dir/$BASHPID.err rc e
   shift
-  errf=$(mktemp)
   out=$(timeout -k 5 "$t" "$@" 2> "$errf"); rc=$?
-  if (( rc == 0 )) && jq -e 'type == "object" or type == "array"' <<< "$out" > /dev/null 2>&1; then
-    jq -c . <<< "$out"
+  (( rc == 0 )) && jq -ce 'select(type == "object" or type == "array")' <<< "$out" 2> /dev/null && return 0
+  if (( rc == 124 || rc == 137 )); then e="$what did not answer within $t seconds"
+  elif (( rc == 0 )); then e="$what could not be read"
   else
-    if (( rc == 124 || rc == 137 )); then e="$what did not answer within $t seconds"
-    elif (( rc == 0 )); then e="$what could not be read"
-    else
-      e=$(grep -v '^[[:space:]]*$' "$errf" | tail -1 | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} \[[A-Z]+\] //')
-      [[ -n $e ]] || e="$what could not be read (exit $rc)"
-    fi
-    jq -cn --arg e "$e" '{error: $e}'
+    e=$(grep -v '^[[:space:]]*$' "$errf" | tail -1 | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} \[[A-Z]+\] //')
+    [[ -n $e ]] || e="$what could not be read (exit $rc)"
   fi
-  rm -f "$errf"
+  jq -cn --arg e "$e" '{error: $e}'
 }
 
 # The programs (dxberry-app list), the logbook setting (dxberry-logbook get) and its 10 newest
@@ -334,35 +350,25 @@ dxb_status_apps() {
 }
 
 # ---- the report ----------------------------------------------------------------------------
-# _dxb_status_part NAME: dxb_status_NAME's object with ok:true, or {ok:false, error} carrying the
-# last line it wrote to stderr.
-_dxb_status_part() {
-  local name=$1 out errf e
-  errf=$(mktemp)
-  if out=$("dxb_status_$name" 2> "$errf") && jq -e 'type == "object"' <<< "$out" > /dev/null 2>&1; then
-    jq -c '{ok: true} + .' <<< "$out"
-  else
-    e=$(grep -v '^[[:space:]]*$' "$errf" | tail -1)
-    jq -cn --arg e "${e:-$name could not be read}" '{ok: false, error: $e}'
-  fi
-  rm -f "$errf"
-}
-
 # dxb_status_json [PART...]: the report (every part when none is named), parts read in parallel.
+# Each part's answer and stderr land in files, and one jq pass makes the report: an answer that is
+# a JSON object gets ok:true, anything else (a failed collector leaves nothing) is {ok:false, error}
+# carrying the last line the part wrote to stderr.
 dxb_status_json() {
-  local parts=("$@") p dir out
+  local parts=("$@") p dir files=()
   (( ${#parts[@]} )) || read -ra parts <<< "$DXB_STATUS_PARTS"
   dir=$(mktemp -d) || { echo "could not create a temporary directory" >&2; return 1; }
-  for p in "${parts[@]}"; do _dxb_status_part "$p" > "$dir/$p" & done
-  wait
-  out='{}'
   for p in "${parts[@]}"; do
-    out=$(jq -c --arg p "$p" --slurpfile v "$dir/$p" '.[$p] = $v[0]' <<< "$out")
+    { "dxb_status_$p" > "$dir/$p" 2> "$dir/$p.err" || : > "$dir/$p"; } &
+    files+=(--rawfile "$p" "$dir/$p" --rawfile "${p}_err" "$dir/$p.err")
   done
+  wait
   # stamped last and to the millisecond: the DXBerry page sets its clocks from it
-  out=$(jq -c --arg g "$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')" '{generated: $g} + .' <<< "$out")
+  jq -cn --arg g "$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')" "${files[@]}" 'reduce $ARGS.positional[] as $p ({generated: $g};
+    .[$p] = ($ARGS.named[$p] | try fromjson catch null
+      | if type == "object" then {ok: true} + .
+        else {ok: false, error: ([$ARGS.named[$p + "_err"] | splits("\n") | select(test("\\S"))] | last // ($p + " could not be read"))} end))' --args -- "${parts[@]}"
   rm -rf "$dir"
-  printf '%s\n' "$out"
 }
 
 # dxb_status_text: the report (stdin, JSON) as one readable line per part, temperatures in °F first.
