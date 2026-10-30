@@ -58,16 +58,22 @@ els.notices.parentNode = { insertBefore(node) { els.vfo = node; } };
 const record = { name: "ic7300", label: "IC-7300", owner: "", has_cat: true, ptt: "rigctld" };
 const state = { connected: true, freq: 14074000, mode: "USB", passband: "2400", ptt: false, vfo: "VFOA", split: false, levels: {}, meters: {}, optimistic: {} };
 let caps = { ModelName: "IC-7300", Modes: ["USB", "LSB"], VFOs: ["VFOA", "VFOB"], CanSetPTT: true, SettableLevels: [], SettableFuncs: [], Hidden: [], FreqRanges: [{ Lo: 30000, Hi: 74800000 }] };
-const owner = scenario === "notowner" ? { kind: "tab", label: "iPhone", mine: false } : { kind: "tab", label: "iPad", mine: true };
+const owner = scenario === "notowner" || scenario === "hidefree" ? { kind: "tab", label: "iPhone", mine: false } : { kind: "tab", label: "iPad", mine: true };
 const audio = scenario === "noaudio" ? { available: false, reason: "no sound server for ic7300: WSJT-X has the sound card" } : { available: true, reason: "" };
 const ptt = { on: false, mine: false, timeout_s: 180, method: "rigctld" };
 
 const posts = []; // the PTT requests, in order: "on", "off", "hb"
 let windows = 0; // the station's window numbers
 let onAnswer = null; // quicktap: answers the held on
+let onClaim = null; // hidefree: answers the held take-over
+let claimPosts = 0;
 const reply = (status, body) => Promise.resolve({ ok: status < 300, status, json: () => Promise.resolve(body) });
 const fetch = (url, opts) => {
   if (opts.method === "GET") return reply(200, { radio: record, state, caps, owner, audio, ptt });
+  if (scenario === "hidefree" && !url.endsWith("/ptt")) {
+    claimPosts++;
+    return new Promise((r) => { onClaim = () => r({ ok: true, status: 200, json: () => Promise.resolve({ ok: false, reason: "busy transmitting", fix: "try again" }) }); });
+  }
   if (url.endsWith("/ptt")) {
     const b = JSON.parse(opts.body);
     posts.push(b.hb ? "hb" : b.on ? "on" : "off");
@@ -93,7 +99,7 @@ let nextTimer = 1;
 const sockets = [];
 function FakeSocket(u) { this.url = u; this.sent = []; sockets.push(this); }
 FakeSocket.prototype.send = function (m) { this.sent.push(m); };
-FakeSocket.prototype.close = function () {};
+FakeSocket.prototype.close = function () { this.closed = true; };
 const audioCalls = { listen: 0, openMic: 0, tx: [] };
 const winHandlers = {};
 let micResolve = null;
@@ -140,6 +146,8 @@ async function press() {
   return since;
 }
 
+const setHidden = (on) => { doc.hidden = on; for (const f of docHandlers.visibilitychange || []) f({}); };
+
 function release(kind) {
   if (kind === "pointerup" || kind === "pointercancel") button().handlers[kind][0]({ pointerId: 1 });
   else for (const f of winHandlers[kind] || []) f({});
@@ -158,6 +166,57 @@ function release(kind) {
     await press();
     out.posts = posts;
     out.audioCalls = audioCalls;
+    console.log(JSON.stringify(out));
+    return;
+  }
+  if (scenario === "hideclaim") {
+    setHidden(true);
+    await flush();
+    out.closedWithClaim = !!sockets[0].closed;
+    setHidden(false);
+    await press();
+    setHidden(true);
+    await flush();
+    out.closedWhilePressed = !!sockets[0].closed;
+    setHidden(false);
+    out.sockets = sockets.length;
+    out.posts = posts;
+    console.log(JSON.stringify(out));
+    return;
+  }
+  if (scenario === "hidefree") {
+    setHidden(true);
+    await flush();
+    out.closed = !!sockets[0].closed;
+    setHidden(false);
+    sockets[1].onopen();
+    await flush();
+    out.url = sockets[1].url;
+    out.watch = sockets[1].sent.map((m) => JSON.parse(m));
+    const listen = () => els.vfo.find((e) => e.has("vfo-listen"))[0];
+    listen().handlers.click[0]({});
+    await flush();
+    setHidden(true);
+    out.closedListening = !!sockets[1].closed;
+    setHidden(false);
+    listen().handlers.click[0]({});
+    await flush();
+    setHidden(true);
+    out.closedAfterListening = !!sockets[1].closed;
+    setHidden(false);
+    sockets[2].onopen();
+    await flush();
+    // the take-over's answer is not in yet when the tab goes away: it may well be a claim
+    els.vfo.find((e) => e.tag === "button" && e.textContent === "Take over")[0].handlers.click[0]({});
+    await flush();
+    setHidden(true);
+    out.closedClaiming = !!sockets[2].closed;
+    out.claimPosts = claimPosts;
+    setHidden(false);
+    onClaim();
+    await flush();
+    setHidden(true);
+    out.closedRefused = !!sockets[2].closed;
     console.log(JSON.stringify(out));
     return;
   }

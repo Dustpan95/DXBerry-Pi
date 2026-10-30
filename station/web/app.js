@@ -162,6 +162,10 @@
   // dxb.events.start(onStatus) opens /api/events and calls onStatus(data) for every status
   // message. While it is not open the "reconnecting" chip shows and the socket is retried with a
   // growing delay (1 s to 30 s). dxb.events.open tells the page whether to leave polling to it.
+  // A hidden tab lets the socket go, so a tab left in the background does not hold the station at
+  // its busy status rate, and opens it again when shown (the pages refresh themselves then). On a
+  // radio page the socket carries the tab token, and closing it releases the tab's claim with any
+  // carrier or PTT on it: the page names what must not be lost through dxb.events.keepOpenWhile.
   const EV_MIN = 1000;
   const EV_MAX = 30000;
   let evWant = false;
@@ -170,6 +174,8 @@
   let evTimer = null;
   let evDelay = EV_MIN;
   let evOnStatus = null;
+  let evWatching = false;  // the visibility listener is in place
+  const evKeep = [];       // functions that say the socket must stay open while hidden
   const evHandlers = {};   // message type -> functions, for the types besides "status"
   const evOpenFns = [];    // called each time the socket opens
   const evCloseFns = [];   // called each time it closes
@@ -185,8 +191,14 @@
     evDelay = Math.min(evDelay * 2, EV_MAX);
   }
 
+  // evRest: the tab is hidden and nothing in it needs the socket. A function that throws counts as
+  // needing it: a socket left open costs less than a lost claim.
+  function evRest() {
+    return dxb.hidden && !evKeep.some((f) => { try { return f(); } catch (e) { return true; } });
+  }
+
   function evConnect() {
-    if (!evWant || evSock) return;
+    if (!evWant || evSock || evRest()) return;
     let s;
     // On a radio page the socket carries the tab token, so the station can release this tab's
     // claim when the socket closes.
@@ -224,12 +236,31 @@
     };
   }
 
+  // evVisibility: shown, the socket comes back now, whatever delay it was waiting out; hidden, it
+  // goes unless the page keeps it. A page sees this close as any other (controls dim, no chip).
+  function evVisibility() {
+    if (!evWant) return;
+    if (dxb.hidden && !evRest()) return;
+    if (evTimer !== null) { clearTimeout(evTimer); evTimer = null; }
+    evDelay = EV_MIN;
+    if (!dxb.hidden) { evConnect(); return; }
+    const s = evSock;
+    const was = evOpen;
+    evSock = null;
+    evOpen = false;
+    if (s) { try { s.close(); } catch (e) { /* already gone */ } }
+    showLink(false);
+    if (was) for (const f of evCloseFns) f();
+  }
+
   const events = {
     get open() { return evOpen; },
     // on TYPE FN: FN(message) for every message of that type (rig, radios, ...)
     on(type, fn) { (evHandlers[type] = evHandlers[type] || []).push(fn); },
     onOpen(fn) { evOpenFns.push(fn); },
     onClose(fn) { evCloseFns.push(fn); },
+    // keepOpenWhile FN: while FN() is true a hidden tab keeps the socket
+    keepOpenWhile(fn) { evKeep.push(fn); },
     // send OBJ: a message to the station; false when the socket is not open (the caller sends
     // again from onOpen)
     send(obj) {
@@ -239,6 +270,10 @@
     start(onStatus) {
       evOnStatus = onStatus;
       evWant = true;
+      if (!evWatching) {
+        evWatching = true;
+        document.addEventListener("visibilitychange", evVisibility);
+      }
       evConnect();
     },
     stop() {

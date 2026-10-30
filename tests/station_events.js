@@ -1,6 +1,7 @@
 // Loads station/web/app.js and dxberry.js together over a permissive stub DOM, a fake fetch and a
 // fake WebSocket, and checks how the page uses the events stream: no timer poll while the socket
-// is open, a render per status message, the callsign in the top bar, and the poll back on close.
+// is open, a render per status message, the callsign in the top bar, the poll back on close, and
+// the socket going away while the tab is hidden.
 // Run: node tests/station_events.js station/web   (prints one JSON object)
 "use strict";
 const fs = require("fs");
@@ -12,6 +13,7 @@ const sockets = [];         // every WebSocket it opened
 const intervals = [];       // setInterval callbacks
 const timeouts = [];        // setTimeout {fn, ms}
 const els = {};
+const docHandlers = {};     // document listeners by event
 
 const report = (generated, call) => JSON.stringify({ generated, station: { ok: true, callsign: call }, network: { hostname: "pi" } });
 const reply = (body) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ exit: 0, stdout: body, stderr: "" }) });
@@ -30,7 +32,8 @@ function stub(id) {
 const doc = {
   hidden: false, activeElement: null, documentElement: { dataset: {} },
   getElementById: (id) => (els[id] = els[id] || stub(id)),
-  createElement: () => stub(""), querySelectorAll: () => [], querySelector: () => null, addEventListener() {},
+  createElement: () => stub(""), querySelectorAll: () => [], querySelector: () => null,
+  addEventListener(t, f) { (docHandlers[t] = docHandlers[t] || []).push(f); },
 };
 function FakeSocket(url) { this.url = url; this.closed = false; sockets.push(this); }
 FakeSocket.prototype.close = function () { this.closed = true; };
@@ -88,5 +91,52 @@ const flush = () => new Promise((r) => setImmediate(r));
   timeouts[timeouts.length - 1].fn();
   sockets[2].onopen();
   out.chipHiddenAfterReopen = els.link.hidden;
+
+  // hidden: the socket closes as far as the page can tell, the chip stays away, nothing retries
+  // and the timer poll rests
+  const setHidden = (on) => { doc.hidden = on; for (const f of docHandlers.visibilitychange) f({}); };
+  let closes = 0;
+  ctx.dxb.events.onClose(() => { closes++; });
+  const live = sockets[2];
+  const queued = timeouts.length;
+  const runs = statusRuns.length;
+  setHidden(true);
+  out.closedWhenHidden = live.closed;
+  out.openWhenHidden = ctx.dxb.events.open;
+  out.closeCallbacks = closes;
+  live.onclose(); // the old socket's own close, arriving late, changes nothing
+  poll.fn(); await flush();
+  out.chipWhileHidden = els.link.hidden === false;
+  out.retriesWhileHidden = timeouts.length - queued;
+  out.runsWhileHidden = statusRuns.length - runs;
+
+  // shown: a new socket at once, and the page's refresh
+  setHidden(false);
+  await flush();
+  out.socketsWhenShown = sockets.length;
+  out.runsWhenShown = statusRuns.length - runs;
+  sockets[3].onopen();
+  out.openWhenShown = ctx.dxb.events.open;
+
+  // a page that needs the socket keeps it while hidden, and a drop is retried as usual; when it
+  // no longer does, a drop stays down until the tab shows again
+  let keep = true;
+  ctx.dxb.events.keepOpenWhile(() => keep);
+  setHidden(true);
+  out.closedWhileKept = sockets[3].closed;
+  sockets[3].onclose();
+  timeouts[timeouts.length - 1].fn();
+  out.socketsAfterKeptRetry = sockets.length;
+  keep = false;
+  sockets[4].onclose();
+  timeouts[timeouts.length - 1].fn();
+  out.socketsAfterRest = sockets.length;
+  setHidden(false);
+  out.socketsShownAfterRest = sockets.length;
+  sockets[5].onopen();
+  // a keeper that throws keeps the socket too
+  ctx.dxb.events.keepOpenWhile(() => { throw new Error("broken"); });
+  setHidden(true);
+  out.closedWhenKeeperThrows = sockets[5].closed;
   console.log(JSON.stringify(out));
 })();

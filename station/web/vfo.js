@@ -412,10 +412,12 @@
   function claimBody() { return { device: dxb.tab() }; }
 
   function ownerCall(which) {
+    const done = () => { S.ownerAsked = false; };
+    S.ownerAsked = true;
     dxb.api("POST", `/api/radio/${name}/${which}`, claimBody()).then((res) => {
       if (!(res && res.ok)) say(failText(res || {}), "bad");
-      loadAll();
-    });
+      return loadAll();
+    }).then(done, done);
   }
 
   // ---- building the page ---------------------------------------------------------------------
@@ -1336,6 +1338,11 @@
     armListen();
     dxb.events.onOpen(() => { S.sock = true; watch(); loadAll(); });
     dxb.events.onClose(() => { S.sock = false; paint(); });
+    // Hidden, the shell lets the events socket go, and the station drops a tab's claim with its
+    // socket, ending any carrier or PTT. So it stays open while this tab holds the transmitter, is
+    // keying or tuning, has a claim on its way (the answer is not known yet) or plays the radio's
+    // audio. Otherwise nothing is lost: loadAll reads the owner, PTT and guard back when shown.
+    dxb.events.keepOpenWhile(() => mine() || !!S.hold || !!S.tune || !!S.tuneAsked || !!S.ownerAsked || S.listening);
     if (dxb.events.open) { S.sock = true; watch(); }
     loadAll();
     // who holds the transmitter is not on the events stream; ask now and then

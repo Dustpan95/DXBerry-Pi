@@ -33,6 +33,29 @@ func TestUpdatesTextDoesNotNameCockpit(t *testing.T) {
 	}
 }
 
+// A hidden tab closes its events socket and opens it again when shown, but the station drops a
+// tab's claim with that socket, so a radio page must keep it while there is anything to lose.
+func TestHiddenTabKeepsEventsOnlyWhileARadioNeedsThem(t *testing.T) {
+	app := page(t, "app.js")
+	for _, want := range []string{`document.addEventListener("visibilitychange", evVisibility)`, "keepOpenWhile(fn)", "evRest()"} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js: no %s", want)
+		}
+	}
+	vfo := page(t, "vfo.js")
+	var keep string
+	for _, l := range strings.Split(vfo, "\n") {
+		if strings.Contains(l, "dxb.events.keepOpenWhile(") {
+			keep = l
+		}
+	}
+	for _, want := range []string{"mine()", "S.hold", "S.tune", "S.tuneAsked", "S.ownerAsked", "S.listening"} {
+		if !strings.Contains(keep, want) {
+			t.Errorf("vfo.js: the events socket is not kept for %s", want)
+		}
+	}
+}
+
 // The login redirect keeps the hash, and an events socket that closes asks whether the session
 // is gone; the restart flow waits for the Pi and then logs in again.
 func TestPagesRecoverFromEndedSessions(t *testing.T) {

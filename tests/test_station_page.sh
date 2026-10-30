@@ -228,6 +228,14 @@ test_refresh_uses_events_when_open() {
   assert_eq "$(jq -r '.sockets' <<< "$j")" "2"
   assert_eq "$(jq -r '.secondRetryDelayMs' <<< "$j")" "2000"
   assert_eq "$(jq -r '.chipHiddenAfterReopen' <<< "$j")" "true"
+  # hidden: closed for the page too, no chip, no retry, no poll
+  assert_eq "$(jq -c '[.closedWhenHidden, .openWhenHidden, .closeCallbacks]' <<< "$j")" '[true,false,1]'
+  assert_eq "$(jq -c '[.chipWhileHidden, .retriesWhileHidden, .runsWhileHidden]' <<< "$j")" '[false,0,0]'
+  # shown: a new socket and one refresh at once
+  assert_eq "$(jq -c '[.socketsWhenShown, .runsWhenShown, .openWhenShown]' <<< "$j")" '[4,1,true]'
+  # kept: the socket stays and a drop is retried; let go: a drop waits for the tab to show
+  assert_eq "$(jq -c '[.closedWhileKept, .socketsAfterKeptRetry, .socketsAfterRest, .socketsShownAfterRest]' <<< "$j")" '[false,5,5,6]'
+  assert_eq "$(jq -r '.closedWhenKeeperThrows' <<< "$j")" "false"
 }
 
 test_station_index_has_the_reconnecting_chip() {
@@ -604,6 +612,27 @@ test_ptt_quick_tap_sends_the_off_at_once() {
   assert_eq "$(jq -r '"\(.labelAfter) \(.hbTimers)"' <<< "$j")" "PTT 0"
   assert_eq "$(jq -c '[.tx[] | select(. == true)]' <<< "$j")" '[]'
   assert_eq "$(jq -c '.notices' <<< "$j")" '[]'
+}
+
+# The station drops a tab's claim with its events socket, and any carrier or PTT with the claim:
+# a hidden tab that holds the transmitter keeps the socket, also when a press ends with the hide
+test_hidden_radio_page_keeps_the_socket_of_a_claim() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(spt_run hideclaim 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -c '[.closedWithClaim, .closedWhilePressed, .sockets]' <<< "$j")" '[false,false,1]'
+  assert_eq "$(jq -c '.posts' <<< "$j")" '["on","off"]'
+}
+
+# a hidden radio page with nothing to lose lets the socket go and comes back watching its radio;
+# playing the radio's audio or asking for the transmitter keeps it
+test_hidden_radio_page_with_nothing_to_lose_closes_the_socket() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(spt_run hidefree 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -r '.closed' <<< "$j")" "true"
+  assert_eq "$(jq -r '.url' <<< "$j")" "wss://pi.local/api/events?tab=iPad%23tab-1"
+  assert_eq "$(jq -c '.watch' <<< "$j")" '[{"type":"watch","radio":"ic7300","level":"page"}]'
+  assert_eq "$(jq -c '[.closedListening, .closedAfterListening]' <<< "$j")" '[false,true]'
+  assert_eq "$(jq -c '[.closedClaiming, .claimPosts, .closedRefused]' <<< "$j")" '[false,1,true]'
 }
 
 # rc3 fix-wave round 2 (R2-1): the station answers that quick tap's on with "PTT was stopped:

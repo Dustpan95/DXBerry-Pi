@@ -546,7 +546,11 @@ for those facts; the rig, audio, owner and job parts are the station's own.
 model on connect. Rig state for a radio goes out at that radio's poll rate.
 Jobs send progress lines. Guards and owner changes send notices. The page
 never polls; it reconnects the socket with backoff and shows a "reconnecting"
-chip meanwhile, with controls dimmed.
+chip meanwhile, with controls dimmed. A hidden tab closes its socket and opens
+it again, with a refresh, when shown, so a tab left in the background costs the
+idle status rate; a radio's page keeps it open while closing it would cost
+something (§9.2: the tab holds the transmitter, is keying or tuning, has a claim
+on its way, or plays the radio's audio).
 
 ## 11. Jobs
 
