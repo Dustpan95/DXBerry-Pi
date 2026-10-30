@@ -509,6 +509,7 @@ test_history_dropin_puts_the_database_in_ram_and_restarts_graywolf() {
   assert_file_contains "$DXB_GW_DROPIN" "RuntimeDirectory=graywolf"
   assert_file_contains "$DXB_GW_DROPIN" "RuntimeDirectoryMode=0750"
   assert_file_contains "$DXB_GW_DROPIN" "RuntimeDirectoryPreserve=yes"
+  assert_file_contains "$DXB_GW_DROPIN" "LogRateLimitBurst=200"
   assert_contains "$(gw_calls)" "systemctl daemon-reload"
   assert_contains "$(gw_calls)" "systemctl try-restart graywolf.service"
   assert_eq "${#DXB_FAILED_STEPS[@]}" "0"

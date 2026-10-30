@@ -10,11 +10,13 @@ sys_env() {
   export DXB_HOSTNAME_FILE=$TEST_TMP/hostname DXB_HOSTS_FILE=$TEST_TMP/hosts DXB_LOCALTIME=$TEST_TMP/localtime \
     DXB_TIMEZONE_FILE=$TEST_TMP/timezone DXB_ZONEINFO_DIR=$TEST_TMP/zi DXB_DIETPI_FUNC=$TEST_TMP/nofunc \
     DXB_DIETPI_TXT=$TEST_TMP/dietpi.txt DXB_JOURNALD_DROPIN=$TEST_TMP/journald.d/dxberry.conf \
+    DXB_JOURNAL_DIR=$TEST_TMP/state/journal DXB_SYSTEMD_DIR=$TEST_TMP/systemd \
     DXB_DIETPI_WIFI=$TEST_TMP/dietpi-wifi.txt DXB_BOOT_DIR=$TEST_TMP/bootfs DXB_LOG_FILE=$TEST_TMP/log DXB_MODE=run
   mkdir -p "$DXB_ZONEINFO_DIR/America" "$DXB_BOOT_DIR"; : > "$DXB_ZONEINFO_DIR/America/Chicago"; : > "$DXB_ZONEINFO_DIR/UTC"
   echo DietPi > "$DXB_HOSTNAME_FILE"; printf '127.0.0.1 localhost\n127.0.1.1 DietPi\n' > "$DXB_HOSTS_FILE"
   printf 'CONFIG_SERIAL_CONSOLE_ENABLE=0\nAUTO_SETUP_GLOBAL_PASSWORD=dietpi\n' > "$DXB_DIETPI_TXT"
   systemctl() { echo "systemctl $*" >> "$TEST_TMP/calls"; }
+  journalctl() { echo "journalctl $*" >> "$TEST_TMP/calls"; }
   chpasswd() { cat >> "$TEST_TMP/chpasswd"; }
   swapon() { echo "NAME"; echo "/dev/zram0"; }
   hostname() { :; }
@@ -74,8 +76,15 @@ test_system_serial_console_updates_dietpi_txt_on_rerun() {
 test_storage_writes_journald_dropin_once_and_reports_zram() {
   sys_env
   provision_storage
-  assert_file_contains "$DXB_JOURNALD_DROPIN" "Storage=volatile"
+  assert_file_contains "$DXB_JOURNALD_DROPIN" "Storage=persistent"
+  assert_file_contains "$DXB_JOURNALD_DROPIN" "SystemMaxUse=64M"
+  assert_ok test -d "$DXB_JOURNAL_DIR"
+  assert_file_contains "$DXB_SYSTEMD_DIR/dxberry-journal-link.service" "/var/log/journal"
+  assert_file_contains "$TEST_TMP/calls" "systemctl enable --now dxberry-journal-link.service"
   assert_file_contains "$TEST_TMP/calls" "systemctl restart systemd-journald"
+  assert_file_contains "$TEST_TMP/calls" "journalctl --flush"
+  # the link before the restart: journald must never make its directory in the RAM /var/log
+  assert_ok test "$(grep -n 'enable --now' "$TEST_TMP/calls" | cut -d: -f1)" -lt "$(grep -n 'restart systemd-journald' "$TEST_TMP/calls" | cut -d: -f1)"
   assert_contains "${DXB_STATUS_LINES[*]}" "swap: zram"
   : > "$TEST_TMP/calls"
   provision_storage
@@ -86,10 +95,18 @@ test_storage_writes_journald_dropin_once_and_reports_zram() {
   DXB_TEMPLATES=$TEST_TMP/empty-templates
   mkdir -p "$DXB_TEMPLATES"
   provision_storage 2> /dev/null
-  assert_file_contains "$DXB_JOURNALD_DROPIN" "Storage=volatile"
+  assert_file_contains "$DXB_JOURNALD_DROPIN" "Storage=persistent"
   assert_fails test -e "$DXB_JOURNALD_DROPIN.dxbtmp"
   assert_contains "${DXB_FAILED_STEPS[*]}" "journald template missing"
   DXB_TEMPLATES=$saved_templates
+}
+
+test_storage_stays_in_ram_when_the_journal_link_fails() {
+  sys_env
+  systemctl() { [[ $* != enable* ]]; }
+  provision_storage 2> /dev/null
+  assert_contains "${DXB_FAILED_STEPS[*]}" "could not link the journal"
+  assert_fails test -e "$DXB_JOURNALD_DROPIN"
 }
 
 test_scrub_replaces_secrets_in_place_and_dietpi_password() {

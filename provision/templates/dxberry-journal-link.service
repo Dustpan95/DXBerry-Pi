@@ -1,0 +1,17 @@
+# /var/log is RAM and DietPi empties every file under it each hour, even through a bind mount.
+# Its cleanup does not follow symlinks, so the journal's directory is a link to the drive, made
+# before journald flushes to it.
+[Unit]
+Description=Keep the journal on the drive, outside the RAM /var/log
+DefaultDependencies=no
+RequiresMountsFor=/var/log /var/lib/dxberry
+Before=systemd-journal-flush.service
+ConditionPathIsDirectory=/var/lib/dxberry/journal
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/ln -sfn /var/lib/dxberry/journal /var/log/journal
+
+[Install]
+WantedBy=sysinit.target

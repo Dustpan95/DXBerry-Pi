@@ -169,8 +169,11 @@ What=tmpfs
 Where=/run/graywolf
 Type=tmpfs
 Options=mode=0750,size=5%%,nosuid,nodev,noexec"
+  # the log cap: a failing sound card makes Graywolf log thousands of lines a minute, which would
+  # push everything else out of the journal
   content="# Written by dxberry-provision: Graywolf's position history in RAM, kept across service
-# restarts, cleared at reboot. Rebuilt from the packaged unit on every run.
+# restarts, cleared at reboot, and a cap on how fast it can log. Rebuilt from the packaged unit on
+# every run.
 [Unit]
 RequiresMountsFor=/run/graywolf
 
@@ -179,7 +182,9 @@ ExecStart=
 ExecStart=$new
 RuntimeDirectory=graywolf
 RuntimeDirectoryMode=0750
-RuntimeDirectoryPreserve=yes"
+RuntimeDirectoryPreserve=yes
+LogRateLimitIntervalSec=60s
+LogRateLimitBurst=200"
   # the RAM disk first: the drop-in depends on it
   _dxb_gw_unit_write "$DXB_GW_HISTORY_MOUNT" "$mount"; rc=$?
   (( rc == 2 )) && return 1

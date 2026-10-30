@@ -71,7 +71,8 @@ full_env() {
     DXB_IFACES_DIR=$TEST_TMP/ifaces DXB_RESOLV_CONF=$TEST_TMP/resolv.conf DXB_SYSTEMD_DIR=$TEST_TMP/systemd \
     DXB_DIETPI_WIFIDB=$TEST_TMP/wifidb DXB_DIETPI_WIFI=$TEST_TMP/dietpi-wifi.txt \
     DXB_DIETPI_SET_HW=$TEST_TMP/set_hw DXB_SYS_NET=$TEST_TMP/sys DXB_INTERFACES_FILE=$TEST_TMP/interfaces \
-    DXB_JOURNALD_DROPIN=$TEST_TMP/journald.d/dxberry.conf DXB_GW_DROPIN=$TEST_TMP/graywolf.service.d/dxberry-history.conf \
+    DXB_JOURNALD_DROPIN=$TEST_TMP/journald.d/dxberry.conf DXB_JOURNAL_DIR=$TEST_TMP/state/journal \
+    DXB_GW_DROPIN=$TEST_TMP/graywolf.service.d/dxberry-history.conf \
     DXB_GW_HISTORY_MOUNT=$TEST_TMP/units/run-graywolf.mount \
     DXB_SYSFS_ROOT=$TEST_TMP/radio-sys DXB_UDEV_RULES_FILE=$TEST_TMP/etc/70.rules \
     DXB_MODPROBE_FILE=$TEST_TMP/etc/dxberry-audio.conf DXB_UDEVADM=fake_udevadm \
