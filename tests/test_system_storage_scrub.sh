@@ -10,12 +10,15 @@ sys_env() {
   export DXB_HOSTNAME_FILE=$TEST_TMP/hostname DXB_HOSTS_FILE=$TEST_TMP/hosts DXB_LOCALTIME=$TEST_TMP/localtime \
     DXB_TIMEZONE_FILE=$TEST_TMP/timezone DXB_ZONEINFO_DIR=$TEST_TMP/zi DXB_DIETPI_FUNC=$TEST_TMP/nofunc \
     DXB_DIETPI_TXT=$TEST_TMP/dietpi.txt DXB_JOURNALD_DROPIN=$TEST_TMP/journald.d/dxberry.conf \
-    DXB_JOURNAL_DIR=$TEST_TMP/state/journal DXB_SYSTEMD_DIR=$TEST_TMP/systemd \
+    DXB_JOURNAL_DIR=$TEST_TMP/state/journal DXB_JOURNAL_LINK=$TEST_TMP/journal-link DXB_SYSTEMD_DIR=$TEST_TMP/systemd \
     DXB_DIETPI_WIFI=$TEST_TMP/dietpi-wifi.txt DXB_BOOT_DIR=$TEST_TMP/bootfs DXB_LOG_FILE=$TEST_TMP/log DXB_MODE=run
   mkdir -p "$DXB_ZONEINFO_DIR/America" "$DXB_BOOT_DIR"; : > "$DXB_ZONEINFO_DIR/America/Chicago"; : > "$DXB_ZONEINFO_DIR/UTC"
   echo DietPi > "$DXB_HOSTNAME_FILE"; printf '127.0.0.1 localhost\n127.0.1.1 DietPi\n' > "$DXB_HOSTS_FILE"
   printf 'CONFIG_SERIAL_CONSOLE_ENABLE=0\nAUTO_SETUP_GLOBAL_PASSWORD=dietpi\n' > "$DXB_DIETPI_TXT"
-  systemctl() { echo "systemctl $*" >> "$TEST_TMP/calls"; }
+  systemctl() {
+    echo "systemctl $*" >> "$TEST_TMP/calls"
+    [[ $* != enable* ]] || ln -sfn "$DXB_JOURNAL_DIR" "$DXB_JOURNAL_LINK"
+  }
   journalctl() { echo "journalctl $*" >> "$TEST_TMP/calls"; }
   chpasswd() { cat >> "$TEST_TMP/chpasswd"; }
   swapon() { echo "NAME"; echo "/dev/zram0"; }
@@ -101,12 +104,18 @@ test_storage_writes_journald_dropin_once_and_reports_zram() {
   DXB_TEMPLATES=$saved_templates
 }
 
-test_storage_stays_in_ram_when_the_journal_link_fails() {
+test_storage_stays_in_ram_until_the_journal_link_exists() {
   sys_env
-  systemctl() { [[ $* != enable* ]]; }
+  systemctl() { return 1; }
   provision_storage 2> /dev/null
   assert_contains "${DXB_FAILED_STEPS[*]}" "could not link the journal"
   assert_fails test -e "$DXB_JOURNALD_DROPIN"
+  # the unit file is already in place by now: the next run must still make the link
+  DXB_FAILED_STEPS=()
+  systemctl() { [[ $* != enable* ]] || ln -sfn "$DXB_JOURNAL_DIR" "$DXB_JOURNAL_LINK"; }
+  provision_storage 2> /dev/null
+  assert_eq "${DXB_FAILED_STEPS[*]}" ""
+  assert_file_contains "$DXB_JOURNALD_DROPIN" "Storage=persistent"
 }
 
 test_scrub_replaces_secrets_in_place_and_dietpi_password() {

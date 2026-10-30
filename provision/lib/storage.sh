@@ -4,6 +4,7 @@
 
 : "${DXB_JOURNALD_DROPIN:=/etc/systemd/journald.conf.d/dxberry.conf}"
 : "${DXB_JOURNAL_DIR:=/var/lib/dxberry/journal}"
+: "${DXB_JOURNAL_LINK:=/var/log/journal}"
 : "${DXB_SYSTEMD_DIR:=/etc/systemd/system}"
 : "${DXB_TEMPLATES:=/opt/dxberry/templates}"
 
@@ -17,13 +18,14 @@ provision_storage() {
   fi
   mkdir -p "$DXB_JOURNAL_DIR"
   # the link first: without it journald would make its directory in the RAM /var/log, where
-  # DietPi's hourly cleanup empties the files
+  # DietPi's hourly cleanup empties the files. Every run, so a failed one is tried again.
   if dxb_write_if_changed "$DXB_SYSTEMD_DIR/dxberry-journal-link.service" "$link"; then
     systemctl daemon-reload 2> /dev/null || true
-    if ! systemctl enable --now dxberry-journal-link.service 2> /dev/null; then
-      dxb_step_failed storage "could not link the journal to the drive; logs stay in RAM"
-      return 1
-    fi
+  fi
+  systemctl enable --now dxberry-journal-link.service 2> /dev/null || true
+  if [[ ! -L $DXB_JOURNAL_LINK ]]; then
+    dxb_step_failed storage "could not link the journal to the drive; logs stay in RAM"
+    return 1
   fi
   if dxb_write_if_changed "$DXB_JOURNALD_DROPIN" "$content"; then
     systemctl restart systemd-journald 2> /dev/null || true

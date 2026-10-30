@@ -11,7 +11,7 @@ ConditionPathIsDirectory=/var/lib/dxberry/journal
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/ln -sfn /var/lib/dxberry/journal /var/log/journal
+ExecStart=/bin/ln -sfnT /var/lib/dxberry/journal /var/log/journal
 
 [Install]
 WantedBy=sysinit.target
