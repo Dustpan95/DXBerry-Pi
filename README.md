@@ -75,7 +75,7 @@ than 5% of RAM. Real state (Graywolf configuration, mail, logs you keep) is on d
 Browse to `https://<the Pi's address>/` (plain `http://` redirects there). Log in as `dietpi` with the
 Pi's password. The certificate is made by the Pi itself, so your browser warns once; to stop the
 warning on a phone or another computer, open `https://<the Pi's address>/station.crt` and install the
-certificate. The page opens on the dashboard and refreshes every 10 seconds: Graywolf (running or not,
+certificate. The page opens on the dashboard and refreshes every 30 seconds: Graywolf (running or not,
 iGate connection, packets per channel, position log), radios and GPS, the network (Ethernet or WiFi,
 address, signal), the Pi (temperature, power warnings, load, memory, disk), the clock, and versions.
 Buttons open Graywolf, restart it, start, stop or restart DXBerry's services, open each service's log,

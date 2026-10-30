@@ -29,7 +29,7 @@ main() {
   done
   dxb_require_root
   umask 077
-  # the console runs this every 10 seconds; routine reads must never grow provision.log
+  # the station runs this every 30 seconds; routine reads must never grow provision.log
   export DXB_LOG_FILE=/dev/null
   report=$(dxb_status_json "${parts[@]}") || { echo "could not build the status report" >&2; return 1; }
   if (( json )); then printf '%s\n' "$report"; else dxb_status_text <<< "$report"; fi

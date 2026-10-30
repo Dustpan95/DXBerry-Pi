@@ -325,7 +325,7 @@ test_status_graywolf_explains_a_missing_refused_or_silent_login() {
 
 # An endpoint that keeps failing for a reason other than authentication (a 404 on another
 # Graywolf version, a disabled channel's stats, ...) must never cost a fresh login: that is a
-# database write on Graywolf's side, and this runs every 10 seconds.
+# database write on Graywolf's side, and this runs every 30 seconds.
 test_status_graywolf_a_404_never_forces_a_relogin() {
   st_env
   : > "$TEST_TMP/gw-404-igate"
@@ -384,7 +384,7 @@ test_status_cli_takes_part_names_and_rejects_anything_else() {
   assert_contains "$(st_out)" "dxberry-status [--json] [PART...]"
 }
 
-# The console runs this every 10 seconds: nothing it does may grow provision.log, even when a
+# The station runs this every 30 seconds: nothing it does may grow provision.log, even when a
 # collector along the way calls a dxb_ logging helper (dxb_warn, dxb_info, ...). st_vcgencmd is
 # overridden only inside this subshell, so the simulated warning never reaches the other tests.
 # A marker file (outside dxb_log's own redirections) proves the override actually ran, so this

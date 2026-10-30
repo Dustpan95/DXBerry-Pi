@@ -373,7 +373,7 @@ function radiosCard(r) {
   }
   const body = [];
   if (!names.length && !cands.length) {
-    body.push(el("p", { class: "muted" }, "No radios set up, and no USB radio interface is plugged in. Plug one in; it shows up here within 10 seconds."));
+    body.push(el("p", { class: "muted" }, "No radios set up, and no USB radio interface is plugged in. Plug one in; it shows up here within 30 seconds."));
   }
   for (const n of names) body.push(radioBlock(r, n));
   if (cands.length) {

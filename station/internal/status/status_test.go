@@ -336,8 +336,8 @@ func TestStatusEndpoint(t *testing.T) {
 func TestEventsRateFollowsListeners(t *testing.T) {
 	r := newRig(t)
 	eventually(t, "the first run", func() bool { return r.count() == 1 })
-	r.clock.Advance(10 * time.Second)
-	never(t, "a 10 s run with nobody listening", func() bool { return r.count() != 1 })
+	r.clock.Advance(30 * time.Second)
+	never(t, "a 30 s run with nobody listening", func() bool { return r.count() != 1 })
 
 	ts := serve(t, r.st, true)
 	c, err := dial(t, ts)
@@ -346,16 +346,18 @@ func TestEventsRateFollowsListeners(t *testing.T) {
 	}
 	readMsg(t, c)
 	eventually(t, "one listener", func() bool { return r.st.Listeners() == 1 })
-	// the cache was 10 s old when the listener came, so it is refreshed now
+	// the cache was 30 s old when the listener came, so it is refreshed now
 	eventually(t, "a refresh for the new listener", func() bool { return r.count() == 2 })
-	r.clock.Advance(10 * time.Second)
-	eventually(t, "a 10 s run while listened to", func() bool { return r.count() == 3 })
+	r.clock.Advance(29 * time.Second)
+	never(t, "a run before 30 s while listened to", func() bool { return r.count() != 2 })
+	r.clock.Advance(time.Second)
+	eventually(t, "a 30 s run while listened to", func() bool { return r.count() == 3 })
 
 	c.CloseNow()
 	eventually(t, "no listeners", func() bool { return r.st.Listeners() == 0 })
-	r.clock.Advance(10 * time.Second)
-	never(t, "a 10 s run after the listener left", func() bool { return r.count() != 3 })
-	r.clock.Advance(50 * time.Second)
+	r.clock.Advance(30 * time.Second)
+	never(t, "a 30 s run after the listener left", func() bool { return r.count() != 3 })
+	r.clock.Advance(30 * time.Second)
 	eventually(t, "the 60 s run", func() bool { return r.count() == 4 })
 }
 
@@ -413,7 +415,7 @@ func TestEventsSlowClientClosed(t *testing.T) {
 	_ = c
 	eventually(t, "the client counted", func() bool { return r.st.Listeners() == 1 })
 	for i := 0; i < 8 && r.st.Listeners() == 1; i++ {
-		r.clock.Advance(10 * time.Second)
+		r.clock.Advance(30 * time.Second)
 		time.Sleep(100 * time.Millisecond)
 	}
 	eventually(t, "the slow client closed", func() bool { return r.st.Listeners() == 0 })

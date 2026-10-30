@@ -535,7 +535,7 @@ Every guard event is logged (`dxberryd[…]: radio codec: SWR guard tripped
 programs (installed, versions, kept notices), logbook, services (unit states),
 jobs, system (temperatures, load, memory, disk, uptime, network), updates.
 The system, programs, logbook and updates parts come from `dxberry-status
---json` run every 10 s (every 60 s when no browser is connected) and from
+--json` run every 30 s (every 60 s when no browser is connected) and from
 `dxberry-update check` on its own schedule, so the CLI stays the one source
 for those facts; the rig, audio, owner and job parts are the station's own.
 `GET /api/status` returns the whole model; the dashboard renders from it.

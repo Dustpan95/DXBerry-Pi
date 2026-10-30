@@ -1,5 +1,5 @@
 // Package status keeps the station's last dxberry-status answer fresh and streams it to the
-// browsers that are watching. One loop runs the command: every 10 s while at least one events
+// browsers that are watching. One loop runs the command: every 30 s while at least one events
 // socket is open, every 60 s otherwise, and soon after any call that changed something.
 package status
 
@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	busyEvery = 10 * time.Second // while somebody listens
+	busyEvery = 30 * time.Second // while somebody listens
 	idleEvery = 60 * time.Second // while nobody does
 	pokeGap   = time.Second      // at most one poked refresh per second
 	runLimit  = 90 * time.Second
