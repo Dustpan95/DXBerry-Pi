@@ -141,6 +141,21 @@ be reached; fldigi follows the same choice unless you changed it inside fldigi. 
 on the DXBerry page. On the command line: `sudo dxberry-app list`, `sudo dxberry-app install fldigi`,
 and `sudo dxberry-logbook get`.
 
+## Release notes for 0.5.0-rc4
+
+- **Logs now survive a crash.** The journal keeps up to 64 MB on the drive instead of RAM, so a Pi that
+  locks up leaves its last logs behind. `journalctl -b -1` shows the boot before this one. Writes to the
+  drive stay small: the journal saves once a minute, or at once for a critical message, so the last
+  minute before a sudden hang can be lost.
+- **Graywolf's logging is capped.** A failing sound card can make Graywolf log thousands of lines a
+  minute; it now gets about 400 lines a minute and the journal notes how many it dropped.
+- **Less work while a page is open.** The status check runs every 30 seconds instead of every 10, starts
+  far fewer commands, and stops while the tab is hidden. A tab that holds a radio, transmits or plays
+  audio stays connected while hidden, so hiding it never drops the radio or ends a transmission.
+- **Known issue:** on the test Pi Graywolf 0.14.14 opens its USB sound card with a 10 ms buffer and
+  reports `alsa::poll() returned POLLERR` many times a second. It did not decode a frame while this was
+  checked. This is under investigation, and the log cap limits the noise, not the cause.
+
 ## Release notes for 0.5.0-rc3
 
 - **Browser audio:** every radio page has a speaker. Any logged-in user can listen, in up to four tabs
