@@ -303,6 +303,8 @@
     pend: {},        // field -> the value shown at once after a write, until a state says it is confirmed
     want: null,      // the frequency the dial is heading for, while one is being sent
     sending: false,
+    loadSeq: 0,      // loadAll's last request
+    loadDone: 0,     // the newest request it has answered
     layout: "", ownerKey: "", step: 1000, tune: null, upd: [], bands: [],
     audio: null,     // {available, reason}: whether the radio's sound server carries browser audio
     ptt: null,       // the station's PTT window: {on, mine, timeout_s, method}
@@ -1247,7 +1249,11 @@
 
   // ---- data ----------------------------------------------------------------------------------
   function loadAll() {
+    const seq = ++S.loadSeq;
     return dxb.api("GET", `/api/radio/${name}`).then((j) => {
+      // a slow poll's older answer must not undo a newer one (a claim that just landed)
+      if (seq < S.loadDone) return;
+      S.loadDone = seq;
       if (j && j.ok === false) {
         if (/no such radio/.test(j.reason || "")) {
           S.found = false;

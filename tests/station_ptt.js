@@ -68,7 +68,13 @@ let onAnswer = null; // quicktap: answers the held on
 let onClaim = null; // hidefree: answers the held take-over
 let claimPosts = 0;
 const reply = (status, body) => Promise.resolve({ ok: status < 300, status, json: () => Promise.resolve(body) });
+let holdGet = false; // staleload: the next read answers only when asked, as nobody's radio
+let answerGet = null;
 const fetch = (url, opts) => {
+  if (opts.method === "GET" && holdGet) {
+    holdGet = false;
+    return new Promise((r) => { answerGet = () => r({ ok: true, status: 200, json: () => Promise.resolve({ radio: record, state, caps, owner: null, audio, ptt }) }); });
+  }
   if (opts.method === "GET") return reply(200, { radio: record, state, caps, owner, audio, ptt });
   if (scenario === "hidefree" && !url.endsWith("/ptt")) {
     claimPosts++;
@@ -181,6 +187,22 @@ function release(kind) {
     setHidden(false);
     out.sockets = sockets.length;
     out.posts = posts;
+    console.log(JSON.stringify(out));
+    return;
+  }
+  if (scenario === "staleload") {
+    holdGet = true;
+    setHidden(true);
+    setHidden(false);
+    await flush();
+    setHidden(true);
+    setHidden(false);
+    await flush();
+    answerGet();
+    await flush();
+    setHidden(true);
+    await flush();
+    out.closedAfterStaleAnswer = !!sockets[0].closed;
     console.log(JSON.stringify(out));
     return;
   }

@@ -930,6 +930,8 @@ function refresh(force) {
 function onEventStatus(data) {
   const s = data && data.status;
   if (!s || typeof s !== "object") return;
+  // a reopened socket first sends the cached report, which can be older than a refresh's answer
+  if (last && Date.parse(s.generated) < Date.parse(last.generated)) return;
   last = s;
   if (show()) clearRefreshFailureNotice();
 }

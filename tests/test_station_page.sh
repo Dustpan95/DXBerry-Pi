@@ -219,6 +219,8 @@ test_refresh_uses_events_when_open() {
   assert_eq "$(jq -r '.chipHiddenWhileOpen' <<< "$j")" "true"
   assert_eq "$(jq -r '.callsign' <<< "$j")" "W1AW"
   assert_eq "$(jq -r '.hostAfterMessage' <<< "$j")" "pi"
+  # a reopened socket's cached report, older than what is on the page, changes nothing
+  assert_eq "$(jq -r '.callsignAfterOlderReport' <<< "$j")" "W1AW"
   # a ping, junk and a null status change nothing and never run the command
   assert_eq "$(jq -r '.runsAfterMessages' <<< "$j")" "0"
   # closed: the chip shows, a retry is queued at 1 s (then 2 s) and the poll resumes
@@ -621,6 +623,13 @@ test_hidden_radio_page_keeps_the_socket_of_a_claim() {
   local j; j=$(spt_run hideclaim 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
   assert_eq "$(jq -c '[.closedWithClaim, .closedWhilePressed, .sockets]' <<< "$j")" '[false,false,1]'
   assert_eq "$(jq -c '.posts' <<< "$j")" '["on","off"]'
+}
+
+# a slow read that answers after a newer one must not lose the claim, or hiding the tab drops it
+test_a_late_read_does_not_undo_a_newer_one() {
+  command -v node > /dev/null 2>&1 || return 0
+  local j; j=$(spt_run staleload 2> "$TEST_TMP/spt.err") || { _fail "station_ptt.js failed: $(cat "$TEST_TMP/spt.err")"; return; }
+  assert_eq "$(jq -c '.closedAfterStaleAnswer' <<< "$j")" 'false'
 }
 
 # a hidden radio page with nothing to lose lets the socket go and comes back watching its radio;
