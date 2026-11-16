@@ -13,16 +13,16 @@ jobs:
         run: '! git ls-files | grep -qxE "boot/dxberry\.txt|boot/dietpi-wifi\.txt"'
       - name: No attribution lines committed
         run: |
-          if git grep -qIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic' -- . ; then
+          if git grep -qIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic|cod[e]x|op[e]nai|subag[e]nt|ag[e]ntic' -- . ; then
             echo "attribution text found in a tracked file:" >&2
-            git grep -nIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic' -- . >&2
+            git grep -nIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic|cod[e]x|op[e]nai|subag[e]nt|ag[e]ntic' -- . >&2
             exit 1
           fi
       - name: Syntax
         run: |
-          for f in $(grep -lE '^#!/bin/(ba)?sh' provision/bin/*) provision/lib/*.sh provision/lib/apps/*.sh build/*.sh boot/*.sh tests/*.sh tests/fixtures/*.sh; do bash -n "$f"; done
+          for f in $(grep -lE '^#!/bin/(ba)?sh' provision/bin/*) provision/lib/*.sh provision/lib/apps/*.sh build/*.sh boot/*.sh tests/*.sh tests/fixtures/*.sh tests/integration/*.sh; do bash -n "$f"; done
       - name: shellcheck
-        run: shellcheck -x $(grep -lE '^#!/bin/(ba)?sh' provision/bin/*) provision/lib/*.sh provision/lib/apps/*.sh build/build-image.sh build/make-update-tarball.sh boot/*.sh tests/*.sh tests/fixtures/*.sh
+        run: shellcheck -x $(grep -lE '^#!/bin/(ba)?sh' provision/bin/*) provision/lib/*.sh provision/lib/apps/*.sh build/build-image.sh build/make-update-tarball.sh boot/*.sh tests/*.sh tests/fixtures/*.sh tests/integration/*.sh
       - name: Placeholder station binary
         # The update file and the tree check require provision/bin/dxberryd; the real one is built
         # by the binary-arm64 job, so this job uses an empty file (git-ignored).
@@ -33,6 +33,20 @@ jobs:
         run: |
           build/build-image.sh --check
           rm -f provision/bin/dxberryd
+  graywolf-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download checksum-verified Graywolf release for isolated testing
+        run: bash tests/integration/download-graywolf.sh "$RUNNER_TEMP/graywolf-api"
+      - name: Build the API test container
+        run: docker build -t dxberry-graywolf-api -f tests/integration/Dockerfile tests/integration
+      - name: Test the released API without network or radio devices
+        run: |
+          docker run --rm --network none --user "$(id -u):$(id -g)" \
+            -v "$PWD:/repo:ro" -v "$RUNNER_TEMP/graywolf-api/extracted:/graywolf:ro" \
+            -e GRAYWOLF_TEST_BIN=/graywolf/usr/bin/graywolf \
+            dxberry-graywolf-api bash tests/integration/graywolf-api.sh
   station:
     runs-on: ubuntu-latest
     env:
