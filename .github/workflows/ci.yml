@@ -13,9 +13,9 @@ jobs:
         run: '! git ls-files | grep -qxE "boot/dxberry\.txt|boot/dietpi-wifi\.txt"'
       - name: No attribution lines committed
         run: |
-          if git grep -qIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic' -- . ; then
+          if git grep -qIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic|cod[e]x|op[e]nai|subag[e]nt|ag[e]ntic' -- . ; then
             echo "attribution text found in a tracked file:" >&2
-            git grep -nIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic' -- . >&2
+            git grep -nIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic|cod[e]x|op[e]nai|subag[e]nt|ag[e]ntic' -- . >&2
             exit 1
           fi
       - name: Syntax

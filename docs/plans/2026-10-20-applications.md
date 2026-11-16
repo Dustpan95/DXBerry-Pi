@@ -1,6 +1,6 @@
 # DXBerry-Pi Applications (v0.4.0-rc1) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Follow the tasks in order and track completion with checkboxes.
 
 **Goal:** Turn DXBerry-Pi into a browser-run multi-mode station: install WSJT-X, JS8Call, fldigi, QSSTV, Pat + ARDOP, flrig and a Wavelog logbook from the console, hand each radio to a program, open the program's real window in its own browser tab, log contacts to any Wavelog/Cloudlog server, and update each program on its own.
 
@@ -30,7 +30,7 @@
 
 ## Global Constraints
 
-- License GPL-2.0-or-later. **No author or attribution lines of any kind** in files, commits or tags (no AI-assistant or model-vendor names, no co-author or session trailers, no "Generated with" footers). CI runs `git grep -qIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic'`; vendored noVNC files are checked with the same grep before they are committed. Commit messages: imperative subject + plain body.
+- License GPL-2.0-or-later. **No author or attribution lines of any kind** in files, commits or tags (no tooling footers or session trailers). CI runs `git grep -qIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic'`; vendored noVNC files are checked with the same grep before they are committed. Commit messages: imperative subject + plain body.
 - Commit as the owner: `git -c user.name="Dustpan95" -c user.email="Dustpan95@users.noreply.github.com" commit ...`, on branch `feat/applications`.
 - No secrets in the tree or in any argument list: API keys go through standard input or a `curl -K <(...)` config, never `argv`, never printed (shown back only as `"set"`).
 - **No version pins.** Packages by name; upstream programs from `releases/latest`; `VERSION` is `0.4.0`.
@@ -39,7 +39,7 @@
 - Tests need only bash 5, awk, jq, tar, sha256sum, dpkg (`--compare-versions`); node optional. Every `tests/test_*.sh` is sourced into **one** shell: each new file uses its own helper prefix (listed per task); stubs of real command names (`systemctl`, `curl`, `apt-get`, `dpkg-query`, `runuser`, `chown`, `useradd`) only through `DXB_*` overrides or inside a subshell. `sleep` may be a no-op left by another file: use `command sleep` where a real wait matters.
 - Existing tests stay green **unmodified** except where a task names the test it changes and why (spec §19: "Graywolf behavior unchanged").
 - The page loads only its own files; no inline scripts, handlers or `style=` in HTML; text nodes only (never `innerHTML`); every command through `run()` (superuser) except `dxberry-app screen` in the program tab. New top-level JS names follow ruling 14.
-- Nothing in a test reaches the network or a Pi. **Only the controller touches the live Pi (Task 16)**; implementers never ssh to it.
+- Nothing in a test reaches the network or a Pi. **Live Pi access is limited to the hardware-validation step (Task 16)**.
 - The live Pi: Graywolf's hand-made channel "VHF APRS" (id 3) on ALSA card `CODEC` must be intact at the end. Before any hardware step that touches the radio, back up Graywolf's database and configuration; restore and verify after.
 
 ## Verified facts this plan relies on (2026-10-20, live Pi 4 4 GB, Trixie, kernel 6.18.50)
@@ -888,9 +888,9 @@ test_update_check_reports_installed_programs() {
 
 ---
 
-### Task 16: Hardware check and release (controller, not dispatched)
+### Task 16: Hardware check and release (on the Pi)
 
-Run on the live Pi by the controller, with the owner's standing OK of 2026-10-20 ("If you take the Pi down, then so be it"). Report every failed step before the next.
+Run on the live Pi, with the owner's standing OK of 2026-10-20 ("If you take the Pi down, then so be it"). Report every failed step before the next.
 
 - [ ] **Backup first:** stop nothing yet; copy Graywolf's database and configuration (`systemctl cat graywolf` names the paths; copy the whole state directory with Graywolf briefly stopped) to `/root/dxb-backup-<date>/`; record channel 3's JSON from the API; `sha256sum` the copies.
 - [ ] **Install the branch** on the Pi the way rc releases were installed (`install-remote.sh`: tarball of `provision/` to `/opt/dxberry`, previous tree kept as `/opt/dxberry.old`), then `dxberry-provision` with `DXB_GW_UPGRADE=0`; check: `dxberry-status --json` parts all `ok`, Graywolf active, channel 3 unchanged, `systemctl --global is-enabled pulseaudio.socket` = `masked`.

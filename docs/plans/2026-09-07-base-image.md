@@ -1,6 +1,6 @@
 # DXBerry-Pi Base Image Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Follow the tasks in order and track completion with checkboxes.
 
 **Goal:** A flashable image (official DietPi + injected first-boot provisioning) that boots a Raspberry Pi 4 to a static address with Ethernet-primary/WiFi-failover networking and a seeded Graywolf APRS station, configured from one file on the boot partition.
 
