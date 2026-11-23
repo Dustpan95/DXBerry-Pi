@@ -79,8 +79,8 @@ echo 'PASS independent calendar timer recovers start-limited work without reset'
 
 # A failed path is explicitly reactivated, as an operator would do. This does
 # not assert automatic path recovery or consumer retirement during tree swaps.
-systemctl stop "$path" "$timer"
 systemctl reset-failed "$path" "$service"
+systemctl stop "$path" "$timer"
 systemctl start "$path" "$timer"
 previous=$(attempts)
 "$helper" enqueue
@@ -103,7 +103,6 @@ wait_for 10 child_gone
 [[ -d $state/radio-events/marks/processing ]]
 rm "$state/started" "$state/child.pid" "$state/child.ready"
 echo ok > "$state/behavior"
-systemctl reset-failed "$service"
 systemctl start "$path" "$timer"
 wait_for 20 empty_queue
 wait_for 10 service_done

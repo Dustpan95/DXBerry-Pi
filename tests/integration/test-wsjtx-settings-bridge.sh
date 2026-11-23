@@ -3,7 +3,17 @@
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+cleanup() {
+  local result=$?
+  trap - EXIT
+  # Go makes module-cache directories read-only. Restore permissions only in
+  # this run's private temporary tree, never a caller-supplied shared cache.
+  if ! chmod -R u+w -- "$work" || ! rm -rf -- "$work"; then
+    (( result != 0 )) || result=1
+  fi
+  exit "$result"
+}
+trap cleanup EXIT
 docker_bin=${DXB_DOCKER:-docker}
 docker_host=${DXB_DOCKER_HOST:-unix:///var/run/docker.sock}
 go_image=${DXB_BRIDGE_GO_IMAGE:-golang:1.24.4-bookworm}
