@@ -4,39 +4,53 @@ on:
   pull_request:
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 jobs:
+  superseded-runs:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.payload.pull_request?.head.ref || context.ref.replace(/^refs\/heads\//, '');
+            const head = context.payload.pull_request?.head.sha || context.sha;
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              ...context.repo, workflow_id: 'ci.yml', branch, per_page: 100
+            });
+            for (const run of runs) {
+              if (run.id !== context.runId && run.head_sha !== head &&
+                  ['queued', 'in_progress'].includes(run.status)) {
+                await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: run.id });
+                core.info(`Cancelled superseded CI run ${run.id}`);
+              }
+            }
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: No real station config in the tree
-        run: '! git ls-files | grep -qxE "boot/dxberry\.txt|boot/dietpi-wifi\.txt"'
-      - name: No attribution lines committed
+        with:
+          persist-credentials: false
+      - name: Build disposable root-fixture runner
+        run: docker build -t dxberry-shell-ci -f tests/integration/Dockerfile.shell .
+      - name: Syntax, lint, root fixtures and packaging checks
         run: |
-          if git grep -qIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic|cod[e]x|op[e]nai|subag[e]nt|ag[e]ntic' -- . ; then
-            echo "attribution text found in a tracked file:" >&2
-            git grep -nIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic|cod[e]x|op[e]nai|subag[e]nt|ag[e]ntic' -- . >&2
-            exit 1
-          fi
-      - name: Syntax
-        run: |
-          for f in $(grep -lE '^#!/bin/(ba)?sh' provision/bin/*) provision/lib/*.sh provision/lib/apps/*.sh build/*.sh boot/*.sh tests/*.sh tests/fixtures/*.sh tests/integration/*.sh tests/integration/systemd/init tests/integration/systemd/*.sh; do bash -n "$f"; done
-      - name: shellcheck
-        run: shellcheck -x $(grep -lE '^#!/bin/(ba)?sh' provision/bin/*) provision/lib/*.sh provision/lib/apps/*.sh build/build-image.sh build/make-update-tarball.sh boot/*.sh tests/*.sh tests/fixtures/*.sh tests/integration/*.sh tests/integration/systemd/init tests/integration/systemd/*.sh
-      - name: Placeholder station binary
-        # Tree/archive checks use placeholders; the binary job builds real executables.
-        run: |
-          touch provision/bin/dxberryd
-          install -m 755 /dev/null provision/bin/dxberry-preset
-          install -m 755 /dev/null provision/bin/dxberry-program-state
-      - name: Unit tests
-        run: tests/run.sh
-      - name: Build tree check
-        run: |
-          build/build-image.sh --check
-          rm -f provision/bin/dxberryd
-          rm -f provision/bin/dxberry-preset
-          rm -f provision/bin/dxberry-program-state
+          set -o pipefail
+          docker run --rm --network none -v "$PWD:/source:ro" dxberry-shell-ci \
+            | tee "$RUNNER_TEMP/shell-ci.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shell-ci-evidence
+          path: ${{ runner.temp }}/shell-ci.log
+          if-no-files-found: warn
+          retention-days: 7
   systemd-queue:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

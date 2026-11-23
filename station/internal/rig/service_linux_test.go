@@ -145,6 +145,7 @@ func TestServiceReaderFreshChecksAndPrivateIdentity(t *testing.T) {
 	if f.unitCalls != 4 || f.peerCalls != 4 {
 		t.Fatal("fresh sources not read twice per call", f.unitCalls, f.peerCalls)
 	}
+	//lint:ignore SA9005 This regression requires private evidence to serialize as an empty object.
 	raw, err := json.Marshal(before)
 	if err != nil || string(raw) != "{}" {
 		t.Fatal("private evidence became wire data", string(raw), err)
@@ -168,6 +169,7 @@ func TestServiceReaderFreshChecksAndPrivateIdentity(t *testing.T) {
 	if _, err := f.r.Read(ctx, "hf", f.e); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
+	//lint:ignore SA1012 Deliberately verify that a nil context is refused.
 	if _, err := f.r.Read(nil, "hf", f.e); !errors.Is(err, ErrServiceUnavailable) {
 		t.Fatal(err)
 	}

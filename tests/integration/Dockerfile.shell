@@ -1,0 +1,7 @@
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash mawk jq shellcheck nodejs curl ca-certificates procps file util-linux \
+    coreutils findutils grep sed diffutils git python3 \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /repo
+ENTRYPOINT ["/bin/bash", "/source/tests/integration/run-shell-ci.sh"]

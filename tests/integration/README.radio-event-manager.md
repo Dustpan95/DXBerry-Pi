@@ -85,3 +85,10 @@ not establish a successful guest run. Actual workflow results provide that
 separate evidence. It does not claim hardware or real udev-device delivery,
 consumer retirement, release-tree replacement or rollback recovery acceptance.
 The queue stays off on the maintained Pi.
+
+The first hosted guest booted successfully and passed coalescing and
+arrivals-during-apply checks. It exposed an assertion error: this systemd keeps
+the service's earlier `exit-code` result when a new start is rate-limited, while
+the path reports `unit-start-limit-hit`. The rate-limit check therefore requires
+that actual path result together with a failed service, before testing timer
+recovery without resetting it. This initial failed run is not full acceptance.

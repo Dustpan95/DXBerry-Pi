@@ -6,11 +6,13 @@ Run the privileged integration check from the repository root:
 tests/integration/test-wsjtx-settings-bridge.sh
 ```
 
-Both compilation and execution run inside Docker with networking disabled.
+A separate Docker preparation step downloads the pinned, checksum-verified Go
+modules. Compilation and execution then run inside Docker with networking disabled.
 The script builds a static test binary and the real standalone settings helper,
 then runs cross-user fixtures as container root. It uses Go 1.24.4 and Debian
 bookworm images by default. `DXB_BRIDGE_GO_IMAGE` and `DXB_BRIDGE_RUN_IMAGE` may
-select existing local images; `DXB_DOCKER` and `DXB_DOCKER_HOST` select the local
+select existing local images. `DXB_BRIDGE_GOPATH` can reuse a prepared Go module
+cache; the isolated compiler mounts that cache read-only. `DXB_DOCKER` and `DXB_DOCKER_HOST` select the local
 Docker command/endpoint. Temporary output is removed when the script ends.
 
 Fixtures create root-private recovery state and application-owned settings.

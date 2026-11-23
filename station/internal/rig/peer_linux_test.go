@@ -159,6 +159,7 @@ func TestInspectPeerBindsSeparateProcessAndBothSocketDescriptors(t *testing.T) {
 	if err != nil || !peer.Same(again) || (Peer{}).Same(Peer{}) {
 		t.Fatal("unchanged process/socket evidence disagreed", err)
 	}
+	//lint:ignore SA9005 This regression requires private evidence to serialize as an empty object.
 	raw, err := json.Marshal(peer)
 	if err != nil || string(raw) != "{}" {
 		t.Fatal("private process evidence became wire data", string(raw), err)
@@ -173,6 +174,7 @@ func TestInspectPeerBindsSeparateProcessAndBothSocketDescriptors(t *testing.T) {
 	if _, err := e.InspectPeer(ctx, child.pid); !errors.Is(err, context.Canceled) {
 		t.Fatal("canceled inspection", err)
 	}
+	//lint:ignore SA1012 Deliberately verify that a nil context is refused.
 	if _, err := e.InspectPeer(nil, child.pid); !errors.Is(err, ErrPeerUnavailable) {
 		t.Fatal("nil context", err)
 	}

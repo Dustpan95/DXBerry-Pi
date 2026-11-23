@@ -112,6 +112,7 @@ func TestGenerationPersistenceRotationAndPrivacy(t *testing.T) {
 		t.Fatal("rotation reused generation")
 	}
 	for _, g := range []Generation{first, next, {}} {
+		//lint:ignore SA9005 This regression requires private evidence to serialize as an empty object.
 		b, err := json.Marshal(g)
 		if err != nil || string(b) != "{}" {
 			t.Fatalf("private evidence serialized: %s %v", b, err)

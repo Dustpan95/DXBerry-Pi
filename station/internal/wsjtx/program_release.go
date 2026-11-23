@@ -113,7 +113,7 @@ func (s *ProgramService) resumeRelease(ctx context.Context, receipt string) (Rel
 }
 
 func (s *ProgramService) resumeAuthority(ctx context.Context, receipt string) (ReleaseState, func(context.Context) (func(), error), error) {
-	ctx, finish, err := s.begin(ctx)
+	_, finish, err := s.begin(ctx)
 	if err != nil {
 		return ReleaseState{}, nil, err
 	}

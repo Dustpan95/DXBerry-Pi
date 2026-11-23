@@ -32,13 +32,14 @@ wait_for() {
 empty_queue() { [[ ! -e $state/radio-events/marks/pending && ! -e $state/radio-events/marks/processing ]]; }
 attempts() { wc -l < "$state/attempts"; }
 started() { [[ -f $state/started ]]; }
-limited() { [[ $(systemctl show "$service" -p Result --value) == start-limit-hit ]]; }
+limited() { [[ $(systemctl show "$path" -p Result --value) == unit-start-limit-hit && $(systemctl show "$service" -p ActiveState --value) == failed ]]; }
 child_gone() { [[ ! -e /proc/$(cat "$state/child.pid") ]]; }
 service_done() { [[ $(systemctl show "$service" -p ActiveState --value) == inactive ]]; }
 
 [[ $(< /proc/1/comm) == systemd ]]
 [[ $(stat -fc '%T' /sys/fs/cgroup) == cgroup2fs ]]
 [[ $(systemctl show -p Version --value) != '' ]]
+printf 'Guest manager: %s; kernel: %s\n' "$(systemctl show -p Version --value)" "$(uname -r)"
 [[ $(cat "$state/boot-order") == $'hotplug\ngraywolf' ]]
 sha256sum "$helper" /opt/dxberry/lib/common.sh /fixture/templates/* > "$state/source.before"
 : > "$state/attempts"

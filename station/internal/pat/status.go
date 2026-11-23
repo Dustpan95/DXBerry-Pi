@@ -23,7 +23,7 @@ const (
 	maxListenerBytes = 128
 )
 
-var ErrUnavailable = errors.New("Pat status unavailable")
+var ErrUnavailable = errors.New("pat status unavailable")
 
 // Status deliberately omits Pat's config hash, HTTP client addresses and remote
 // connection address. Connected/Dialing describe a Winlink transport, not PTT

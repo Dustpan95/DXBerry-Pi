@@ -126,6 +126,7 @@ func TestDeviceReaderBindsSyntheticNodeSysfsAndDescriptorWithoutOpeningDevice(t 
 			t.Fatal("zero reader accepted", err)
 		}
 	}
+	//lint:ignore SA1012 Deliberately verify that a nil context is refused.
 	if _, err := f.r.Read(nil, f.service, command); !errors.Is(err, ErrDeviceUnavailable) {
 		t.Fatal(err)
 	}

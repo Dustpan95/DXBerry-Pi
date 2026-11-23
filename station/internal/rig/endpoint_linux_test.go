@@ -74,6 +74,7 @@ func TestConnectionEndpointMatchesActualLinuxSocketWithoutCommands(t *testing.T)
 	if calls != 0 {
 		t.Fatal("metadata lookup sent protocol commands", calls)
 	}
+	//lint:ignore SA9005 This regression requires private evidence to serialize as an empty object.
 	encoded, err := json.Marshal(e)
 	if err != nil || string(encoded) != "{}" {
 		t.Fatal("private endpoint became wire data", string(encoded), err)
@@ -258,6 +259,7 @@ func TestManagerConnectionSnapshotTracksRecordEntryAndSocket(t *testing.T) {
 	}
 	r.lst.push()
 	plEventually(t, "removed snapshot", func() bool { _, ok := r.m.ConnectionSnapshot("hf"); return !ok && !replacement.Current() })
+	//lint:ignore SA9005 This regression requires private evidence to serialize as an empty object.
 	encoded, err := json.Marshal(replacement)
 	if err != nil || string(encoded) != "{}" {
 		t.Fatal("manager evidence became wire data", string(encoded), err)
