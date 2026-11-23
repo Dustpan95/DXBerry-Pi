@@ -51,8 +51,49 @@ cmd_start() {
   else echo "started $DXB_UPDATE_JOB_UNIT (follow it with: sudo dxberry-update job)"; fi
 }
 
-cmd_apply() {
-  local kind=$1 name=${2:-} rc
+# The job owns a separate execution gate. Admission, provisioning and unit
+# hooks use different locks; keep this one through body, result and EXIT cleanup.
+_dxb_update_apply_lock() {
+  local dir=${DXB_RUN_DIR:-/run/dxberry} file lock_dir_identity fresh_dir_identity
+  file=$dir/update-apply.lock
+  command -v flock > /dev/null 2>&1 || { echo 'flock is required for update execution' >&2; return 6; }
+  mkdir -p "$dir" 2> /dev/null || { echo 'could not create the update execution lock directory' >&2; return 6; }
+  [[ -d $dir && ! -L $dir ]] || { echo 'unsafe update execution lock directory' >&2; return 6; }
+  lock_dir_identity=$(stat -c '%d:%i:%u:%a' "$dir") || return 6
+  case ${lock_dir_identity#*:*:} in 0:700|0:750|0:755) ;; *) echo 'unsafe update execution lock directory' >&2; return 6 ;; esac
+  if [[ ! -e $file && ! -L $file ]]; then
+    ( set -o noclobber; umask 077; : > "$file" ) 2> /dev/null || true
+  fi
+  [[ -f $file && ! -L $file && $(stat -c '%u:%h:%s:%a' "$file") == 0:1:0:600 ]] \
+    || { echo 'unsafe update execution lock file' >&2; return 6; }
+  if ! exec {DXB_UPDATE_APPLY_LOCK_FD}< "$file"; then
+    echo 'could not open the update execution lock' >&2
+    return 6
+  fi
+  if ! flock -w "${DXB_UPDATE_APPLY_LOCK_WAIT:-30}" "$DXB_UPDATE_APPLY_LOCK_FD"; then
+    echo 'another update job is active; retry after it finishes' >&2
+    exec {DXB_UPDATE_APPLY_LOCK_FD}>&-
+    return 6
+  fi
+  fresh_dir_identity=$(stat -c '%d:%i:%u:%a' "$dir")
+  if [[ $lock_dir_identity != "$fresh_dir_identity" || -L $dir || -L $file || ! $file -ef /proc/self/fd/$DXB_UPDATE_APPLY_LOCK_FD \
+    || $(stat -Lc '%u:%h:%s:%a' "/proc/self/fd/$DXB_UPDATE_APPLY_LOCK_FD") != 0:1:0:600 ]]; then
+    echo 'update execution lock changed while waiting' >&2
+    exec {DXB_UPDATE_APPLY_LOCK_FD}>&-
+    return 6
+  fi
+}
+
+cmd_apply() (
+  local kind=$1 name=${2:-} rc result run_id=${DXB_UPDATE_RUN_ID:-} run_unit=${DXB_UPDATE_RUN_UNIT:-}
+  local DXB_UPDATE_APPLY_LOCK_FD
+  if [[ -n $run_id || -n $run_unit ]]; then
+    if [[ ! $run_id =~ ^[0-9a-f]{32}$ || $run_id == 00000000000000000000000000000000 || $run_unit != "dxberry-job-update-$kind${name:+-$name}-$run_id" ]]; then
+      echo 'invalid update request metadata; nothing changed' >&2
+      return 6
+    fi
+  fi
+  _dxb_update_apply_lock || return 6
   case $kind in
     graywolf) dxb_update_apply_graywolf ;;
     dxberry) dxb_update_apply_dxberry ;;
@@ -66,31 +107,38 @@ cmd_apply() {
   # the next check shows what is installed now
   rm -f "$DXB_UPDATE_CACHE"
   mkdir -p "$DXB_RUN_DIR" 2> /dev/null
-  jq -cn --argjson e "$rc" --argjson t "$(date +%s)" '{exit: $e, finished: $t}' > "$DXB_UPDATE_RESULT"
+  if ! result=$(jq -cn --argjson e "$rc" --argjson t "$(date +%s)" --arg id "$run_id" --arg unit "$run_unit" \
+    '{version:2,run_id:(if $id == "" then null else $id end),unit:(if $unit == "" then null else $unit end),exit:$e,finished:$t}') \
+    || ! _dxb_update_write_record "$DXB_UPDATE_RESULT" "$result"; then
+    echo 'update ended but its result could not be published; inspect its output' >&2
+    return 8
+  fi
   echo "finished with exit $rc"
   return $rc
-}
+)
 
 # cmd_job: a job file that does not parse is no job (null), and a result that does not parse is no
 # result: the answer is always one line of JSON the page can read.
 cmd_job() {
-  local unit state result=null lines j=null
-  if [[ -f $DXB_UPDATE_JOB_FILE ]] && jq -e 'type == "object"' "$DXB_UPDATE_JOB_FILE" > /dev/null 2>&1; then
-    unit=$(dxb_update_job_unit)
+  local unit state result=null lines j=null job latest
+  job=$(cat "$DXB_UPDATE_JOB_FILE" 2>/dev/null) || job=''
+  if unit=$(jq -er 'select(type == "object") | .unit | select(type == "string" and test("^dxberry-job-update-[a-z0-9_-]{1,160}$"))' <<< "$job" 2>/dev/null); then
     if [[ -n $unit ]] && systemctl is-active --quiet "$unit"; then state=running
-    elif [[ -f $DXB_UPDATE_RESULT ]]; then
-      state=finished
-      result=$(jq -c 'if type == "object" then . else null end' "$DXB_UPDATE_RESULT" 2> /dev/null)
-      [[ -n $result ]] || result=null
-    else state=ended; fi
+    else
+      result=$(_dxb_update_result_for_job "$job")
+      if [[ $result != null ]]; then state=finished; else state=ended; fi
+    fi
     # systemd's own "Failed to open /run/systemd/transient/..." lines, logged once a --collect
     # unit is gone, are not the job's output
     lines=$(journalctl -u "$unit" -o cat --no-pager -n 400 2> /dev/null \
       | jq -Rsc 'split("\n") | map(select(length > 0 and (test(": Failed to open /run/systemd/transient/") | not)))')
     j=$(jq -c --arg s "$state" --argjson r "$result" --argjson l "${lines:-[]}" \
       '{name: null} + . + {state: $s, exit: ($r.exit // null), finished: ($r.finished // null), lines: $l}
-      | . + {status: (if .state == "running" then "running" elif .exit == 0 then "done" else "failed" end)}' "$DXB_UPDATE_JOB_FILE" 2> /dev/null)
+      | del(.run_id,.version)
+      | . + {status: (if .state == "running" then "running" elif .exit == 0 then "done" else "failed" end)}' <<< "$job" 2> /dev/null)
     [[ -n $j ]] || j=null
+    latest=$(cat "$DXB_UPDATE_JOB_FILE" 2>/dev/null) || latest=''
+    [[ $latest == "$job" ]] || j=null
   fi
   j=$(jq -cn --argjson j "$j" --argjson now "$(date +%s)" --argjson rb "$([[ -e $DXB_REBOOT_FLAG ]] && echo true || echo false)" \
     '{now: $now, reboot_required: $rb, job: $j}')

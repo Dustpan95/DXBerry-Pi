@@ -7,6 +7,26 @@ source "$DXB_LIB/gps.sh"
 source "$DXB_LIB/apps.sh"
 source "$DXB_LIB/status.sh"
 
+test_status_report_collectors_do_not_overlap_but_keep_all_answers() (
+  st_env
+  st_one_collector() {
+    if ! mkdir "$TEST_TMP/collector-running" 2>/dev/null; then
+      : > "$TEST_TMP/overlap"
+      return 1
+    fi
+    sleep 0.1
+    rmdir "$TEST_TMP/collector-running"
+    printf '{"value":true}\n'
+  }
+  dxb_status_pi() { st_one_collector; }
+  dxb_status_network() { st_one_collector; }
+  dxb_status_graywolf() { st_one_collector; }
+  local report
+  report=$(dxb_status_json pi network graywolf)
+  [[ ! -e $TEST_TMP/overlap ]] || _fail "status collectors competed with each other"
+  assert_eq "$(jq '[.pi,.network,.graywolf] | all(.ok and .value)' <<< "$report")" true
+)
+
 # st_env: a Pi 4 on WiFi, chrony synced over NTP, Graywolf running with one channel, no radios.
 # The fake commands answer from files under $TEST_TMP, so a test changes the scene by editing one.
 st_env() {
@@ -226,14 +246,14 @@ test_status_release_reports_the_cached_update_check() {
   st_cli --json release || _fail "dxberry-status --json release failed: $(cat "$TEST_TMP/err")"
   assert_eq "$(jq -c '.release.update' "$TEST_TMP/out")" "null"
   export DXB_UPDATE_CACHE=$TEST_TMP/state/update-check.json
-  echo '{"checked_at":1700000000,"graywolf":{"update":true},"dxberry":{"update":false},"system":{"count":3}}' > "$DXB_UPDATE_CACHE"
+  echo '{"version":2,"checked_at":1700000000,"graywolf":{"update":true},"dxberry":{"update":false},"system":{"count":3}}' > "$DXB_UPDATE_CACHE"
   st_cli --json release
   assert_eq "$(jq -c '.release.update' "$TEST_TMP/out")" '{"graywolf":true,"dxberry":false,"system":3,"checked_at":1700000000}'
   # a part the check could not read is null (not known), never false/0 (which would read "up to date")
-  echo '{"checked_at":1700000000,"graywolf":{"error":"x"},"dxberry":{"error":"y"},"system":{"error":"z"}}' > "$DXB_UPDATE_CACHE"
+  echo '{"version":2,"checked_at":1700000000,"graywolf":{"error":"x"},"dxberry":{"error":"y"},"system":{"error":"z"}}' > "$DXB_UPDATE_CACHE"
   st_cli --json release
   assert_eq "$(jq -c '.release.update' "$TEST_TMP/out")" '{"graywolf":null,"dxberry":null,"system":null,"checked_at":1700000000}'
-  echo '{"checked_at":1700000000,"graywolf":{"error":"x"},"dxberry":{"update":false},"system":{"count":0}}' > "$DXB_UPDATE_CACHE"
+  echo '{"version":2,"checked_at":1700000000,"graywolf":{"error":"x"},"dxberry":{"update":false},"system":{"count":0}}' > "$DXB_UPDATE_CACHE"
   st_cli --json release
   assert_eq "$(jq -c '.release.update' "$TEST_TMP/out")" '{"graywolf":null,"dxberry":false,"system":0,"checked_at":1700000000}'
   # a corrupt cache is no answer at all
@@ -434,7 +454,7 @@ st_fork_scene() {
   mkdir -p "$TEST_TMP/run/graywolf"
   : > "$TEST_TMP/run/graywolf/history.db"; : > "$TEST_TMP/run/graywolf/history.db-wal"; : > "$TEST_TMP/run/graywolf/history.db-shm"
   printf 'CALLSIGN=W0BTE-10\nLATITUDE=38.9\nLONGITUDE=-94.6\n' > "$DXB_BOOT_DIR/dxberry.txt"
-  echo '{"checked_at":1700000000,"graywolf":{"update":false},"dxberry":{"update":false},"system":{"count":0}}' > "$DXB_STATE_DIR/update-check.json"
+  echo '{"version":2,"checked_at":1700000000,"graywolf":{"update":false},"dxberry":{"update":false},"system":{"count":0}}' > "$DXB_STATE_DIR/update-check.json"
   st_cli --json || _fail "dxberry-status --json failed: $(cat "$TEST_TMP/err")"
 }
 

@@ -1,0 +1,110 @@
+#!/bin/bash
+# dxberry-radio-event enqueue|reconcile: retain boot-scoped hotplug work.
+# Only the root producer writes pending; only the serialized worker claims and
+# acknowledges processing. Acknowledgement is a completed apply, not authority.
+set -uo pipefail
+umask 077
+
+: "${DXB_RUN_DIR:=/run/dxberry}"
+: "${DXB_RADIO_EVENT_RADIO_CMD:=/opt/dxberry/bin/dxberry-radio}"
+: "${DXB_RADIO_EVENT_RETRY_DELAY:=5}"
+queue=$DXB_RUN_DIR/radio-events
+marks=$queue/marks
+
+event_error() { printf 'radio hotplug queue: %s\n' "$*" >&2; return 6; }
+event_dir_ok() { [[ -d $1 && ! -L $1 && $(stat -c '%u:%a' "$1") == "0:$2" ]]; }
+event_identity() { stat -c '%d:%i:%u:%a' "$1"; }
+
+event_prepare() {
+  (( EUID == 0 )) || { event_error 'root is required'; return 6; }
+  if [[ ! -e $DXB_RUN_DIR && ! -L $DXB_RUN_DIR ]]; then mkdir -m 755 "$DXB_RUN_DIR" 2>/dev/null || true; fi
+  [[ -d $DXB_RUN_DIR && ! -L $DXB_RUN_DIR ]] || { event_error 'unsafe runtime directory'; return 6; }
+  case $(stat -c '%u:%a' "$DXB_RUN_DIR") in
+    0:700|0:750|0:755) ;;
+    *) event_error 'unsafe runtime directory ownership or mode'; return 6 ;;
+  esac
+  local d
+  for d in "$queue" "$marks"; do
+    if [[ ! -e $d && ! -L $d ]]; then mkdir -m 700 "$d" 2>/dev/null || true; fi
+    event_dir_ok "$d" 700 || { event_error 'unsafe queue directory'; return 6; }
+  done
+}
+
+event_enqueue() {
+  event_prepare || return 6
+  # No apply/record/worker lock or manager call in the udev producer.
+  mkdir -m 700 "$marks/pending" 2>/dev/null || true
+  event_dir_ok "$marks/pending" 700 || { event_error 'could not retain pending work'; return 6; }
+}
+
+event_reconcile() {
+  event_prepare || return 6
+  local lib=${DXB_LIB:-/opt/dxberry/lib}
+  # The read lease is acquired afresh; no inherited descriptor bypass is used.
+  # shellcheck source=provision/lib/common.sh
+  source "$lib/common.sh" || return 6
+  declare -F dxb_with_update_read_lock >/dev/null || { event_error 'update coordination is unavailable'; return 6; }
+  dxb_with_update_read_lock _event_reconcile_locked
+}
+
+_event_reconcile_locked() {
+  local run_identity queue_identity marks_identity file=$queue/worker.lock entry
+  local processing_identity rc
+  run_identity=$(event_identity "$DXB_RUN_DIR") || return 6
+  queue_identity=$(event_identity "$queue") || return 6
+  marks_identity=$(event_identity "$marks") || return 6
+  if [[ ! -e $file && ! -L $file ]]; then (set -o noclobber; : > "$file") 2>/dev/null || true; fi
+  [[ -f $file && ! -L $file && $(stat -c '%u:%h:%s:%a' "$file") == 0:1:0:600 ]] \
+    || { event_error 'unsafe worker lock'; return 6; }
+  exec 5< "$file" || return 6
+  flock -n 5 || { event_error 'another reconciliation worker is active'; return 6; }
+  [[ $run_identity == "$(event_identity "$DXB_RUN_DIR")" && ! -L $DXB_RUN_DIR \
+    && $queue_identity == "$(event_identity "$queue")" && ! -L $queue \
+    && $marks_identity == "$(event_identity "$marks")" && ! -L $marks \
+    && ! -L $file && $file -ef /proc/self/fd/5 \
+    && $(stat -Lc '%u:%h:%s:%a' /proc/self/fd/5) == 0:1:0:600 ]] \
+    || { event_error 'queue changed while acquiring its worker lock'; return 6; }
+  shopt -s nullglob dotglob
+  for entry in "$marks"/*; do
+    case ${entry##*/} in pending|processing) ;; *) event_error 'unknown retained work'; return 6 ;; esac
+    event_dir_ok "$entry" 700 || { event_error 'unsafe retained work'; return 6; }
+    local children=("$entry"/*)
+    (( ${#children[@]} == 0 )) || { event_error 'retained work is not an empty marker'; return 6; }
+  done
+  if [[ ! -d $marks/processing ]]; then
+    [[ -d $marks/pending ]] || return 0
+    mv -T "$marks/pending" "$marks/processing" || { event_error 'could not claim pending work'; return 6; }
+  fi
+  processing_identity=$(event_identity "$marks/processing") || return 6
+  # The independent worker gate stays in the parent; no child can inherit it.
+  "$DXB_RADIO_EVENT_RADIO_CMD" hotplug 5>&-; rc=$?
+  (( rc == 0 )) || return "$rc"
+  [[ $run_identity == "$(event_identity "$DXB_RUN_DIR")" && ! -L $DXB_RUN_DIR \
+    && $queue_identity == "$(event_identity "$queue")" && ! -L $queue \
+    && $marks_identity == "$(event_identity "$marks")" && ! -L $marks \
+    && $processing_identity == "$(event_identity "$marks/processing")" && ! -L $marks/processing ]] \
+    || { event_error 'claimed work changed; not acknowledged'; return 6; }
+  rmdir "$marks/processing" || { event_error 'could not acknowledge claimed work'; return 6; }
+}
+
+main() {
+  [[ $# == 1 ]] || { echo 'usage: dxberry-radio-event enqueue|reconcile|protocol' >&2; return 2; }
+  case $1 in
+    -h|--help) echo 'usage: dxberry-radio-event enqueue|reconcile|protocol'; return 0 ;;
+    protocol) echo 2 ;;
+    enqueue) event_enqueue ;;
+    reconcile)
+      [[ $DXB_RADIO_EVENT_RETRY_DELAY =~ ^([0-9]|[1-5][0-9]|60)$ ]] || { echo 'invalid retry delay' >&2; return 2; }
+      local rc
+      event_reconcile; rc=$?
+      exec 5>&-
+      if (( rc != 0 )); then
+        echo 'radio hotplug work remains pending; reconciliation will retry' >&2
+        sleep "$DXB_RADIO_EVENT_RETRY_DELAY"
+      fi
+      return "$rc" ;;
+    *) echo 'usage: dxberry-radio-event enqueue|reconcile|protocol' >&2; return 2 ;;
+  esac
+}
+
+main "$@"

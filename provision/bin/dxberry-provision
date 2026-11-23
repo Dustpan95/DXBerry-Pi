@@ -58,6 +58,10 @@ dxb_config_failure() {
 # otherwise the Pi would come back with no address and no way in. Returns non-zero when blocked.
 dxb_first_boot_gate() {
   local blocked=0
+  if ! dxb_net_files_ready; then
+    dxb_step_failed network "not rebooting: saved network files do not match the requested configuration; fix the failed write and re-run sudo dxberry-provision --first-boot"
+    blocked=1
+  fi
   if ! systemctl is-enabled --quiet dxberry-netwatch; then
     dxb_step_failed network "not rebooting: dxberry-netwatch is not enabled, so this Pi would come back with no network. Run 'systemctl enable dxberry-netwatch', then 'sudo dxberry-provision --first-boot'"
     blocked=1
@@ -69,8 +73,43 @@ dxb_first_boot_gate() {
   return $blocked
 }
 
-main() {
-  local reseed=0 check=0 gate_ok=1 gw_ok=0 boot cfg w
+# This lock belongs only to the full provisioning command. Unit conditions,
+# prepare/native hooks and STOP never acquire it: provisioning can wait for
+# those operations. Keep the descriptor in main's subshell until every return.
+_dxb_provision_lock() {
+  local dir=${DXB_RUN_DIR:-/run/dxberry} file lock_dir_identity fresh_dir_identity
+  file=$dir/provision.lock
+  command -v flock > /dev/null 2>&1 || { echo 'flock is required for provisioning' >&2; return 6; }
+  mkdir -p "$dir" 2> /dev/null || { echo 'could not create the provisioning lock directory' >&2; return 6; }
+  [[ -d $dir && ! -L $dir ]] || { echo 'unsafe provisioning lock directory' >&2; return 6; }
+  lock_dir_identity=$(stat -c '%d:%i:%u:%a' "$dir") || return 6
+  case ${lock_dir_identity#*:*:} in 0:700|0:750|0:755) ;; *) echo 'unsafe provisioning lock directory' >&2; return 6 ;; esac
+  if [[ ! -e $file && ! -L $file ]]; then
+    ( set -o noclobber; umask 077; : > "$file" ) 2> /dev/null || true
+  fi
+  [[ -f $file && ! -L $file && $(stat -c '%u:%h:%s:%a' "$file") == 0:1:0:600 ]] \
+    || { echo 'unsafe provisioning lock file' >&2; return 6; }
+  if ! exec {DXB_PROVISION_LOCK_FD}< "$file"; then
+    echo 'could not open the provisioning lock' >&2
+    return 6
+  fi
+  if ! flock -w "${DXB_PROVISION_LOCK_WAIT:-30}" "$DXB_PROVISION_LOCK_FD"; then
+    echo 'another provisioning run is active; retry after it finishes' >&2
+    exec {DXB_PROVISION_LOCK_FD}>&-
+    return 6
+  fi
+  fresh_dir_identity=$(stat -c '%d:%i:%u:%a' "$dir")
+  if [[ $lock_dir_identity != "$fresh_dir_identity" || -L $dir || -L $file || ! $file -ef /proc/self/fd/$DXB_PROVISION_LOCK_FD \
+    || $(stat -Lc '%u:%h:%s:%a' "/proc/self/fd/$DXB_PROVISION_LOCK_FD") != 0:1:0:600 ]]; then
+    echo 'provisioning lock changed while waiting' >&2
+    exec {DXB_PROVISION_LOCK_FD}>&-
+    return 6
+  fi
+}
+
+main() (
+  local reseed=0 check=0 gate_ok=1 gw_ok=0 network_ok=0 boot cfg w
+  local DXB_PROVISION_LOCK_FD
   DXB_MODE=run
   for a in "$@"; do
     case $a in
@@ -107,7 +146,16 @@ main() {
     dxb_info "first-boot provisioning already completed; nothing to do"
     return 0
   fi
+  _dxb_provision_lock || return 6
+  # Another first-boot run can have completed while this one waited for it.
+  if [[ $DXB_MODE == first-boot && -f $DXB_STATE_DIR/provisioned ]]; then
+    dxb_info "first-boot provisioning already completed; nothing to do"
+    return 0
+  fi
   mkdir -p "$DXB_STATE_DIR"; chmod 700 "$DXB_STATE_DIR"
+  # Before any configured system/package/network/radio step. Bootstrap creates
+  # only a missing trusted station parent; damaged state must remain refused.
+  dxb_program_generation_prepare_advance || return 6
   # never touch a log path that is not a regular file (a device node, e.g. a hand-set DXB_LOG_FILE
   # of /dev/null) - chmod 600 on /dev/null as root breaks every other program that opens it
   if [[ ! -e $DXB_LOG_FILE || -f $DXB_LOG_FILE ]]; then : >> "$DXB_LOG_FILE"; chmod 600 "$DXB_LOG_FILE"; fi
@@ -120,6 +168,11 @@ main() {
 
   provision_system
   provision_network
+  if dxb_net_files_ready; then
+    network_ok=1
+  elif [[ $DXB_MODE == run ]]; then
+    dxb_step_failed network "saved network files do not match the requested configuration; automatic netwatch restart skipped"
+  fi
   provision_storage
   command -v jq > /dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y jq > /dev/null 2>&1 || dxb_step_failed system "jq is not installed"
   dxb_gw_install && gw_ok=1
@@ -168,13 +221,13 @@ main() {
     reboot
   elif [[ $DXB_MODE == first-boot ]]; then
     dxb_warn "not rebooting; this session stays up. Fix the network problem in $boot/dxberry-status.txt, then run: sudo dxberry-provision --first-boot"
-  elif (( DXB_NET_CHANGED )); then
+  elif (( DXB_NET_CHANGED && network_ok )); then
     # netwatch adopts an interface that is already up (base spec 8.4), so this restart does not
     # apply a changed address or gateway to it
     dxb_warn "network configuration changed; restarting dxberry-netwatch in 3s. An interface that is already up keeps its old settings until it is cycled or the Pi restarts: run sudo reboot to apply the change."
     systemd-run --quiet --on-active=3 systemctl restart dxberry-netwatch 2> /dev/null || systemctl restart dxberry-netwatch
   fi
   return $rc
-}
+)
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

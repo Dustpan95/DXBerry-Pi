@@ -7,6 +7,10 @@ Before=network-online.target
 [Service]
 Type=notify
 NotifyAccess=all
+# ifupdown owns the supplicant/DHCP helpers it launches. They must survive a watcher
+# restart so the new watcher can adopt the configured interface. The watcher cleans
+# up its own link monitor when it exits.
+KillMode=process
 # puts the previous tree back if a power cut hit between the two renames of an update (/opt/dxberry missing)
 ExecStartPre=-/bin/sh -c 'test -e /opt/dxberry || ! test -x /opt/dxberry.prev/bin/dxberry-netwatch || mv -T /opt/dxberry.prev /opt/dxberry'
 ExecStart=/opt/dxberry/bin/dxberry-netwatch run

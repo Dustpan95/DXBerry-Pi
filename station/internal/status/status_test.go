@@ -142,7 +142,13 @@ func TestStatusCachesBetweenRuns(t *testing.T) {
 	r.clock.Advance(59 * time.Second)
 	never(t, "a run before the idle interval", func() bool { return r.count() != 1 })
 	r.clock.Advance(time.Second)
-	eventually(t, "the run at 60 s", func() bool { return r.count() == 2 })
+	never(t, "a periodic run with no listeners", func() bool { return r.count() != 1 })
+	r.clock.Advance(24 * time.Hour)
+	never(t, "a report after a long idle period", func() bool { return r.count() != 1 })
+	_, stale, status := snap(t, r.st)
+	if !stale || !strings.Contains(string(status), "N0CALL") {
+		t.Fatalf("idle cache must remain available and age honestly: stale=%v status=%s", stale, status)
+	}
 }
 
 func TestStatusKeepsLastAnswerAndGoesStaleWhenARunFails(t *testing.T) {
@@ -154,6 +160,7 @@ func TestStatusKeepsLastAnswerAndGoesStaleWhenARunFails(t *testing.T) {
 	}
 	r.fail.Store(true)
 	r.clock.Advance(60 * time.Second)
+	r.st.Poke()
 	eventually(t, "the failing run", func() bool { return r.count() == 2 })
 	eventually(t, "stale", func() bool { _, s, _ := snap(t, r.st); return s })
 	gen2, _, status := snap(t, r.st)
@@ -184,6 +191,9 @@ func TestChangesState(t *testing.T) {
 		{"dxberry-radio", []string{"claim", "radio1", "graywolf"}, true},
 		{"dxberry-config", []string{"set", "X=1"}, true},
 		{"systemctl", []string{"restart", "gpsd.service"}, true},
+		{"systemctl", []string{"is-active", "graywolf.service"}, false},
+		{"systemctl", []string{"stop", "graywolf.service"}, true},
+		{"systemctl", []string{"reload", "nginx.service"}, true},
 		{"dxberry-app", []string{"switch", "wsjtx"}, true},
 		{"dxberry-radio", []string{"status", "--json"}, false},
 		{"dxberry-config", []string{"get", "--json"}, false},
@@ -195,6 +205,7 @@ func TestChangesState(t *testing.T) {
 		{"dxberry-radio", []string{"scan"}, false},
 		{"dxberry-app", []string{"list"}, false},
 		{"dxberry-status", []string{"--json"}, false},
+		{"dxberry-preset", []string{"--json"}, false},
 		{"journalctl", []string{"-u", "gpsd.service"}, false},
 		{"dxberry-app", nil, false},
 	} {
@@ -358,7 +369,9 @@ func TestEventsRateFollowsListeners(t *testing.T) {
 	r.clock.Advance(30 * time.Second)
 	never(t, "a 30 s run after the listener left", func() bool { return r.count() != 3 })
 	r.clock.Advance(30 * time.Second)
-	eventually(t, "the 60 s run", func() bool { return r.count() == 4 })
+	never(t, "a 60 s run after the listener left", func() bool { return r.count() != 3 })
+	r.clock.Advance(24 * time.Hour)
+	never(t, "an unattended daily run", func() bool { return r.count() != 3 })
 }
 
 func TestEventsSendsPings(t *testing.T) {

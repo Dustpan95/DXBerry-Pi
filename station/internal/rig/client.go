@@ -116,7 +116,8 @@ type Client struct {
 
 	mu        sync.Mutex
 	connected bool
-	epoch     uint64 // bumped on every successful connect
+	epoch     uint64   // bumped on every successful connect
+	endpoint  Endpoint // private identity of that socket, absent when metadata is unavailable
 	callbacks []func(bool)
 	events    []bool
 	wake      chan struct{}
@@ -205,6 +206,15 @@ func (c *Client) Connected() bool {
 	return c.connected
 }
 
+// ConnectionGeneration returns the current connection identity synchronously.
+// Unlike OnState delivery, this cannot lag a reconnect. A generation identifies
+// one TCP connection, not a radio registration or a hardware identity.
+func (c *Client) ConnectionGeneration() (generation uint64, connected bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.epoch, c.connected
+}
+
 // OnState registers fn to be called, on a separate goroutine and in order,
 // each time the connection comes up (true) or goes down (false). It is not
 // called for a state that predates the registration, so register first and
@@ -217,14 +227,22 @@ func (c *Client) OnState(fn func(connected bool)) {
 }
 
 func (c *Client) setState(up bool) {
+	c.setStateEndpoint(up, endpointData{})
+}
+
+func (c *Client) setStateEndpoint(up bool, data endpointData) {
 	c.mu.Lock()
 	if c.connected == up {
 		c.mu.Unlock()
 		return
 	}
 	c.connected = up
+	c.endpoint = Endpoint{}
 	if up {
 		c.epoch++
+		if data.valid() {
+			c.endpoint = Endpoint{client: c, generation: c.epoch, data: data}
+		}
 	}
 	c.events = append(c.events, up)
 	c.mu.Unlock()
@@ -378,7 +396,7 @@ func (c *Client) run() {
 			continue
 		}
 		stopClose := context.AfterFunc(c.ctx, func() { conn.Close() })
-		c.setState(true)
+		c.setStateEndpoint(true, captureEndpoint(conn))
 		why := c.serve(conn, ll)
 		stopClose()
 		conn.Close()

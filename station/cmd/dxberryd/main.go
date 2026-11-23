@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -29,6 +30,7 @@ import (
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/term"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/tlscert"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/vnc"
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/wsjtx"
 	"github.com/Dustpan95/DXBerry-Pi/station/web"
 )
 
@@ -66,16 +68,58 @@ func main() {
 	rigCaps := flag.String("rigcaps", "", "radio capability cache directory (default <state>/rigcaps)")
 	radiosPath := flag.String("radios", "/var/lib/dxberry/radios.json", "radio records file")
 	audioRun := flag.String("audio-run", audio.DefaultRunDir, "directory of the radios' sound server sockets")
+	patNative := patStatusOption(flag.CommandLine)
+	programRun := flag.String("program-run", wsjtx.DefaultProgramRuntime, "private root program-hook runtime directory")
+	programReleaseRun := flag.String("program-release-run", "/run/dxberry", "release coordination directory; must match the updater run directory")
+	wsjtxHook := flag.String("wsjtx-hook", "", "root unit hook: start or stopped")
+	wsjtxRadio := flag.String("wsjtx-radio", "", "radio for the root unit hook")
+	wsjtxInvocation := flag.String("wsjtx-invocation", "", "systemd invocation for the root unit hook")
+	wsjtxInitialize := flag.Bool("wsjtx-initialize", false, "explicitly initialize a new native program inventory; collection stays disabled")
+	wsjtxProtocol := flag.Bool("wsjtx-protocol", false, "print the native program bundle protocol")
+	wsjtxRelease := flag.String("wsjtx-release", "", "root release action: check, status or resume")
+	wsjtxTarget := flag.String("wsjtx-release-target", "", "trusted staged tree for root release preflight")
+	wsjtxReceipt := flag.String("wsjtx-release-receipt", "", "exact paused release receipt for explicit reconciliation")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+	if *wsjtxProtocol {
+		fmt.Println(wsjtx.ProgramBundleProtocol)
+		return
+	}
 	if *showVersion {
 		fmt.Println(version)
+		return
+	}
+	if *wsjtxInitialize || *wsjtxHook != "" {
+		if *wsjtxRelease != "" {
+			fmt.Fprintln(os.Stderr, "ambiguous native program mode")
+			os.Exit(7)
+		}
+		if err := runProgramMode(context.Background(), *state, *programRun, *programReleaseRun, *wsjtxHook, *wsjtxRadio, *wsjtxInvocation, *wsjtxInitialize); err != nil {
+			fmt.Fprintln(os.Stderr, "Native program routing could not be verified; review the station service and retained recovery state.")
+			os.Exit(7)
+		}
+		return
+	}
+	if *wsjtxRelease != "" {
+		value, err := runProgramReleaseMode(context.Background(), *state, *programRun, *wsjtxRelease, *wsjtxTarget, *wsjtxReceipt)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Native collection remains paused or unverified; stop/recover managed sessions and reconcile the retained release state.")
+			os.Exit(7)
+		}
+		if *wsjtxRelease == "status" {
+			_ = json.NewEncoder(os.Stdout).Encode(value)
+		}
 		return
 	}
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	mgr := auth.New(auth.PAM{Service: "dxberry"}, auth.DefaultGroups(), time.Now)
 	runner := cli.New(*bin, nil)
+	if presetState, err := filepath.Abs(*state); err != nil {
+		log.Print("preset definitions unavailable: station state path cannot be resolved")
+	} else if err := runner.SetPresetState(presetState); err != nil {
+		log.Print("preset definitions unavailable: invalid station state path")
+	}
 	st := status.New(func(ctx context.Context) (string, error) {
 		res, err := runner.Run(ctx, cli.Call{Command: "dxberry-status", Args: []string{"--json"}})
 		if err == nil && res.Exit != 0 {
@@ -84,6 +128,10 @@ func main() {
 		return res.Stdout, err
 	}, nil)
 	rw := radios.New(*radiosPath, 0)
+	patStatus, patErr := newPatStatusAPI(*patNative, *radiosPath, rw)
+	if patErr != nil {
+		log.Print("Pat native status is unavailable; check the trusted radio file path.")
+	}
 	st.SetRadios(rw)
 	if *rigCaps == "" {
 		*rigCaps = filepath.Join(*state, "rigcaps")
@@ -152,13 +200,46 @@ func main() {
 		}
 	}
 	ensureCertificate(*tlsDir, runner)
+	programService, programErr := wsjtx.NewProgramService(wsjtx.ProgramServiceConfig{
+		StatePath: filepath.Join(*state, "wsjtx"), Approvals: radioStore, Eligible: programEligibility(*radiosPath, *bin),
+		ResumeLease: func(ctx context.Context) (func(), error) {
+			return wsjtx.AcquireProgramReleaseLease(ctx, filepath.Dir(*bin), *programReleaseRun)
+		},
+	})
+	var programHooks *wsjtx.ProgramHookServer
+	if programErr == nil {
+		defer programService.Close()
+		programHooks, programErr = wsjtx.ListenProgramHooks(*programRun, programService)
+		if programHooks != nil {
+			defer programHooks.Close()
+		}
+	}
+	if programErr != nil {
+		log.Printf("native program hook unavailable; collection starts will require recovery: %v", programErr)
+	}
+	var nativeEvents *wsjtx.ProgramEvents
+	if programHooks != nil {
+		nativeEvents = wsjtx.NewProgramEvents(programService.CollectionState, func(name string) bool {
+			_, ok := rw.Get(name)
+			return ok
+		})
+		st.SetPrograms(nativeEvents)
+	}
 	routes := func(mux *http.ServeMux) {
 		mgr.Register(mux)
 		runner.Register(mux)
 		st.Register(mux, mgr.Alive)
 		radioAPI.Register(mux)
 		radioSettings.Register(mux)
+		// Preview remains unavailable until an effective-target verifier is wired.
+		(&httpapi.PresetPreviewAPI{Auth: mgr}).Register(mux)
 		audioAPI.Register(mux)
+		if patStatus != nil {
+			patStatus.Register(mux)
+		}
+		if programHooks != nil {
+			(&httpapi.WSJTXAPI{Radios: rw, Collection: programService}).Register(mux)
+		}
 		sessionOf := func(r *http.Request) *httpapi.Session {
 			s, _ := mgr.Session(r)
 			return s
@@ -193,6 +274,16 @@ func main() {
 	go rw.Run(statusCtx)
 	go rigs.Run(statusCtx)
 	go programs.Run(statusCtx, 2*time.Second)
+	if nativeEvents != nil {
+		go nativeEvents.Run(statusCtx)
+	}
+	if programHooks != nil {
+		go func() {
+			if err := programHooks.Serve(statusCtx); err != nil {
+				log.Printf("native program hook stopped: %v", err)
+			}
+		}()
+	}
 	radioAPI.OweMarkedCarriers()
 
 	stop := make(chan os.Signal, 1)

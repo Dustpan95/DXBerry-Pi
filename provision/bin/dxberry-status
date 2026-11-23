@@ -2,9 +2,31 @@
 # dxberry-status: the station at a glance - Pi, network, Graywolf, radios, time, versions, services,
 # the callsign and grid, and the programs and logbook.
 #   dxberry-status [--json] [PART...]   PART: pi network graywolf radios time release services station apps
+#   dxberry-status --json --capture [--previous-boot]   Metadata-only, boot-scoped audio diagnostics.
 # Each part is read on its own; one that cannot be read says why and the others still appear.
 # Exit 0 whenever the report was produced, 2 on a usage error. Spec: docs/design/2026-09-29-console.md section 7.
 set -uo pipefail
+
+if [[ ${BASH_SOURCE[0]} == "$0" && ${DXB_STATUS_LOW_PRIORITY:-0} != 1 ]] && command -v nice > /dev/null 2>&1; then
+  # Yield before even loading the reporting libraries. Sourcing this file never
+  # changes the caller, and a relative adjustment never promotes an already nice task.
+  if [[ -r /proc/self/status ]] && command -v taskset > /dev/null 2>&1; then
+    while IFS=: read -r _dxb_status_key _dxb_status_value; do
+      if [[ $_dxb_status_key == Cpus_allowed_list ]]; then
+        _dxb_status_cpu=${_dxb_status_value//[[:space:]]/}
+        _dxb_status_cpu=${_dxb_status_cpu##*,}
+        _dxb_status_cpu=${_dxb_status_cpu##*-}
+        # Restrict only this process to one of its already permitted CPUs.
+        if [[ $_dxb_status_cpu =~ ^[0-9]+$ ]]; then
+          taskset -pc "$_dxb_status_cpu" "$BASHPID" > /dev/null 2>&1 || true
+        fi
+        break
+      fi
+    done < /proc/self/status
+  fi
+  export DXB_STATUS_LOW_PRIORITY=1
+  exec nice -n 10 /bin/bash "$0" "$@"
+fi
 
 DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
 # config, gps and apps: the station part reads the callsign and grid as the programs are told them
@@ -13,13 +35,15 @@ for _m in common config graywolf gps apps status; do
   source "$DXB_LIB/$_m.sh"
 done
 
-usage() { sed -n '2,6p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,7p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 main() {
-  local json=0 parts=() a report
+  local json=0 capture=0 previous=0 parts=() a report
   for a in "$@"; do
     case $a in
       --json) json=1 ;;
+      --capture) capture=1 ;;
+      --previous-boot) previous=1 ;;
       -h|--help) usage; return 0 ;;
       -*) echo "unknown option: $a" >&2; usage >&2; return 2 ;;
       *)
@@ -27,12 +51,24 @@ main() {
         parts+=("$a") ;;
     esac
   done
+  if (( previous && ! capture )) || (( capture && (! json || ${#parts[@]} > 0) )); then
+    echo '--capture requires --json and cannot be combined with report parts; --previous-boot requires --capture' >&2
+    return 2
+  fi
   dxb_require_root
   umask 077
   # the station runs this every 30 seconds; routine reads must never grow provision.log
   export DXB_LOG_FILE=/dev/null
+  if (( capture )); then
+    # shellcheck source=provision/lib/capture-diagnostics.sh
+    source "$DXB_LIB/capture-diagnostics.sh" || return 1
+    if (( previous )); then dxb_status_capture previous; else dxb_status_capture current; fi
+    return $?
+  fi
   report=$(dxb_status_json "${parts[@]}") || { echo "could not build the status report" >&2; return 1; }
   if (( json )); then printf '%s\n' "$report"; else dxb_status_text <<< "$report"; fi
 }
 
-if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; exit $?; fi
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"; exit $?
+fi

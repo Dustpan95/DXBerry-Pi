@@ -512,7 +512,7 @@ test_station_fails_when_nothing_listens_on_443_afterwards() {
 # suffix) and otherwise provision/VERSION; go itself is a stand-in that records its arguments
 test_station_build_stamps_the_given_version() (
   mkdir -p "$TEST_TMP/gobin"
-  printf '#!/bin/bash\necho "$@" > "%s/go-args"\n' "$TEST_TMP" > "$TEST_TMP/gobin/go"; chmod 755 "$TEST_TMP/gobin/go"
+  printf '#!/bin/bash\necho "$@" >> "%s/go-args"\n' "$TEST_TMP" > "$TEST_TMP/gobin/go"; chmod 755 "$TEST_TMP/gobin/go"
   PATH=$TEST_TMP/gobin:$PATH bash "$DXB_ROOT/station/build.sh" "$TEST_TMP/out" 0.5.0-rc1
   assert_contains "$(cat "$TEST_TMP/go-args")" "-X main.version=0.5.0-rc1"
   PATH=$TEST_TMP/gobin:$PATH bash "$DXB_ROOT/station/build.sh" "$TEST_TMP/out"
@@ -523,9 +523,70 @@ test_station_build_stamps_the_given_version() (
 # and the Pi installs libopus0 only: the station build always sets the tag
 test_station_build_leaves_out_libopusfile() (
   mkdir -p "$TEST_TMP/gobin"
-  printf '#!/bin/bash\necho "$@" > "%s/go-args"\n' "$TEST_TMP" > "$TEST_TMP/gobin/go"; chmod 755 "$TEST_TMP/gobin/go"
+  printf '#!/bin/bash\necho "$@" >> "%s/go-args"\n' "$TEST_TMP" > "$TEST_TMP/gobin/go"; chmod 755 "$TEST_TMP/gobin/go"
   PATH=$TEST_TMP/gobin:$PATH bash "$DXB_ROOT/station/build.sh" "$TEST_TMP/out" 0.5.0-rc3
   assert_contains "$(cat "$TEST_TMP/go-args")" "build -tags nolibopusfile "
+)
+
+test_station_builds_the_settings_helper_without_cgo() (
+  mkdir -p "$TEST_TMP/gobin"
+  cat > "$TEST_TMP/gobin/go" <<'SH'
+#!/bin/bash
+printf '%s:%s\n' "$CGO_ENABLED" "$*" >> "$TEST_TMP/go-args"
+SH
+  chmod 755 "$TEST_TMP/gobin/go"
+  PATH=$TEST_TMP/gobin:$PATH bash "$DXB_ROOT/station/build.sh" "$TEST_TMP/out" 0.5.0-rc3
+  assert_contains "$(cat "$TEST_TMP/go-args")" '1:build -tags nolibopusfile'
+  assert_contains "$(cat "$TEST_TMP/go-args")" '0:build -trimpath'
+  assert_contains "$(cat "$TEST_TMP/go-args")" './cmd/dxberry-wsjtx-settings'
+)
+
+test_station_build_stops_before_helper_when_console_build_fails() (
+  mkdir -p "$TEST_TMP/gobin"
+  cat > "$TEST_TMP/gobin/go" <<'SH'
+#!/bin/bash
+[[ $* == *./cmd/dxberryd* ]] && exit 19
+touch "$TEST_TMP/helper-was-built"
+SH
+  chmod 755 "$TEST_TMP/gobin/go"
+  assert_fails env PATH="$TEST_TMP/gobin:$PATH" bash "$DXB_ROOT/station/build.sh" "$TEST_TMP/out" 0.5.0-rc3
+  [[ ! -e $TEST_TMP/helper-was-built ]] || _fail 'helper built after failed console build'
+)
+
+test_station_builds_the_preset_helper_without_cgo() (
+  mkdir -p "$TEST_TMP/gobin"
+  cat > "$TEST_TMP/gobin/go" <<'SH'
+#!/bin/bash
+printf '%s:%s\n' "$CGO_ENABLED" "$*" >> "$TEST_TMP/go-args"
+SH
+  chmod 755 "$TEST_TMP/gobin/go"
+  PATH=$TEST_TMP/gobin:$PATH bash "$DXB_ROOT/station/build.sh" "$TEST_TMP/out" 0.5.0-rc4
+  assert_contains "$(grep './cmd/dxberry-preset' "$TEST_TMP/go-args")" '0:build -trimpath'
+  assert_contains "$(cat "$TEST_TMP/go-args")" "-o $TEST_TMP/dxberry-preset ./cmd/dxberry-preset"
+)
+
+test_station_build_stops_before_preset_when_settings_build_fails() (
+  mkdir -p "$TEST_TMP/gobin"
+  cat > "$TEST_TMP/gobin/go" <<'SH'
+#!/bin/bash
+[[ $* == *./cmd/dxberry-wsjtx-settings* ]] && exit 19
+[[ $* == *./cmd/dxberry-preset* ]] && touch "$TEST_TMP/preset-was-built"
+exit 0
+SH
+  chmod 755 "$TEST_TMP/gobin/go"
+  assert_fails env PATH="$TEST_TMP/gobin:$PATH" bash "$DXB_ROOT/station/build.sh" "$TEST_TMP/out" 0.5.0-rc4
+  [[ ! -e $TEST_TMP/preset-was-built ]] || _fail 'preset built after failed settings helper'
+)
+
+test_station_build_reports_preset_helper_failure() (
+  mkdir -p "$TEST_TMP/gobin"
+  cat > "$TEST_TMP/gobin/go" <<'SH'
+#!/bin/bash
+[[ $* == *./cmd/dxberry-preset* ]] && exit 23
+exit 0
+SH
+  chmod 755 "$TEST_TMP/gobin/go"
+  assert_fails env PATH="$TEST_TMP/gobin:$PATH" bash "$DXB_ROOT/station/build.sh" "$TEST_TMP/out" 0.5.0-rc4
 )
 
 # An update's radio apply runs before this step installs the sound server unit and its packages:

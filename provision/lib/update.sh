@@ -95,7 +95,10 @@ dxb_update_dxberry_info() {
 # dxb_update_system_info: how many Debian packages an upgrade would change (after apt-get update).
 dxb_update_system_info() {
   local sim
-  DEBIAN_FRONTEND=noninteractive "$DXB_APT_GET" update -qq > /dev/null 2>&1 || dxb_warn "apt-get update failed; the package list may be old"
+  if ! DEBIAN_FRONTEND=noninteractive "$DXB_APT_GET" update -qq -o APT::Update::Error-Mode=any > /dev/null 2>&1; then
+    jq -cn '{error:"Package lists could not be refreshed; available updates are unknown"}'
+    return 0
+  fi
   sim=$("$DXB_APT_GET" -s -o Debug::NoLocking=1 upgrade 2> /dev/null) || return 1
   awk '/^Inst /{ print $2 }' <<< "$sim" | jq -Rsc 'split("\n") | map(select(length > 0)) | {count: length, packages: .[:50]}'
 }
@@ -109,8 +112,10 @@ dxb_update_system_info() {
 # writes with an epoch and a Debian revision ("1:3.0.3-1") that the release tag ("3.0.3") never
 # has, so for upstream programs those two are stripped from the installed side before comparing.
 # A Debian program is compared as dpkg reports both sides, unchanged.
+# The caller supplies true only after its system package check succeeds; no
+# argument leaves Debian availability unknown. Upstream checks are independent.
 dxb_update_apps_info() {
-  local rows name label src installed cmp latest out='{}' e
+  local apt_fresh=${1:-false} rows name label src installed cmp latest out='{}' e
   declare -F dxb_apps_rows > /dev/null || { echo '{}'; return 0; }
   rows=$(dxb_apps_rows 2> /dev/null) || { echo '{}'; return 0; }
   while IFS=$'\t' read -r name label src; do
@@ -119,7 +124,10 @@ dxb_update_apps_info() {
     [[ -n $installed ]] || continue
     cmp=$installed
     if [[ $src != apt:* ]]; then cmp=${cmp#*:}; [[ $installed == [0-9]*:* ]] || cmp=$installed; cmp=${cmp%-*}; fi
-    if latest=$(dxb_apps_latest "$name" 2> /dev/null) && latest=$(jq -r '.version // empty' <<< "$latest" 2> /dev/null) && [[ -n $latest ]]; then
+    if [[ $src == apt:* && $apt_fresh != true ]]; then
+      e=$(jq -cn --arg i "$installed" --arg m "$label's newest version is unknown because the system package check failed" \
+        '{installed:$i,source:"debian",error:$m}')
+    elif latest=$(dxb_apps_latest "$name" 2> /dev/null) && latest=$(jq -r '.version // empty' <<< "$latest" 2> /dev/null) && [[ -n $latest ]]; then
       e=$(jq -cn --arg i "$installed" --arg l "$latest" --arg c "$cmp" --arg s "$([[ $src == apt:* ]] && echo debian || echo upstream)" \
         '{installed: $i, latest: $l, source: $s, update: ($l != "" and $l != $c)}')
     else
@@ -159,10 +167,14 @@ _dxb_update_job_ended_since() {
 # cache when it ends, and what this check read may be from before it. rollback and
 # reboot_required are always worked out now.
 dxb_update_check() {
-  local now age='' ttl=$DXB_UPDATE_TTL_S j gw dx sy ap
+  local now age='' ttl=$DXB_UPDATE_TTL_S j gw dx sy ap cached_at apt_fresh=false
   now=$(date +%s)
-  if [[ ${1:-} != refresh && -f $DXB_UPDATE_CACHE ]]; then
-    age=$(( now - $(jq -r '.checked_at // 0' "$DXB_UPDATE_CACHE" 2> /dev/null || echo 0) ))
+  # Version 2 requires a successful strict package-list refresh before claiming
+  # package availability. Older answers cannot carry that evidence forward.
+  if [[ ${1:-} != refresh && -f $DXB_UPDATE_CACHE ]] && cached_at=$(jq -ser '
+    select(length == 1) | .[0] | select(type == "object" and .version == 2)
+    | .checked_at | select(type == "number") | tostring | select(test("^[0-9]{1,16}$"))' "$DXB_UPDATE_CACHE" 2>/dev/null); then
+    age=$(( now - cached_at ))
     if jq -e '[.graywolf.error, .dxberry.error, .system.error] + [(.apps // {})[] | .error] | any(. != null)' "$DXB_UPDATE_CACHE" > /dev/null 2>&1; then
       ttl=$DXB_UPDATE_ERROR_TTL_S
     fi
@@ -176,9 +188,10 @@ dxb_update_check() {
     dx=$(dxb_update_dxberry_info) || dx=$(jq -cn --argjson p "$([[ $(dxb_update_prereleases) == on ]] && echo true || echo false)" \
       '{error: "the DXBerry release list could not be read", include_prereleases: $p}')
     sy=$(dxb_update_system_info) || sy='{"error":"apt-get could not simulate an upgrade"}'
-    ap=$(dxb_update_apps_info) || ap='{}'
+    if jq -e '.error == null and (.count | type == "number")' <<< "$sy" >/dev/null 2>&1; then apt_fresh=true; fi
+    ap=$(dxb_update_apps_info "$apt_fresh") || ap='{}'
     j=$(jq -cn --argjson t "$now" --argjson g "$gw" --argjson d "$dx" --argjson s "$sy" --argjson a "$ap" \
-      '{checked_at: $t, graywolf: $g, dxberry: $d, system: $s, apps: $a}')
+      '{version:2, checked_at: $t, graywolf: $g, dxberry: $d, system: $s, apps: $a}')
     if ! dxb_update_job_running && ! _dxb_update_job_ended_since "$now"; then
       mkdir -p "$(dirname "$DXB_UPDATE_CACHE")" 2> /dev/null
       dxb_write_if_changed "$DXB_UPDATE_CACHE" "$j" 644 > /dev/null 2>&1
@@ -255,6 +268,7 @@ dxb_update_apply_graywolf() {
     echo "Graywolf is pinned to ${DXB_CFG[GRAYWOLF_VERSION]} in dxberry.txt; nothing to update"
     return 0
   fi
+  dxb_program_generation_advance || return 6
   before=$(dxb_gw_installed_version)
   # whether Graywolf ran BEFORE the install decides whether it runs after: the package stops the
   # service while it upgrades and leaves it stopped (a "restart if running" afterwards never brought
@@ -304,8 +318,82 @@ _dxb_update_restart_sessions() {
   return 0
 }
 
-dxb_update_apply_dxberry() {
+# The file descriptor remains held through the tree swap/setup and closes with
+# the apply subshell. Reconciliation takes shared locks on this file and the
+# legacy job-start lock; it cannot resume acquisition during an update.
+_dxb_update_program_release_guard() {
+  local target=$1 lock=$DXB_RUN_DIR/native-release.lock
+  mkdir -p "$DXB_RUN_DIR" || return 6
+  command -v flock > /dev/null 2>&1 || { echo "flock is required for release coordination" >&2; return 6; }
+  ( umask 077; : >> "$lock" ) || return 6
+  exec 5>> "$lock" || return 6
+  command flock -w 5 5 || { echo "native program release reconciliation is busy; retry later" >&2; return 6; }
+  # A legacy source with no inventory cannot own a native route. New native
+  # publishers declare the bundle protocol; missing retained state never repairs
+  # itself, and a configured source must use its root preflight command.
+  if [[ ! -f $DXB_OPT/share/wsjtx-native-protocol && ! -e $DXB_STATE_DIR/station/wsjtx && ! -e $DXB_STATE_DIR/station/wsjtx-release ]] \
+    && ! grep -qs '"wsjtx_routing_approval"' "$DXB_STATE_DIR/station/radios/"*.json; then return 0; fi
+  if [[ ! -x $DXB_OPT/bin/dxberryd ]] || ! "$DXB_OPT/bin/dxberryd" -state "$DXB_STATE_DIR/station" \
+    -program-run "${DXB_PROGRAM_RUN:-$DXB_RUN_DIR/station-programs}" -program-release-run "$DXB_RUN_DIR" -wsjtx-release check -wsjtx-release-target "$target" 5>&-; then
+    echo "the release tree was not changed; native routes must be restored and retained release state reconciled before retrying" >&2
+    return 6
+  fi
+}
+
+# A tree swap cannot retire the experimental queue yet. Require positive
+# absence of its known producers, retained work, fragments and manager units.
+# This is a refusal guard, not a quiescence or free-radio verifier.
+_dxb_update_radio_event_guard() {
+  local unit_dir=${DXB_SYSTEMD_DIR:-/etc/systemd/system} queue=$DXB_RUN_DIR/radio-events
+  local rules=${DXB_UPDATE_RADIO_RULES_FILE:-${DXB_UDEV_RULES_FILE:-/etc/udev/rules.d/70-dxberry-radio.rules}}
+  local unit path out line loads active jobs sc=${DXB_SYSTEMCTL:-systemctl} grc
+  if [[ ${DXB_RADIO_EVENT_QUEUE:-off} == on ]]; then
+    echo 'radio event queue opt-in must be retired before changing the release tree' >&2; return 6
+  fi
+  for unit in dxberry-radio-reconcile.service dxberry-radio-reconcile.path dxberry-radio-reconcile.timer; do
+    for path in "$unit_dir/$unit" "$unit_dir/$unit.d"; do
+      if [[ -e $path || -L $path ]]; then
+        echo 'radio event queue configuration must be retired before changing the release tree' >&2; return 6
+      fi
+    done
+  done
+  if [[ -e $rules || -L $rules ]]; then
+    [[ -f $rules && ! -L $rules ]] || { echo 'radio producer configuration is unavailable' >&2; return 6; }
+    case $(stat -c '%u:%h:%a' "$rules") in 0:1:600|0:1:640|0:1:644) ;; *) echo 'unsafe radio producer configuration' >&2; return 6 ;; esac
+    grep -q 'dxberry-radio-event' "$rules"; grc=$?
+    if (( grc != 1 )); then echo 'radio event producer needs retirement or its configuration could not be read' >&2; return 6; fi
+  fi
+  if [[ -e $queue || -L $queue ]]; then
+    [[ -d $queue && ! -L $queue && $(stat -c '%u:%a' "$queue") == 0:700 ]] \
+      || { echo 'radio event queue state is unavailable' >&2; return 6; }
+    if ! (
+      shopt -s nullglob dotglob
+      for path in "$queue"/*; do
+        [[ ${path##*/} == marks && -d $path && ! -L $path && $(stat -c '%u:%a' "$path") == 0:700 ]] || exit 1
+        local children=("$path"/*)
+        (( ${#children[@]} == 0 )) || exit 1
+      done
+    ); then echo 'retained radio event work or consumer history needs retirement before changing the release tree' >&2; return 6; fi
+  fi
+  for unit in dxberry-radio-reconcile.service dxberry-radio-reconcile.path dxberry-radio-reconcile.timer; do
+    out=$("$sc" show --no-pager --property=LoadState --property=ActiveState --property=Job -- "$unit" 2>/dev/null) \
+      || { echo 'radio event manager state is unavailable; release tree unchanged' >&2; return 6; }
+    loads=0; active=0; jobs=0
+    while IFS= read -r line; do
+      case $line in
+        LoadState=not-found) loads=$((loads+1)) ;;
+        ActiveState=inactive) active=$((active+1)) ;;
+        Job=) jobs=$((jobs+1)) ;;
+        *) echo 'radio event unit is loaded or its manager state is unknown; retire it before changing the release tree' >&2; return 6 ;;
+      esac
+    done <<< "$out"
+    (( loads == 1 && active == 1 && jobs == 1 )) || { echo 'radio event manager reply is incomplete or ambiguous' >&2; return 6; }
+  done
+}
+
+dxb_update_apply_dxberry() (
   local info url sha_url name latest dl want new=$DXB_OPT.new prev=$DXB_OPT.prev old=$DXB_OPT.old had_old=0
+  _dxb_update_radio_event_guard || return 6
   info=$(dxb_update_dxberry_info) || { echo "the DXBerry release list could not be read; nothing changed" >&2; return 6; }
   if [[ $(jq -r '.update' <<< "$info") != true ]]; then echo "DXBerry $(jq -r '.installed' <<< "$info") is the newest; nothing to update"; return 0; fi
   url=$(jq -r '.url' <<< "$info"); sha_url=$(jq -r '.sha_url' <<< "$info"); name=$(jq -r '.name' <<< "$info"); latest=$(jq -r '.latest' <<< "$info")
@@ -332,6 +420,9 @@ dxb_update_apply_dxberry() {
   fi
   rm -rf "$dl"
   chown -R 0:0 "$new" 2> /dev/null || true
+  _dxb_update_radio_event_guard || { rm -rf "$new"; return 6; }
+  dxb_program_generation_advance || { rm -rf "$new"; return 6; }
+  _dxb_update_program_release_guard "$new" || { rm -rf "$new"; return 6; }
   # the new tree's files reach the disk before a rename can make it the live one: otherwise a power
   # cut could keep the renames but lose the files' contents (ext4 commits them separately)
   sync
@@ -384,7 +475,7 @@ dxb_update_apply_dxberry() {
   dxb_update_run_provision || { echo "the setup run reported failed steps" >&2; return 8; }
   _dxb_update_restart_sessions
   return 0
-}
+)
 
 # dxb_update_station_teardown: a tree that predates the station app (no bin/dxberryd) has no web
 # page of its own to put on 443 and 80, and the station would keep them: stop and remove the
@@ -407,12 +498,16 @@ dxb_update_station_teardown() {
   return 0
 }
 
-dxb_update_apply_rollback() {
+dxb_update_apply_rollback() (
   local prev=$DXB_OPT.prev next=$DXB_OPT.next had_audio=0 audio_gone=0 prc=0
   if [[ ! -x $prev/bin/dxberry-provision || ! -f $prev/lib/common.sh || ! -f $prev/VERSION ]]; then
     echo "there is no earlier DXBerry to go back to" >&2
     return 6
   fi
+  _dxb_update_radio_event_guard || return 6
+  dxb_program_generation_advance || return 6
+  _dxb_update_program_release_guard "$prev" || return 6
+  _dxb_update_radio_event_guard || return 6
   [[ -e $DXB_OPT/bin/dxberry-audio ]] && had_audio=1
   rm -rf "$next"
   sync
@@ -454,20 +549,25 @@ dxb_update_apply_rollback() {
   (( audio_gone )) && _dxb_update_restart_sessions
   (( prc )) && { echo "the setup run reported failed steps" >&2; return 8; }
   return 0
-}
+)
 
 # dxb_update_apply_system: dpkg --configure -a (heals an interrupted install) then apt-get update
 # and upgrade, never asking (keeps changed config files) and waiting out a concurrent apt/dpkg
-# lock instead of failing at once. 6 when nothing changed yet (configure or update failed), 8 when
-# the upgrade itself failed partway through. A kernel or firmware package is used only after a
+# lock instead of failing at once. 6 when preparation fails before upgrade (configure, refresh
+# or simulation), 8 when the upgrade itself failed partway through. Repairing an interrupted
+# dpkg configuration can itself change state. A kernel or firmware package is used only after a
 # restart, so once one is upgraded the restart flag is written (as the provisioner writes it).
 dxb_update_apply_system() {
-  local pkgs p restart=0
+  local pkgs sim p restart=0
+  dxb_program_generation_advance || return 6
   DEBIAN_FRONTEND=noninteractive "$DXB_DPKG_CMD" --configure -a --force-confdef --force-confold \
     || { echo "dpkg --configure -a failed" >&2; return 6; }
-  DEBIAN_FRONTEND=noninteractive "$DXB_APT_GET" update -o DPkg::Lock::Timeout=120 || { echo "apt-get update failed" >&2; return 6; }
+  DEBIAN_FRONTEND=noninteractive "$DXB_APT_GET" update -o APT::Update::Error-Mode=any -o DPkg::Lock::Timeout=120 \
+    || { echo "apt-get update failed" >&2; return 6; }
   # what the upgrade will change, read as dxb_update_system_info reads it
-  pkgs=$("$DXB_APT_GET" -s -o Debug::NoLocking=1 upgrade 2> /dev/null | awk '/^Inst /{ print $2 }')
+  sim=$("$DXB_APT_GET" -s -o Debug::NoLocking=1 upgrade 2> /dev/null) \
+    || { echo "apt-get could not simulate an upgrade" >&2; return 6; }
+  pkgs=$(awk '/^Inst /{ print $2 }' <<< "$sim")
   DEBIAN_FRONTEND=noninteractive "$DXB_APT_GET" -y --no-install-recommends \
     -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade -o DPkg::Lock::Timeout=120 \
     || { echo "apt-get upgrade failed" >&2; return 8; }
@@ -559,6 +659,7 @@ dxb_update_apply_app() {
   row=$(dxb_apps_row "$name") || { echo "there is no program called $name" >&2; return 6; }
   label=$(jq -r .label <<< "$row")
   dxb_apps_installed "$name" || { echo "$label is not installed; nothing to update" >&2; return 6; }
+  dxb_program_generation_advance || return 6
   mapfile -t units < <(_dxb_update_app_sessions "$name")
   if (( ${#units[@]} )); then
     echo "stopping $label"
@@ -596,37 +697,68 @@ dxb_update_job_running() { local u; u=$(dxb_update_job_unit); [[ -n $u ]] && sys
 : "${DXB_CONFIG_LOCK_WAIT:=30}"
 
 # dxb_update_lock: the update lock (update.lock, fd 6), held until the command exits: one update,
-# install or removal is started at a time. 0 ok (also when there is no flock), 5 busy.
+# install or removal is started at a time. 0 locked, 5 busy or lock unavailable.
 dxb_update_lock() {
   local f=$DXB_RUN_DIR/update.lock
-  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
-  exec 6> "$f" || return 0
-  command -v flock > /dev/null 2>&1 || return 0
-  flock -w "$DXB_UPDATE_LOCK_WAIT" 6 || { echo "another update command is running; try again" >&2; return 5; }
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null || { echo "could not create the update lock directory" >&2; return 5; }
+  command -v flock > /dev/null 2>&1 || { echo "flock is not installed; cannot lock updates" >&2; return 5; }
+  exec 6> "$f" || { echo "could not open the update lock" >&2; return 5; }
+  flock -w "$DXB_UPDATE_LOCK_WAIT" 6 || { echo "another update command is running; try again" >&2; exec 6>&-; return 5; }
 }
 
 # dxb_update_lock_settings: dxberry-config's own lock (its lock_config: the same file, fd 7), taken
 # after the update lock, so an update never starts while a settings change is being started, kept
 # or undone. dxberry-config never takes the update lock, so the two commands can never wait on
 # each other; and it holds its lock only while it starts a job or keeps / undoes a network change,
-# never for a whole settings job. 0 ok, 5 busy.
+# never for a whole settings job. 0 locked, 5 busy or lock unavailable.
 dxb_update_lock_settings() {
   local f=$DXB_RUN_DIR/config.lock
-  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
-  exec 7> "$f" || return 0
-  command -v flock > /dev/null 2>&1 || return 0
-  flock -w "$DXB_CONFIG_LOCK_WAIT" 7 || { echo "a settings change is in progress; try again once it has started" >&2; return 5; }
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null || { echo "could not create the settings lock directory" >&2; return 5; }
+  command -v flock > /dev/null 2>&1 || { echo "flock is not installed; cannot lock settings" >&2; return 5; }
+  exec 7> "$f" || { echo "could not open the settings lock" >&2; return 5; }
+  flock -w "$DXB_CONFIG_LOCK_WAIT" 7 || { echo "a settings change is in progress; try again once it has started" >&2; exec 7>&-; return 5; }
 }
 
 # dxb_update_job_start KIND [NAME]: start the job "dxberry-update apply KIND [NAME]" and record it
-# in the job file ({unit, kind, name (null without one), started}); the unit's name is left in
+# in a version-2 job file (request ID, unit, kind, name and started); the unit's name is left in
 # DXB_UPDATE_JOB_UNIT. The caller holds dxb_update_lock; this takes the settings lock and refuses
 # while an update or settings job runs or a network change waits to be kept or undone. A dxberry
 # or rollback job runs from a copy of the command, because it replaces $DXB_OPT. 0 started, 5
 # busy, 6 not started.
 DXB_UPDATE_JOB_UNIT=''
+
+_dxb_update_new_run_id() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
+
+# Atomic process-visible publication with exact readback; no caller may infer
+# success from a partially written record. These documents grant no authority.
+_dxb_update_write_record() {
+  local file=$1 value=$2
+  mkdir -p "${file%/*}" || return 6
+  dxb_write_if_changed "$file" "$value" 600 || true
+  [[ -f $file && ! -L $file && $(< "$file") == "$value" ]] || return 6
+}
+
+# A completion result must belong to the captured request and the execution
+# gate must be free. Missing/legacy/corrupt evidence produces no completion.
+_dxb_update_result_for_job() (
+  local job=$1 id unit fd lock=$DXB_RUN_DIR/update-apply.lock result
+  id=$(jq -er 'select(.version == 2) | .run_id | select(type == "string" and test("^[0-9a-f]{32}$"))' <<< "$job" 2>/dev/null) || { echo null; return; }
+  unit=$(jq -r .unit <<< "$job")
+  [[ $id != 00000000000000000000000000000000 && $unit == *-"$id" ]] || { echo null; return; }
+  [[ -f $lock && ! -L $lock && $(stat -c '%u:%h:%s:%a' "$lock" 2>/dev/null) == 0:1:0:600 ]] || { echo null; return; }
+  if ! exec {fd}< "$lock"; then echo null; return; fi
+  if ! flock -s -n "$fd" 2>/dev/null; then echo null; return; fi
+  [[ $lock -ef /proc/self/fd/$fd && ! -L $lock && $(stat -Lc '%u:%h:%s:%a' "/proc/self/fd/$fd" 2>/dev/null) == 0:1:0:600 ]] || { echo null; return; }
+  result=$(jq -c --arg id "$id" --arg unit "$unit" '
+    if type == "object" and .version == 2 and .run_id == $id and .unit == $unit
+      and (.exit | type == "number" and . == floor and . >= 0 and . <= 255)
+      and (.finished | type == "number" and . == floor and . >= 0)
+    then . else null end' "$DXB_UPDATE_RESULT" 2>/dev/null) || result=null
+  printf '%s\n' "${result:-null}"
+)
+
 dxb_update_job_start() {
-  local kind=$1 name=${2:-} unit
+  local kind=$1 name=${2:-} unit run_id previous_id record
   local -a cmd=("$DXB_UPDATE_CMD" apply "$kind")
   [[ -z $name ]] || cmd+=("$name")
   DXB_UPDATE_JOB_UNIT=''
@@ -634,6 +766,11 @@ dxb_update_job_start() {
   if dxb_update_job_running; then echo "an update is still running; wait for it to finish (sudo dxberry-update job)" >&2; return 5; fi
   if dxb_settings_job_running; then echo "a settings change is still being applied; wait for it to finish (sudo dxberry-config job)" >&2; return 5; fi
   if dxb_netsafe_pending; then echo "the last network change waits to be kept or undone first (sudo dxberry-config confirm, or revert)" >&2; return 5; fi
+  previous_id=$(jq -r '.run_id // empty' "$DXB_UPDATE_JOB_FILE" 2>/dev/null) || previous_id=''
+  if ! run_id=$(_dxb_update_new_run_id) || [[ ! $run_id =~ ^[0-9a-f]{32}$ || $run_id == 00000000000000000000000000000000 || $run_id == "$previous_id" ]]; then
+    echo 'could not identify the update request; nothing started' >&2
+    return 6
+  fi
   # a copy left by an earlier job is dropped whatever this job's kind (no job is running now)
   rm -rf "$DXB_UPDATE_WORK/run"
   if [[ $kind == dxberry || $kind == rollback ]]; then
@@ -642,19 +779,20 @@ dxb_update_job_start() {
     fi
     cmd=(env "DXB_LIB=$DXB_UPDATE_WORK/run/lib" "$DXB_UPDATE_WORK/run/bin/dxberry-update" apply "$kind")
   fi
-  unit="dxberry-job-update-$kind${name:+-$name}-$(date +%s)"
+  unit="dxberry-job-update-$kind${name:+-$name}-$run_id"
+  record=$(jq -cn --arg u "$unit" --arg id "$run_id" --arg k "$kind" --arg n "$name" --argjson t "$(date +%s)" \
+    '{version:2,run_id:$id,unit:$u,kind:$k,name:(if $n == "" then null else $n end),started:$t}') || return 6
+  _dxb_update_write_record "$DXB_UPDATE_JOB_FILE" "$record" || { echo 'could not publish the update request; nothing started' >&2; return 6; }
   # the last job's result is moved aside, not deleted: the new job must never be shown with the old
   # exit, but a start that fails puts it back (the page still shows what happened last)
   rm -f "$DXB_UPDATE_RESULT.last"
   if [[ -e $DXB_UPDATE_RESULT ]]; then mv -f "$DXB_UPDATE_RESULT" "$DXB_UPDATE_RESULT.last"; fi
-  if ! "$DXB_SYSTEMD_RUN" --quiet --collect --unit="$unit" --description="DXBerry update ($kind${name:+ $name})" "${cmd[@]}" > /dev/null 2>&1; then
+  if ! "$DXB_SYSTEMD_RUN" --quiet --collect --setenv="DXB_UPDATE_RUN_ID=$run_id" --setenv="DXB_UPDATE_RUN_UNIT=$unit" \
+    --unit="$unit" --description="DXBerry update ($kind${name:+ $name})" "${cmd[@]}" > /dev/null 2>&1; then
     if [[ -e $DXB_UPDATE_RESULT.last ]]; then mv -f "$DXB_UPDATE_RESULT.last" "$DXB_UPDATE_RESULT"; fi
     echo "could not start the update job" >&2; return 6
   fi
   rm -f "$DXB_UPDATE_RESULT.last"
-  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
-  jq -cn --arg u "$unit" --arg k "$kind" --arg n "$name" --argjson t "$(date +%s)" \
-    '{unit: $u, kind: $k, name: (if $n == "" then null else $n end), started: $t}' > "$DXB_UPDATE_JOB_FILE"
   # shellcheck disable=SC2034  # read by the commands that start jobs (dxberry-update, dxberry-app)
   DXB_UPDATE_JOB_UNIT=$unit
 }

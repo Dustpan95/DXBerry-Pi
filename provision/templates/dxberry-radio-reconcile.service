@@ -1,0 +1,13 @@
+[Unit]
+Description=DXBerry-Pi retained radio hotplug reconciliation
+After=dxberry-radio-hotplug.service graywolf.service
+# Failed attempts retain their marker and wait five seconds before exiting.
+# The path unit rechecks pending work when this unit finishes.
+StartLimitIntervalSec=60
+StartLimitBurst=6
+
+[Service]
+Type=oneshot
+TimeoutStartSec=600
+KillMode=control-group
+ExecStart=/opt/dxberry/bin/dxberry-radio-event reconcile

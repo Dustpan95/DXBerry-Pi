@@ -27,17 +27,37 @@ jobs:
         run: cd station && go test -race ./...
       - name: Build dxberryd
         run: bash station/build.sh out/dxberryd "${GITHUB_REF_NAME#v}"
+      - name: Cross-user WSJT-X settings bridge
+        run: tests/integration/test-wsjtx-settings-bridge.sh
+      - name: Prepare preset HTTP test images
+        run: docker pull golang:1.24.4-bookworm && docker pull debian:trixie-slim
+      - name: Prepare program generation runtime
+        run: docker build -t dxberry-program-state-runtime:fixture -f tests/integration/Dockerfile tests/integration
+      - name: Program generation helper process boundary
+        run: DXB_PROGRAMSTATE_GOPATH="$(go env GOPATH)" tests/integration/test-program-state-cli.sh station/out/dxberry-program-state "$RUNNER_TEMP/program-state-cli"
+      - name: Preset configuration HTTP and actual helper
+        run: DXB_PRESET_GOPATH="$(go env GOPATH)" tests/integration/test-preset-http.sh station/out/dxberry-preset "$RUNNER_TEMP/preset-http"
+      - name: Preset preview with root-owned isolated fixtures
+        run: DXB_PRESET_GOPATH="$(go env GOPATH)" tests/integration/test-preset-preview.sh "$RUNNER_TEMP/preset-preview"
       - name: Show the binary
         # the Pi installs libopus0 only: a binary that needs libopusfile would not start there
         run: |
           file station/out/dxberryd
+          file station/out/dxberry-wsjtx-settings
+          file station/out/dxberry-preset
+          file station/out/dxberry-program-state
+          test "$(station/out/dxberryd -wsjtx-protocol)" = "$(cat provision/share/wsjtx-native-protocol)"
           libs=$(ldd station/out/dxberryd)
           echo "$libs"
           ! grep -q libopusfile <<< "$libs"
       - uses: actions/upload-artifact@v4
         with:
           name: dxberryd-arm64
-          path: station/out/dxberryd
+          path: |
+            station/out/dxberryd
+            station/out/dxberry-wsjtx-settings
+            station/out/dxberry-preset
+            station/out/dxberry-program-state
           if-no-files-found: error
   build:
     needs: binary
@@ -53,6 +73,9 @@ jobs:
       - name: Place the station binary
         run: |
           install -m 755 dl/dxberryd provision/bin/dxberryd
+          install -m 755 dl/dxberry-wsjtx-settings provision/bin/dxberry-wsjtx-settings
+          install -m 755 dl/dxberry-preset provision/bin/dxberry-preset
+          install -m 755 dl/dxberry-program-state provision/bin/dxberry-program-state
           file provision/bin/dxberryd
       - name: No real station config in the tree
         run: '! git ls-files | grep -qxE "boot/dxberry\.txt|boot/dietpi-wifi\.txt"'

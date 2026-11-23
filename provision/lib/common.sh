@@ -29,6 +29,24 @@ dxb_log() {
 dxb_info() { dxb_log INFO "$@"; }
 dxb_warn() { dxb_log WARN "$@"; }
 dxb_error() { dxb_log ERROR "$@"; }
+
+# Successful advance invalidates older evidence even if later work fails. Never
+# restore the old generation. Only trusted operator/test configuration selects
+# the helper; request JSON cannot select a command or state directory.
+_dxb_program_generation_call() {
+  local reply='' helper=${DXB_PROGRAM_STATE_CMD:-/opt/dxberry/bin/dxberry-program-state}
+  if ! reply=$("$helper" --state "$DXB_STATE_DIR/station" "$1" 2> /dev/null) \
+    || [[ $reply != '{"ok":true,"protocol":1}' ]]; then
+    dxb_error "ownership tracking is unavailable; check program and radio status"
+    return 6
+  fi
+}
+
+dxb_program_generation_advance() { _dxb_program_generation_call advance; }
+# Provisioning alone explicitly prepares the parent before advancing. Normal
+# writers/activation still refuse a missing parent and never repair state.
+dxb_program_generation_prepare_advance() { _dxb_program_generation_call prepare-advance; }
+
 dxb_step_failed() { DXB_FAILED_STEPS+=("$1: $2"); dxb_error "$1: $2"; }
 dxb_status_add() { DXB_STATUS_LINES+=("$1"); }
 
@@ -145,3 +163,81 @@ dxb_write_if_changed() {
   mv -f "$tmp" "$dest"
   return 0
 }
+
+# Fixed internal callbacks only. A fresh shared lease excludes the public update
+# worker. Inherit it into changing children; an inheriting survivor keeps updates
+# out after its parent exits. This is not complete manager/descendant authority.
+dxb_with_update_read_lock() {
+  local dir=${DXB_RUN_DIR:-/run/dxberry} file identity fresh _dxb_update_read_fd='' rc
+  file=$dir/update-apply.lock
+  (( EUID == 0 )) || { echo 'root is required for update coordination' >&2; return 6; }
+  command -v flock >/dev/null 2>&1 || { echo 'flock is required for update coordination' >&2; return 6; }
+  mkdir -p "$dir" 2>/dev/null || return 6
+  [[ -d $dir && ! -L $dir ]] || return 6
+  identity=$(stat -c '%d:%i:%u:%a' "$dir") || return 6
+  case ${identity#*:*:} in 0:700|0:750|0:755) ;; *) echo 'unsafe update coordination directory' >&2; return 6 ;; esac
+  if [[ ! -e $file && ! -L $file ]]; then (set -o noclobber; umask 077; : > "$file") 2>/dev/null || true; fi
+  [[ -f $file && ! -L $file && $(stat -c '%u:%h:%s:%a' "$file") == 0:1:0:600 ]] \
+    || { echo 'unsafe update coordination lock' >&2; return 6; }
+  exec {_dxb_update_read_fd}< "$file" || return 6
+  if ! command flock -s -n "$_dxb_update_read_fd"; then
+    exec {_dxb_update_read_fd}>&-
+    echo 'an update is active; retry after it finishes' >&2
+    return 6
+  fi
+  fresh=$(stat -c '%d:%i:%u:%a' "$dir")
+  if [[ $identity != "$fresh" || -L $dir || -L $file || ! $file -ef /proc/self/fd/$_dxb_update_read_fd \
+    || $(stat -Lc '%u:%h:%s:%a' "/proc/self/fd/$_dxb_update_read_fd") != 0:1:0:600 ]]; then
+    exec {_dxb_update_read_fd}>&-
+    echo 'update coordination changed while acquiring its lease' >&2
+    return 6
+  fi
+  "$@"; rc=$?
+  if [[ $identity != "$(stat -c '%d:%i:%u:%a' "$dir")" || -L $dir || -L $file \
+    || ! $file -ef /proc/self/fd/$_dxb_update_read_fd \
+    || $(stat -Lc '%u:%h:%s:%a' "/proc/self/fd/$_dxb_update_read_fd") != 0:1:0:600 ]]; then
+    echo 'update coordination changed during work; effects are retained' >&2
+    rc=6
+  fi
+  exec {_dxb_update_read_fd}>&-
+  return "$rc"
+}
+
+# Called only inside the publication read lease. This checks a bounded protocol
+# response and observed file continuity, not complete installed-bundle authority.
+dxb_radio_event_protocol_ready() (
+  local helper=${DXB_RADIO_EVENT_PROTOCOL_CMD:-/opt/dxberry/bin/dxberry-radio-event}
+  local parent helper_identity parent_identity helper_hash helper_size probe_root probe_run=${DXB_RUN_DIR:-/run/dxberry}
+  (( EUID == 0 )) || return 6
+  parent=${helper%/*}
+  [[ $helper == /* && -f $helper && ! -L $helper && -x $helper && -d $parent && ! -L $parent ]] \
+    || { echo 'compatible radio event helper is unavailable' >&2; return 6; }
+  parent_identity=$(stat -c '%d:%i:%u:%a' "$parent") || return 6
+  case ${parent_identity#*:*:} in 0:700|0:750|0:755) ;; *) echo 'unsafe radio event helper directory' >&2; return 6 ;; esac
+  [[ $(stat -c '%u:%h:%a' "$helper") == 0:1:755 ]] \
+    || { echo 'unsafe radio event helper' >&2; return 6; }
+  helper_size=$(stat -c '%s' "$helper") || return 6
+  if [[ ! $helper_size =~ ^[0-9]+$ ]] || (( helper_size <= 0 || helper_size > 65536 )); then
+    echo 'radio event helper size is unsupported' >&2; return 6
+  fi
+  helper_identity=$(stat -c '%d:%i:%u:%h:%s:%a' "$helper") || return 6
+  helper_hash=$(command sha256sum "$helper") || return 6
+  probe_root=$(umask 077; command mktemp -d "$probe_run/radio-event-probe.XXXXXX") || return 6
+  trap 'command rm -rf -- "$probe_root"' EXIT
+  # Limit stdout to one KiB and elapsed execution to three seconds plus TERM
+  # grace. Use real timeout even when a caller's test shell has a stand-in.
+  if ! (
+    ulimit -c 0 || exit 6
+    ulimit -f 1 || exit 6
+    command timeout --signal=TERM --kill-after=1 3 "$helper" protocol > "$probe_root/protocol" 2>/dev/null
+  ) 2>/dev/null; then
+    echo 'radio event helper protocol query failed or exceeded its bounds' >&2; return 6
+  fi
+  if ! command cmp -s "$probe_root/protocol" <(printf '2\n'); then
+    echo 'radio event helper protocol is incompatible' >&2; return 6
+  fi
+  [[ ! -L $parent && $parent_identity == "$(stat -c '%d:%i:%u:%a' "$parent")" \
+    && -f $helper && ! -L $helper && $helper_identity == "$(stat -c '%d:%i:%u:%h:%s:%a' "$helper")" \
+    && $helper_hash == "$(command sha256sum "$helper")" ]] \
+    || { echo 'radio event helper changed during its protocol query' >&2; return 6; }
+)

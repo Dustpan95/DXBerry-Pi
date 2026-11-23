@@ -1,0 +1,5 @@
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash curl nginx-light openssl python3 && rm -rf /var/lib/apt/lists/*
+WORKDIR /repo
+CMD ["bash", "tests/integration/pat-proxy.sh"]

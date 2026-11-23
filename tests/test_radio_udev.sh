@@ -7,7 +7,7 @@ source "$DXB_LIB/radio_udev.sh"
 source "$DXB_ROOT/tests/fixtures/sysfs.sh"
 
 udev_env() {
-  export DXB_STATE_DIR=$TEST_TMP/state DXB_LOG_FILE=$TEST_TMP/state/log DXB_SYSFS_ROOT=$TEST_TMP/sys \
+  export DXB_STATE_DIR=$TEST_TMP/state DXB_LOG_FILE=$TEST_TMP/state/log DXB_RUN_DIR=$TEST_TMP/run DXB_SYSFS_ROOT=$TEST_TMP/sys \
     DXB_RADIO_PROFILES=$DXB_ROOT/provision/share/radio-profiles.tsv DXB_RADIOS_FILE=$TEST_TMP/state/radios.json \
     DXB_UDEV_RULES_FILE=$TEST_TMP/etc/70.rules DXB_MODPROBE_FILE=$TEST_TMP/etc/dxberry-audio.conf DXB_UDEVADM=fake_udevadm
   mkdir -p "$DXB_STATE_DIR" "$TEST_TMP/etc"; : > "$TEST_TMP/calls"

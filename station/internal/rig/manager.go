@@ -200,9 +200,12 @@ func (m *Manager) start(parent context.Context, r radios.Radio) {
 	m.mu.Unlock()
 
 	var wg sync.WaitGroup
+	// Subscribe before polling or discovery can publish the first state.
+	updates := p.Subscribe()
+	first := p.State()
 	wg.Add(3)
 	go func() { defer wg.Done(); p.Run(ctx) }()
-	go func() { defer wg.Done(); m.forward(ctx, r.Name, p) }()
+	go func() { defer wg.Done(); m.forward(ctx, r.Name, p, updates, first) }()
 	go func() { defer wg.Done(); m.discover(ctx, e, model) }()
 	go func() { wg.Wait(); close(e.done) }()
 }
@@ -262,10 +265,8 @@ func (m *Manager) discover(ctx context.Context, e *entry, model string) {
 }
 
 // forward turns the poller's states into events for the sockets.
-func (m *Manager) forward(ctx context.Context, name string, p *Poller) {
-	ch := p.Subscribe()
+func (m *Manager) forward(ctx context.Context, name string, p *Poller, ch <-chan State, first State) {
 	defer p.Unsubscribe(ch)
-	first := p.State()
 	linked, answering := first.Connected, first.Answering
 	for {
 		select {

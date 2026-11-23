@@ -1,0 +1,18 @@
+{
+  "profile": "product-admin",
+  "sourceRoots": ["station/web"],
+  "locale": "en",
+  "canonicalMap": "UX-CONTRACT.md",
+  "requiredCapabilities": ["Scrollbar", "Toast"],
+  "ownership": {"Select/Listbox": "native"},
+  "executionContext": "Run verification in Docker; use the appropriate builder or browser image.",
+  "requiredCommands": ["unit", "web", "browser", "audit", "design-format"],
+  "commands": {
+    "unit": "node tests/station_wsjtx.js station/web/wsjtx.js",
+    "web": "go test -race -tags=nolibopusfile ./web ./internal/httpapi",
+    "browser": "bash tests/integration/browser-wsjtx.sh",
+    "audit": "python3 \"$DXB_UI_AUDITOR\" . --mode strict",
+    "design-format": "npm exec --offline --yes --package=@google/design.md -- designmd lint DESIGN.md"
+  },
+  "evidence": {"failurePaths": "tests/integration/browser-wsjtx.js"}
+}

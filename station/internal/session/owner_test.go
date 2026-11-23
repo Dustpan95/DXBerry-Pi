@@ -124,8 +124,8 @@ func TestProgramHolderBlocksTabs(t *testing.T) {
 	o := NewOwners(newClock())
 	o.SetPrograms(p)
 
-	if _, ok := o.Holder("radio1"); ok {
-		t.Fatal("holder before any refresh")
+	if h, ok := o.Holder("radio1"); !ok || h.Kind != "program" || h.ID != "wsjtx" {
+		t.Fatal("unverified initial assignment did not hold the radio")
 	}
 	p.Refresh(context.Background())
 	h, ok := o.Holder("radio1")
@@ -157,15 +157,18 @@ func TestScreenProbeReadsState(t *testing.T) {
 			return out, exit, nil
 		}
 	}
-	ok, label, _ := ScreenProbe(run(`{"state":"running","label":"WSJT-X"}`, 0))(context.Background(), "wsjtx-radio1")
+	ok, label, _ := ScreenProbe(run(`{"session":"wsjtx-radio1","access":true,"state":"running","label":"WSJT-X"}`, 0))(context.Background(), "wsjtx-radio1")
 	if !ok || label != "WSJT-X" {
 		t.Fatalf("running: %v %q", ok, label)
 	}
-	if ok, _, err := ScreenProbe(run(`{"state":"stopped"}`, 0))(context.Background(), "wsjtx-radio1"); ok || err != nil {
+	if ok, _, err := ScreenProbe(run(`{"session":"wsjtx-radio1","access":true,"state":"stopped"}`, 0))(context.Background(), "wsjtx-radio1"); ok || err != nil {
 		t.Fatalf("stopped: %v %v", ok, err)
 	}
-	if ok, _, err := ScreenProbe(run(`{"state":"starting"}`, 0))(context.Background(), "wsjtx-radio1"); !ok || err != nil {
+	if ok, _, err := ScreenProbe(run(`{"session":"wsjtx-radio1","access":true,"state":"starting"}`, 0))(context.Background(), "wsjtx-radio1"); !ok || err != nil {
 		t.Fatalf("starting must hold the radio: %v %v", ok, err)
+	}
+	if ok, label, err := ScreenProbe(run(`{"session":"wsjtx-radio1","app":"wsjtx","radio":"radio1","label":"WSJT-X","radio_label":"Radio","state":"failed","socket":null,"open":{"kind":"screen"},"access":true}`, 0))(context.Background(), "wsjtx-radio1"); ok || label != "WSJT-X" || err != nil {
+		t.Fatalf("full production response: %v %q %v", ok, label, err)
 	}
 	if _, _, err := ScreenProbe(run(`{"state":"running"}`, 3))(context.Background(), "wsjtx-radio1"); err == nil {
 		t.Fatal("a failed command is not an answer")
@@ -175,6 +178,77 @@ func TestScreenProbeReadsState(t *testing.T) {
 	}
 	if _, _, err := ScreenProbe(run(`{"session":"wsjtx-radio1","access":false}`, 0))(context.Background(), "wsjtx-radio1"); err == nil {
 		t.Fatal("access:false is not an answer")
+	}
+}
+
+func TestScreenProbeRejectsMissingAmbiguousOrMismatchedEvidence(t *testing.T) {
+	for _, raw := range []string{
+		`{}`, `null`, `[]`,
+		`{"session":"wsjtx-radio1","access":true}`,
+		`{"session":"wsjtx-radio1","access":true,"state":null}`,
+		`{"session":"wsjtx-radio1","access":true,"state":"unknown"}`,
+		`{"session":"wsjtx-radio1","access":true,"state":"deactivating"}`,
+		`{"session":"wsjtx-radio1","access":true,"state":"running","state":"stopped"}`,
+		`{"session":"wsjtx-radio1","access":true,"state":"running","State":"stopped"}`,
+		`{"session":"wsjtx-radio2","access":true,"state":"stopped"}`,
+		`{"session":"pat-radio1","access":true,"state":"stopped"}`,
+		`{"session":"wsjtx-radio1","state":"stopped"}`,
+		`{"session":"wsjtx-radio1","access":null,"state":"stopped"}`,
+		`{"session":"wsjtx-radio1","access":false,"state":"stopped"}`,
+		`{"session":"wsjtx-radio1","access":true,"state":"stopped","app":"pat"}`,
+		`{"session":"wsjtx-radio1","access":true,"state":"stopped","radio":"radio2"}`,
+		`{"session":"wsjtx-radio1","access":true,"state":"stopped","app":null}`,
+		`{"session":"wsjtx-radio1","access":true,"state":"stopped","label":null}`,
+	} {
+		run := func(context.Context, []string) (string, int, error) { return raw, 0, nil }
+		probe := ScreenProbe(run)
+		if _, _, err := probe(context.Background(), "wsjtx-radio1"); err == nil {
+			t.Errorf("incomplete or ambiguous state accepted: %s", raw)
+		}
+		// Verify the error reaches the ownership guard and cannot free a
+		// previously running program's transmitter.
+		p := NewPrograms(func() []radios.Radio { return []radios.Radio{{Name: "radio1", Owner: "wsjtx"}} }, func(context.Context, string) (bool, string, error) { return true, "WSJT-X", nil })
+		p.Refresh(context.Background())
+		p.probe = probe
+		p.Refresh(context.Background())
+		o := NewOwners(newClock())
+		o.SetPrograms(p)
+		if err := o.Claim("radio1", tab("a")); !errors.Is(err, ErrProgramOwns) {
+			t.Errorf("unverified evidence freed a transmitter: %s: %v", raw, err)
+		}
+	}
+}
+
+func TestProgramOwnerChangeCannotReuseAnotherProgramsAnswer(t *testing.T) {
+	for _, previouslyHeld := range []bool{false, true} {
+		list := []radios.Radio{{Name: "radio1", Owner: "wsjtx"}}
+		fail := false
+		p := NewPrograms(func() []radios.Radio { return list }, func(context.Context, string) (bool, string, error) {
+			if fail {
+				return false, "", errors.New("unavailable")
+			}
+			return previouslyHeld, "WSJT-X", nil
+		})
+		p.Refresh(context.Background())
+		list[0].Owner, fail = "pat", true
+		p.Refresh(context.Background())
+		p.Refresh(context.Background())
+		o := NewOwners(newClock())
+		o.SetPrograms(p)
+		if holder, ok := o.Holder("radio1"); !ok || holder.ID != "pat" || holder.Label != "pat" {
+			t.Errorf("answer from previous owner survived the switch: held=%v: %+v %v", previouslyHeld, holder, ok)
+		}
+		if err := o.Claim("radio1", tab("a")); !errors.Is(err, ErrProgramOwns) {
+			t.Errorf("new unverified owner allowed a browser claim: %v", err)
+		}
+		if err := o.TakeOver("radio1", tab("a")); !errors.Is(err, ErrProgramOwns) {
+			t.Errorf("new unverified owner allowed takeover: %v", err)
+		}
+		p.probe = func(context.Context, string) (bool, string, error) { return false, "Pat", nil }
+		p.Refresh(context.Background())
+		if err := o.Claim("radio1", tab("a")); err != nil {
+			t.Errorf("verified stopped replacement did not release the radio: %v", err)
+		}
 	}
 }
 
@@ -220,7 +294,7 @@ func TestSocketRefcountReleasesOnLastClose(t *testing.T) {
 }
 
 // With no answer yet (the first probe after a start fails), the radio's owner program is taken
-// to hold it until a probe succeeds; a failure after an answer keeps that answer.
+// to hold it until a probe succeeds; a later failure also invalidates a free answer.
 func TestProgramHolderHeldWhenNoProbeHasAnswered(t *testing.T) {
 	list := []radios.Radio{{Name: "radio1", Owner: "wsjtx"}}
 	fail, held := true, false
@@ -251,9 +325,9 @@ func TestProgramHolderHeldWhenNoProbeHasAnswered(t *testing.T) {
 		t.Fatalf("free after an answer: %v", err)
 	}
 	o.Release("radio1", "a")
-	fail = true // a failure after the answer "free" keeps it
+	fail = true // the previous free answer cannot resolve current uncertainty
 	p.Refresh(context.Background())
-	if _, ok := o.Holder("radio1"); ok {
-		t.Fatal("a failure after an answer changed it")
+	if h, ok := o.Holder("radio1"); !ok || h.Kind != "program" || h.ID != "wsjtx" {
+		t.Fatal("a failure after a free answer did not block ownership")
 	}
 }

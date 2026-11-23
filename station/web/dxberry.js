@@ -949,8 +949,21 @@ function applyTheme() {
   else delete document.documentElement.dataset.theme;
 }
 
+// Pat is a radio program: opening its idle web port must not start it or take a radio.
+// The proxy returns here when its backend is unavailable. Consume only our marker so
+// reloading the console does not repeat the warning or discard other navigation state.
+function patUnavailableNotice() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("pat") !== "unavailable") return;
+  params.delete("pat");
+  const query = params.toString();
+  history.replaceState(history.state, "", location.pathname + (query ? "?" + query : "") + location.hash);
+  notice("Pat’s web interface isn’t available. Start Pat from its radio card, then open it again. If it is already running, check its log.", "warn");
+}
+
 function init() {
   applyTheme();
+  patUnavailableNotice();
   window.addEventListener("storage", applyTheme);
   document.getElementById("refresh").addEventListener("click", () => refresh(true));
   dxb.onVisible(() => refresh(true));

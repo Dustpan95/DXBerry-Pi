@@ -20,6 +20,10 @@ provision_storage() {
   # the link first: without it journald would make its directory in the RAM /var/log, where
   # DietPi's hourly cleanup empties the files. Every run, so a failed one is tried again.
   if dxb_write_if_changed "$DXB_SYSTEMD_DIR/dxberry-journal-link.service" "$link"; then
+    if [[ ! -f $DXB_SYSTEMD_DIR/dxberry-journal-link.service || $(< "$DXB_SYSTEMD_DIR/dxberry-journal-link.service") != "$link" ]]; then
+      dxb_step_failed storage "could not write $DXB_SYSTEMD_DIR/dxberry-journal-link.service"
+      return 1
+    fi
     systemctl daemon-reload 2> /dev/null || true
   fi
   systemctl enable --now dxberry-journal-link.service 2> /dev/null || true
@@ -28,6 +32,10 @@ provision_storage() {
     return 1
   fi
   if dxb_write_if_changed "$DXB_JOURNALD_DROPIN" "$content"; then
+    if [[ ! -f $DXB_JOURNALD_DROPIN || $(< "$DXB_JOURNALD_DROPIN") != "$content" ]]; then
+      dxb_step_failed storage "could not write $DXB_JOURNALD_DROPIN"
+      return 1
+    fi
     systemctl restart systemd-journald 2> /dev/null || true
     journalctl --flush 2> /dev/null || true
     dxb_info "journald set to keep up to 64 MB on the drive"

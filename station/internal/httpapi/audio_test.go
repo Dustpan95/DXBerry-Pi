@@ -19,24 +19,33 @@ import (
 
 // fakeBridge records what the signalling socket asked of the radio's bridge.
 type fakeBridge struct {
-	mu       sync.Mutex
-	offers   []string
-	tabs     []string
-	cands    []ICECandidate
-	closed   []string
-	lost     map[int]func(tab, reason string)
-	next     int
-	failWith error
-	gate     chan struct{} // when set, Close waits for it
+	mu          sync.Mutex
+	offers      []string
+	tabs        []string
+	generations []uint64
+	cands       []ICECandidate
+	closed      []string
+	lost        map[int]func(tab string, generation uint64, reason string)
+	next        int
+	failWith    error
+	gate        chan struct{} // when set, Close waits for it
+	connectHook func(context.Context, string, string, uint64) error
 }
 
-func (f *fakeBridge) Connect(ctx context.Context, offer string, tab string) (string, error) {
+func (f *fakeBridge) ConnectGeneration(ctx context.Context, offer string, tab string, generation uint64) (string, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.offers = append(f.offers, offer)
 	f.tabs = append(f.tabs, tab)
-	if f.failWith != nil {
-		return "", f.failWith
+	f.generations = append(f.generations, generation)
+	fail, hook := f.failWith, f.connectHook
+	f.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx, offer, tab, generation); err != nil {
+			return "", err
+		}
+	}
+	if fail != nil {
+		return "", fail
 	}
 	return "ANSWER:" + offer, nil
 }
@@ -60,11 +69,11 @@ func (f *fakeBridge) Close(tab string) {
 	f.closed = append(f.closed, tab)
 }
 
-func (f *fakeBridge) OnLost(fn func(tab, reason string)) func() {
+func (f *fakeBridge) OnLostGeneration(fn func(tab string, generation uint64, reason string)) func() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.lost == nil {
-		f.lost = map[int]func(string, string){}
+		f.lost = map[int]func(string, uint64, string){}
 	}
 	id := f.next
 	f.next++
@@ -74,13 +83,25 @@ func (f *fakeBridge) OnLost(fn func(tab, reason string)) func() {
 
 func (f *fakeBridge) loseAll(tab, reason string) {
 	f.mu.Lock()
-	var fns []func(string, string)
+	var generation uint64
+	for i := range f.tabs {
+		if f.tabs[i] == tab {
+			generation = f.generations[i]
+		}
+	}
+	f.mu.Unlock()
+	f.loseGeneration(tab, generation, reason)
+}
+
+func (f *fakeBridge) loseGeneration(tab string, generation uint64, reason string) {
+	f.mu.Lock()
+	var fns []func(string, uint64, string)
 	for _, fn := range f.lost {
 		fns = append(fns, fn)
 	}
 	f.mu.Unlock()
 	for _, fn := range fns {
-		fn(tab, reason)
+		fn(tab, generation, reason)
 	}
 }
 
@@ -248,17 +269,6 @@ func TestSignalOfferAnswerTrickleAndClose(t *testing.T) {
 		cands[0].SDPMid == nil || *cands[0].SDPMid != "0" || cands[0].SDPMLineIndex == nil || *cands[0].SDPMLineIndex != 0 {
 		t.Fatalf("tab %q candidate %+v", tabs[0], cands[0])
 	}
-	// another tab's loss is not this socket's; this tab's is
-	ar.bridge.loseAll("sess-secret|Other#2", "no audio from the browser")
-	ar.bridge.loseAll("sess-secret|Browser#1", "")
-	m = readMsg(t, c)
-	if len(m) != 1 || m["type"] != "audio-lost" {
-		t.Fatalf("lost %v", m)
-	}
-	ar.bridge.loseAll("sess-secret|Browser#1", "no audio from the radio's sound card (RADIO1.in)")
-	if m = readMsg(t, c); m["type"] != "audio-lost" || m["reason"] != "no audio from the radio's sound card (RADIO1.in)" {
-		t.Fatalf("lost with a reason %v", m)
-	}
 	// an offer the bridge cannot answer is an error the page can show
 	ar.bridge.mu.Lock()
 	ar.bridge.failWith = errors.New("the offer carries no audio")
@@ -396,6 +406,318 @@ func TestSignalCapsConnectionsPerLogin(t *testing.T) {
 	sendMsg(t, c6, map[string]any{"type": "offer", "sdp": "o"})
 	if m := readMsg(t, c6); m["type"] != "answer" {
 		t.Fatalf("after a tab left %v", m)
+	}
+}
+
+func TestSignalFailedOfferFreesConnectionSlot(t *testing.T) {
+	for _, connected := range []bool{false, true} {
+		name := "first offer"
+		if connected {
+			name = "replacement offer"
+		}
+		t.Run(name, func(t *testing.T) {
+			ar := newAudioRig(t, true)
+			failed, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%23failed", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer failed.CloseNow()
+			if connected {
+				sendMsg(t, failed, map[string]any{"type": "offer", "sdp": "original"})
+				if m := readMsg(t, failed); m["type"] != "answer" {
+					t.Fatalf("original offer: %v", m)
+				}
+			}
+			ar.bridge.mu.Lock()
+			ar.bridge.failWith = errors.New("bad audio offer")
+			ar.bridge.mu.Unlock()
+			sendMsg(t, failed, map[string]any{"type": "offer", "sdp": "bad"})
+			if m := readMsg(t, failed); m["type"] != "error" {
+				t.Fatalf("failed offer: %v", m)
+			}
+			ar.bridge.mu.Lock()
+			ar.bridge.failWith = nil
+			ar.bridge.mu.Unlock()
+			// Keep the failed socket open: it must not consume a peer slot.
+			var healthy []*websocket.Conn
+			for i := 0; i < MaxAudioPerLogin; i++ {
+				c, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%23healthy"+string(rune('a'+i)), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer c.CloseNow()
+				healthy = append(healthy, c)
+				sendMsg(t, c, map[string]any{"type": "offer", "sdp": "healthy"})
+				if m := readMsg(t, c); m["type"] != "answer" {
+					t.Fatalf("healthy tab %d blocked by failed offer: %v", i, m)
+				}
+			}
+			_, _, closed, _ := ar.bridge.snapshot()
+			if len(closed) != 1 || closed[0] != "sess-secret|Browser#failed" {
+				t.Fatalf("failed offer did not close its own peer only: %v", closed)
+			}
+			// A later retry on the same socket can claim a newly available slot.
+			sendMsg(t, healthy[0], map[string]any{"type": "close"})
+			waitFor(t, "healthy tab release", func() bool {
+				_, _, closed, _ := ar.bridge.snapshot()
+				for _, tab := range closed {
+					if tab == "sess-secret|Browser#healthya" {
+						return true
+					}
+				}
+				return false
+			})
+			sendMsg(t, failed, map[string]any{"type": "offer", "sdp": "retry"})
+			if m := readMsg(t, failed); m["type"] != "answer" {
+				t.Fatalf("retry on failed socket: %v", m)
+			}
+		})
+	}
+}
+
+func TestSignalLostPeerFreesConnectionSlotWithoutSocketClose(t *testing.T) {
+	ar := newAudioRig(t, true)
+	lost, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%23lost", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lost.CloseNow()
+	sendMsg(t, lost, map[string]any{"type": "offer", "sdp": "original"})
+	if m := readMsg(t, lost); m["type"] != "answer" {
+		t.Fatalf("original offer: %v", m)
+	}
+	ar.bridge.loseAll("sess-secret|Browser#lost", "audio link dropped")
+	if m := readMsg(t, lost); m["type"] != "audio-lost" {
+		t.Fatalf("lost peer: %v", m)
+	}
+	// Leave the lost peer's socket open. Only actual or pending peers consume
+	// quota, so four other tabs must still be allowed to establish audio.
+	for i := 0; i < MaxAudioPerLogin; i++ {
+		c, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%23afterloss"+string(rune('a'+i)), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.CloseNow()
+		sendMsg(t, c, map[string]any{"type": "offer", "sdp": "healthy"})
+		if m := readMsg(t, c); m["type"] != "answer" {
+			t.Fatalf("healthy peer %d blocked by lost peer: %v", i, m)
+		}
+	}
+}
+
+func TestSignalLossNotificationEndsOnlyItsSocketLifecycle(t *testing.T) {
+	for _, reason := range []string{"", "no audio from the radio's sound card (RADIO1.in)"} {
+		t.Run(reason, func(t *testing.T) {
+			ar := newAudioRig(t, true)
+			c, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%23notice", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.CloseNow()
+			sendMsg(t, c, map[string]any{"type": "offer", "sdp": "first"})
+			readMsg(t, c)
+			ar.bridge.loseAll("sess-secret|Other#2", "unrelated loss")
+			ar.bridge.loseAll("sess-secret|Browser#notice", reason)
+			m := readMsg(t, c)
+			if m["type"] != "audio-lost" || (reason != "" && m["reason"] != reason) || (reason == "" && len(m) != 1) {
+				t.Fatalf("loss notice: %v", m)
+			}
+			ar.bridge.loseAll("sess-secret|Browser#notice", "duplicate loss")
+			sendMsg(t, c, map[string]any{"type": "ice", "candidate": map[string]any{"candidate": "late candidate"}})
+			sendMsg(t, c, map[string]any{"type": "offer", "sdp": "racing retry"})
+			if m := readMsg(t, c); m["type"] != "error" {
+				t.Fatalf("duplicate notice or revived ended socket: %v", m)
+			}
+			if offers, _, closed, cands := ar.bridge.snapshot(); len(offers) != 1 || len(closed) != 0 || len(cands) != 0 {
+				t.Fatalf("ended socket reached bridge: offers=%v closed=%v candidates=%v", offers, closed, cands)
+			}
+		})
+	}
+}
+
+func TestSignalDelayedLossKeepsReplacement(t *testing.T) {
+	for _, newSocket := range []bool{false, true} {
+		name := "same socket"
+		if newSocket {
+			name = "replacement socket"
+		}
+		t.Run(name, func(t *testing.T) {
+			ar := newAudioRig(t, true)
+			old, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%23same", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer old.CloseNow()
+			sendMsg(t, old, map[string]any{"type": "offer", "sdp": "first"})
+			readMsg(t, old)
+			ar.bridge.mu.Lock()
+			first := ar.bridge.generations[0]
+			ar.bridge.mu.Unlock()
+			current := old
+			if newSocket {
+				current, _, err = ar.dial(t, "/api/audio/radio1/signal?tab=Browser%23same", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer current.CloseNow()
+			}
+			sendMsg(t, current, map[string]any{"type": "offer", "sdp": "replacement"})
+			if m := readMsg(t, current); m["type"] != "answer" {
+				t.Fatalf("replacement: %v", m)
+			}
+			ar.bridge.mu.Lock()
+			second := ar.bridge.generations[1]
+			ar.bridge.mu.Unlock()
+			if first == 0 || second == 0 || first == second {
+				t.Fatalf("offers reused an identity: %d %d", first, second)
+			}
+			ar.bridge.loseGeneration("sess-secret|Browser#same", first, "delayed original loss")
+			// A stale loss must neither free the current peer's quota nor send
+			// a loss notice that would make its browser close working audio.
+			for i := 0; i < MaxAudioPerLogin; i++ {
+				c, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%23quota"+string(rune('a'+i)), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer c.CloseNow()
+				sendMsg(t, c, map[string]any{"type": "offer", "sdp": "healthy"})
+				m := readMsg(t, c)
+				want := "answer"
+				if i == MaxAudioPerLogin-1 {
+					want = "refused"
+				}
+				if m["type"] != want {
+					t.Fatalf("quota after stale loss: peer %d got %v, want %s", i, m, want)
+				}
+			}
+			sendMsg(t, current, map[string]any{"type": "ice", "candidate": map[string]any{"candidate": "current peer"}})
+			sendMsg(t, current, map[string]any{"type": "offer", "sdp": "still current"})
+			if m := readMsg(t, current); m["type"] != "answer" {
+				t.Fatalf("stale loss reached replacement: %v", m)
+			}
+			if newSocket {
+				_ = old.Close(websocket.StatusNormalClosure, "")
+			}
+			_, _, closed, cands := ar.bridge.snapshot()
+			if len(closed) != 0 || len(cands) != 1 {
+				t.Fatalf("replacement disrupted: closed=%v candidates=%v", closed, cands)
+			}
+		})
+	}
+}
+
+func TestSignalLossDuringOfferDoesNotReturnEndedPeer(t *testing.T) {
+	ar := newAudioRig(t, true)
+	ar.bridge.connectHook = func(ctx context.Context, offer, tab string, generation uint64) error {
+		if offer == "lost during connect" {
+			ar.bridge.loseGeneration(tab, generation, "connection ended before answer")
+		}
+		return nil
+	}
+	c, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%23earlyloss", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	sendMsg(t, c, map[string]any{"type": "offer", "sdp": "lost during connect"})
+	if m := readMsg(t, c); m["type"] != "audio-lost" {
+		t.Fatalf("early loss: %v", m)
+	}
+	if m := readMsg(t, c); m["type"] != "error" {
+		t.Fatalf("ended peer answered: %v", m)
+	}
+	// This socket's lost lifecycle cannot be revived by racing another offer.
+	sendMsg(t, c, map[string]any{"type": "offer", "sdp": "retry"})
+	if m := readMsg(t, c); m["type"] != "error" {
+		t.Fatalf("ended socket revived a peer: %v", m)
+	}
+	replacement, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%23earlyloss", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replacement.CloseNow()
+	sendMsg(t, replacement, map[string]any{"type": "offer", "sdp": "retry"})
+	if m := readMsg(t, replacement); m["type"] != "answer" {
+		t.Fatalf("fresh socket retry: %v", m)
+	}
+}
+
+func TestSignalOverlappingOffersStayInOrderWithoutBlockingOtherTabs(t *testing.T) {
+	ar := newAudioRig(t, true)
+	entered, resume := make(chan struct{}), make(chan struct{})
+	defer close(resume)
+	ar.bridge.connectHook = func(ctx context.Context, offer, tab string, generation uint64) error {
+		if offer == "slow original" {
+			close(entered)
+			select {
+			case <-resume:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	}
+	old, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%23overlap", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.CloseNow()
+	sendMsg(t, old, map[string]any{"type": "offer", "sdp": "slow original"})
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("original did not enter Connect")
+	}
+	current, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%23overlap", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer current.CloseNow()
+	sendMsg(t, current, map[string]any{"type": "offer", "sdp": "new socket"})
+	// Quota includes the pending original. A different tab can connect while
+	// the same tab's replacement waits for its own preceding offer.
+	other, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%23independent", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.CloseNow()
+	sendMsg(t, other, map[string]any{"type": "offer", "sdp": "independent"})
+	if m := readMsg(t, other); m["type"] != "answer" {
+		t.Fatalf("other tab blocked: %v", m)
+	}
+	for i := 0; i < MaxAudioPerLogin-1; i++ {
+		c, _, err := ar.dial(t, "/api/audio/radio1/signal?tab=Browser%23pendingquota"+string(rune('a'+i)), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.CloseNow()
+		sendMsg(t, c, map[string]any{"type": "offer", "sdp": "quota"})
+		want := "answer"
+		if i == MaxAudioPerLogin-2 {
+			want = "refused"
+		}
+		if m := readMsg(t, c); m["type"] != want {
+			t.Fatalf("pending peer not counted in quota: %v, want %s", m, want)
+		}
+	}
+	// Ending the original offer allows the replacement to follow it. Keep
+	// the channel open here; the deferred close also releases failure paths.
+	resume <- struct{}{}
+	readMsg(t, old)
+	if m := readMsg(t, current); m["type"] != "answer" {
+		t.Fatalf("replacement: %v", m)
+	}
+	offers, _, _, _ := ar.bridge.snapshot()
+	if strings.Join(offers, ",") != "slow original,independent,quota,quota,new socket" {
+		t.Fatalf("overlapping offers reached bridge out of order: %v", offers)
+	}
+	_ = old.Close(websocket.StatusNormalClosure, "")
+	sendMsg(t, current, map[string]any{"type": "offer", "sdp": "after old closes"})
+	if m := readMsg(t, current); m["type"] != "answer" {
+		t.Fatalf("current after old closes: %v", m)
+	}
+	if _, _, closed, _ := ar.bridge.snapshot(); len(closed) != 0 {
+		t.Fatalf("old socket closed replacement: %v", closed)
 	}
 }
 

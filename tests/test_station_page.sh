@@ -3,6 +3,11 @@
 # The station app's page scripts: the compatibility layer (app.js) and dxberry.js's text helpers.
 SP_WEB=$DXB_ROOT/station/web
 
+test_native_wsjtx_status_keeps_freshness_identity_and_unknowns_explicit() {
+  command -v node > /dev/null 2>&1 || return 0
+  assert_ok node "$DXB_ROOT/tests/station_wsjtx.js" "$SP_WEB/wsjtx.js"
+}
+
 # sp_run SCENARIO: what dxb.run did against the fake fetch, as JSON
 sp_run() { node "$DXB_ROOT/tests/station_page.js" "$SP_WEB/app.js" "$1"; }
 
@@ -147,7 +152,7 @@ test_station_dashboard_opens_programs_on_the_screen_page() {
 test_station_index_loads_the_page_scripts_in_order() {
   local got
   got=$(grep -oE '<script src="[^"]+"' "$SP_WEB/index.html" | grep -oE '/[a-z.]+' | tr '\n' ' ')
-  assert_eq "$got" "/app.js /dxberry.js /settings.js /updates.js /dashboard.js /programs.js /audio.js /vfo.js /radiosettings.js "
+  assert_eq "$got" "/app.js /dxberry.js /settings.js /updates.js /dashboard.js /programs.js /audio.js /wsjtx.js /vfo.js /radiosettings.js "
 }
 
 test_station_pages_parse_together() {

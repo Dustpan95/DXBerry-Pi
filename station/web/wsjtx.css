@@ -1,0 +1,46 @@
+/* Native program status uses the console's shared palette and controls. */
+.vfo-program-native { grid-column: 1 / -1; }
+.wsjtx-panel { margin-top: 16px; scroll-margin-top: 80px; }
+.wsjtx-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-height: 40px; }
+.wsjtx-heading h3, .wsjtx-heading h4 { margin: 0; }
+.wsjtx-heading h4 { font-size: 14px; }
+.wsjtx-heading > .btn { margin-left: auto; min-height: 40px; }
+.wsjtx-summary { min-height: 174px; padding-bottom: 12px; }
+.wsjtx-message { min-height: 2.9em; margin: 8px 0 12px; }
+.wsjtx-readouts { display: flex; flex-wrap: wrap; gap: 12px 32px; margin: 0; }
+.wsjtx-readouts > div { min-width: 0; max-width: 100%; }
+.wsjtx-readouts dt { color: var(--muted); font-size: 12px; }
+.wsjtx-readouts dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.wsjtx-frequency { font: 600 28px/1.2 var(--font-mono); font-variant-numeric: tabular-nums; }
+.wsjtx-mode { font-size: 20px; font-weight: 600; }
+.wsjtx-transmit { min-height: 1.45em; margin: 10px 0 0; }
+.wsjtx-warnings { color: var(--warn); }
+.wsjtx-warnings:empty { display: none; }
+.wsjtx-activity-heading { margin: 8px 0; }
+.wsjtx-activity { height: 320px; overflow: auto; scrollbar-gutter: stable; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.wsjtx-activity:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wsjtx-empty { margin: 0; padding: 18px 12px; }
+.wsjtx-table { table-layout: fixed; margin: 0; font-size: 13px; }
+.wsjtx-table th, .wsjtx-table td { padding: 7px 4px; vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
+.wsjtx-table th { position: sticky; top: 0; background: var(--card); }
+.wsjtx-table td { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.wsjtx-table td:first-child { white-space: nowrap; overflow-wrap: normal; }
+.wsjtx-col-utc { width: 78px; }
+.wsjtx-col-snr { width: 34px; }
+.wsjtx-col-dt { width: 54px; }
+.wsjtx-col-hz { width: 48px; }
+.wsjtx-decode-text { white-space: pre-wrap; }
+.wsjtx-decode-notes { display: block; font-family: system-ui, sans-serif; }
+.wsjtx-footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 16px; min-height: 70px; }
+.wsjtx-footer > p { min-height: 2.9em; }
+.wsjtx-footer .btn { min-height: 40px; }
+@media (max-width: 480px) {
+  .wsjtx-table { font-size: 12px; }
+  .wsjtx-col-utc { width: 70px; }
+  .wsjtx-col-snr { width: 30px; }
+  .wsjtx-col-dt { width: 50px; }
+  .wsjtx-col-hz { width: 42px; }
+  .wsjtx-footer { grid-template-columns: minmax(0, 1fr); }
+  .wsjtx-footer > p { min-height: 4.35em; }
+  .wsjtx-footer > .btn { justify-self: start; }
+}

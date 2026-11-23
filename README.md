@@ -262,7 +262,7 @@ and `sudo dxberry-logbook get`.
 plugged in. `sudo dxberry-radio add radio1 --audio N --cat N` pins one as `radio1`, giving it a stable
 name (`hw:RADIO1`, `/dev/dxberry/radio1-cat`) that survives replugging into a different USB port.
 `--audio` and `--cat` also take a port path as `scan` prints it (`--audio usb-0:1.3:1.0`).
-`sudo dxberry-radio claim radio1 graywolf` hands it to Graywolf, wiring an audio device, channel and PTT
+`sudo dxberry-radio claim radio1 graywolf` hands it to Graywolf, wiring receive/transmit audio devices, a channel and PTT
 through Graywolf's API; `release` takes it back. A radio has exactly one owning application at a time,
 handed over automatically (the previous owner is unwired first); rigctld runs for every pinned radio
 regardless of ownership, since CAT control is not exclusive. `sudo dxberry-radio status` shows what is
@@ -277,6 +277,12 @@ See `docs/design/2026-09-09-radio-plumbing.md` for the full design.
 
 ## Building the image yourself
 
+First run `station/build.sh` in a Linux Docker build container with Go and the
+PAM/Opus development dependencies. It produces `dxberryd`,
+`dxberry-wsjtx-settings` and `dxberry-preset` in `provision/bin`. Image/update inputs require real
+ARM64 executables; the shell-only CI job uses disposable placeholders solely
+for tree/archive tests. Run source checks and unit tests inside Docker.
+
 ```
 sudo build/build-image.sh            # downloads and verifies the official DietPi image, injects /opt/dxberry
 build/build-image.sh --check         # verifies the repository tree only (no root, no network)
@@ -286,6 +292,24 @@ tests/run.sh                         # unit tests (bash, awk, jq)
 
 Building needs root plus `losetup`, `xz`, `sha256sum`, `curl`, `partprobe`, `mount` and `udevadm` on the host.
 Output goes to `out/DXBerry-Pi-<version>-rpi234-arm64.img.xz` and a matching `.sha256` file.
+
+The Graywolf API integration check runs against a checksum-verified release in a
+disposable container with no external network or radio devices. It covers first
+wiring, repeat wiring with operator settings preserved, and removal without
+changing unrelated channels. CI tests the latest Graywolf release, matching an
+unpinned first boot. To run it locally from the repository root:
+
+```sh
+fixture_dir=$(mktemp -d)
+bash tests/integration/download-graywolf.sh "$fixture_dir"
+docker build -t dxberry-graywolf-api -f tests/integration/Dockerfile tests/integration
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD:/repo:ro" -v "$fixture_dir/extracted:/graywolf:ro" \
+  -e GRAYWOLF_TEST_BIN=/graywolf/usr/bin/graywolf \
+  dxberry-graywolf-api bash tests/integration/graywolf-api.sh
+```
+
+The fixture's login and database are temporary and unrelated to any live station.
 
 ## Layout
 

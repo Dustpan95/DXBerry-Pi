@@ -1,2 +1,5 @@
 d /run/dxberry 0755 root root -
 d /run/dxberry/rigctld 0755 root root -
+d /run/dxberry/radio-events 0700 root root -
+d /run/dxberry/radio-events/marks 0700 root root -
+d /var/lib/dxberry/station 0700 root root -

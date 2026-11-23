@@ -1,0 +1,57 @@
+#!/bin/bash
+set -eu
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /run
+mkdir -p /run/dxb-ci
+hostname dxb-ci-guest
+for kind in service path timer; do
+  sed -e 's/dxberry-radio-reconcile/dxb-ci-reconcile/g' \
+      -e 's/dxberry-radio-hotplug/dxb-ci-hotplug/g' \
+      -e 's/graywolf.service/dxb-ci-graywolf.service/g' \
+      -e 's|/run/dxberry/|/run/dxb-ci/|g' \
+      "/fixture/templates/dxberry-radio-reconcile.$kind" > "/etc/systemd/system/dxb-ci-reconcile.$kind"
+done
+mkdir -p /etc/systemd/system/dxb-ci-reconcile.service.d
+cat > /etc/systemd/system/dxb-ci-reconcile.service.d/fixture.conf <<'UNIT'
+[Service]
+Environment=DXB_RUN_DIR=/run/dxb-ci
+Environment=DXB_RADIO_EVENT_RADIO_CMD=/usr/local/libexec/dxb-inert-apply
+UNIT
+cat > /etc/systemd/system/dxb-ci-hotplug.service <<'UNIT'
+[Unit]
+Before=dxb-ci-graywolf.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'echo hotplug >> /run/dxb-ci/boot-order'
+UNIT
+cat > /etc/systemd/system/dxb-ci-graywolf.service <<'UNIT'
+[Unit]
+After=dxb-ci-hotplug.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'echo graywolf >> /run/dxb-ci/boot-order'
+UNIT
+cat > /etc/systemd/system/dxb-ci-test.service <<'UNIT'
+[Unit]
+After=dxb-ci-hotplug.service dxb-ci-graywolf.service
+[Service]
+Type=oneshot
+TimeoutStartSec=360
+ExecStart=/usr/local/libexec/dxb-manager-test
+StandardOutput=journal+console
+StandardError=journal+console
+UNIT
+cat > /etc/systemd/system/dxb-ci.target <<'UNIT'
+[Unit]
+Requires=sysinit.target
+After=sysinit.target
+Wants=dxb-ci-hotplug.service dxb-ci-graywolf.service dxb-ci-test.service
+AllowIsolate=yes
+UNIT
+exec /lib/systemd/systemd --system --unit=dxb-ci.target

@@ -194,15 +194,39 @@ func plEventually(t *testing.T, what string, ok func() bool) {
 
 func settle() { time.Sleep(40 * time.Millisecond) }
 
-func startPoller(t *testing.T, l *plLink, caps Caps) (*Poller, *plClock) {
+func startPoller(t *testing.T, l *plLink, caps Caps, beforeRun ...func(*Poller)) (*Poller, *plClock) {
 	t.Helper()
 	clk := newPlClock()
 	p := newPoller(l, caps, clk, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, configure := range beforeRun {
+		configure(p)
+	}
+	runPoller(t, p)
+	// A changed frequency can be visible before the cycle finishes. Wait
+	// until Run has completed its initial cycle and scheduled the next tick,
+	// so later test actions cannot race unfinished initial reads.
+	plEventually(t, "initial cycle scheduled", func() bool {
+		clk.mu.Lock()
+		defer clk.mu.Unlock()
+		return len(clk.waiters) > 0
+	})
+	return p, clk
+}
+
+func initialPollerInterest(i Interest) func(*Poller) {
+	return func(p *Poller) { p.SetInterest(i) }
+}
+
+func initialPollerHooks(h Hooks) func(*Poller) {
+	return func(p *Poller) { p.SetHooks(h) }
+}
+
+func runPoller(t *testing.T, p *Poller) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { p.Run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
-	return p, clk
 }
 
 func TestPollerRatesFollowInterest(t *testing.T) {
@@ -254,8 +278,7 @@ func TestPollerMetersOnlyOnPage(t *testing.T) {
 	l.set("get_level RFPOWER", "Level Value: 0.5")
 	l.set("get_level SWR", "Level Value: 1.5")
 	l.set("get_level ALC", "Level Value: 0.2")
-	p, clk := startPoller(t, l, meterCaps())
-	p.SetInterest(Dashboard)
+	p, clk := startPoller(t, l, meterCaps(), initialPollerInterest(Dashboard))
 	plEventually(t, "first read", func() bool { return l.count("get_freq") >= 1 })
 	clk.Advance(2 * time.Second)
 	plEventually(t, "second read", func() bool { return l.count("get_freq") >= 2 })
@@ -285,8 +308,7 @@ func txLink() *plLink {
 // transmitting brings a Page poller to the state of a key-down with SWR/ALC read once.
 func transmitting(t *testing.T, l *plLink) (*Poller, *plClock) {
 	t.Helper()
-	p, clk := startPoller(t, l, meterCaps())
-	p.SetInterest(Page)
+	p, clk := startPoller(t, l, meterCaps(), initialPollerInterest(Page))
 	plEventually(t, "first read", func() bool { return p.State().Freq == 14074000 })
 	l.set("get_ptt", "PTT: 1")
 	clk.Advance(250 * time.Millisecond)
@@ -301,20 +323,27 @@ func transmitting(t *testing.T, l *plLink) (*Poller, *plClock) {
 
 func TestPollerSWRAndALCOnlyWhilePTT(t *testing.T) {
 	l := txLink()
-	p, clk := startPoller(t, l, meterCaps())
-	p.SetInterest(Page)
+	p, clk := startPoller(t, l, meterCaps(), initialPollerInterest(Page))
 	var hist struct {
 		sync.Mutex
 		states []State
 	}
 	ch := p.Subscribe()
+	done, drained := make(chan struct{}), make(chan struct{})
 	go func() {
-		for st := range ch {
-			hist.Lock()
-			hist.states = append(hist.states, st)
-			hist.Unlock()
+		defer close(drained)
+		for {
+			select {
+			case <-done:
+				return
+			case st := <-ch:
+				hist.Lock()
+				hist.states = append(hist.states, st)
+				hist.Unlock()
+			}
 		}
 	}()
+	t.Cleanup(func() { p.Unsubscribe(ch); close(done); <-drained })
 	plEventually(t, "first read", func() bool { return p.State().Freq == 14074000 })
 	clk.Advance(250 * time.Millisecond)
 	settle()
@@ -339,6 +368,18 @@ func TestPollerSWRAndALCOnlyWhilePTT(t *testing.T) {
 		t.Fatal("ALC and SWR counts differ")
 	}
 	plEventually(t, "meters", func() bool { st := p.State(); return st.Meters["SWR"] == 1.5 && st.Meters["ALC"] == 0.2 })
+	// The subscription holds only the newest frame. Observe TX before unkeying
+	// so a deliberately slow test reader cannot have it replaced by zero.
+	plEventually(t, "published transmit frame", func() bool {
+		hist.Lock()
+		defer hist.Unlock()
+		for _, st := range hist.states {
+			if st.Meters["SWR"] == 1.5 {
+				return true
+			}
+		}
+		return false
+	})
 
 	l.set("get_ptt", "PTT: 0")
 	clk.Advance(200 * time.Millisecond)
@@ -346,21 +387,22 @@ func TestPollerSWRAndALCOnlyWhilePTT(t *testing.T) {
 		st := p.State()
 		return !st.PTT && st.Meters["SWR"] == 0 && st.Meters["ALC"] == 0
 	})
-	// the zero frame was published as a State, after a transmitting one
-	hist.Lock()
-	sawTx, sawZero := false, false
-	for _, st := range hist.states {
-		if st.Meters["SWR"] == 1.5 {
-			sawTx = true
+	// State() can see the zero frame before the asynchronous subscriber has
+	// appended it. Wait for the published evidence, not just the current state.
+	plEventually(t, "published transmit frame followed by zero frame", func() bool {
+		hist.Lock()
+		defer hist.Unlock()
+		sawTx, sawZero := false, false
+		for _, st := range hist.states {
+			if st.Meters["SWR"] == 1.5 {
+				sawTx = true
+			}
+			if sawTx && !st.PTT && st.Meters["SWR"] == 0 && st.Meters["ALC"] == 0 {
+				sawZero = true
+			}
 		}
-		if sawTx && !st.PTT && st.Meters["SWR"] == 0 && st.Meters["ALC"] == 0 {
-			sawZero = true
-		}
-	}
-	hist.Unlock()
-	if !sawTx || !sawZero {
-		t.Fatalf("published states lack the transmit frame or the zero frame (tx %v zero %v)", sawTx, sawZero)
-	}
+		return sawTx && sawZero
+	})
 	n := l.count("get_level SWR")
 	for i := 0; i < 3; i++ {
 		clk.Advance(time.Second)
@@ -412,8 +454,7 @@ func TestPollerSkipsNonFiniteMeters(t *testing.T) {
 	l := txLink()
 	l.set("get_level STRENGTH", "Level Value: nan")
 	l.set("get_level RFPOWER", "Level Value: +Inf")
-	p, _ := startPoller(t, l, meterCaps())
-	p.SetInterest(Page)
+	p, _ := startPoller(t, l, meterCaps(), initialPollerInterest(Page))
 	plEventually(t, "meters read", func() bool { return l.count("get_level RFPOWER") >= 1 && p.State().Freq != 0 })
 	settle()
 	st := p.State()
@@ -471,8 +512,7 @@ func TestPollerClearsOptimisticFlagOfUnreadableField(t *testing.T) {
 
 func TestPollerCorrectsOptimisticValue(t *testing.T) {
 	l := newPlLink() // the rig starts at 14074000
-	p, clk := startPoller(t, l, Caps{})
-	p.SetInterest(Page)
+	p, clk := startPoller(t, l, Caps{}, initialPollerInterest(Page))
 	plEventually(t, "first read", func() bool { return p.State().Freq == 14074000 })
 	var seen State
 	err := p.Write(context.Background(), func(*Client) error {
@@ -496,8 +536,7 @@ func TestPollerCorrectsOptimisticValue(t *testing.T) {
 // A write issued while a read is in flight runs before the poller's next read.
 func TestPollerWriteGoesAheadOfQueuedReads(t *testing.T) {
 	l := newPlLink()
-	p, clk := startPoller(t, l, Caps{})
-	p.SetInterest(Page)
+	p, clk := startPoller(t, l, Caps{}, initialPollerInterest(Page))
 	plEventually(t, "first read", func() bool { return p.State().Freq == 14074000 })
 	settle()
 	release := l.blockOn("get_mode")
@@ -542,8 +581,7 @@ func TestPollerWriteRevertsOnFailure(t *testing.T) {
 
 func TestPollerNoReadWhileWritePending(t *testing.T) {
 	l := newPlLink()
-	p, clk := startPoller(t, l, Caps{})
-	p.SetInterest(Page)
+	p, clk := startPoller(t, l, Caps{}, initialPollerInterest(Page))
 	plEventually(t, "first read", func() bool { return l.count("get_freq") >= 1 })
 	settle()
 	inWrite, release, finished := make(chan int), make(chan struct{}), make(chan struct{})
@@ -593,8 +631,11 @@ func TestPollerDisconnectedState(t *testing.T) {
 
 func TestPollerSubscribeGetsChanges(t *testing.T) {
 	l := newPlLink()
-	p, _ := startPoller(t, l, Caps{})
+	p := newPoller(l, Caps{}, newPlClock(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ch := p.Subscribe()
+	// Subscribe before Run can publish its first cycle. The fake clock does
+	// not advance, so a missed initial publication has no later replacement.
+	runPoller(t, p)
 	select {
 	case st := <-ch:
 		if st.Freq != 14074000 {
@@ -659,8 +700,7 @@ func TestPollerAnsweringFollowsReads(t *testing.T) {
 func TestPollerSetTransmittingReadsSWRWithoutPTT(t *testing.T) {
 	l := txLink()
 	l.set("get_ptt", "PTT: 0")
-	p, clk := startPoller(t, l, meterCaps())
-	p.SetInterest(Page)
+	p, clk := startPoller(t, l, meterCaps(), initialPollerInterest(Page))
 	plEventually(t, "first read", func() bool { return p.State().Freq == 14074000 })
 	clk.Advance(250 * time.Millisecond)
 	settle()
@@ -698,17 +738,16 @@ func TestPollerSetTransmittingReadsSWRWithoutPTT(t *testing.T) {
 func TestPollerGuardHookSeesSWRWithoutThePage(t *testing.T) {
 	l := txLink()
 	l.set("get_ptt", "PTT: 1")
-	p, clk := startPoller(t, l, meterCaps())
 	var mu sync.Mutex
 	var seen []float64
-	p.SetHooks(Hooks{SWR: func(swr float64, on bool) {
+	hooks := Hooks{SWR: func(swr float64, on bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		if on {
 			seen = append(seen, swr)
 		}
-	}})
-	p.SetInterest(Dashboard)
+	}}
+	p, clk := startPoller(t, l, meterCaps(), initialPollerHooks(hooks), initialPollerInterest(Dashboard))
 	plEventually(t, "PTT seen", func() bool { return p.State().PTT })
 	for i := 0; i < 3; i++ {
 		clk.Advance(200 * time.Millisecond)
@@ -722,17 +761,16 @@ func TestPollerGuardHookSeesSWRWithoutThePage(t *testing.T) {
 func TestPollerGuardProbesPTTBelowPage(t *testing.T) {
 	l := txLink()
 	l.set("get_ptt", "PTT: 0")
-	p, clk := startPoller(t, l, meterCaps())
 	var mu sync.Mutex
 	var seen []float64
-	p.SetHooks(Hooks{SWR: func(swr float64, on bool) {
+	hooks := Hooks{SWR: func(swr float64, on bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		if on {
 			seen = append(seen, swr)
 		}
-	}})
-	p.SetInterest(None)
+	}}
+	p, clk := startPoller(t, l, meterCaps(), initialPollerHooks(hooks), initialPollerInterest(None))
 	plEventually(t, "first probe", func() bool { return l.count("get_ptt") >= 1 })
 	settle()
 	l.set("get_ptt", "PTT: 1")
@@ -749,17 +787,16 @@ func TestPollerGuardProbesPTTBelowPage(t *testing.T) {
 func TestPollerHookGetsStationTx(t *testing.T) {
 	l := txLink()
 	l.set("get_ptt", "PTT: 0")
-	p, clk := startPoller(t, l, meterCaps())
 	var mu sync.Mutex
 	var tx []bool
-	p.SetHooks(Hooks{SWRTx: func(swr float64, on, st bool) {
+	hooks := Hooks{SWRTx: func(swr float64, on, st bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		if on {
 			tx = append(tx, st)
 		}
-	}})
-	p.SetInterest(Page)
+	}}
+	p, clk := startPoller(t, l, meterCaps(), initialPollerHooks(hooks), initialPollerInterest(Page))
 	plEventually(t, "first read", func() bool { return p.State().Freq == 14074000 })
 	p.SetTransmitting(true)
 	plEventually(t, "first", func() bool { mu.Lock(); defer mu.Unlock(); return len(tx) >= 1 })
@@ -779,9 +816,7 @@ func getPTTCount(l *plLink) int { return l.count("get_ptt") }
 func TestPollerProbeOncePerSecondAtDashboard(t *testing.T) {
 	l := txLink()
 	l.set("get_ptt", "PTT: 0")
-	p, clk := startPoller(t, l, meterCaps())
-	p.SetHooks(Hooks{SWR: func(float64, bool) {}})
-	p.SetInterest(Dashboard)
+	_, clk := startPoller(t, l, meterCaps(), initialPollerHooks(Hooks{SWR: func(float64, bool) {}}), initialPollerInterest(Dashboard))
 	plEventually(t, "first read", func() bool { return getPTTCount(l) >= 1 })
 	settle()
 	base := getPTTCount(l)
@@ -803,9 +838,7 @@ func TestPollerNoProbeAtPageWithoutGuardOrAfterHooksCleared(t *testing.T) {
 	// Page interest: the main cycle at 250 ms is the only reader
 	l := txLink()
 	l.set("get_ptt", "PTT: 0")
-	p, clk := startPoller(t, l, meterCaps())
-	p.SetHooks(Hooks{SWR: func(float64, bool) {}})
-	p.SetInterest(Page)
+	_, clk := startPoller(t, l, meterCaps(), initialPollerHooks(Hooks{SWR: func(float64, bool) {}}), initialPollerInterest(Page))
 	plEventually(t, "first read", func() bool { return getPTTCount(l) >= 1 })
 	settle()
 	for i := 0; i < 4; i++ {
@@ -818,8 +851,7 @@ func TestPollerNoProbeAtPageWithoutGuardOrAfterHooksCleared(t *testing.T) {
 	// no guard: Dashboard reads PTT every 2 s only
 	l2 := txLink()
 	l2.set("get_ptt", "PTT: 0")
-	p2, clk2 := startPoller(t, l2, meterCaps())
-	p2.SetInterest(Dashboard)
+	_, clk2 := startPoller(t, l2, meterCaps(), initialPollerInterest(Dashboard))
 	plEventually(t, "first read", func() bool { return getPTTCount(l2) >= 1 })
 	settle()
 	clk2.Advance(time.Second)
@@ -830,9 +862,7 @@ func TestPollerNoProbeAtPageWithoutGuardOrAfterHooksCleared(t *testing.T) {
 	// hooks cleared: the probe stops
 	l3 := txLink()
 	l3.set("get_ptt", "PTT: 0")
-	p3, clk3 := startPoller(t, l3, meterCaps())
-	p3.SetHooks(Hooks{SWR: func(float64, bool) {}})
-	p3.SetInterest(Dashboard)
+	p3, clk3 := startPoller(t, l3, meterCaps(), initialPollerHooks(Hooks{SWR: func(float64, bool) {}}), initialPollerInterest(Dashboard))
 	plEventually(t, "first read", func() bool { return getPTTCount(l3) >= 1 })
 	settle()
 	p3.SetHooks(Hooks{})

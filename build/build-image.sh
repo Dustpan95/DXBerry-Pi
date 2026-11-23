@@ -64,13 +64,15 @@ REQUIRED_FILES=(
   provision/templates/interfaces-eth0.tmpl provision/templates/interfaces-wlan0.tmpl
   provision/templates/journald-dxberry.conf provision/templates/dxberry-journal-link.service provision/templates/dxberry-netwatch.service
   provision/bin/dxberry-radio provision/lib/radio.sh provision/lib/radio_udev.sh provision/lib/rigctld.sh
+  provision/bin/dxberry-radio-event provision/templates/dxberry-radio-reconcile.service
+  provision/templates/dxberry-radio-reconcile.path provision/templates/dxberry-radio-reconcile.timer
   provision/lib/gps.sh provision/lib/apps/graywolf.sh provision/share/radio-profiles.tsv
   provision/templates/rigctld@.service provision/templates/dxberry-radio-hotplug.service provision/templates/dxberry-radio-wire.service
   provision/templates/dxberry-radio.tmpfiles provision/templates/70-dxberry-radio.rules.head
   provision/templates/dxberry-audio.conf provision/templates/chrony-dxberry.conf provision/templates/gpsd-default.tmpl
-  provision/bin/dxberry-status provision/lib/status.sh
+  provision/bin/dxberry-status provision/lib/status.sh provision/lib/capture-diagnostics.sh
   provision/lib/station.sh provision/templates/dxberryd.service provision/templates/nginx-dxberry.conf provision/templates/pam-dxberry
-  provision/bin/dxberryd station/web/index.html station/web/dxberry.js station/web/dxberry.css
+  provision/bin/dxberryd provision/bin/dxberry-preset provision/bin/dxberry-program-state station/web/index.html station/web/dxberry.js station/web/dxberry.css
   station/web/settings.js station/web/updates.js
   provision/bin/dxberry-config provision/lib/settings.sh provision/templates/dxberry-config-boot.service
   provision/bin/dxberry-update provision/lib/update.sh
@@ -78,7 +80,7 @@ REQUIRED_FILES=(
   provision/templates/nginx-pat.conf provision/templates/dxberry-ardop@.service
   provision/bin/dxberry-logbook provision/lib/logbook.sh provision/lib/apps/wavelog.sh provision/templates/nginx-wavelog.conf
   provision/templates/dxberry-logbridge.service provision/templates/dxberry-logbook-flush.service provision/templates/dxberry-logbook-flush.timer
-  provision/bin/dxberry-app provision/lib/screen.sh provision/lib/apps.sh provision/share/apps.tsv
+  provision/bin/dxberry-app provision/lib/screen.sh provision/lib/apps.sh provision/lib/wsjtx.sh provision/share/apps.tsv provision/share/wsjtx-native-protocol
   provision/lib/apps/fldigi.sh provision/lib/apps/flrig.sh provision/lib/apps/js8call.sh provision/lib/apps/qsstv.sh provision/lib/apps/wsjtx.sh
   provision/templates/dxberry-screen@.service provision/templates/dxberry-apps.tmpfiles
   provision/bin/dxberry-audio provision/templates/dxberry-audio@.service
@@ -88,6 +90,9 @@ REQUIRED_FILES=(
   station/web/vendor/xterm/addon-fit.js station/web/vendor/xterm/LICENSE station/web/vendor/xterm/LICENSE.addon-fit station/web/vendor/xterm/VERSION
 )
 EXECUTABLE_FILES=(
+  provision/bin/dxberry-preset
+  provision/bin/dxberry-radio-event
+  provision/bin/dxberry-program-state
   provision/bin/dxberry-preboot provision/bin/dxberry-provision provision/bin/dxberry-netwatch provision/bin/dxberry-radio
   provision/bin/dxberry-status provision/bin/dxberry-config provision/bin/dxberry-update provision/bin/dxberry-logbook provision/bin/dxberry-app provision/bin/dxberry-audio
   boot/Automation_Custom_PreScript.sh boot/Automation_Custom_Script.sh
@@ -107,6 +112,10 @@ check_tree() {
       ok=0
     fi
   done
+  if [[ -L $ROOT/provision/bin/dxberry-program-state ]]; then
+    echo "not a regular helper: provision/bin/dxberry-program-state" >&2
+    ok=0
+  fi
   for f in "$ROOT"/provision/bin/* "$ROOT"/provision/lib/*.sh "$ROOT"/provision/lib/apps/*.sh "$ROOT"/boot/*.sh; do
     # dxberryd is the built Go binary, not a script; anything else without a #! line is not one either
     [[ $f == "$ROOT/provision/bin/dxberryd" ]] && continue
@@ -331,6 +340,12 @@ if ! ln -sf /opt/dxberry/bin/dxberry-status "$MNT/root/usr/local/sbin/dxberry-st
 fi
 if ! ln -sf /opt/dxberry/bin/dxberry-config "$MNT/root/usr/local/sbin/dxberry-config"; then
   die "failed to symlink dxberry-config"
+fi
+if ! ln -sf /opt/dxberry/bin/dxberry-preset "$MNT/root/usr/local/sbin/dxberry-preset"; then
+  die "failed to symlink dxberry-preset"
+fi
+if ! ln -sf /opt/dxberry/bin/dxberry-program-state "$MNT/root/usr/local/sbin/dxberry-program-state"; then
+  die "failed to symlink dxberry-program-state"
 fi
 if ! ln -sf /opt/dxberry/bin/dxberry-update "$MNT/root/usr/local/sbin/dxberry-update"; then
   die "failed to symlink dxberry-update"

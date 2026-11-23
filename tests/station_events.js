@@ -41,7 +41,7 @@ FakeSocket.prototype.close = function () { this.closed = true; };
 const ctx = {
   document: doc, console, fetch, JSON, Promise, encodeURIComponent, Date, Math, Object, String, Array, Node: function () {},
   location: { pathname: "/", search: "", protocol: "https:", host: "pi.local", assign() {} },
-  localStorage: { getItem: () => null }, WebSocket: FakeSocket,
+  localStorage: { getItem: () => null }, WebSocket: FakeSocket, URLSearchParams,
   setInterval: (fn, ms) => { intervals.push({ fn, ms }); return intervals.length; },
   setTimeout: (fn, ms) => { timeouts.push({ fn, ms }); return timeouts.length; }, clearTimeout() {},
   addEventListener() {}, dashRender() {}, progRender() {},

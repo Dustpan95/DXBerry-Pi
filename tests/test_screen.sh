@@ -72,8 +72,9 @@ app_gamma_command() { echo "gamma command $1 $2" >> "$TEST_TMP/appcalls"; printf
 GAMMA
   { cat "$DXB_ROOT/provision/share/apps.tsv"; printf 'gamma\tGamma\tradio\tapt:gamma\t-\tA program for the tests\n'; } > "$DXB_APPS_TSV"
   fx_scene "$DXB_SYSFS_ROOT" two-digirigs
-  # radio2's CAT is the second digirig's serial port in this scene
-  DXB_RADIOS=$(jq -c '.radios.radio2.cat.path = "usb-0:1.2:1.0"' <<< "$DXB_RADIOS")
+  # Match radio2's pins to the second DigiRig in this synthetic scene.
+  DXB_RADIOS=$(jq -c '.radios.radio2.cat.path = "usb-0:1.2:1.0"
+    | .radios.radio2.cat.serial = "0001" | .radios.radio2.audio.vidpid = "0d8c:013c"' <<< "$DXB_RADIOS")
   printf '%s\n' "$DXB_RADIOS" > "$DXB_RADIOS_FILE"
 }
 # sc_owned RADIO APP: APP owns RADIO, and RADIO's rigctld is running.
@@ -170,12 +171,21 @@ test_session_unit_template_runs_prepare_as_root_and_program_as_dxbapps() {
 # ---- beyond the brief's eight ------------------------------------------------------------
 
 # The unit file is exactly the brief's, plus the ExecStopPost line of the stopped/waiting ruling.
+test_screen_generation_prefix_precedes_presence_and_preparation() {
+  local u=$DXB_ROOT/provision/templates/dxberry-screen@.service
+  assert_eq "$(grep '^ExecCondition=' "$u")" "$(printf '%s\n' 'ExecCondition=+/opt/dxberry/bin/dxberry-program-state advance' 'ExecCondition=+/opt/dxberry/bin/dxberry-app present %i')"
+  assert_eq "$(grep '^ExecStartPre=' "$u")" 'ExecStartPre=+/opt/dxberry/bin/dxberry-app prepare %i'
+  assert_file_contains "$u" 'ExecStopPost=+/opt/dxberry/bin/dxberry-app stopped %i'
+  assert_file_not_contains "$u" 'ExecStopPost=+/opt/dxberry/bin/dxberry-program-state'
+  assert_file_not_contains "$u" 'StateDirectory='
+}
+
 test_screen_unit_template_and_tmpfiles_are_exact() {
   local u=$DXB_ROOT/provision/templates/dxberry-screen@.service
   assert_file_contains "$u" "ExecStopPost=+/opt/dxberry/bin/dxberry-app stopped %i"
   assert_file_contains "$u" "SupplementaryGroups=audio dialout dxbscreen"
   assert_file_contains "$u" "KillMode=mixed"
-  assert_eq "$(grep -c . "$u")" "20"
+  assert_eq "$(grep -c . "$u")" "21"
   assert_eq "$(cat "$DXB_ROOT/provision/templates/dxberry-apps.tmpfiles")" \
     "$(printf '%s\n' "d /run/dxberry/screens 3770 root dxbscreen -" "d /run/dxberry/sessions 0750 root dxbscreen -" "d /run/dxberry/audio 0750 root dxbscreen -")"
 }
@@ -229,6 +239,19 @@ test_screen_stopped_unkeys_a_radio_keyed_over_cat() (
   sc_replug radio2; sc_flrig_module; sc_set_control radio2 flrig; : > "$TEST_TMP/rigctl-calls"
   assert_ok sc_app stopped flrig-radio2
   assert_eq "$(cat "$TEST_TMP/rigctl-calls")" ""
+)
+
+test_screen_stopped_unkeys_when_generation_state_is_unusable() (
+  sc_env; sc_owned radio2 gamma
+  mkdir -p "$DXB_STATE_DIR/station"
+  # A regular file where the private directory belongs makes advancement fail.
+  printf 'unusable tracking state\n' > "$DXB_STATE_DIR/station/program-state"
+  printf '#!/bin/bash\necho "rigctl $*" >> "$TEST_TMP/rigctl-calls"\n' > "$TEST_TMP/bin/rigctl"
+  chmod 755 "$TEST_TMP/bin/rigctl"
+  : > "$TEST_TMP/rigctl-calls"
+  assert_ok env DXB_RIGCTL="$TEST_TMP/bin/rigctl" "$DXB_ROOT/provision/bin/dxberry-app" stopped gamma-radio2
+  assert_eq "$(cat "$TEST_TMP/rigctl-calls")" 'rigctl -m 2 -r 127.0.0.1:4534 T 0'
+  assert_eq "$(cat "$DXB_STATE_DIR/station/program-state")" 'unusable tracking state'
 )
 
 # prepare writes the session's environment (0640 root:dxbscreen) in root's own sessions
@@ -357,6 +380,30 @@ test_screen_xvnc_and_openbox_argv() {
 
 # the screen answer reads its labels from the env file as data (a file that tries to run code is
 # never run), only from a regular file, and says when the caller cannot open screens yet
+test_screen_unit_state_requires_a_successful_manager_read() (
+  local output rc expected
+  export SCREEN_STATE=active SCREEN_RC=0
+  export DXB_SYSTEMCTL=$TEST_TMP/systemctl
+  cat > "$DXB_SYSTEMCTL" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >> "$TEST_TMP/state-calls"
+[[ $* == 'show --property=ActiveState --value -- example.service' ]] || exit 2
+printf '%s\n' "$SCREEN_STATE"
+exit "$SCREEN_RC"
+SH
+  chmod +x "$DXB_SYSTEMCTL"
+  for output in active reloading refreshing deactivating activating inactive failed unknown '' future; do
+    SCREEN_STATE=$output; SCREEN_RC=0
+    case $output in active|reloading|refreshing|deactivating) expected=running ;; activating) expected=starting ;; inactive) expected=stopped ;; failed) expected=failed ;; *) expected=unknown ;; esac
+    assert_eq "$(dxb_screen_unit_state example.service)" "$expected"
+  done
+  for rc in 1 3 124; do
+    SCREEN_STATE=inactive; SCREEN_RC=$rc
+    assert_eq "$(dxb_screen_unit_state example.service)" unknown
+  done
+  assert_file_not_contains "$TEST_TMP/state-calls" is-failed
+)
+
 test_screen_answer_states_and_never_runs_the_env_file() {
   sc_env; sc_owned radio2 gamma
   sc_app screen gamma-radio2 --json > /dev/null 2>&1; assert_eq "$?" "3"     # never prepared, not running
@@ -503,9 +550,11 @@ test_screen_session_refuses_root_and_a_missing_env() {
 test_screen_usage_lines() {
   local h; h=$(sc_app -h)
   assert_contains "$h" "screen SESSION"
+  assert_contains "$h" "verify-present SESSION"
   assert_contains "$h" "Exit:"
-  assert_eq "$(sed -n '2,14p' "$DXB_ROOT/provision/bin/dxberry-app" | grep -vc '^#')" "0"
-  assert_eq "$(sed -n '15p' "$DXB_ROOT/provision/bin/dxberry-app" | grep -c '^#')" "0"
+  assert_contains "$h" "9 did not start."
+  assert_not_contains "$h" 'set -uo pipefail'
+  assert_not_contains "$h" 'DXB_LIB='
 }
 
 # sc_fakes: stand-ins for Xvnc (records its arguments, then makes its X socket and runs), openbox

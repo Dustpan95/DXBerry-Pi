@@ -1,6 +1,6 @@
 # DXBerry-Pi Radio Plumbing Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Follow the tasks in order and track completion with checkboxes.
 
 **Goal:** Plug radios into the Pi and get stable device names, one hamlib `rigctld` per radio, a GPS feeding time and position, and a `dxberry-radio` command that records which application owns which radio and hands it over on request.
 
@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- License GPL-2.0-or-later. **No author or attribution lines of any kind** in files or commit messages: no AI-assistant or model-vendor names, no co-author or session trailers, no "Generated with" footers. CI greps for them and fails. Commit messages: imperative subject + plain body, nothing else.
+- License GPL-2.0-or-later. **No author or attribution lines of any kind** in files or commit messages: no tooling footers or session trailers. CI greps for them and fails. Commit messages: imperative subject + plain body, nothing else.
 - No secrets in the tree. **No version pins** (packages installed by name only). Nothing runs against a Pi from a test.
 - All scripts `#!/bin/bash`, `set -uo pipefail` (no `set -e`), shellcheck-clean: `shellcheck -x provision/bin/* provision/lib/*.sh provision/lib/apps/*.sh build/build-image.sh boot/*.sh tests/*.sh`. `build/build-image.sh --check` prints `tree ok`. `tests/run.sh` prints `ok` for every test and `0 failures` with no stray stderr.
 - Tests need only bash 5, awk, jq; every external command (`udevadm`, `systemctl`, `rigctl`, `gpspipe`, `apt-get`, `ip`, `curl`) is stubbed as a shell function or by `DXB_*` overrides. Tests must not need root.
@@ -2548,7 +2548,7 @@ git commit -m "Provision radio plumbing on first boot and ship it in the image"
 **Files:**
 - Create: `.superpowers/sdd/2026-09-09-radio-plumbing/acceptance.md` (gitignored ledger entry; results only, never secrets)
 
-This task is run by the controller with the operator, not by an implementer subagent. Nothing here changes the repository except fixes found, which go through their own brief/review cycle.
+Perform this hardware check with the operator. Nothing here changes the repository except fixes found, which go through their own brief/review cycle.
 
 - [ ] **Step 1: Deploy the tree** to the Pi at 10.0.0.90 the way rc3 was deployed (`git archive HEAD provision | ssh … tar -x -C /opt/dxberry`), then `sudo dxberry-provision` (run mode). Confirm: packages present (`rigctld --version`, `gpsd -V`, `chronyc tracking`), `systemd-timesyncd` masked, `dxberry-radio-hotplug.service` enabled, `/run/dxberry/rigctld` exists, status file lists the radio/gps/time lines.
 - [ ] **Step 2: Spec §12 items 5–6** with whatever interface the operator plugs in: `dxberry-radio scan` shows it with the expected functions; after `add`, `udevadm info -q property /dev/snd/controlC*` shows `ID_PATH` matching the rule, `cat /sys/class/sound/card*/id` shows `RADIO1` after replug, `/dev/dxberry/radio1-cat` exists, `aplay -l` lists USB first.

@@ -237,6 +237,37 @@ dxb_netsafe_install_unit() {
 dxb_settings_job_unit() { [[ -f $DXB_CONFIG_JOB_FILE ]] && jq -r '.unit // empty' "$DXB_CONFIG_JOB_FILE" 2> /dev/null; return 0; }
 dxb_settings_job_running() { local u; u=$(dxb_settings_job_unit); [[ -n $u ]] && systemctl is-active --quiet "$u"; }
 
+_dxb_settings_new_run_id() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
+
+# Atomic process-visible publication with exact readback. These records do not
+# establish a manager invocation or grant permission to operate a radio.
+_dxb_settings_write_record() {
+  local file=$1 value=$2
+  mkdir -p "${file%/*}" || return 6
+  dxb_write_if_changed "$file" "$value" 600 || true
+  [[ -f $file && ! -L $file && $(< "$file") == "$value" ]] || return 6
+}
+
+# Completion belongs to the captured request and is hidden until execution
+# cleanup releases its gate. Legacy, unrelated or unavailable evidence is null.
+_dxb_settings_result_for_job() (
+  local job=$1 id unit fd lock=$DXB_RUN_DIR/config-apply.lock result
+  id=$(jq -er 'select(.version == 2) | .run_id | select(type == "string" and test("^[0-9a-f]{32}$"))' <<< "$job" 2>/dev/null) || { echo null; return; }
+  unit=$(jq -r .unit <<< "$job")
+  [[ $id != 00000000000000000000000000000000 && $unit == "dxberry-job-config-$id" ]] || { echo null; return; }
+  [[ -f $lock && ! -L $lock && $(stat -c '%u:%h:%s:%a' "$lock" 2>/dev/null) == 0:1:0:600 ]] || { echo null; return; }
+  if ! exec {fd}< "$lock"; then echo null; return; fi
+  if ! flock -s -n "$fd" 2>/dev/null; then echo null; return; fi
+  [[ $lock -ef /proc/self/fd/$fd && ! -L $lock && $(stat -Lc '%u:%h:%s:%a' "/proc/self/fd/$fd" 2>/dev/null) == 0:1:0:600 ]] || { echo null; return; }
+  result=$(jq -sc --arg id "$id" --arg unit "$unit" '
+    (if length == 1 then .[0] else null end) |
+    if type == "object" and .version == 2 and .run_id == $id and .unit == $unit
+      and (.exit | type == "number" and . == floor and . >= 0 and . <= 255)
+      and (.finished | type == "number" and . == floor and . >= 0)
+    then . else null end' "$DXB_CONFIG_RESULT" 2>/dev/null) || result=null
+  printf '%s\n' "${result:-null}"
+)
+
 # dxb_settings_push_graywolf: Graywolf keeps its own copy of POSITION_LOG and the GPS source, and a
 # plain provisioner run does not reseed it, so the new values go through their one seed function
 # each (spec 10.2) - never a whole --reseed. 0 ok, 1 failed (the seed functions record why).

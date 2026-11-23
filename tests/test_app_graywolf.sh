@@ -29,14 +29,30 @@ gwapp_curl() {
   if [[ -n $GW_FAIL_PATH && $p == "$GW_FAIL_PATH" ]]; then
     GW_CALL_COUNT[$p]=$(( ${GW_CALL_COUNT[$p]:-0} + 1 ))
     if [[ -z $GW_FAIL_ON_CALL ]] || (( GW_CALL_COUNT[$p] == GW_FAIL_ON_CALL )); then
+      echo 'curl: (22) The requested URL returned error: 500' >&2
       return 22
     fi
   fi
+  # Mirror the released API's validation, rather than accepting any JSON body.
+  # This catches field/direction/type drift even before the real-API integration run.
+  case "$m $p" in
+    'POST /audio-devices'|'PUT /audio-devices/'*)
+      if [[ $p != */gain ]]; then
+        jq -e '.name != "" and (.direction == "input" or .direction == "output")
+          and .source_type == "soundcard" and (.device_path | type == "string")
+          and .sample_rate == 48000 and .channels == 1 and .format == "s16le"' <<< "$data" > /dev/null || return 22
+      fi ;;
+    'POST /channels'|'PUT /channels/'*)
+      jq -e '.modem_type != null and .modem_type != "" and .input_device_id != .output_device_id
+        and (has("backing")|not) and (has("ptt")|not)' <<< "$data" > /dev/null || return 22 ;;
+    'POST /ptt'|'PUT /ptt/'*)
+      jq -e '.persist == null or (.persist | type == "number")' <<< "$data" > /dev/null || return 22 ;;
+  esac
   case "$m $p" in
     "GET /auth/setup") echo '{"needs_setup":false}' ;;
     "POST /auth/login"|"POST /auth/logout") echo '{}' ;;
     "GET /audio-devices") echo "$GW_AUDIO" ;;
-    "POST /audio-devices") echo '{"id":11}' ;;
+    "POST /audio-devices") jq -c 'if .direction == "output" then {id:12} else {id:11} end' <<< "$data" ;;
     "PUT /audio-devices/"*) echo '{"id":11}' ;;
     "DELETE /audio-devices/"*) echo '{}' ;;
     "GET /channels") echo "$GW_CHANNELS" ;;
@@ -44,7 +60,9 @@ gwapp_curl() {
     "PUT /channels/"*) echo '{"id":21}' ;;
     "GET /channels/"*) echo '{"id":21,"name":"radio1"}' ;;
     "DELETE /channels/"*) echo '{}' ;;
-    "GET /ptt/"*) (( GW_PTT_404 )) && return 22; echo '{"id":31,"channel_id":21,"method":"vox","dwait_ms":30}' ;;
+    "GET /ptt/"*)
+      if (( GW_PTT_404 )); then echo 'curl: (22) The requested URL returned error: 404' >&2; return 22; fi
+      echo '{"id":31,"channel_id":21,"method":"vox","dwait_ms":30,"slot_time_ms":37,"persist":0}' ;;
     "POST /ptt"|"PUT /ptt/"*) echo '{"id":31}' ;;
     "POST /ptt/test-rigctld") echo '{"ok":true,"message":"","latency_ms":3}' ;;
     *) return 22 ;;
@@ -53,14 +71,15 @@ gwapp_curl() {
 # named for this file: every tests/test_*.sh is sourced into one process, so a bare calls()
 # here would be silently replaced by another file's helper of the same name
 gwapp_calls() { cat "$TEST_TMP/calls"; }
+gwapp_body() { sed -n "s|^$1 $2 ||p" "$TEST_TMP/calls" | head -1; }
 
 test_gwapp_wire_creates_device_channel_and_rigctld_ptt() {
   gwapp_env
   assert_ok app_graywolf_wire radio1
   assert_contains "$(gwapp_calls)" 'POST /auth/login {"username":"admin","password":"hunter2hunter2"}'
-  assert_contains "$(gwapp_calls)" 'POST /audio-devices {"name":"radio1","source_type":"soundcard","source_path":"plughw:CARD=RADIO1,DEV=0","sample_rate":48000}'
-  assert_contains "$(gwapp_calls)" 'POST /channels {"name":"radio1","input_device_id":11,"output_device_id":11,"input_channel":0,"output_channel":0}'
-  assert_contains "$(gwapp_calls)" 'POST /ptt {"channel_id":21,"method":"rigctld","device_path":"127.0.0.1:4532","invert":false,"persist":true}'
+  assert_eq "$(grep -c '^POST /audio-devices ' "$TEST_TMP/calls")" 2
+  assert_eq "$(gwapp_body POST /channels | jq -c '{input_device_id,output_device_id,modem_type,bit_rate,mark_freq,space_freq}')" '{"input_device_id":11,"output_device_id":12,"modem_type":"afsk","bit_rate":1200,"mark_freq":1200,"space_freq":2200}'
+  assert_contains "$(gwapp_calls)" 'POST /ptt {"channel_id":21,"method":"rigctld","device_path":"127.0.0.1:4532","invert":false}'
   assert_contains "$(gwapp_calls)" 'POST /ptt/test-rigctld {"host":"127.0.0.1","port":4532}'
   assert_contains "$(gwapp_calls)" 'POST /auth/logout'
   # a new channel is only fully live after a restart (the rc2 Pi kept deleted channels in the
@@ -72,7 +91,7 @@ test_gwapp_wire_creates_device_channel_and_rigctld_ptt() {
 
 test_gwapp_wire_restarts_when_only_the_audio_device_is_new() {
   gwapp_env
-  GW_CHANNELS='[{"id":21,"name":"radio1","input_device_id":5,"output_device_id":5}]'
+  GW_CHANNELS='[{"id":21,"name":"radio1","input_device_id":5,"output_device_id":6,"modem_type":"afsk"}]'
   GW_PTT_404=0
   assert_ok app_graywolf_wire radio1
   assert_contains "$(gwapp_calls)" 'POST /audio-devices'
@@ -82,13 +101,14 @@ test_gwapp_wire_restarts_when_only_the_audio_device_is_new() {
 
 test_gwapp_wire_updates_existing_by_name_and_keeps_tuning() {
   gwapp_env
-  GW_AUDIO='[{"id":5,"name":"other"},{"id":11,"name":"radio1","source_path":"plughw:0,0","gain_db":-6}]'
-  GW_CHANNELS='[{"id":21,"name":"radio1","input_device_id":5,"output_device_id":5,"modem_type":"afsk1200","num_slicers":5}]'
+  GW_AUDIO='[{"id":5,"name":"other"},{"id":11,"name":"radio1","direction":"input","device_path":"plughw:0,0","gain_db":-6},{"id":12,"name":"radio1 TX","direction":"output","gain_db":0}]'
+  GW_CHANNELS='[{"id":21,"name":"radio1","input_device_id":5,"output_device_id":6,"modem_type":"afsk","bit_rate":300,"profile":"B","num_slicers":5,"enabled":false,"backing":{"summary":"modem"},"ptt":{"method":"vox"}}]'
   GW_PTT_404=0
   assert_ok app_graywolf_wire radio1
-  assert_contains "$(gwapp_calls)" 'PUT /audio-devices/11 {"name":"radio1","source_path":"plughw:CARD=RADIO1,DEV=0","gain_db":-6,"source_type":"soundcard","sample_rate":48000}'
-  assert_contains "$(gwapp_calls)" 'PUT /channels/21 {"name":"radio1","input_device_id":11,"output_device_id":11,"modem_type":"afsk1200","num_slicers":5,"input_channel":0,"output_channel":0}'
-  assert_contains "$(gwapp_calls)" 'PUT /ptt/21 {"channel_id":21,"method":"rigctld","dwait_ms":30,"device_path":"127.0.0.1:4532","invert":false,"persist":true}'
+  assert_eq "$(gwapp_body PUT /audio-devices/11 | jq -c '{direction,device_path,gain_db}')" '{"direction":"input","device_path":"plughw:CARD=RADIO1,DEV=0","gain_db":-6}'
+  assert_contains "$(gwapp_calls)" 'PUT /audio-devices/12/gain {"gain_db":0}'
+  assert_eq "$(gwapp_body PUT /channels/21 | jq -c '{input_device_id,output_device_id,modem_type,bit_rate,profile,num_slicers,enabled}')" '{"input_device_id":11,"output_device_id":12,"modem_type":"afsk","bit_rate":300,"profile":"B","num_slicers":5,"enabled":false}'
+  assert_eq "$(gwapp_body PUT /ptt/21 | jq -c '{method,dwait_ms,slot_time_ms,persist}')" '{"method":"rigctld","dwait_ms":30,"slot_time_ms":37,"persist":0}'
   assert_not_contains "$(gwapp_calls)" 'POST /audio-devices'
   assert_not_contains "$(gwapp_calls)" 'systemctl'                    # an update applies live; no restart
 }
@@ -96,9 +116,9 @@ test_gwapp_wire_updates_existing_by_name_and_keeps_tuning() {
 test_gwapp_ptt_payloads_per_method() {
   gwapp_env
   local r; r=$(jq -c '.radios.radio1' <<< "$DXB_RADIOS")
-  assert_eq "$(dxb_gwapp_ptt_payload radio1 "$(jq -c '.ptt.method="cm108"' <<< "$r")" 21)" '{"channel_id":21,"method":"cm108","device_path":"/dev/dxberry/radio1-hid","gpio_pin":3,"invert":false,"persist":true}'
-  assert_eq "$(dxb_gwapp_ptt_payload radio1 "$(jq -c '.ptt.method="gpio" | .ptt.gpio_line=17' <<< "$r")" 21)" '{"channel_id":21,"method":"gpio","device_path":"/dev/gpiochip0","gpio_line":17,"invert":false,"persist":true}'
-  assert_eq "$(dxb_gwapp_ptt_payload radio1 "$(jq -c '.ptt.method="vox"' <<< "$r")" 21)" '{"channel_id":21,"method":"vox","invert":false,"persist":true}'
+  assert_eq "$(dxb_gwapp_ptt_payload radio1 "$(jq -c '.ptt.method="cm108"' <<< "$r")" 21)" '{"channel_id":21,"method":"cm108","device_path":"/dev/dxberry/radio1-hid","gpio_pin":3,"invert":false}'
+  assert_eq "$(dxb_gwapp_ptt_payload radio1 "$(jq -c '.ptt.method="gpio" | .ptt.gpio_line=17' <<< "$r")" 21)" '{"channel_id":21,"method":"gpio","device_path":"/dev/gpiochip0","gpio_line":17,"invert":false}'
+  assert_eq "$(dxb_gwapp_ptt_payload radio1 "$(jq -c '.ptt.method="vox"' <<< "$r")" 21)" '{"channel_id":21,"method":"vox","invert":false}'
 }
 
 test_gwapp_wire_fails_with_7_on_api_error() {
@@ -118,8 +138,8 @@ test_gwapp_wire_fails_on_failed_list_fetch_without_duplicating() {
 
 test_gwapp_wire_put_bodies_are_never_empty() {
   gwapp_env
-  GW_AUDIO='[{"id":11,"name":"radio1","source_path":"plughw:0,0"}]'
-  GW_CHANNELS='[{"id":21,"name":"radio1","input_device_id":11,"output_device_id":11}]'
+  GW_AUDIO='[{"id":11,"name":"radio1","direction":"input","device_path":"plughw:0,0"},{"id":12,"name":"radio1 TX","direction":"output"}]'
+  GW_CHANNELS='[{"id":21,"name":"radio1","input_device_id":11,"output_device_id":12,"modem_type":"afsk"}]'
   GW_PTT_404=0
   assert_ok app_graywolf_wire radio1
   local line m p body puts=0
@@ -136,15 +156,47 @@ test_gwapp_wire_put_bodies_are_never_empty() {
 
 test_gwapp_unwire_deletes_by_name_and_tolerates_absence() {
   gwapp_env
-  GW_AUDIO='[{"id":11,"name":"radio1"}]'; GW_CHANNELS='[{"id":21,"name":"radio1"}]'
+  GW_AUDIO='[{"id":11,"name":"radio1","direction":"input"},{"id":12,"name":"radio1 TX","direction":"output"},{"id":13,"name":"other"}]'; GW_CHANNELS='[{"id":21,"name":"radio1"}]'
   assert_ok app_graywolf_unwire radio1
   assert_contains "$(gwapp_calls)" 'DELETE /channels/21?cascade=true'
   assert_contains "$(gwapp_calls)" 'DELETE /audio-devices/11'
+  assert_contains "$(gwapp_calls)" 'DELETE /audio-devices/12'
+  assert_not_contains "$(gwapp_calls)" 'DELETE /audio-devices/13'
   assert_contains "$(gwapp_calls)" 'systemctl --no-block try-restart graywolf.service'   # deleted channels linger in the modem until then
   gwapp_env
   assert_ok app_graywolf_unwire radio1
   assert_not_contains "$(gwapp_calls)" 'DELETE'
   assert_not_contains "$(gwapp_calls)" 'systemctl'
+}
+
+test_gwapp_rejects_an_existing_audio_name_with_the_wrong_direction() {
+  gwapp_env
+  GW_AUDIO='[{"id":11,"name":"radio1","direction":"output"}]'
+  app_graywolf_wire radio1
+  assert_eq "$?" 7
+  assert_not_contains "$(gwapp_calls)" 'PUT /audio-devices/11'
+  assert_not_contains "$(gwapp_calls)" 'POST /channels'
+}
+
+test_gwapp_ptt_read_failure_never_overwrites_timing() {
+  gwapp_env
+  GW_FAIL_PATH=/ptt/21
+  app_graywolf_wire radio1
+  assert_eq "$?" 7
+  assert_not_contains "$(gwapp_calls)" 'POST /ptt '
+  assert_not_contains "$(gwapp_calls)" 'PUT /ptt/'
+}
+
+test_gwapp_missing_output_device_is_created_before_rebinding_channel() {
+  gwapp_env
+  GW_AUDIO='[{"id":11,"name":"radio1","direction":"input","gain_db":-9}]'
+  GW_CHANNELS='[{"id":21,"name":"radio1","input_device_id":11,"output_device_id":0,"modem_type":"afsk"}]'
+  GW_PTT_404=0
+  assert_ok app_graywolf_wire radio1
+  assert_eq "$(grep -c '^POST /audio-devices ' "$TEST_TMP/calls")" 1
+  assert_eq "$(gwapp_body POST /audio-devices | jq -r .direction)" output
+  assert_eq "$(gwapp_body PUT /channels/21 | jq -r .output_device_id)" 12
+  assert_contains "$(gwapp_calls)" 'systemctl --no-block restart graywolf.service'
 }
 
 test_gwapp_contract_functions() {

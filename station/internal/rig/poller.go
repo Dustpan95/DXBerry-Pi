@@ -115,18 +115,20 @@ type Poller struct {
 	// transmitting: the station itself keys the radio (a carrier or a PTT window): SWR and ALC are
 	// read at the transmit cadence even where the radio never reports PTT on CAT (vox, none)
 	transmitting atomic.Bool
+	observing    atomic.Bool // at most one on-demand observation per poller
 	wake         chan struct{}
 
 	wmu sync.Mutex // serializes writes against each other
 
-	mu       sync.Mutex
-	readPTTv bool // the last PTT value a READ reported (st.PTT may hold an optimistic one)
-	misses   int  // poll cycles in a row that tried the radio and got no successful read
-	st       State
-	caps     Caps
-	interest Interest
-	subs     []chan State
-	hooks    Hooks
+	mu               sync.Mutex
+	observationEpoch uint64 // link/capability/station-key transitions invalidate observations
+	readPTTv         bool   // the last PTT value a READ reported (st.PTT may hold an optimistic one)
+	misses           int    // poll cycles in a row that tried the radio and got no successful read
+	st               State
+	caps             Caps
+	interest         Interest
+	subs             []chan State
+	hooks            Hooks
 }
 
 // NewPoller returns a poller for c. Run starts it.
@@ -147,7 +149,9 @@ func newPoller(l Link, caps Caps, clock Clock, log *slog.Logger) *Poller {
 	p.st = State{Answering: true, Levels: map[string]float64{}, Meters: map[string]float64{}, Optimistic: map[string]bool{}}
 	p.setCapsLocked(caps)
 	l.OnState(p.onState) // register first, then read the state
+	p.mu.Lock()          // callbacks can already be running after registration
 	p.st.Connected = l.Connected()
+	p.mu.Unlock()
 	return p
 }
 
@@ -165,6 +169,7 @@ func (p *Poller) setCapsLocked(c Caps) {
 // connection comes up).
 func (p *Poller) SetCaps(c Caps) {
 	p.mu.Lock()
+	p.observationEpoch++
 	p.setCapsLocked(c)
 	p.publishLocked()
 	p.mu.Unlock()
@@ -175,6 +180,9 @@ func (p *Poller) SetCaps(c Caps) {
 // the poller treats the radio as keyed for its SWR/ALC cadence whatever get_ptt answers.
 func (p *Poller) SetTransmitting(on bool) {
 	if p.transmitting.Swap(on) != on {
+		p.mu.Lock()
+		p.observationEpoch++
+		p.mu.Unlock()
 		p.nudge()
 	}
 }
@@ -241,6 +249,7 @@ func (p *Poller) nudge() {
 func (p *Poller) onState(up bool) {
 	p.mu.Lock()
 	if p.st.Connected != up {
+		p.observationEpoch++
 		p.st.Connected = up
 		p.publishLocked()
 	}

@@ -11,6 +11,7 @@ User=dxbapps
 Group=dxbapps
 SupplementaryGroups=audio dialout dxbscreen
 UMask=0007
+ExecCondition=+/opt/dxberry/bin/dxberry-program-state advance
 ExecCondition=+/opt/dxberry/bin/dxberry-app present %i
 ExecStartPre=+/opt/dxberry/bin/dxberry-app prepare %i
 ExecStart=/opt/dxberry/bin/dxberry-app session %i

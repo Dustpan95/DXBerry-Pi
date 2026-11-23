@@ -180,7 +180,7 @@ test_page_reads_only_fields_that_dxberry_status_produces() {
   cp "$TEST_TMP/pg-recent.json" "$TEST_TMP/st-recent.json"
   printf 'CALLSIGN=W0BTE\nLATITUDE=38.9\nLONGITUDE=-94.6\n' > "$DXB_BOOT_DIR/dxberry.txt"
   export DXB_UPDATE_CACHE=$TEST_TMP/state/update-check.json
-  echo '{"checked_at":1,"graywolf":{"update":true},"dxberry":{"update":false},"system":{"count":0}}' > "$DXB_UPDATE_CACHE"
+  echo '{"version":2,"checked_at":1,"graywolf":{"update":true},"dxberry":{"update":false},"system":{"count":0}}' > "$DXB_UPDATE_CACHE"
   st_cli --json || _fail "dxberry-status --json failed: $(cat "$TEST_TMP/err")"
   for f in $(pg_fields); do
     n=$(( n + 1 ))

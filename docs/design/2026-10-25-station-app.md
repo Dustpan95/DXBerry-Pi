@@ -185,7 +185,12 @@ Pi:
 - `nginx-dxberry-auth-endpoints.conf`: `/.dxberry-auth` now proxies to
   `http://127.0.0.1:8090/api/auth/check` (200 with a valid session cookie,
   401 otherwise); `@dxberry-login` redirects to `https://$http_host/login?next=…`.
-  The Pat (8081) and Wavelog (8082) sites are unchanged otherwise.
+  Both program sites retain the same login gate. If Pat (8081) returns a
+  gateway/unavailable error (502, 503 or 504), its proxy redirects to the station
+  console with a one-time warning through the shared `notice()` helper. The
+  warning explains how to start Pat from a radio card or inspect its log; opening
+  the URL never starts a program or changes radio ownership. The query marker is
+  removed while preserving other URL and history state. Wavelog (8082) is unchanged.
 - `dxb_webproxy_site_refresh` learns the new certificate source (§5.3) in
   place of Cockpit's `ws-certs.d`.
 
@@ -535,9 +540,25 @@ Every guard event is logged (`dxberryd[…]: radio codec: SWR guard tripped
 programs (installed, versions, kept notices), logbook, services (unit states),
 jobs, system (temperatures, load, memory, disk, uptime, network), updates.
 The system, programs, logbook and updates parts come from `dxberry-status
---json` run every 30 s (every 60 s when no browser is connected) and from
+--json` run at startup and every 30 s while an events client is connected, and from
 `dxberry-update check` on its own schedule, so the CLI stays the one source
 for those facts; the rig, audio, owner and job parts are the station's own.
+With no clients, periodic full reports pause. An aged one-shot status read
+requests a background refresh without waiting; concurrent reads coalesce and
+failed attempts also obey the 30 s read interval. State-changing calls retain
+their separate debounced refresh. Cached reports become stale after 90 s or
+after a failed attempt. See [idle reporting](idle-reporting.md); this scheduler
+does not pause radio control, guards, audio, running programs or update jobs.
+The standalone `dxberry-status` entry point runs reporting at a lower CPU
+priority (`nice` adjustment +10, capped by the OS). Report sections run one at a
+time, so their processes do not all compete with small radio audio buffers.
+On Linux, when `taskset` is available, the reporting process is also confined
+to one CPU from its existing allowed set. It never expands a caller-imposed
+CPU restriction. Affinity failure or a missing utility does not prevent a report.
+This changes only the reporting process and its
+children, never the daemon's radio-control handlers. It does not promote an
+already lower-priority report or change a shell that sources the command. If
+the priority utility is unavailable, the report still runs normally.
 `GET /api/status` returns the whole model; the dashboard renders from it.
 
 ### 10.2 Events
@@ -547,8 +568,8 @@ model on connect. Rig state for a radio goes out at that radio's poll rate.
 Jobs send progress lines. Guards and owner changes send notices. The page
 never polls; it reconnects the socket with backoff and shows a "reconnecting"
 chip meanwhile, with controls dimmed. A hidden tab closes its socket and opens
-it again, with a refresh, when shown, so a tab left in the background costs the
-idle status rate; a radio's page keeps it open while closing it would cost
+it again, with a refresh, when shown, so a tab left in the background does not
+keep periodic full reports running; a radio's page keeps it open while closing it would cost
 something (§9.2: the tab holds the transmitter, is keying or tuning, has a claim
 on its way, or plays the radio's audio).
 

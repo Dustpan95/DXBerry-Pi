@@ -22,6 +22,7 @@ au_env() {
     DXB_AUDIO_DIR=$TEST_TMP/run/audio DXB_AUDIO_WAIT_S=0 DXB_FAKE_EUID=0 DXB_SESSIONS_DIR=$TEST_TMP/run/sessions
   fx_scene "$DXB_SYSFS_ROOT" two-digirigs
   DXB_RADIOS=$(jq -c '.radios.radio2.cat.path = "usb-0:1.2:1.0"
+    | .radios.radio2.cat.serial = "0001" | .radios.radio2.audio.vidpid = "0d8c:013c"
     | .radios.codec = (.radios.radio1 | .label = "Codec" | .rigctld_port = 4536 | .audio.path = "usb-0:1.9:1.0")
     | .radios.gw = (.radios.radio1 | .label = "Packet" | .rigctld_port = 4538 | .owner = "graywolf")' <<< "$DXB_RADIOS")
   printf '%s\n' "$DXB_RADIOS" > "$DXB_RADIOS_FILE"

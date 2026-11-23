@@ -17,6 +17,7 @@
 # port is flrig's then, so rigctld gets neither it nor an RTS/DTR line on it.
 dxb_rigctld_env() {
   local name=$1 r=$2 kind=${3:-none} model port baud ptt cat='' pttdev='' rig_args='' ptt_args=''
+  local use_cat=false use_ptt=false use_hid=false pins binding
   model=$(jq -r '.rig.model' <<< "$r"); port=$(jq -r '.rigctld_port' <<< "$r")
   baud=$(jq -r '.rig.baud' <<< "$r"); ptt=$(jq -r '.rig.ptt_type' <<< "$r")
   [[ $(jq -r '.cat' <<< "$r") == null ]] || cat="/dev/dxberry/$name-cat"
@@ -44,7 +45,33 @@ dxb_rigctld_env() {
         else ptt_args=''; dxb_warn "radio $name: its PTT is a Pi GPIO pin, but no GPIO line is set; PTT is left off"; fi ;;
     esac
   fi
-  printf 'MODEL=%s\nPORT=%s\nRIG_ARGS=%s\nPTT_ARGS=%s\n' "$model" "$port" "$rig_args" "$ptt_args"
+  # Stable /dev names do not change when their pinned USB identity changes.
+  # Include only pins this process actually opens, not unrelated audio/labels
+  # or flrig's CAT pin. The extra environment value is metadata, not an argument.
+  [[ " $rig_args $ptt_args " == *" /dev/dxberry/$name-cat "* ]] && use_cat=true
+  [[ " $ptt_args " == *" /dev/dxberry/$name-ptt "* ]] && use_ptt=true
+  [[ " $ptt_args " == *" /dev/dxberry/$name-hid "* ]] && use_hid=true
+  pins=$(jq -cS --argjson c "$use_cat" --argjson p "$use_ptt" --argjson h "$use_hid" '
+    def pin: {path, vidpid, serial};
+    {version:1, cat:(if $c then (.cat | pin) else null end),
+     ptt_serial:(if $p then (.ptt_serial | pin) else null end),
+     hid:(if $h then (.hid | pin) else null end)}' <<< "$r") || return 6
+  binding=$(sha256sum <<< "$pins") || return 6
+  binding=${binding%% *}
+  [[ $binding =~ ^[0-9a-f]{64}$ ]] || return 6
+  printf 'MODEL=%s\nPORT=%s\nRIG_ARGS=%s\nPTT_ARGS=%s\nRIG_PINS_SHA256=%s\n' "$model" "$port" "$rig_args" "$ptt_args" "$binding"
+}
+
+# Check the expected intent before clearing it; caller serialization is still
+# required. Accepted --no-block work is not proof the process has restarted.
+_dxb_rigctld_pending_done() {
+  local file=$1 digest=$2
+  [[ -e $file || -L $file ]] || return 0
+  if [[ -f $file && ! -L $file && $(< "$file") == "$digest" ]]; then
+    rm -f -- "$file" && [[ ! -e $file && ! -L $file ]] && return 0
+  fi
+  dxb_error "rigctld restart intent changed or could not be cleared; try apply again"
+  return 6
 }
 
 dxb_rigctld_state() {
@@ -59,20 +86,41 @@ dxb_rigctld_state() {
 # the apply lock while a udev-triggered hotplug waits for it) would wait on itself otherwise; callers
 # that need rigctld ready poll for it. 0 ok, 6 error.
 dxb_rigctld_sync() {
-  local name=$1 r=$2 present=$3 kind=${4:-none} env f changed=0 unit="rigctld@$1.service"
+  local name=$1 r=$2 present=$3 kind=${4:-none} env f pending digest changed=0 retry=0 unit="rigctld@$1.service"
   f="$DXB_RIGCTLD_RUN_DIR/$name.env"
+  pending="$DXB_RIGCTLD_RUN_DIR/$name.restart-pending"
   mkdir -p "$DXB_RIGCTLD_RUN_DIR" 2> /dev/null || { dxb_error "cannot create $DXB_RIGCTLD_RUN_DIR"; return 6; }
-  env=$(dxb_rigctld_env "$name" "$r" "$kind")
-  if dxb_write_if_changed "$f" "$env" 644; then
-    [[ $(< "$f") == "$env" ]] || { dxb_error "could not write $f"; return 6; }
-    changed=1
+  env=$(dxb_rigctld_env "$name" "$r" "$kind") || { dxb_error "could not derive $unit configuration"; return 6; }
+  if [[ -e $f || -L $f ]] && [[ ! -f $f || -L $f ]]; then dxb_error "refusing a non-regular rigctld environment"; return 6; fi
+  if [[ -e $pending || -L $pending ]]; then
+    [[ -f $pending && ! -L $pending ]] || { dxb_error "refusing a non-regular rigctld restart intent"; return 6; }
+    retry=1
+  fi
+  [[ -f $f && $(< "$f") == "$env" ]] || changed=1
+  digest=$(sha256sum <<< "$env") || return 6
+  digest=${digest%% *}
+  [[ $digest =~ ^[0-9a-f]{64}$ ]] || return 6
+  if (( changed || retry )); then
+    # Intent precedes the environment publication. If publication or the
+    # restart request fails, a later apply still owes the restart.
+    dxb_write_if_changed "$pending" "$digest" 600 || : # unchanged is also success; read back below
+    [[ -f $pending && ! -L $pending && $(< "$pending") == "$digest" ]] || { dxb_error "could not retain $unit restart intent"; return 6; }
+  fi
+  if (( changed )); then
+    dxb_write_if_changed "$f" "$env" 644 || :
+    [[ -f $f && ! -L $f && $(< "$f") == "$env" ]] || { dxb_error "could not write $f"; return 6; }
   fi
   if (( present )); then
     if systemctl is-active --quiet "$unit"; then
-      (( changed )) && { systemctl --no-block restart "$unit" || { dxb_error "restart $unit failed"; return 6; }; dxb_info "$unit restarted (configuration changed)"; }
+      if (( changed || retry )); then
+        systemctl --no-block restart "$unit" || { dxb_error "restart $unit failed"; return 6; }
+        _dxb_rigctld_pending_done "$pending" "$digest" || return 6
+        dxb_info "$unit restart requested (configuration changed or pending)"
+      fi
     else
       systemctl --no-block start "$unit" || { dxb_error "start $unit failed"; return 6; }
-      dxb_info "$unit started on port $(jq -r '.rigctld_port' <<< "$r")"
+      _dxb_rigctld_pending_done "$pending" "$digest" || return 6
+      dxb_info "$unit start requested on port $(jq -r '.rigctld_port' <<< "$r")"
     fi
   elif systemctl is-active --quiet "$unit"; then
     systemctl stop "$unit" || { dxb_error "stop $unit failed"; return 6; }
@@ -90,7 +138,14 @@ dxb_rigctld_stop_all_except() {
     [[ $keep == *" $n "* ]] && continue
     systemctl stop "rigctld@$n.service" 2> /dev/null
     rm -f "$f"
+    rm -f "$DXB_RIGCTLD_RUN_DIR/$n.restart-pending"
     dxb_info "rigctld@$n stopped and removed (radio no longer in the record)"
+  done
+  # Publication can fail after creating an intent but before its env exists.
+  for f in "$DXB_RIGCTLD_RUN_DIR"/*.restart-pending; do
+    [[ -f $f || -L $f ]] || continue
+    n=${f##*/}; n=${n%.restart-pending}
+    [[ $keep == *" $n "* ]] || rm -f -- "$f"
   done
   return 0
 }
@@ -107,9 +162,24 @@ dxb_rigctld_query() {
 
 # 0 installed/changed, 1 already in place, 6 failure.
 dxb_rigctld_install_units() {
+  if [[ ${DXB_RADIO_EVENT_QUEUE:-off} == on ]]; then
+    declare -F dxb_with_update_read_lock dxb_radio_event_protocol_ready >/dev/null \
+      || { echo 'compatible radio event coordination is unavailable' >&2; return 6; }
+    dxb_with_update_read_lock _dxb_rigctld_install_units
+  else
+    _dxb_rigctld_install_units
+  fi
+}
+
+_dxb_rigctld_install_units() {
+  if [[ ${DXB_RADIO_EVENT_QUEUE:-off} == on ]]; then dxb_radio_event_protocol_ready || return 6; fi
   local rc=1 t dest content
+  local units=(rigctld@.service dxberry-radio-hotplug.service dxberry-radio-wire.service)
+  if [[ ${DXB_RADIO_EVENT_QUEUE:-off} == on ]]; then
+    units+=(dxberry-radio-reconcile.service dxberry-radio-reconcile.path dxberry-radio-reconcile.timer)
+  fi
   mkdir -p "$DXB_SYSTEMD_DIR" "$DXB_TMPFILES_DIR" 2> /dev/null
-  for t in rigctld@.service dxberry-radio-hotplug.service dxberry-radio-wire.service; do
+  for t in "${units[@]}"; do
     content=$(< "$DXB_TEMPLATES/$t") || return 6
     dest="$DXB_SYSTEMD_DIR/$t"
     if dxb_write_if_changed "$dest" "$content" 644; then
@@ -133,6 +203,13 @@ dxb_rigctld_install_units() {
   # ordered before graywolf (rigctld and stable names first), so a re-wire that is due at boot
   # (record changed while the owner was stopped) has no owner to talk to until then
   systemctl enable dxberry-radio-wire.service > /dev/null 2>&1 || { dxb_error "systemctl enable dxberry-radio-wire.service failed"; return 6; }
+  # A queued event survives active/failed worker jobs. The path rechecks on
+  # completion; the timer recovers delivery after manager start limiting.
+  if [[ ${DXB_RADIO_EVENT_QUEUE:-off} == on ]]; then
+    for t in dxberry-radio-reconcile.path dxberry-radio-reconcile.timer; do
+      systemctl enable --now "$t" > /dev/null 2>&1 || { dxb_error "systemctl enable --now $t failed"; return 6; }
+    done
+  fi
   return $rc
 }
 

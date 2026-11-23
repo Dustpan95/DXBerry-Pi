@@ -2,11 +2,14 @@ package cli
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Dustpan95/DXBerry-Pi/station/internal/presets"
 )
 
 // Register mounts POST /api/cli/{command}. The session gate is httpapi's.
@@ -22,11 +25,18 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 }
 
 func (c *CLI) handle(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Args  []string `json:"args"`
-		Stdin string   `json:"stdin"`
+	var body callBody
+	var err error
+	if r.PathValue("command") == "dxberry-preset" {
+		var raw []byte
+		raw, err = io.ReadAll(http.MaxBytesReader(w, r.Body, presets.MaxBytes))
+		if err == nil {
+			body, err = decodePresetBody(raw)
+		}
+	} else {
+		err = json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&body)
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&body); err != nil {
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request body"})
 		return
 	}

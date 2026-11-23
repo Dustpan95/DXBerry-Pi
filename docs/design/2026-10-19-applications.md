@@ -404,6 +404,15 @@ a time through `inifile.sh` (preserving the file's other lines, ordering and
 comments), atomic with read-back, and a missing file is created with only
 the wiring and first-start keys.
 
+The Qt INI editor accepts one canonical ASCII section/key occurrence in its
+one-line, LF subset. It refuses duplicate keys/sections, escaped aliases and
+other layouts it cannot verify (including CRLF, BOM and physical continuations)
+with exit 6 before editing that field. A raw first-key read-back is insufficient:
+Qt can use the last duplicate or a decoded alias instead. An ambiguous read also
+returns 6 rather than pretending the key is missing. The failure names the field
+and file without logging its value. Unrelated encoded groups and opaque QVariant
+values remain byte-preserved; XML and FLTK preference handling is unchanged.
+
 ## 10. flrig and Pat's web interface
 
 ### 10.1 Rig control by flrig
