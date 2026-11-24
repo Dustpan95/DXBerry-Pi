@@ -85,6 +85,26 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 		t.Fatal("official package integrity mismatch")
 	}
 	root := t.TempDir()
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		// Only these newly generated application text logs are inspected.
+		// Do not glob recordings, mailbox data or station paths for diagnostics.
+		logs, _ := filepath.Glob(root + "/data/WSJT-X - fixture*/logs/wsjtx_syslog_*.log")
+		legacy, _ := filepath.Glob(root + "/data/WSJT-X - fixture*/wsjtx_syslog.log")
+		for _, path := range append(logs, legacy...) {
+			f, err := os.Open(path)
+			if err != nil {
+				continue
+			}
+			raw, err := io.ReadAll(io.LimitReader(f, 32<<10))
+			_ = f.Close()
+			if err == nil {
+				t.Log(filepath.Base(filepath.Dir(path)), filepath.Base(path), string(raw))
+			}
+		}
+	})
 	for _, dir := range []string{"config", "data", "cache", "state", "runtime"} {
 		if err := os.Mkdir(filepath.Join(root, dir), 0700); err != nil {
 			t.Fatal(err)
@@ -122,10 +142,36 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	start("/usr/bin/pulseaudio", "--daemonize=no", "--exit-idle-time=-1", "--disallow-exit", "-n", "--file="+pulseConfig)
+	pulseReady := false
+	for deadline := time.Now().Add(8 * time.Second); time.Now().Before(deadline); {
+		ready := true
+		for _, item := range []struct{ command, expected string }{{"get-default-sink", "fixture_null\n"}, {"get-default-source", "fixture_null.monitor\n"}} {
+			probe, done := context.WithTimeout(ctx, time.Second)
+			cmd := exec.CommandContext(probe, "/usr/bin/pactl", item.command)
+			cmd.Env, cmd.Dir = env, root
+			var output, stderr applicationOutput
+			cmd.Stdout, cmd.Stderr = &output, &stderr
+			err := cmd.Run()
+			done()
+			if err != nil || output.text() != item.expected {
+				ready = false
+				break
+			}
+		}
+		if ready {
+			pulseReady = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !pulseReady {
+		t.Fatal("private PulseAudio null devices never became ready")
+	}
 	var audio struct {
 		Qt, Input, Output string
 		QtCore            string `json:"qt_core"`
 	}
+	var audioFailure string
 	for deadline := time.Now().Add(8 * time.Second); time.Now().Before(deadline); {
 		cmd := exec.CommandContext(ctx, "/usr/bin/python3", "/fixture/audio-info.py")
 		cmd.Env, cmd.Dir = env, root
@@ -134,11 +180,13 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 		if cmd.Run() == nil && json.Unmarshal([]byte(stdout.text()), &audio) == nil && audio.Qt != "" && audio.Input != "" && audio.Output != "" {
 			break
 		}
+		audioFailure = stderr.text()
 		time.Sleep(100 * time.Millisecond)
 	}
 	if audio.Qt == "" || audio.Input == "" || audio.Output == "" {
-		t.Fatal("actual Qt dummy audio unavailable")
+		t.Fatal("actual Qt dummy audio unavailable:", audioFailure)
 	}
+	t.Logf("private Qt audio: input=%q output=%q", audio.Input, audio.Output)
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IP{127, 0, 0, 1}})
 	if err != nil {
 		t.Fatal(err)
@@ -199,7 +247,7 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 		}
 	}
 	if len(heartbeats) < 3 || heartbeat == nil || heartbeat.Version == nil || !strings.Contains(*heartbeat.Version, "3.0.2") || status == nil || status.DECall == nil || *status.DECall != "N0CALL" || status.DEGrid == nil || *status.DEGrid != "AA00aa" {
-		t.Fatal("actual heartbeat/status evidence incomplete")
+		t.Fatalf("actual heartbeat/status evidence incomplete: heartbeats=%d status=%t schema=%d", len(heartbeats), status != nil, schema)
 	}
 	intervals := []float64{heartbeats[1].Sub(heartbeats[0]).Seconds(), heartbeats[2].Sub(heartbeats[1]).Seconds()}
 	for _, interval := range intervals {

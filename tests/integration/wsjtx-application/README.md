@@ -11,7 +11,9 @@ unprivileged (UID/GID 65534, zero capabilities), read-only, network-disabled and
 has no sound, USB, GPIO, serial, host display or service-manager devices/sockets.
 
 The driver creates a private PulseAudio null sink and source plus an offscreen
-Qt display. All HOME/XDG paths and profiles are fresh temporary data, with
+Qt display. It verifies the null sink/source through the private Pulse server
+before Qt enumerates devices, then requires Qt to select those fixture devices.
+All HOME/XDG paths and profiles are fresh temporary data, with
 N0CALL/AA00aa, rig None, automatic sequencing off and UDP requests disabled.
 It starts two actual `--rig-name` instances. One passive IPv4 loopback socket
 feeds real datagrams directly to the unchanged production parser; a separate
@@ -25,7 +27,7 @@ and retained N1MM enable/server/port keys, using nondefault logging sentinels
 to distinguish preservation from a reset. The Qt version reference is accepted only if
 both actual application processes map the same QtCore library. The final JSON
 report is explicitly partial. No success report is printed on failure; process
-diagnostics contain only new synthetic profiles. The fixture terminates its
+diagnostics include bounded text logs only from new synthetic profiles. The fixture terminates its
 own processes and does not claim graceful application shutdown acceptance.
 
 After building the image separately, run on a Linux/amd64 Docker host:
