@@ -12,6 +12,7 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || die "cannot find the re
 [[ -f $root/provision/bin/dxberryd ]] || die "provision/bin/dxberryd is missing: build the station app first (station/build.sh), the update file carries it"
 [[ -f $root/provision/bin/dxberry-preset && -x $root/provision/bin/dxberry-preset ]] || die "provision/bin/dxberry-preset is missing or not executable: build the station app first (station/build.sh)"
 [[ ! -L $root/provision/bin/dxberry-program-state && -f $root/provision/bin/dxberry-program-state && -x $root/provision/bin/dxberry-program-state ]] || die "provision/bin/dxberry-program-state is missing, linked or not executable: build the station app first (station/build.sh)"
+[[ ! -L $root/provision/bin/dxberry-wsjtx-settings && -f $root/provision/bin/dxberry-wsjtx-settings && -x $root/provision/bin/dxberry-wsjtx-settings ]] || die "provision/bin/dxberry-wsjtx-settings is missing, linked or not executable: build the station app first (station/build.sh)"
 stage=$(mktemp -d) || die "no temporary directory"
 trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/dxberry" "$out" || die "cannot create $out"

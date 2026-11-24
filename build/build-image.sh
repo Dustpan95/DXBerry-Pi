@@ -72,7 +72,7 @@ REQUIRED_FILES=(
   provision/templates/dxberry-audio.conf provision/templates/chrony-dxberry.conf provision/templates/gpsd-default.tmpl
   provision/bin/dxberry-status provision/lib/status.sh provision/lib/capture-diagnostics.sh
   provision/lib/station.sh provision/templates/dxberryd.service provision/templates/nginx-dxberry.conf provision/templates/pam-dxberry
-  provision/bin/dxberryd provision/bin/dxberry-preset provision/bin/dxberry-program-state station/web/index.html station/web/dxberry.js station/web/dxberry.css
+  provision/bin/dxberryd provision/bin/dxberry-preset provision/bin/dxberry-program-state provision/bin/dxberry-wsjtx-settings station/web/index.html station/web/dxberry.js station/web/dxberry.css
   station/web/settings.js station/web/updates.js
   provision/bin/dxberry-config provision/lib/settings.sh provision/templates/dxberry-config-boot.service
   provision/bin/dxberry-update provision/lib/update.sh
@@ -93,6 +93,7 @@ EXECUTABLE_FILES=(
   provision/bin/dxberry-preset
   provision/bin/dxberry-radio-event
   provision/bin/dxberry-program-state
+  provision/bin/dxberry-wsjtx-settings
   provision/bin/dxberry-preboot provision/bin/dxberry-provision provision/bin/dxberry-netwatch provision/bin/dxberry-radio
   provision/bin/dxberry-status provision/bin/dxberry-config provision/bin/dxberry-update provision/bin/dxberry-logbook provision/bin/dxberry-app provision/bin/dxberry-audio
   boot/Automation_Custom_PreScript.sh boot/Automation_Custom_Script.sh
@@ -112,10 +113,12 @@ check_tree() {
       ok=0
     fi
   done
-  if [[ -L $ROOT/provision/bin/dxberry-program-state ]]; then
-    echo "not a regular helper: provision/bin/dxberry-program-state" >&2
-    ok=0
-  fi
+  for f in provision/bin/dxberry-program-state provision/bin/dxberry-wsjtx-settings; do
+    if [[ -L $ROOT/$f ]]; then
+      echo "not a regular helper: $f" >&2
+      ok=0
+    fi
+  done
   for f in "$ROOT"/provision/bin/* "$ROOT"/provision/lib/*.sh "$ROOT"/provision/lib/apps/*.sh "$ROOT"/boot/*.sh; do
     # dxberryd is the built Go binary, not a script; anything else without a #! line is not one either
     [[ $f == "$ROOT/provision/bin/dxberryd" ]] && continue

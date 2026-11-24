@@ -143,8 +143,10 @@ jobs:
         run: cd station && go vet ./...
       - name: go test
         run: cd station && go test -race ./...
+      - name: Select unpublished candidate version
+        run: echo "DXB_CANDIDATE_VERSION=$(cat provision/VERSION)-ci.${GITHUB_RUN_NUMBER}.${GITHUB_SHA:0:12}" >> "$GITHUB_ENV"
       - name: Build dxberryd
-        run: bash station/build.sh out/dxberryd
+        run: bash station/build.sh out/dxberryd "$DXB_CANDIDATE_VERSION"
       - name: Cross-user WSJT-X settings bridge
         run: tests/integration/test-wsjtx-settings-bridge.sh
       - name: Prepare preset HTTP test images
@@ -168,6 +170,27 @@ jobs:
           libs=$(ldd station/out/dxberryd)
           echo "$libs"
           ! grep -q libopusfile <<< "$libs"
+      - name: Package and verify unpublished ARM64 update candidate
+        run: |
+          for binary in dxberryd dxberry-wsjtx-settings dxberry-preset dxberry-program-state; do
+            install -m 755 "station/out/$binary" "provision/bin/$binary"
+          done
+          build/build-image.sh --check
+          out="$RUNNER_TEMP/update-candidate"
+          archive=$(build/make-update-tarball.sh "$DXB_CANDIDATE_VERSION" "$out")
+          (cd "$out" && sha256sum -c "$(basename "$archive").sha256")
+          for binary in dxberryd dxberry-wsjtx-settings dxberry-preset dxberry-program-state; do
+            tar -xOzf "$archive" "dxberry/bin/$binary" | cmp - "station/out/$binary"
+          done
+          test "$(tar -xOzf "$archive" dxberry/VERSION)" = "$(station/out/dxberryd -version)"
+          git rev-parse HEAD > "$out/SOURCE_COMMIT"
+          git rev-parse 'HEAD^{tree}' > "$out/SOURCE_TREE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dxberry-update-candidate
+          path: ${{ runner.temp }}/update-candidate/
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: dxberryd-arm64
