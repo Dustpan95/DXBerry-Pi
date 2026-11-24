@@ -6,11 +6,20 @@ are designs to develop, not claims about what the current image provides.
 
 ## Current baseline
 
-The live Pi runs rc4 with recorded local fixes for Graywolf API wiring, Pat's
+The maintained Pi now runs `0.5.0-ci.review.19e4cf1`, from the source tree
+integrated through PR #14. The complete helper bundle and generation tracking
+are installed. Native collection and the experimental queue remain disabled.
+See the [November 24 deployment record](station-deployment-2026-11-24.md) for
+the source/build identities, verified configuration preservation and retained
+rollback trees. Hardware and actual-application acceptance remain separate.
+
+### Earlier maintenance history
+
+The preceding rc4 installation carried recorded local fixes for Graywolf API wiring, Pat's
 idle URL, provisioning writes, Ethernet startup, verified interface handoffs,
 network-helper lifecycle, bounded radio-apply locking, and Qt settings conflict
 preflight.
-The console now runs `0.5.0-rc4+idle-reporting.4`: unused full-station reporting
+At that checkpoint the console ran `0.5.0-rc4+idle-reporting.4`: unused full-station reporting
 pauses without suspending radio/audio/program activity. Its isolated maintenance
 build preserves the installed Pat/audio fixes, stops service-health reads from
 queuing full reports, and makes the emergency STOP label visible in both themes.
@@ -19,13 +28,14 @@ screen evidence, prevents a changed owner inheriting an old answer, and blocks
 browser ownership during startup or after an unavailable program check.
 The [audio lifecycle maintenance](browser-audio-lifecycle.md) frees quota for
 lost peers using exact offer identity and retains the radio-poller startup fix.
-Native WSJT-X remains undeployed.
+Native WSJT-X collection remains disabled in the current coordinated bundle.
 See the [installation and rollback record](idle-reporting.md).
 The isolated [provisioning lock maintenance](provision-operation-lock.md#pi-maintenance-installation)
 also serializes full provisioning runs and rechecks first-boot completion after
 waiting. It was installed without running provisioning or restarting services;
 radio/TX configuration, mixer and service identities were preserved. The
-development tracking helper remains uninstalled.
+isolated patch did not install the tracking helper; the November 24 coordinated
+deployment installed its matching helper and session condition.
 The separate [update execution lock maintenance](update-execution-lock.md#pi-maintenance-installation)
 is also installed: the command now retains its gate through job work, result
 publication and exit cleanup. Its verified one-file update preserved the
@@ -65,8 +75,10 @@ Its single-library replacement preserved all seven service identities and the
 manual radio/TX/audio setup without executing a handover or radio operation.
 The [retained hotplug queue](radio-event-queue.md) is implemented experimentally
 and remains off by default. It retains arrivals across busy/failed apply work;
-manager delivery and whole-tree update/rollback integration must pass before
+actual udev-device delivery and whole-tree update/rollback integration must pass before
 activation. The new queue is not running on the Pi.
+The isolated real-manager core delivery checks passed in CI; they do not close
+the remaining device, retirement or recovery gates.
 Its verified candidate payload is staged privately on the Pi; live runtime
 files, service identities and radio/TX/audio configuration were preserved.
 The subsequent [queue/update barriers](radio-event-update-gates.md) exclude
@@ -182,7 +194,8 @@ endpoints. Durable endpoint retirement and a routing journal preserve ownership
 across restarts. Explicit per-radio consent binds to a fresh settings preview;
 the application-user helper installs/restores only at verified systemd lifecycle
 boundaries. Root unit hooks, private daemon IPC and authenticated read/configuration
-routes are connected. All of this remains local, with collection disabled on the Pi.
+routes are connected. These foundations are in the coordinated bundle, with
+collection disabled on the Pi.
 
 An update/rollback guard now pauses new acquisitions before incompatible tree
 changes and proves all managed routes restored. Failed transitions retain the
@@ -191,7 +204,8 @@ receipt, an installed compatible bundle, the matching running daemon and no
 updater in progress. Compatible publishers declare bundle protocol 1 and preserve
 the latest pause, endpoint inventory, journal and approvals. The helper and marker
 are included in release artifact paths. See the adapter design for root recovery
-requirements. The guard has not been deployed to the Pi.
+requirements. The guard is included in the coordinated Pi bundle; actual
+application-routing and incompatible-release recovery acceptance remain open.
 
 Container checks cover real Qt serialization, malformed-input fuzzing, concurrent
 sessions, standalone cross-user helper transactions, crash recovery, root socket
@@ -253,7 +267,7 @@ locally against the reviewed 1.0.1 `GET /api/status` contract. It has a fixed
 loopback destination, bounded reads, no redirects or control operations, and
 projects only connection/listener state. A default-off development flag now
 wires a named read-only HTTP endpoint through authentication and same-origin
-checks, without a native panel, polling or Pi deployment. A dedicated Linux
+checks, without a native panel, polling or activation on the Pi. A dedicated Linux
 reader checks the sole fresh assignment,
 reviewed package version, unit invocation, actual process and owned listener on
 both sides of each HTTP read, discarding replacements and file rewrites.

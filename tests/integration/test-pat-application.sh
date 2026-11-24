@@ -39,3 +39,9 @@ docker_call run --rm --pull=never --network none --read-only \
   -e GOMAXPROCS=2 \
   -e DXB_PAT_COMPAT_PACKAGE=/input/package.deb -e DXB_PAT_COMPAT_REPORT=/evidence/pat-application.json \
   "$run_image" /test/pat-compat.test -test.v -test.timeout=60s -test.run '^TestPatApplicationCompatibility$'
+# The root extraction driver publishes only synthetic fixture status. Make its
+# newly produced report readable by the invoking account and artifact uploader.
+# A failed test exits above, preserving any existing evidence unchanged.
+docker_call run --rm --pull=never --network none --read-only --cap-drop=ALL \
+  --security-opt=no-new-privileges -v "$evidence:/evidence" \
+  "$run_image" chmod 644 /evidence/pat-application.json
