@@ -8,7 +8,9 @@
 : "${DXB_UDEVADM:=udevadm}"
 
 dxb_radio_udev_rules() {
-  local head rules
+  local head rules producer='/bin/systemctl --no-block start dxberry-radio-hotplug.service'
+  # Experimental until manager delivery and update/rollback integration pass.
+  [[ ${DXB_RADIO_EVENT_QUEUE:-off} != on ]] || producer='/opt/dxberry/bin/dxberry-radio-event enqueue'
   head=$(< "$DXB_TEMPLATES/70-dxberry-radio.rules.head") || return 6
   rules=$(jq -r '.radios | to_entries[] | .key as $n | .value as $r
     | "", "# \($n) - \($r.label // "" | gsub("[\r\n]"; " "))",
@@ -20,13 +22,25 @@ dxb_radio_udev_rules() {
   [[ -z $rules ]] || printf '%s\n' "$rules"
   # Second rule: on remove, udev replays the tags from its database, which cannot be verified
   # off-hardware. The fallback catches every remove in the three subsystems we care about
-  # regardless; apply is idempotent, so the extra runs cost nothing.
-  printf '\nTAG=="dxberry-radio", ACTION=="add|remove", RUN+="/bin/systemctl --no-block start dxberry-radio-hotplug.service"\n'
-  printf 'ACTION=="remove", SUBSYSTEM=="sound|tty|hidraw", RUN+="/bin/systemctl --no-block start dxberry-radio-hotplug.service"\n'
+  # regardless. The opt-in producer retains a level-triggered request before
+  # returning; direct starts of an active oneshot can lose the later scan.
+  printf '\nTAG=="dxberry-radio", ACTION=="add|remove", RUN+="%s"\n' "$producer"
+  printf 'ACTION=="remove", SUBSYSTEM=="sound|tty|hidraw", RUN+="%s"\n' "$producer"
 }
 
 # 0 written (udev reloaded and re-triggered), 1 unchanged, 6 could not write.
 dxb_radio_udev_write() {
+  if [[ ${DXB_RADIO_EVENT_QUEUE:-off} == on ]]; then
+    declare -F dxb_with_update_read_lock dxb_radio_event_protocol_ready >/dev/null \
+      || { echo 'compatible radio event coordination is unavailable' >&2; return 6; }
+    dxb_with_update_read_lock _dxb_radio_udev_write "$1"
+  else
+    _dxb_radio_udev_write "$1"
+  fi
+}
+
+_dxb_radio_udev_write() {
+  if [[ ${DXB_RADIO_EVENT_QUEUE:-off} == on ]]; then dxb_radio_event_protocol_ready || return 6; fi
   local content
   content=$(dxb_radio_udev_rules "$1") || return 6
   mkdir -p "$(dirname "$DXB_UDEV_RULES_FILE")" 2> /dev/null

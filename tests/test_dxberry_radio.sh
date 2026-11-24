@@ -273,7 +273,7 @@ test_cli_json_answers_carry_the_runs_warnings() {
 # saves radio2's new owner, then the release saves its older copy of the record over it and stops
 # the application radio2 was just given to.
 test_cli_radio_changes_take_turns_on_the_record() {
-  command -v flock > /dev/null 2>&1 || return 0   # without flock the lock is only a warning
+  command -v flock > /dev/null 2>&1 || return 0   # this concurrency fixture needs real flock
   local pid rc
   cli_env
   rm -rf "$DXB_SYSFS_ROOT"; fx_scene "$DXB_SYSFS_ROOT" two-digirigs

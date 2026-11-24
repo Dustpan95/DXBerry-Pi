@@ -3,6 +3,9 @@ out/
 build/work/
 station/out/
 provision/bin/dxberryd
+provision/bin/dxberry-wsjtx-settings
+provision/bin/dxberry-preset
+provision/bin/dxberry-program-state
 *.img
 *.img.xz
 *.sha256

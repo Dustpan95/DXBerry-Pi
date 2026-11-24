@@ -191,3 +191,38 @@ test_scrub_leaves_unconsumed_secrets_alone() {
   assert_file_contains "$DXB_BOOT_DIR/dxberry.txt" "WIFI_PASSWORD=<applied>"
   [[ -f $DXB_DIETPI_WIFI ]] && _fail "dietpi-wifi.txt should be removed once WIFI_PASSWORD was consumed"
 }
+
+# Fixture changes stay inside each isolated test.
+# shellcheck disable=SC2030,SC2031
+test_storage_failed_file_replacement_is_reported_before_service_changes() (
+  local TEST_TMP=$TEST_TMP
+  local -a DXB_FAILED_STEPS=()
+  local parent=$TEST_TMP role target failed_target
+  mv() {
+    [[ ${*: -1} != "$failed_target" ]] || return 1
+    command mv "$@"
+  }
+  for role in unit journal; do
+    TEST_TMP=$parent/$role; mkdir -p "$TEST_TMP"
+    sys_env
+    if [[ $role == unit ]]; then target=$DXB_SYSTEMD_DIR/dxberry-journal-link.service
+    else target=$DXB_JOURNALD_DROPIN; fi
+    mkdir -p "${target%/*}"; echo previous > "$target"
+    failed_target=$target
+    assert_fails provision_storage > /dev/null 2>&1
+    assert_eq "$(< "$target")" previous
+    assert_contains "${DXB_FAILED_STEPS[*]}" "could not write $target"
+    assert_file_not_contains "$TEST_TMP/calls" 'systemctl restart systemd-journald'
+    assert_file_not_contains "$TEST_TMP/calls" 'journalctl --flush'
+    assert_not_contains "${DXB_STATUS_LINES[*]}" 'logs: journal on the drive'
+    if [[ $role == unit ]]; then
+      assert_file_not_contains "$TEST_TMP/calls" 'systemctl daemon-reload'
+      assert_file_not_contains "$TEST_TMP/calls" 'systemctl enable'
+    fi
+    failed_target=''; DXB_FAILED_STEPS=()
+    assert_ok provision_storage > /dev/null 2>&1
+    assert_eq "${DXB_FAILED_STEPS[*]}" ''
+    assert_file_contains "$TEST_TMP/calls" 'systemctl restart systemd-journald'
+    assert_contains "${DXB_STATUS_LINES[*]}" 'logs: journal on the drive'
+  done
+)

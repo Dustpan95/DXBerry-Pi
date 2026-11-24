@@ -110,6 +110,10 @@ test_webproxy_pat_site_is_rendered_enabled_and_reloaded() {
   # shellcheck disable=SC2016  # nginx variables, matched literally
   assert_file_contains "$f" 'proxy_set_header Host $http_host;'
   assert_file_contains "$f" "proxy_pass http://127.0.0.1:8180;"
+  assert_file_contains "$f" "proxy_intercept_errors on;"
+  assert_file_contains "$f" "error_page 502 503 504 = @dxberry-pat-unavailable;"
+  # shellcheck disable=SC2016  # nginx variable, matched literally
+  assert_file_contains "$f" 'return 303 "https://$host/?pat=unavailable";'
   assert_file_not_contains "$f" "@CERT@"
   assert_eq "$(readlink "$DXB_NGINX_DIR/sites-enabled/dxberry-pat.conf")" "$f"
   assert_eq "$(grep 'nginx -t\|systemctl reload nginx' "$TEST_TMP/calls" | tr '\n' '|')" "nginx -t|systemctl reload nginx|"

@@ -48,7 +48,7 @@ test_build_check_fails_on_non_executable_file() {
 
 test_build_symlinks_every_command_into_usr_local_sbin() {
   local b
-  for b in dxberry-provision dxberry-netwatch dxberry-radio dxberry-status dxberry-config dxberry-update; do
+  for b in dxberry-provision dxberry-netwatch dxberry-radio dxberry-status dxberry-config dxberry-preset dxberry-program-state dxberry-update; do
     grep -qF "ln -sf /opt/dxberry/bin/$b " "$DXB_ROOT/build/build-image.sh" \
       || _fail "build-image.sh has no /usr/local/sbin symlink line for $b"
   done
@@ -60,6 +60,7 @@ test_build_ships_the_status_command() {
   executable=$(sed -n '/^EXECUTABLE_FILES=(/,/^)/p' "$DXB_ROOT/build/build-image.sh")
   assert_contains "$required" "provision/bin/dxberry-status"
   assert_contains "$required" "provision/lib/status.sh"
+  assert_contains "$required" "provision/lib/capture-diagnostics.sh"
   assert_contains "$executable" "provision/bin/dxberry-status"
 }
 
@@ -67,7 +68,7 @@ test_build_ships_the_station_files() {
   local required f
   required=$(sed -n '/^REQUIRED_FILES=(/,/^)/p' "$DXB_ROOT/build/build-image.sh")
   for f in provision/lib/station.sh provision/templates/dxberryd.service provision/templates/nginx-dxberry.conf \
-    provision/templates/pam-dxberry provision/bin/dxberryd station/web/index.html station/web/dxberry.js station/web/dxberry.css; do
+    provision/templates/pam-dxberry provision/bin/dxberryd provision/bin/dxberry-preset provision/bin/dxberry-program-state station/web/index.html station/web/dxberry.js station/web/dxberry.css; do
     assert_contains "$required" "$f"
   done
   # nothing of the Cockpit console is shipped any more
@@ -101,6 +102,76 @@ test_build_update_file_needs_the_service_binary() {
   assert_eq "$rc" "1"
   assert_contains "$msg" "provision/bin/dxberryd is missing"
 }
+
+test_build_requires_the_preset_binary_and_executable_mode() {
+  local b=$DXB_ROOT/provision/bin/dxberry-preset saved=$TEST_TMP/preset.keep out rc
+  [[ ! -e $b ]] || mv "$b" "$saved"
+  out=$("$DXB_ROOT/build/build-image.sh" --check 2>&1); rc=$?
+  assert_eq "$rc" 1
+  assert_contains "$out" 'missing provision/bin/dxberry-preset'
+  out=$("$DXB_ROOT/build/make-update-tarball.sh" v0.5.0-rc4 "$TEST_TMP/out" 2>&1); rc=$?
+  assert_eq "$rc" 1
+  assert_contains "$out" 'provision/bin/dxberry-preset is missing or not executable'
+  : > "$b"; chmod 644 "$b"
+  out=$("$DXB_ROOT/build/build-image.sh" --check 2>&1); rc=$?
+  assert_eq "$rc" 1
+  assert_contains "$out" 'not executable: provision/bin/dxberry-preset'
+  out=$("$DXB_ROOT/build/make-update-tarball.sh" v0.5.0-rc4 "$TEST_TMP/out" 2>&1); rc=$?
+  assert_eq "$rc" 1
+  assert_contains "$out" 'provision/bin/dxberry-preset is missing or not executable'
+  rm -f "$b"
+  [[ ! -e $saved ]] || mv "$saved" "$b"
+}
+
+test_build_requires_the_program_state_binary_mode_and_regular_file() (
+  local b=$DXB_ROOT/provision/bin/dxberry-program-state saved=$TEST_TMP/program-state.keep out rc
+  [[ ! -e $b ]] || mv "$b" "$saved"
+  trap 'rm -f "$b"; if [[ -e $saved ]]; then mv "$saved" "$b"; fi' EXIT
+  out=$("$DXB_ROOT/build/build-image.sh" --check 2>&1); rc=$?
+  assert_eq "$rc" 1
+  assert_contains "$out" 'missing provision/bin/dxberry-program-state'
+  out=$("$DXB_ROOT/build/make-update-tarball.sh" v0.5.0-rc4 "$TEST_TMP/out" 2>&1); rc=$?
+  assert_eq "$rc" 1
+  assert_contains "$out" 'provision/bin/dxberry-program-state is missing, linked or not executable'
+  : > "$b"; chmod 644 "$b"
+  out=$("$DXB_ROOT/build/build-image.sh" --check 2>&1); rc=$?
+  assert_eq "$rc" 1
+  assert_contains "$out" 'not executable: provision/bin/dxberry-program-state'
+  out=$("$DXB_ROOT/build/make-update-tarball.sh" v0.5.0-rc4 "$TEST_TMP/out" 2>&1); rc=$?
+  assert_eq "$rc" 1
+  rm -f "$b"
+  ln -s "$saved" "$b"
+  out=$("$DXB_ROOT/build/build-image.sh" --check 2>&1); rc=$?
+  assert_eq "$rc" 1
+  assert_contains "$out" 'not a regular helper: provision/bin/dxberry-program-state'
+  out=$("$DXB_ROOT/build/make-update-tarball.sh" v0.5.0-rc4 "$TEST_TMP/out" 2>&1); rc=$?
+  assert_eq "$rc" 1
+)
+
+test_build_requires_the_wsjtx_settings_helper_mode_and_regular_file() (
+  local b=$DXB_ROOT/provision/bin/dxberry-wsjtx-settings saved=$TEST_TMP/wsjtx-settings.keep out rc
+  [[ ! -e $b ]] || mv "$b" "$saved"
+  trap 'rm -f "$b"; if [[ -e $saved ]]; then mv "$saved" "$b"; fi' EXIT
+  out=$("$DXB_ROOT/build/build-image.sh" --check 2>&1); rc=$?
+  assert_eq "$rc" 1
+  assert_contains "$out" 'missing provision/bin/dxberry-wsjtx-settings'
+  out=$("$DXB_ROOT/build/make-update-tarball.sh" v0.5.0-rc4 "$TEST_TMP/out" 2>&1); rc=$?
+  assert_eq "$rc" 1
+  assert_contains "$out" 'provision/bin/dxberry-wsjtx-settings is missing, linked or not executable'
+  : > "$b"; chmod 644 "$b"
+  out=$("$DXB_ROOT/build/build-image.sh" --check 2>&1); rc=$?
+  assert_eq "$rc" 1
+  assert_contains "$out" 'not executable: provision/bin/dxberry-wsjtx-settings'
+  out=$("$DXB_ROOT/build/make-update-tarball.sh" v0.5.0-rc4 "$TEST_TMP/out" 2>&1); rc=$?
+  assert_eq "$rc" 1
+  rm -f "$b"
+  ln -s "$DXB_ROOT/provision/bin/dxberry-program-state" "$b"
+  out=$("$DXB_ROOT/build/build-image.sh" --check 2>&1); rc=$?
+  assert_eq "$rc" 1
+  assert_contains "$out" 'not a regular helper: provision/bin/dxberry-wsjtx-settings'
+  out=$("$DXB_ROOT/build/make-update-tarball.sh" v0.5.0-rc4 "$TEST_TMP/out" 2>&1); rc=$?
+  assert_eq "$rc" 1
+)
 
 test_build_ships_the_config_command() {
   local required executable
@@ -180,10 +251,16 @@ test_build_makes_the_update_file() {
   assert_contains "$list" "dxberry/bin/dxberry-provision"
   assert_contains "$list" "dxberry/lib/settings.sh"
   assert_contains "$list" "dxberry/bin/dxberryd"
+  assert_contains "$list" "dxberry/bin/dxberry-preset"
+  assert_contains "$list" "dxberry/bin/dxberry-program-state"
+  assert_contains "$list" "dxberry/bin/dxberry-wsjtx-settings"
   assert_contains "$list" "dxberry/lib/station.sh"
   assert_not_contains "$list" "cockpit"
   # modes as the image installs them, owned by root
   assert_eq "$(awk '$NF == "dxberry/bin/dxberry-provision" {print $1, $2}' <<< "$list")" "-rwxr-xr-x 0/0"
+  assert_eq "$(awk '$NF == "dxberry/bin/dxberry-preset" {print $1, $2}' <<< "$list")" "-rwxr-xr-x 0/0"
+  assert_eq "$(awk '$NF == "dxberry/bin/dxberry-program-state" {print $1, $2}' <<< "$list")" "-rwxr-xr-x 0/0"
+  assert_eq "$(awk '$NF == "dxberry/bin/dxberry-wsjtx-settings" {print $1, $2}' <<< "$list")" "-rwxr-xr-x 0/0"
   assert_eq "$(awk '$NF == "dxberry/lib/common.sh" {print $1}' <<< "$list")" "-rw-r--r--"
   assert_eq "$(awk '$NF == "dxberry/VERSION" {print $1}' <<< "$list")" "-rw-r--r--"
   assert_eq "$(awk '$NF == "dxberry/RELEASE" {print $1}' <<< "$list")" "-rw-r--r--"

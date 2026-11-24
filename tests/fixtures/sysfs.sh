@@ -46,6 +46,12 @@ fx_systemctl() {
       if grep -qx "$u" "$TEST_TMP/active" 2> /dev/null; then [[ $2 == --quiet ]] || echo active; return 0
       else [[ $2 == --quiet ]] || echo inactive; return 3; fi ;;
     is-failed) if grep -qx "$u" "$TEST_TMP/failed" 2> /dev/null; then return 0; else return 1; fi ;;
+    show)
+      if [[ $2 == --property=ActiveState && $3 == --value && $4 == -- ]]; then
+        if grep -qx "$u" "$TEST_TMP/active" 2> /dev/null; then echo active
+        elif grep -qx "$u" "$TEST_TMP/failed" 2> /dev/null; then echo failed
+        else echo inactive; fi
+      fi ;;
     is-enabled)
       st=disabled; [[ -f $TEST_TMP/enabled-$u ]] && read -r st < "$TEST_TMP/enabled-$u"
       echo "$st"; [[ $st == enabled ]]; return $? ;;

@@ -1,0 +1,23 @@
+FROM debian:trixie-slim AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    golang-go gcc libc6-dev libpam0g-dev libopus-dev pkg-config ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /repo/station
+COPY station/go.mod station/go.sum ./
+RUN go mod download
+COPY station/ ./
+RUN CGO_ENABLED=1 go test -c -tags=nolibopusfile,browserfixture -trimpath \
+    -o /dxberry-browser-fixture ./internal/httpapi
+
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash chromium nodejs npm curl ca-certificates libopus0 libpam0g && \
+    rm -rf /var/lib/apt/lists/*
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --global --ignore-scripts playwright@1.62.1
+ENV NODE_PATH=/usr/local/lib/node_modules
+WORKDIR /repo
+COPY --from=build /dxberry-browser-fixture /usr/local/bin/dxberry-browser-fixture
+COPY tests/page_smoke.js tests/page_smoke.js
+COPY tests/integration/browser-ptt.js tests/integration/browser-ptt.sh tests/integration/
+COPY tests/integration/browser-wsjtx.js tests/integration/browser-wsjtx.sh tests/integration/
+CMD ["bash", "tests/integration/browser-ptt.sh"]

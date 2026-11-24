@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/radios"
 )
@@ -28,9 +29,10 @@ type Holder struct {
 
 // Refusals.
 var (
-	ErrProgramOwns  = errors.New("a program holds this radio's transmitter")
-	ErrHeld         = errors.New("another tab holds this radio's transmitter")
-	ErrTransmitting = errors.New("the radio is transmitting")
+	ErrProgramOwns      = errors.New("a program holds this radio's transmitter")
+	ErrHeld             = errors.New("another tab holds this radio's transmitter")
+	ErrTransmitting     = errors.New("the radio is transmitting")
+	ErrClaimUnavailable = errors.New("a new radio claim cannot be identified")
 )
 
 // Clock is the owner lock's source of time.
@@ -49,8 +51,9 @@ func TabLabel(tab string) string {
 }
 
 type claim struct {
-	h    Holder
-	last time.Time
+	h          Holder
+	last       time.Time
+	generation uint64
 }
 
 // Owners is the lock for every radio.
@@ -63,6 +66,7 @@ type Owners struct {
 	transmitting func(radio string) bool
 	onDrop       func(radio string)
 	sockets      map[string]int // open events sockets per tab id
+	nextClaim    uint64         // process-local claim identity; never reused
 }
 
 // NewOwners returns an empty lock.
@@ -156,7 +160,7 @@ func (o *Owners) Claim(radio string, h Holder) error {
 	if c, ok := o.claims[radio]; ok && c.h.ID != h.ID {
 		err = ErrHeld
 	} else {
-		o.claims[radio] = claim{h: h, last: o.clock.Now()}
+		err = o.setClaimLocked(radio, h)
 	}
 	o.mu.Unlock()
 	if exp {
@@ -177,7 +181,7 @@ func (o *Owners) TakeOver(radio string, h Holder) error {
 	if c, ok := o.claims[radio]; ok && c.h.ID != h.ID && o.transmitting != nil && o.transmitting(radio) {
 		err = ErrTransmitting
 	} else {
-		o.claims[radio] = claim{h: h, last: o.clock.Now()}
+		err = o.setClaimLocked(radio, h)
 	}
 	o.mu.Unlock()
 	if exp {
@@ -219,8 +223,9 @@ func (o *Owners) Touch(radio, id string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if c, ok := o.claims[radio]; ok && c.h.ID == id {
-		c.last = o.clock.Now()
-		o.claims[radio] = c
+		// Keep the existing renewal behavior, but an expired/discontinuous
+		// claim must never revive an observation from its earlier lifetime.
+		_ = o.setClaimLocked(radio, c.h)
 	}
 }
 
@@ -244,49 +249,76 @@ func (o *Owners) Holder(radio string) (Holder, bool) {
 // starting), and the program's label. An error means it could not tell.
 type Probe func(ctx context.Context, session string) (held bool, label string, err error)
 
+// programRefresh is nonzero-sized so concurrent refreshes have distinct tokens.
+// Its identity only orders publication; it is not program lifecycle evidence.
+type programRefresh byte
+
 // Programs derives program holders from the radio records and the running screens.
 type Programs struct {
 	list  func() []radios.Radio
 	probe Probe
 
 	mu       sync.Mutex
+	latest   *programRefresh
 	holders  map[string]Holder
-	failing  map[string]bool // radios whose last probe failed (logged once per streak)
-	answered map[string]bool // radios a probe has answered for (held or free)
+	failing  map[string]bool   // radios whose last probe failed (logged once per streak)
+	answered map[string]bool   // diagnostic history, never permission to reuse a free answer
+	owners   map[string]string // owner associated with that radio's cached evidence
 }
 
-// NewPrograms returns a source that has not looked yet; Refresh or Run fills it.
+// NewPrograms conservatively holds assigned radios until the first successful
+// probe. The record list is cached inventory, not a process-state query.
 func NewPrograms(list func() []radios.Radio, probe Probe) *Programs {
-	return &Programs{list: list, probe: probe, holders: map[string]Holder{}, failing: map[string]bool{}, answered: map[string]bool{}}
+	p := &Programs{list: list, probe: probe, holders: map[string]Holder{}, failing: map[string]bool{}, answered: map[string]bool{}, owners: map[string]string{}}
+	for _, r := range list() {
+		if r.Owner != "" {
+			p.holders[r.Name] = Holder{Kind: "program", ID: r.Owner, Label: r.Owner}
+			p.owners[r.Name] = r.Owner
+		}
+	}
+	return p
 }
 
-// Refresh asks about every radio that has an owner and keeps the answers. When a probe cannot
-// tell, the radio keeps the answer it had: a transient failure must not free a transmitter. With
-// no answer yet (the first probe after a start fails) the radio's owner program is taken to hold
-// it until a probe succeeds: failing closed.
+// Refresh asks about every assigned radio. Failed or canceled probes block
+// browser ownership until a successful probe resolves the uncertainty. An
+// existing program label can be kept, but an earlier free answer cannot.
+// Owner replacement discards the previous owner's evidence. Concurrent calls
+// publish only the latest-started refresh, so a slow old free result cannot
+// replace a newer held/unknown answer. This remains a cache, not fresh authority.
 func (p *Programs) Refresh(ctx context.Context) {
+	token := new(programRefresh)
+	p.mu.Lock()
+	p.latest = token
+	p.mu.Unlock()
 	next := map[string]Holder{}
 	failing := map[string]bool{}
 	answered := map[string]bool{}
+	owners := map[string]string{}
 	for _, r := range p.list() {
 		if r.Owner == "" {
 			continue
 		}
+		owners[r.Name] = r.Owner
 		held, label, err := p.probe(ctx, r.Owner+"-"+r.Name)
+		if err == nil {
+			err = ctx.Err()
+		}
 		if err != nil {
 			failing[r.Name] = true
 			p.mu.Lock()
 			prev, had := p.holders[r.Name]
 			known := p.answered[r.Name]
 			again := p.failing[r.Name]
+			if p.owners[r.Name] != r.Owner {
+				prev, had, known, again = Holder{}, false, false, false
+			}
 			p.mu.Unlock()
 			if !again {
-				slog.Error("could not tell whether a program holds a radio; keeping the last answer", "radio", r.Name, "owner", r.Owner, "error", err, "kept", had, "answered_before", known)
+				slog.Error("could not tell whether a program holds a radio; blocking browser ownership", "radio", r.Name, "owner", r.Owner, "error", err, "kept", had, "answered_before", known)
 			}
-			switch {
-			case had:
+			if had {
 				next[r.Name] = prev
-			case !known:
+			} else {
 				next[r.Name] = Holder{Kind: "program", ID: r.Owner, Label: r.Owner}
 			}
 			answered[r.Name] = known
@@ -301,7 +333,9 @@ func (p *Programs) Refresh(ctx context.Context) {
 		}
 	}
 	p.mu.Lock()
-	p.holders, p.failing, p.answered = next, failing, answered
+	if p.latest == token {
+		p.holders, p.failing, p.answered, p.owners = next, failing, answered, owners
+	}
 	p.mu.Unlock()
 }
 
@@ -330,9 +364,12 @@ func (p *Programs) Holder(radio string) (Holder, bool) {
 
 // ScreenProbe asks `dxberry-app screen <session> --json` through run. The session holds the radio
 // while its state is "running" or "starting". A failed command, unreadable output or
-// access:false is an error, not "free".
+// missing/ambiguous/mismatched evidence or access:false is an error, not "free".
 func ScreenProbe(run func(ctx context.Context, args []string) (stdout string, exit int, err error)) Probe {
 	return func(ctx context.Context, session string) (bool, string, error) {
+		if err := ctx.Err(); err != nil {
+			return false, "", err
+		}
 		out, exit, err := run(ctx, []string{"screen", session, "--json"})
 		if err != nil {
 			return false, "", err
@@ -340,16 +377,74 @@ func ScreenProbe(run func(ctx context.Context, args []string) (stdout string, ex
 		if exit != 0 {
 			return false, "", fmt.Errorf("dxberry-app screen exited %d", exit)
 		}
-		var v struct {
-			State, Label string
-			Access       *bool
+		if err := ctx.Err(); err != nil {
+			return false, "", err
 		}
-		if json.Unmarshal([]byte(out), &v) != nil {
-			return false, "", errors.New("dxberry-app screen printed something unreadable")
+		return parseScreenEvidence(out, session)
+	}
+}
+
+func parseScreenEvidence(out, session string) (bool, string, error) {
+	invalid := errors.New("dxberry-app screen evidence could not be verified")
+	app, radio, ok := strings.Cut(session, "-")
+	if !ok || app == "" || radio == "" || len(out) > 64*1024 || !utf8.ValidString(out) || !json.Valid([]byte(out)) {
+		return false, "", invalid
+	}
+	decoder := json.NewDecoder(strings.NewReader(out))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return false, "", invalid
+	}
+	fields := make(map[string]json.RawMessage)
+	for decoder.More() {
+		token, err := decoder.Token()
+		key, ok := token.(string)
+		if err != nil || !ok || fields[key] != nil {
+			return false, "", invalid
 		}
-		if v.Access != nil && !*v.Access {
-			return false, "", errors.New("the station user cannot read program screens (access false): log out and back in, or join the dxbscreen group")
+		for _, field := range []string{"session", "state", "access", "app", "radio", "label"} {
+			if key != field && strings.EqualFold(key, field) {
+				return false, "", invalid
+			}
 		}
-		return v.State == "running" || v.State == "starting", v.Label, nil
+		var value json.RawMessage
+		if decoder.Decode(&value) != nil {
+			return false, "", invalid
+		}
+		fields[key] = value
+	}
+	var got, state string
+	var access *bool
+	if json.Unmarshal(fields["session"], &got) != nil || got != session || json.Unmarshal(fields["access"], &access) != nil || access == nil {
+		return false, "", invalid
+	}
+	if !*access {
+		return false, "", errors.New("the station user cannot read program screens (access false): log out and back in, or join the dxbscreen group")
+	}
+	for key, expected := range map[string]string{"app": app, "radio": radio} {
+		if value, exists := fields[key]; exists {
+			var text *string
+			if json.Unmarshal(value, &text) != nil || text == nil || *text != expected {
+				return false, "", invalid
+			}
+		}
+	}
+	label := ""
+	if value, exists := fields["label"]; exists {
+		var text *string
+		if json.Unmarshal(value, &text) != nil || text == nil {
+			return false, "", invalid
+		}
+		label = *text
+	}
+	if json.Unmarshal(fields["state"], &state) != nil {
+		return false, "", invalid
+	}
+	switch state {
+	case "running", "starting":
+		return true, label, nil
+	case "stopped", "failed":
+		return false, label, nil
+	default:
+		return false, "", invalid
 	}
 }

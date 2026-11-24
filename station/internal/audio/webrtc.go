@@ -100,14 +100,15 @@ type Candidate struct {
 
 // conn is one tab's peer connection.
 type conn struct {
-	tab     TabID
-	pc      *webrtc.PeerConnection
-	track   *webrtc.TrackLocalStaticSample
-	lastRTP atomic.Int64 // unix nanoseconds of the last packet from the browser (the add time at first)
-	upAt    atomic.Int64 // unix nanoseconds the link came up (0: not yet)
-	inbound atomic.Bool  // a packet has come from the browser (its microphone is attached)
-	done    chan struct{}
-	once    sync.Once
+	tab        TabID
+	generation uint64 // signalling offer identity; zero for callers without signalling quota
+	pc         *webrtc.PeerConnection
+	track      *webrtc.TrackLocalStaticSample
+	lastRTP    atomic.Int64 // unix nanoseconds of the last packet from the browser (the add time at first)
+	upAt       atomic.Int64 // unix nanoseconds the link came up (0: not yet)
+	inbound    atomic.Bool  // a packet has come from the browser (its microphone is attached)
+	done       chan struct{}
+	once       sync.Once
 }
 
 // close ends the connection; it reports whether this call did it.
@@ -147,20 +148,21 @@ type Bridge struct {
 
 	txMu sync.Mutex // serializes the playback's start and stop
 
-	mu      sync.Mutex
-	conns   map[TabID]*conn
-	allowed map[TabID]time.Time
-	tmpl    *Capture
-	used    bool
-	cap     *Capture
-	play    *Playback
-	playOn  bool
-	playGen uint64 // counts pacat starts, so a write error is matched to the pacat it hit
-	retried bool
-	lostFns map[int]func(TabID, string)
-	closeFn map[int]func(TabID)
-	nextFn  int
-	shut    bool
+	mu                sync.Mutex
+	conns             map[TabID]*conn
+	allowed           map[TabID]time.Time
+	tmpl              *Capture
+	used              bool
+	cap               *Capture
+	play              *Playback
+	playOn            bool
+	playGen           uint64 // counts pacat starts, so a write error is matched to the pacat it hit
+	retried           bool
+	lostFns           map[int]func(TabID, string)
+	lostGenerationFns map[int]func(TabID, uint64, string)
+	closeFn           map[int]func(TabID)
+	nextFn            int
+	shut              bool
 }
 
 // NewBridge makes radio's bridge. capture is <CARD>.in, play is <CARD>.tx; capture runs only
@@ -174,6 +176,7 @@ func NewBridge(radio string, capture *Capture, play *Playback, ports PortRange, 
 		radio: radio, ports: ports, log: log.With("radio", radio), LostAfter: LostAfter,
 		ctx: ctx, cancel: cancel, tmpl: capture, play: play,
 		conns: map[TabID]*conn{}, allowed: map[TabID]time.Time{}, lostFns: map[int]func(TabID, string){}, closeFn: map[int]func(TabID){},
+		lostGenerationFns: map[int]func(TabID, uint64, string){},
 	}
 }
 
@@ -211,6 +214,12 @@ func (b *Bridge) encoder() (*Encoder, error) {
 // the tab may transmit, its microphone to the radio). The answer holds every host candidate;
 // the browser's own may follow through AddICECandidate. An earlier connection of the tab is replaced.
 func (b *Bridge) Connect(ctx context.Context, offerSDP string, tab TabID) (string, error) {
+	return b.ConnectGeneration(ctx, offerSDP, tab, 0)
+}
+
+// ConnectGeneration attaches the signalling layer's offer identity to this peer.
+// Loss notices retain that identity even when delivery follows a replacement.
+func (b *Bridge) ConnectGeneration(ctx context.Context, offerSDP string, tab TabID, generation uint64) (string, error) {
 	if tab == "" {
 		return "", errors.New("no tab")
 	}
@@ -257,7 +266,7 @@ func (b *Bridge) Connect(ctx context.Context, offerSDP string, tab TabID) (strin
 			}
 		}
 	}()
-	c := &conn{tab: tab, pc: pc, track: track, done: make(chan struct{})}
+	c := &conn{tab: tab, generation: generation, pc: pc, track: track, done: make(chan struct{})}
 	pc.OnTrack(func(tr *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		if tr.Kind() == webrtc.RTPCodecTypeAudio {
 			go b.receive(c, tr)
@@ -539,6 +548,10 @@ func (b *Bridge) lose(c *conn, reason string) {
 	for _, fn := range b.lostFns {
 		fns = append(fns, fn)
 	}
+	generationFns := make([]func(TabID, uint64, string), 0, len(b.lostGenerationFns))
+	for _, fn := range b.lostGenerationFns {
+		generationFns = append(generationFns, fn)
+	}
 	b.mu.Unlock()
 	if stop != nil {
 		_ = stop.Close()
@@ -547,6 +560,9 @@ func (b *Bridge) lose(c *conn, reason string) {
 		b.log.Info("browser audio lost", "device", deviceLabel(c.tab), "reason", reason)
 		for _, fn := range fns {
 			fn(c.tab, reason)
+		}
+		for _, fn := range generationFns {
+			fn(c.tab, c.generation, reason)
 		}
 	}
 }
@@ -562,6 +578,21 @@ func (b *Bridge) OnLost(fn func(tab TabID, reason string)) (cancel func()) {
 	return func() {
 		b.mu.Lock()
 		delete(b.lostFns, id)
+		b.mu.Unlock()
+	}
+}
+
+// OnLostGeneration is OnLost with the exact lost offer's identity. Callbacks run
+// without the bridge mutex and must not treat a tab name as a current peer ID.
+func (b *Bridge) OnLostGeneration(fn func(tab TabID, generation uint64, reason string)) (cancel func()) {
+	b.mu.Lock()
+	id := b.nextFn
+	b.nextFn++
+	b.lostGenerationFns[id] = fn
+	b.mu.Unlock()
+	return func() {
+		b.mu.Lock()
+		delete(b.lostGenerationFns, id)
 		b.mu.Unlock()
 	}
 }

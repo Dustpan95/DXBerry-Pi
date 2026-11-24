@@ -262,7 +262,7 @@ command's stderr only when it fails. Exit codes:
 | 3 | no such radio / application |
 | 4 | device absent (pin not found in sysfs) |
 | 5 | `claim` failed to start or wire the new owner; radio left released |
-| 6 | apply failed (udev reload, unit install, or write error), or another change kept the record locked for three minutes (`add`/`set`/`remove`/`claim`/`release` change it one at a time) |
+| 6 | apply failed (udev reload, unit install, write error, or apply-lock failure), or another change kept the record locked for three minutes (`add`/`set`/`remove`/`claim`/`release` change it one at a time) |
 | 7 | re-wiring the existing owner failed during `set` or `apply` (owner unchanged) |
 
 - `scan` — candidates with a numeric index, port, profile name, functions.
@@ -288,7 +288,13 @@ command's stderr only when it fails. Exit codes:
   `dxberry-radio-wire.service` — the same `hotplug` apply, ordered after
   `graywolf.service` — does the re-wire once the owner is up. The
   `hotplug` subcommand is the same with quieter logging and no udev reload
-  (udev is what called it).
+  (udev is what called it). Concurrent applies serialize on
+  `/run/dxberry/apply.lock`; a waiting apply gives up after 180 seconds with
+  exit 6 and retry guidance, without changing derived state. The internal
+  `DXB_RADIO_APPLY_LOCK_WAIT` override changes that wait, including zero for
+  an immediate attempt; `DXB_FLOCK` overrides the apply-lock command for
+  isolated tests. An unavailable lock command or unwritable lock file retains
+  the existing warning-and-continue behavior.
 - `claim NAME APP` — hand-over (§9).
 - `release NAME` — unwire, stop the application if it owns nothing else,
   clear `owner`.
@@ -526,30 +532,44 @@ rigctld is never touched by a hand-over; it belongs to the radio.
 `app_graywolf_wire radio1` with `wiring: full`, all through the existing
 `dxb_gw_api` client after `dxb_gw_login`:
 
-1. Audio device named `radio1`: `GET /audio-devices`, find by `name`; `POST`
-   or `PUT` `{name: "radio1", source_type: "soundcard", source_path:
-   "plughw:CARD=RADIO1,DEV=0", sample_rate: 48000}`.
+1. Two directional audio devices: input named `radio1`, output named
+   `radio1 TX`. `GET /audio-devices`, find each by `name`; `POST` or `PUT`
+   `{name, direction: "input"|"output", source_type: "soundcard", device_path:
+   "plughw:CARD=RADIO1,DEV=0", sample_rate: 48000, channels: 1, format: "s16le"}`.
+   The input's existing id and gain survive an upgrade. The space in the output
+   name prevents a collision with another radio's valid identifier. An existing
+   device with the expected name but the wrong direction is refused, not repurposed.
+   Existing gains are preserved, including output gain 0 dB: Graywolf's full-device
+   PUT maps that value to its -12 dB create default, so the focused `/gain` endpoint
+   restores an explicitly configured 0 dB output gain after a device update.
 2. Channel named `radio1`: find by `name`; `POST` or `PUT` with
-   `input_device_id`/`output_device_id` = that device, `modem_type`/`profile`
-   left at Graywolf's defaults on create (never overwritten on update, so
-   operator tuning survives), `input_channel`/`output_channel` 0.
+   `input_device_id` pointing at the input and `output_device_id` at the output,
+   `input_channel`/`output_channel` 0. A new channel supplies the required
+   `modem_type: "afsk"`, `bit_rate: 1200`, `mark_freq: 1200`, `space_freq: 2200`.
+   Updates preserve the operator's decoder settings and enabled state. Computed
+   `backing` and `ptt` status summaries are removed before PUT because they are
+   read-only fields that Graywolf rejects in a request body.
 3. PTT for that channel through the PTT resource (`GET /ptt/{channel}`,
    then `PUT /ptt/{channel}` or `POST /ptt` to create), body
-   `{channel_id, method, device_path, gpio_line, gpio_pin, invert, persist}`
+   `{channel_id, method, device_path, gpio_line, gpio_pin, invert}`
    according to `ptt.method`: `rigctld` → `device_path:
    "127.0.0.1:4532"` (Graywolf parses the rigctld target as a `host:port`
    string in `device_path`); `cm108` → `device_path:
    /dev/dxberry/radio1-hid`, `gpio_pin: 3`; `gpio` → `device_path:
    /dev/gpiochip0`, `gpio_line`; `vox`/`digirig_tone`/`none` → `method`
-   only. Timing fields (`dwait_ms`, `slot_time_ms`) are never sent on update
-   so operator tuning survives.
+   only. CSMA settings (`dwait_ms`, `slot_time_ms`, numeric `persist`) are preserved
+   by merging the existing resource on update; they are not replaced with wiring
+   defaults. In particular, `persist` is a numeric probability value, not a
+   boolean requesting persistence. Creation leaves those settings at Graywolf's
+   defaults. Only a 404 on the initial PTT read permits creation: other read
+   failures abort wiring rather than resetting an existing channel's CSMA tuning.
 4. `POST /ptt/test-rigctld {host, port}` is used once after wiring to log
    whether Graywolf can reach the instance; a failure is a warning, not a
    failed wire, because rigctld may be mid-restart.
 
 `app_graywolf_unwire radio1` deletes the channel (`DELETE
-/channels/{id}?cascade=true`) and the audio device (`DELETE
-/audio-devices/{id}`) by name, so the running Graywolf releases the ALSA
+/channels/{id}?cascade=true`) and both named audio devices (`DELETE
+/audio-devices/{id}`), so the running Graywolf releases the ALSA
 device immediately. Beacons and iGate settings are untouched; a beacon bound
 to the deleted channel is re-bound by Graywolf's cascade rules, which the
 implementation task checks and records.

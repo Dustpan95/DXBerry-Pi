@@ -1,8 +1,8 @@
 #!/bin/bash
 # shellcheck shell=bash
 # Status collectors behind dxberry-status (console spec section 7). Each dxb_status_<part> prints one
-# JSON object, or fails with its reason as the last line on stderr; dxb_status_json runs the parts in
-# parallel and wraps each as {"ok":true,...} or {"ok":false,"error":"..."}, so one source that cannot
+# JSON object, or fails with its reason as the last line on stderr; dxb_status_json reads the parts
+# one at a time and wraps each as {"ok":true,...} or {"ok":false,"error":"..."}, so one source that cannot
 # be read never hides the others. Expects common.sh, config.sh, graywolf.sh, gps.sh and apps.sh to be
 # sourced (config, gps and apps for the station part). While a browser listens the station runs this
 # every 30 s, so the collectors stay in this shell where they can: every subshell, pipeline and jq is
@@ -139,9 +139,12 @@ dxb_status_release() {
     done < "$DXB_RELEASE_FILE"
   fi
   if [[ -r $cache ]]; then
-    u=$(jq -c '{graywolf: (if .graywolf.error then null else .graywolf.update == true end),
-      dxberry: (if .dxberry.error then null else .dxberry.update == true end),
-      system: (if .system.error then null else .system.count // 0 end), checked_at: (.checked_at // null)}' "$cache" 2> /dev/null) || u=null
+    u=$(jq -sc 'if length == 1 and (.[0] | type == "object" and .version == 2) then .[0] |
+      {graywolf: (if .graywolf.error or (.graywolf.update | type != "boolean") then null else .graywolf.update end),
+      dxberry: (if .dxberry.error or (.dxberry.update | type != "boolean") then null else .dxberry.update end),
+      system: (if .system.error or (.system.count | type != "number") then null
+        elif (.system.count < 0 or .system.count != (.system.count | floor)) then null else .system.count end),
+      checked_at: (.checked_at // null)} else null end' "$cache" 2> /dev/null) || u=null
   fi
   [[ -x $DXB_STATION_CMD ]] && IFS= read -r s < <("$DXB_STATION_CMD" -version 2> /dev/null)
   jq -cn --arg v "$v" --arg c "$c" --arg g "$(dxb_gw_installed_version)" --arg k "$s" --argjson u "${u:-null}" \
@@ -350,7 +353,8 @@ dxb_status_apps() {
 }
 
 # ---- the report ----------------------------------------------------------------------------
-# dxb_status_json [PART...]: the report (every part when none is named), parts read in parallel.
+# dxb_status_json [PART...]: the report (every part when none is named). Serialize parts so
+# their short-lived processes do not all compete with the radio's small capture buffer at once.
 # Each part's answer and stderr land in files, and one jq pass makes the report: an answer that is
 # a JSON object gets ok:true, anything else (a failed collector leaves nothing) is {ok:false, error}
 # carrying the last line the part wrote to stderr.
@@ -359,10 +363,9 @@ dxb_status_json() {
   (( ${#parts[@]} )) || read -ra parts <<< "$DXB_STATUS_PARTS"
   dir=$(mktemp -d) || { echo "could not create a temporary directory" >&2; return 1; }
   for p in "${parts[@]}"; do
-    { "dxb_status_$p" > "$dir/$p" 2> "$dir/$p.err" || : > "$dir/$p"; } &
+    ( "dxb_status_$p" > "$dir/$p" 2> "$dir/$p.err" || : > "$dir/$p" )
     files+=(--rawfile "$p" "$dir/$p" --rawfile "${p}_err" "$dir/$p.err")
   done
-  wait
   # stamped last and to the millisecond: the DXBerry page sets its clocks from it
   jq -cn --arg g "$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')" "${files[@]}" 'reduce $ARGS.positional[] as $p ({generated: $g};
     .[$p] = ($ARGS.named[$p] | try fromjson catch null

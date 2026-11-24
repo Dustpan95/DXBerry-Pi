@@ -42,10 +42,14 @@ json_ok() { (( JSON )) && jq -cn --argjson w "$(warnings_json)" '{ok: true, warn
 # take only the apply lock (fd 9, inside dxb_radio_apply), so taking this one first cannot deadlock.
 lock_record() {
   local f=$DXB_RUN_DIR/record.lock
-  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
-  if ! exec 8> "$f"; then dxb_warn "could not open $f; changing the record without the record lock"; return 0; fi
-  if ! command -v flock > /dev/null 2>&1; then dxb_warn "flock is not installed; a concurrent radio change could overwrite this one"; return 0; fi
-  flock -w "${DXB_RADIO_LOCK_WAIT:-180}" 8 || { dxb_error "another radio change is still running; try again when it has finished"; return 6; }
+  if ! command -v flock > /dev/null 2>&1; then dxb_error "flock is not installed; cannot change the radio record safely"; return 6; fi
+  if ! mkdir -p "$DXB_RUN_DIR" 2> /dev/null; then dxb_error "could not create the record lock directory $DXB_RUN_DIR"; return 6; fi
+  if ! exec 8> "$f"; then dxb_error "could not open the record lock $f"; return 6; fi
+  if ! flock -w "${DXB_RADIO_LOCK_WAIT:-180}" 8; then
+    dxb_error "another radio change is still running; try again when it has finished"
+    exec 8>&-
+    return 6
+  fi
 }
 
 # Loads dxberry.txt when present (GPS keys, Graywolf credentials fallback); absence is fine.

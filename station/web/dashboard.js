@@ -226,6 +226,9 @@ function dashRadioCard(s, n, x) {
   const acts = [];
   // no Open while a job installs, updates or removes the program
   if (x.owner && state === "running" && !job) acts.push(dashOpenLink(s, n, x, label));
+  if (x.owner === "wsjtx" && DASH_RADIO_RE.test(n)) {
+    acts.push(el("a", { class: "btn small", href: `/radio/${encodeURIComponent(n)}#wsjtx-status`, "data-key": `dash:${n}:program-status`, "aria-label": `WSJT-X status for ${n}` }, "WSJT-X status"));
+  }
   if (x.cat && DASH_RADIO_RE.test(n)) acts.push(el("a", { class: "btn small", href: `/radio/${n}`, "data-key": `dash:${n}:vfo`, "aria-label": `Open the VFO page of ${n}` }, "Open"));
   // Listen opens the radio's page, which starts the audio at the first tap there (#listen; a
   // browser plays sound only from a gesture on the page itself). Graywolf holds its radio's sound

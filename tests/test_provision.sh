@@ -419,6 +419,36 @@ test_provision_radio_installs_and_reports() {
   assert_eq "$DXB_RADIO_REBOOT_NEEDED" "1"
 }
 
+test_provision_radio_prepares_tracking_parent_before_first_apply() (
+  full_env; provision_cfg 'PASSWORD=examplepass' 'GPS_DEVICE=none'
+  fx_scene "$DXB_SYSFS_ROOT" none
+  # The provision driver creates the state root before calling this step.
+  mkdir -p "$DXB_STATE_DIR"
+  [[ ! -e $DXB_STATE_DIR/station ]] || _fail 'fixture must start without station parent'
+  export DXB_PROGRAM_STATE_CMD=$TEST_TMP/require-parent
+  cat > "$DXB_PROGRAM_STATE_CMD" <<'HELPER'
+#!/bin/bash
+[[ $# == 3 && $1 == --state && $2 == "$DXB_STATE_DIR/station" && $3 == advance ]] || exit 2
+[[ -d $2 ]] || exit 6
+printf '%s\n' '{"ok":true,"protocol":1}'
+HELPER
+  chmod 755 "$DXB_PROGRAM_STATE_CMD"
+  # Model only this tmpfiles rule; a separate real-tool fixture checks its
+  # filesystem semantics. No applications setup runs before this radio step.
+  # shellcheck disable=SC2317  # invoked through DXB_SYSTEMD_TMPFILES
+  systemd-tmpfiles() {
+    printf 'systemd-tmpfiles %s\n' "$*" >> "$TEST_TMP/calls"
+    if grep -Fxq 'd /var/lib/dxberry/station 0700 root root -' "$2"; then
+      mkdir -m 700 "$DXB_STATE_DIR/station"
+    fi
+    return 0
+  }
+  provision_radio
+  assert_eq "${#DXB_FAILED_STEPS[@]}" 0
+  [[ -d $DXB_STATE_DIR/station ]] || _fail 'radio setup did not prepare tracking parent'
+  [[ ! -e $DXB_STATE_DIR/station/program-state ]] || _fail 'tmpfiles fixture initialized an epoch'
+)
+
 test_provision_radio_apt_failure_is_a_failed_step_not_fatal() {
   full_env; provision_cfg 'PASSWORD=examplepass'
   fx_scene "$DXB_SYSFS_ROOT" none
@@ -580,8 +610,6 @@ test_run_mode_flags_a_restart_when_the_network_files_change() {
     dxb_require_root() { :; }
     dxb_gw_install() { return 0; }
     dxb_gw_seed() { return 0; }
-    # shellcheck disable=SC2030
-    provision_network() { DXB_NET_CHANGED=1; }
     main
   ) > /dev/null 2>&1
   assert_file_contains "$DXB_REBOOT_FLAG" "System restart required"
@@ -595,7 +623,6 @@ test_run_mode_flags_a_restart_when_the_network_files_change() {
     dxb_require_root() { :; }
     dxb_gw_install() { return 0; }
     dxb_gw_seed() { return 0; }
-    provision_network() { DXB_NET_CHANGED=1; }
     main --first-boot
   ) > /dev/null 2>&1
   [[ -e $DXB_REBOOT_FLAG ]] && _fail "first boot writes no restart flag (it reboots)"
@@ -734,4 +761,63 @@ test_provision_apps_skips_a_disabled_site_and_missing_nginx() (
   provision_apps 2> /dev/null
   assert_file_not_contains "$TEST_TMP/calls" "nginx"
   assert_file_not_contains "$TEST_TMP/calls" "apt-get"
+)
+
+# Fixture changes stay inside each isolated test.
+# shellcheck disable=SC2030,SC2031
+test_provision_failed_network_write_preserves_the_session_and_can_be_retried() (
+  local TEST_TMP=$TEST_TMP
+  local parent=$TEST_TMP mode role failed_target rc
+  # shellcheck disable=SC2317
+  mv() {
+    [[ ${*: -1} != "$failed_target" ]] || return 1
+    command mv "$@"
+  }
+  export -f mv
+  for mode in first-boot run; do
+    for role in ethernet wifi resolver unit; do
+      TEST_TMP=$parent/$mode-$role; mkdir -p "$TEST_TMP"; export TEST_TMP
+      full_env
+      printf '%s\n' 'PASSWORD=secretpass' 'STATIC_IP=192.168.1.90/24' 'GATEWAY=192.168.1.1' 'DNS=1.1.1.1' 'WIFI_SSID=Home' 'WIFI_PASSWORD=wifipass1' 'WIFI_COUNTRY=US' > "$DXB_BOOT_DIR/dxberry.txt"
+      case $role in
+        ethernet) failed_target=$DXB_IFACES_DIR/eth0.conf ;;
+        wifi) failed_target=$DXB_IFACES_DIR/wlan0.conf ;;
+        resolver) failed_target=$DXB_RESOLV_CONF ;;
+        unit) failed_target=$DXB_SYSTEMD_DIR/dxberry-netwatch.service ;;
+      esac
+      export failed_target
+      mkdir -p "${failed_target%/*}"; echo previous > "$failed_target"
+      (
+        source "$DXB_ROOT/provision/bin/dxberry-provision"
+        dxb_require_root() { :; }
+        dxb_gw_install() { return 0; }
+        dxb_gw_seed() { return 0; }
+        if [[ $mode == first-boot ]]; then main --first-boot; else main; fi
+      ) > /dev/null 2>&1
+      rc=$?
+      assert_eq "$rc" 1
+      assert_file_contains "$DXB_BOOT_DIR/dxberry-status.txt" "could not write $failed_target"
+      assert_file_not_contains "$TEST_TMP/calls" 'systemd-run --quiet --on-active=3 systemctl restart dxberry-netwatch'
+      assert_file_not_contains "$TEST_TMP/calls" 'systemctl restart dxberry-netwatch'
+      assert_file_not_contains "$TEST_TMP/calls" 'reboot'
+      [[ ! -e $DXB_STATE_DIR/provisioned ]] || _fail 'failed network writes must not mark first boot complete'
+      if [[ $mode == first-boot ]]; then
+        assert_file_contains "$DXB_BOOT_DIR/dxberry-status.txt" 'not rebooting: saved network files'
+      else
+        assert_file_contains "$DXB_BOOT_DIR/dxberry-status.txt" 'automatic netwatch restart skipped'
+      fi
+      failed_target=''
+      (
+        source "$DXB_ROOT/provision/bin/dxberry-provision"
+        dxb_require_root() { :; }
+        dxb_gw_install() { return 0; }
+        dxb_gw_seed() { return 0; }
+        if [[ $mode == first-boot ]]; then main --first-boot; else main; fi
+      ) > /dev/null 2>&1
+      if [[ $mode == first-boot ]]; then
+        assert_file_contains "$TEST_TMP/calls" 'reboot'
+        [[ -e $DXB_STATE_DIR/provisioned ]] || _fail 'a successful retry must complete first boot'
+      fi
+    done
+  done
 )

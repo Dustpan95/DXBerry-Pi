@@ -277,6 +277,12 @@ driver runs them in a fixed order:
 - Every step compares desired state to current state and only acts on a
   difference. A re-run on an already-provisioned system changes nothing and
   says so.
+- Generated network and journal files are read back before reporting a write as
+  successful or applying it to a service. A rejected replacement leaves the
+  previous file intact and records a failed step. First boot checks the saved
+  Ethernet/WiFi, static DNS and netwatch unit against the requested configuration
+  before rebooting; an ordinary run skips the automatic netwatch restart while
+  those files are incomplete. The next run retries the failed write.
 - Password fields that read `<applied>` are skipped. A new plaintext value is
   applied and then scrubbed again.
 - Graywolf seeding runs only while Graywolf reports `needs_setup: true`
@@ -336,7 +342,7 @@ ifupdown, `wpa_supplicant` and iproute2, all present on the base image.
 
 ### 8.2 Invariant
 
-**Exactly one of `eth0` / `wlan0` carries an address at any time, and only
+**At most one of `eth0` / `wlan0` carries a configured IPv4 address at any time, and only
 `dxberry-netwatch` assigns addresses.** Neither interface is `auto` or
 `allow-hotplug` in ifupdown, so nothing else can bring one up. This makes
 duplicate addresses, duplicate-address-detection stalls and route-metric
@@ -384,8 +390,12 @@ back.
 States: `ETH` (eth0 configured), `WIFI` (wlan0 configured), `NONE` (neither;
 no carrier and no WiFi configured or WiFi association failed).
 
-- **Start:** raise eth0. Carrier present → `ifup eth0` → `ETH`. Otherwise, if
-  wlan0 is defined → `ifup wlan0` → `WIFI`; else `NONE`.
+- **Start:** raise eth0. If neither interface is already configured, allow up to
+  5 s for Ethernet carrier to negotiate (`DXB_NW_ETH_GRACE`; 0 disables the wait).
+  Stop waiting as soon as carrier appears; an absent Ethernet adapter does not
+  wait. Carrier present → `ifup eth0` → `ETH`. Otherwise, if wlan0 is defined →
+  `ifup wlan0` → `WIFI`; else `NONE`. Adopting an existing connection skips this
+  wait and does not cycle the interface.
 - **Carrier lost in `ETH`:** `ifdown eth0`, re-raise link, then `ifup wlan0`
   if defined → `WIFI`, else `NONE`.
 - **Carrier returns in `WIFI` or `NONE`:** `ifdown wlan0` first (if up), then
@@ -398,14 +408,33 @@ Events come from `ip monitor link` (kernel netlink, immediate). A 2 s debounce
 absorbs link flaps. A 5 s poll of `/sys/class/net/eth0/carrier` backs up the
 event stream. All transitions are logged to the journal.
 
-`ifdown` is always called before `ifup` on the other interface, so the same
-address is never held by two interfaces even for an instant.
+`ifdown` is always called before `ifup` on the other interface. A successful
+exit alone is insufficient: both ifupdown state and the kernel IPv4 address list
+must confirm teardown. An error or incomplete teardown gets one forced attempt;
+if it remains unconfirmed, the handoff is blocked and retried on later ticks.
+An unreadable address list also blocks setup. An absent adapter cannot retain
+an address, so its stale ifupdown entry does not prevent fallback; `ifup --force`
+handles that entry when the adapter returns without an address.
+
+A failed setup returns to `NONE` with the normal retry delay. Before another
+setup, partial addresses on either interface are cleaned up through the same
+verified teardown. At startup, an existing overlap is repaired in favor of
+usable Ethernet, or the configured WiFi link otherwise. Failed repair is retried;
+no additional setup is attempted while teardown is blocked. `--status` lists all
+live IPv4 holders, so an overlap that cannot be repaired remains visible.
 
 Starting netwatch is non-disruptive: if ifupdown already reports the right
 interface configured (a service restart, not a boot), it adopts that state
 instead of cycling the interface. A provisioner re-run restarts netwatch only
 when an interface file actually changed, and does so as its last action, since
 the SSH session running the provisioner may drop when the address moves.
+
+The service uses `KillMode=process`: ifupdown's supplicant and DHCP helpers must
+survive a watcher stop/restart. The watcher's TERM/INT and exit handlers clean up
+its own link monitor only, verifying the monitor's parent and process starttime
+before sending a signal. Network helpers stop through `ifdown`, rather than as a
+side effect of stopping the watcher. An ungraceful SIGKILL cannot run this cleanup;
+ordinary service restarts use the handled TERM path.
 
 ### 8.5 DHCP mode
 

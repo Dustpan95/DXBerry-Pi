@@ -1,0 +1,9 @@
+[Unit]
+Description=DXBerry-Pi pending radio hotplug work
+
+[Path]
+DirectoryNotEmpty=/run/dxberry/radio-events/marks
+Unit=dxberry-radio-reconcile.service
+
+[Install]
+WantedBy=multi-user.target

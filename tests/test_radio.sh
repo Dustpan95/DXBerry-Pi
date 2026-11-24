@@ -697,6 +697,49 @@ test_apply_holds_a_lock_while_it_runs_and_frees_it_afterwards() {
   assert_ok flock -n "$DXB_RUN_DIR/apply.lock" true      # nothing running now: the lock is free again
 }
 
+test_apply_lock_override_receives_a_bounded_wait_and_closes_on_failure() (
+  radio_env
+  DXB_FLOCK=fake_apply_flock
+  DXB_RADIO_APPLY_LOCK_WAIT=3
+  fake_apply_flock() { printf '%s\n' "$*" > "$TEST_TMP/lockargs"; return 73; }
+  _dxb_radio_apply() { : > "$TEST_TMP/applied"; }
+  dxb_radio_apply hotplug 2> "$TEST_TMP/stderr"
+  assert_eq "$?" "6"
+  assert_eq "$(cat "$TEST_TMP/lockargs")" "-w 3 9"
+  [[ ! -e $TEST_TMP/applied ]] || _fail "apply ran after its lock failed"
+  assert_contains "$(cat "$TEST_TMP/stderr")" "try again"
+  if { : >&9; } 2>/dev/null; then _fail "failed apply left its lock descriptor open"; fi
+)
+
+test_apply_contended_lock_returns_without_running_and_can_be_retried() (
+  radio_env
+  DXB_FLOCK=flock
+  DXB_RADIO_APPLY_LOCK_WAIT=0
+  mkdir -p "$DXB_RUN_DIR"
+  exec 8> "$DXB_RUN_DIR/apply.lock"
+  flock 8
+  _dxb_radio_apply() { printf '%s\n' "$1" > "$TEST_TMP/applied"; return 7; }
+  dxb_radio_apply hotplug 2> "$TEST_TMP/stderr"
+  assert_eq "$?" "6"
+  [[ ! -e $TEST_TMP/applied ]] || _fail "contending apply ran without the lock"
+  exec 8>&-
+  dxb_radio_apply hotplug
+  assert_eq "$?" "7"
+  assert_eq "$(cat "$TEST_TMP/applied")" "hotplug"
+  assert_ok flock -n "$DXB_RUN_DIR/apply.lock" true
+)
+
+test_apply_missing_lock_command_refuses_to_apply() (
+  radio_env
+  DXB_FLOCK=$TEST_TMP/no-flock
+  _dxb_radio_apply() { printf '%s\n' "$1" > "$TEST_TMP/applied"; }
+  dxb_radio_apply hotplug 2> "$TEST_TMP/stderr"
+  assert_eq "$?" "6"
+  [[ ! -e $TEST_TMP/applied ]] || _fail "apply ran without its lock command"
+  assert_contains "$(cat "$TEST_TMP/stderr")" "flock is not installed"
+  if { : >&9; } 2>/dev/null; then _fail "missing lock command left its descriptor open"; fi
+)
+
 test_apply_reports_the_pending_alsa_id_until_the_card_is_renamed() {
   radio_env; fx_scene "$DXB_SYSFS_ROOT" digirig; dxb_radio_scan_cache; dxb_radio_load
   dxb_radio_add radio1 '{"audio":"1","cat":"2"}' > /dev/null

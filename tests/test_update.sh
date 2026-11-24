@@ -21,6 +21,7 @@ up_env() {
   # no update test reaches the real systemctl: a recorder in $TEST_TMP/calls (up_sc, below)
   export DXB_SYSTEMCTL=up_sc
   export DXB_STATE_DIR=$TEST_TMP/state DXB_LOG_FILE=$TEST_TMP/state/log DXB_RUN_DIR=$TEST_TMP/run \
+    DXB_SYSTEMD_DIR=$TEST_TMP/systemd DXB_UPDATE_RADIO_RULES_FILE=$TEST_TMP/etc/70-radio.rules \
     DXB_UPDATE_CACHE=$TEST_TMP/state/update-check.json DXB_UPDATE_CONF=$TEST_TMP/state/update.conf \
     DXB_UPDATE_JOB_FILE=$TEST_TMP/run/update-job.json DXB_UPDATE_RESULT=$TEST_TMP/run/update-result.json \
     DXB_UPDATE_WORK=$TEST_TMP/state/update-work DXB_OPT=$TEST_TMP/opt/dxberry DXB_SBIN=$TEST_TMP/sbin \
@@ -225,20 +226,20 @@ test_update_check_keeps_a_failed_answer_only_briefly() {
   local j now
   up_env
   now=$(date +%s)
-  jq -cn --argjson t "$(( now - 1000 ))" '{checked_at: $t, graywolf: {error: "x"}, dxberry: {update: false}, system: {count: 0}}' > "$DXB_UPDATE_CACHE"
+  jq -cn --argjson t "$(( now - 1000 ))" '{version:2, checked_at: $t, graywolf: {error: "x"}, dxberry: {update: false}, system: {count: 0}}' > "$DXB_UPDATE_CACHE"
   j=$( dpkg-query() { printf 'installed 0.14.13\n'; }; dxb_update_check )
   assert_eq "$(jq -r '.cached, .graywolf.latest' <<< "$j" | tr '\n' ' ')" "false 0.14.14 "
   # younger than 15 minutes: still the cached answer
-  jq -cn --argjson t "$(( now - 100 ))" '{checked_at: $t, graywolf: {installed: "0.14.13"}, dxberry: {error: "y"}, system: {count: 0}}' > "$DXB_UPDATE_CACHE"
+  jq -cn --argjson t "$(( now - 100 ))" '{version:2, checked_at: $t, graywolf: {installed: "0.14.13"}, dxberry: {error: "y"}, system: {count: 0}}' > "$DXB_UPDATE_CACHE"
   : > "$TEST_TMP/calls"
   j=$( dpkg-query() { printf 'installed 0.14.13\n'; }; dxb_update_check )
   assert_eq "$(jq -r '.cached' <<< "$j")" "true"
   assert_eq "$(cat "$TEST_TMP/calls")" ""
   # an answer without an error keeps its six hours
-  jq -cn --argjson t "$(( now - 1000 ))" '{checked_at: $t, graywolf: {installed: "0.14.13"}, dxberry: {update: false}, system: {count: 0}}' > "$DXB_UPDATE_CACHE"
+  jq -cn --argjson t "$(( now - 1000 ))" '{version:2, checked_at: $t, graywolf: {installed: "0.14.13"}, dxberry: {update: false}, system: {count: 0}}' > "$DXB_UPDATE_CACHE"
   j=$( dpkg-query() { printf 'installed 0.14.13\n'; }; dxb_update_check )
   assert_eq "$(jq -r '.cached' <<< "$j")" "true"
-  jq -cn --argjson t "$(( now - 1000 ))" '{checked_at: $t, graywolf: {installed: "0.14.13"}, dxberry: {update: false}, system: {error: "z"}}' > "$DXB_UPDATE_CACHE"
+  jq -cn --argjson t "$(( now - 1000 ))" '{version:2, checked_at: $t, graywolf: {installed: "0.14.13"}, dxberry: {update: false}, system: {error: "z"}}' > "$DXB_UPDATE_CACHE"
   j=$( dpkg-query() { printf 'installed 0.14.13\n'; }; dxb_update_check )
   assert_eq "$(jq -r '.cached, .system.count' <<< "$j" | tr '\n' ' ')" "false 2 "
 }
@@ -292,7 +293,12 @@ test_update_rollback_info() {
 }
 
 # up_tree DIR VERSION: an installed DXBerry tree (the repo's provision/) at DIR claiming VERSION.
-up_tree() { mkdir -p "$1" && cp -r "$DXB_ROOT/provision/." "$1/" && echo "$2" > "$1/VERSION"; }
+up_tree() {
+  mkdir -p "$1" && cp -r "$DXB_ROOT/provision/." "$1/" && echo "$2" > "$1/VERSION"
+  # Historical update fixtures model releases from before native collection.
+  # Dedicated release tests explicitly add the capability when modelling it.
+  rm -f "$1/share/wsjtx-native-protocol"
+}
 # up_provision_stub: an EXECUTABLE stand-in for the new tree's dxberry-provision recording how it ran.
 up_provision_stub() {
   # shellcheck disable=SC2016  # single-quoted on purpose: expands when the generated stub script runs, not here
@@ -301,8 +307,19 @@ up_provision_stub() {
   chmod +x "$TEST_TMP/provision-stub"
   export DXB_UPDATE_PROVISION=$TEST_TMP/provision-stub DXB_PROVISION_LOG=$TEST_TMP/state/provision.log
 }
-# up_release_file VERSION: build the real update file for VERSION and serve it.
-up_release_file() { "$DXB_ROOT/build/make-update-tarball.sh" "$1" "$TEST_TMP/http" > /dev/null || _fail "could not build the update file"; }
+# up_release_file VERSION [native]: build the update file and serve it. Historical
+# fixtures predate native collection; new capability cases opt in explicitly.
+up_release_file() {
+  "$DXB_ROOT/build/make-update-tarball.sh" "$1" "$TEST_TMP/http" > /dev/null || { _fail "could not build the update file"; return; }
+  [[ ${2:-} == native ]] && return 0
+  local name=dxberry-pi-$1.tar.gz stage=$TEST_TMP/legacy-release-fixture
+  mkdir -p "$stage"
+  tar -xzf "$TEST_TMP/http/$name" -C "$stage" --no-same-owner
+  rm -f "$stage/dxberry/share/wsjtx-native-protocol"
+  tar --owner=0 --group=0 --numeric-owner -czf "$TEST_TMP/http/$name" -C "$stage" dxberry
+  ( cd "$TEST_TMP/http" && sha256sum "$name" > "$name.sha256" )
+  rm -rf "$stage"
+}
 
 test_update_apply_dxberry_swaps_the_tree_and_runs_the_new_setup() {
   up_env; up_provision_stub
@@ -567,7 +584,16 @@ up_station_env() {
   : > "$DXB_NGINX_DIR/sites-available/dxberry-pat.conf"
   : > "$TEST_TMP/calls"
 }
-up_sc() { echo "systemctl $*" >> "$TEST_TMP/calls"; return 0; }
+up_sc() {
+  if [[ $1 == show && ${*: -1} == dxberry-radio-reconcile.* ]]; then
+    # Keep absence queries observable without counting them as station changes.
+    echo "systemctl $*" >> "$TEST_TMP/queue-manager-reads"
+    printf 'LoadState=not-found\nActiveState=inactive\nJob=\n'
+    return 0
+  fi
+  echo "systemctl $*" >> "$TEST_TMP/calls"
+  return 0
+}
 up_nginx() { echo "nginx $*" >> "$TEST_TMP/calls"; return 0; }
 
 test_update_rollback_to_a_tree_without_the_station_tears_it_down() (
@@ -651,6 +677,18 @@ test_update_dxberry_release_keeps_other_lines_through_update_and_rollback() {
 # A link of ours (one that points into $DXB_OPT/bin/) left dangling by a tree change - e.g.
 # dxberry-update after a rollback to a tree that predates it - is removed; a dangling link that
 # points somewhere else entirely is left alone (it is not this function's business).
+test_update_links_program_state_and_removes_its_link_for_an_older_tree() {
+  up_env
+  up_tree "$DXB_OPT" 0.5.0-rc4
+  : > "$DXB_OPT/bin/dxberry-program-state"
+  chmod 755 "$DXB_OPT/bin/dxberry-program-state"
+  dxb_update_link_commands
+  assert_eq "$(readlink "$DXB_SBIN/dxberry-program-state")" "$DXB_OPT/bin/dxberry-program-state"
+  rm "$DXB_OPT/bin/dxberry-program-state"
+  dxb_update_link_commands
+  [[ ! -L $DXB_SBIN/dxberry-program-state ]] || _fail "older tree retained a dangling generation-helper link"
+}
+
 test_update_link_commands_drops_only_a_dangling_link_of_ours() {
   up_env
   up_tree "$DXB_OPT" 0.3.0-rc3
@@ -808,11 +846,11 @@ test_update_apply_system_upgrades_without_questions() {
   assert_contains "$(cat "$TEST_TMP/calls")" "dpkg --configure -a"
   assert_contains "$(cat "$TEST_TMP/calls")" "apt-get update"
   assert_contains "$(cat "$TEST_TMP/calls")" "apt-get -y --no-install-recommends -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade"
-  # only the update call fails: nothing changed yet
+  # only the refresh fails: no upgrade is attempted
   echo update > "$TEST_TMP/apt-fail-on"; echo 100 > "$TEST_TMP/apt-rc"
   dxb_update_apply_system > /dev/null 2>&1; assert_eq "$?" "6"
-  # only the upgrade call fails: partway through
-  echo upgrade > "$TEST_TMP/apt-fail-on"
+  # only the real upgrade carries -y; simulation still succeeds
+  echo -y > "$TEST_TMP/apt-fail-on"
   dxb_update_apply_system > /dev/null 2>&1; assert_eq "$?" "8"
 }
 
@@ -971,7 +1009,7 @@ test_update_cli_job_with_a_corrupt_job_file() {
   printf '{"unit":"dxberry-job-update-system-1","kind":"system","started":1}\n' > "$DXB_UPDATE_JOB_FILE"
   echo 'garbage' > "$DXB_UPDATE_RESULT"
   assert_ok up_cli job --json
-  assert_eq "$(jq -c '[.job.kind, .job.state, .job.exit]' "$TEST_TMP/out")" '["system","finished",null]'
+  assert_eq "$(jq -c '[.job.kind, .job.state, .job.exit]' "$TEST_TMP/out")" '["system","ended",null]'
 }
 
 test_update_cli_dxberry_job_runs_from_a_copy() {
@@ -1019,6 +1057,13 @@ test_update_cli_apply_hands_the_setup_run_the_real_log() {
   assert_eq "$(cat "$DXB_OPT/VERSION")" "0.3.0-rc3"
 }
 
+# Simulate a completed version-2 worker for the currently admitted request.
+up_cli_bound_result() {
+  (umask 077; : > "$DXB_RUN_DIR/update-apply.lock")
+  jq -cn --slurpfile job "$DXB_UPDATE_JOB_FILE" --argjson rc "$1" \
+    '{version:2,run_id:$job[0].run_id,unit:$job[0].unit,exit:$rc,finished:1700000000}' > "$DXB_UPDATE_RESULT"
+}
+
 test_update_cli_job_reports() {
   local unit
   up_cli_env
@@ -1028,7 +1073,7 @@ test_update_cli_job_reports() {
   assert_ok up_cli job --json
   assert_eq "$(jq -r '.job.kind, .job.state' "$TEST_TMP/out" | tr '\n' ' ')" "system running "
   assert_eq "$(jq -c '.job.lines' "$TEST_TMP/out")" '["downloading dxberry-pi-0.3.0-rc4.tar.gz","running the setup"]'
-  : > "$TEST_TMP/active"; echo '{"exit":0,"finished":1700000000}' > "$DXB_UPDATE_RESULT"
+  : > "$TEST_TMP/active"; up_cli_bound_result 0
   assert_ok up_cli job --json
   assert_eq "$(jq -r '.job.state, .job.exit' "$TEST_TMP/out" | tr '\n' ' ')" "finished 0 "
 }
@@ -1054,9 +1099,9 @@ test_update_cli_every_start_answers_with_its_unit() {
   assert_eq "$(jq -r '.job.unit' "$TEST_TMP/out")" "$unit"
   assert_eq "$(jq -c '[.job | (.unit|type), (.kind|type), .name, .state, .status, .exit, (.lines|type)] + [(.now|type)]' "$TEST_TMP/out")" \
     "[\"string\",\"string\",\"wsjtx\",\"running\",\"running\",null,\"array\",\"number\"]"
-  : > "$TEST_TMP/active"; echo '{"exit":0,"finished":1700000000}' > "$DXB_UPDATE_RESULT"
+  : > "$TEST_TMP/active"; up_cli_bound_result 0
   up_cli job --json; assert_eq "$(jq -r '.job.status' "$TEST_TMP/out")" "done"
-  echo '{"exit":8,"finished":1700000000}' > "$DXB_UPDATE_RESULT"
+  up_cli_bound_result 8
   up_cli job --json; assert_eq "$(jq -r '.job.status' "$TEST_TMP/out")" "failed"
   # a job with no name still has the key
   printf '{"unit":"dxberry-job-update-system-1","kind":"system","started":1}\n' > "$DXB_UPDATE_JOB_FILE"
@@ -1159,9 +1204,9 @@ test_update_check_a_program_that_cannot_be_read_has_an_error() {
   assert_eq "$(jq -r '.apps.wsjtx.update' <<< "$j")" "true"
   # an error in apps keeps the cached answer only for the short time
   now=$(date +%s)
-  jq -cn --argjson t "$(( now - 1000 ))" '{checked_at: $t, graywolf: {update: false}, dxberry: {update: false}, system: {count: 0}, apps: {fldigi: {error: "x"}}}' > "$DXB_UPDATE_CACHE"
+  jq -cn --argjson t "$(( now - 1000 ))" '{version:2, checked_at: $t, graywolf: {update: false}, dxberry: {update: false}, system: {count: 0}, apps: {fldigi: {error: "x"}}}' > "$DXB_UPDATE_CACHE"
   assert_eq "$(dxb_update_check | jq -r '.cached')" "false"
-  jq -cn --argjson t "$(( now - 1000 ))" '{checked_at: $t, graywolf: {update: false}, dxberry: {update: false}, system: {count: 0}, apps: {wsjtx: {update: false}}}' > "$DXB_UPDATE_CACHE"
+  jq -cn --argjson t "$(( now - 1000 ))" '{version:2, checked_at: $t, graywolf: {update: false}, dxberry: {update: false}, system: {count: 0}, apps: {wsjtx: {update: false}}}' > "$DXB_UPDATE_CACHE"
   assert_eq "$(dxb_update_check | jq -r '.cached')" "true"
 }
 test_update_system_restarts_the_sessions_of_upgraded_debian_programs() {
@@ -1227,6 +1272,7 @@ test_update_app_normal_path_leaves_no_trap_behind() {
 # after the new setup ran, every running program session restarts (an rc2 session still holds the
 # card with its own PulseAudio); stopped ones are left alone
 up_sc_list() {
+  if [[ $1 == show && ${*: -1} == dxberry-radio-reconcile.* ]]; then up_sc "$@"; return; fi
   echo "systemctl $*" >> "$TEST_TMP/calls"
   case $1 in
     list-units) printf 'dxberry-screen@wsjtx-radio1.service loaded active running x\ndxberry-screen@fldigi-radio2.service loaded active running y\ndxberry-screen@pat-radio3.service loaded inactive dead z\n' ;;

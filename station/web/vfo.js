@@ -153,7 +153,7 @@
 
   // layoutFor CAPS RECORD OWNER: the sections of the page, top to bottom, by name
   function layoutFor(caps, record, owner) {
-    const program = owner && owner.kind === "program" ? ["program"] : [];
+    const program = (owner && owner.kind === "program") || (record && record.owner === "wsjtx") ? ["program"] : [];
     if (noCat(record, caps)) return ["nocat", "stop", "owner", ...program];
     const nc = normCaps(caps);
     if (!nc) return ["connecting", "stop", "owner", ...program];
@@ -337,6 +337,14 @@
       e.append(typeof k === "object" ? k : String(k));
     }
     return e;
+  }
+
+  const nativeStatus = window.dxbWSJTX ? window.dxbWSJTX.create({ radio: name, h, retry: () => watch(), formatFrequency: formatFreq }) : null;
+  let nativeAnchored = false;
+
+  function onProgram(message) {
+    if (!S.found || (S.rec && S.rec.owner !== "wsjtx")) return;
+    if (nativeStatus) nativeStatus.receive(message);
   }
 
   function store(k, v) { try { localStorage.setItem("vfo:" + k, String(v)); } catch (e) { /* storage blocked */ } }
@@ -1137,9 +1145,10 @@
   function programLink() {
     const owner = S.rec && S.rec.owner;
     if (!owner || !/^[a-z][a-z0-9-]*$/.test(owner)) return null;
-    const label = S.owner ? S.owner.label : owner;
-    if (typeof dashOpenLink === "function" && typeof last !== "undefined" && last && last.radios && last.radios.ok && last.radios.radios[name]) {
-      const a = dashOpenLink(last, name, last.radios.radios[name], label);
+    const label = owner === "wsjtx" ? "WSJT-X" : S.owner ? S.owner.label : owner;
+    if (typeof dashOpenLink === "function" && typeof last !== "undefined" && last) {
+      // The radio API is fresher than the status report after reassignment.
+      const a = dashOpenLink(last, name, { owner }, label);
       if (a) return a;
     }
     return h("a", { class: "btn small primary", href: `/screen#${owner}-${name}`, target: "_blank", rel: "noopener" }, `Open ${label}`);
@@ -1161,7 +1170,28 @@
       });
       box.replaceChildren(h("p", { class: "vfo-owner" }, ownerLine(o)), h("div", { class: "actions" }, acts));
     }
-    if (prog) prog.replaceChildren(h("div", { class: "actions" }, programLink()));
+    if (prog) {
+      const native = nativeStatus && S.rec && S.rec.owner === "wsjtx";
+      prog.classList.toggle("vfo-program-native", !!native);
+      if (native) {
+        const active = o && o.kind === "program";
+        const panel = h("div", { class: "wsjtx-panel", id: "wsjtx-status" });
+        prog.replaceChildren(h("div", { class: "actions" }, active ? programLink() : h("a", { class: "btn small", href: "/#dashboard" }, "Back to radios")), panel);
+        nativeStatus.mount(panel);
+        if (!nativeAnchored && location.hash === "#wsjtx-status") {
+          nativeAnchored = true;
+          requestAnimationFrame(() => {
+            if (!panel.isConnected) return;
+            panel.scrollIntoView({ block: "start" });
+            panel.querySelector("h3").focus({ preventScroll: true });
+          });
+        }
+        if (S.sock) watch();
+      } else {
+        if (nativeStatus) nativeStatus.mount(null);
+        prog.replaceChildren(h("div", { class: "actions" }, programLink()));
+      }
+    } else if (nativeStatus) nativeStatus.mount(null);
   }
 
   sectionBuilders.why = () => {
@@ -1257,6 +1287,8 @@
       if (j && j.ok === false) {
         if (/no such radio/.test(j.reason || "")) {
           S.found = false;
+          if (nativeStatus) nativeStatus.mount(null);
+          document.title = "Radio not found — DXBerry";
           root.replaceChildren(h("section", { class: "card vfo-box" }, h("p", {}, `There is no radio called ${name}.`), h("a", { class: "btn small", href: "/" }, "Back to the dashboard")));
           S.layout = "";
           return;
@@ -1265,6 +1297,7 @@
         return;
       }
       S.rec = j.radio || S.rec;
+      document.title = `${S.rec && S.rec.label ? S.rec.label : name} — DXBerry`;
       S.caps = j.caps || S.caps;
       S.nc = normCaps(S.caps);
       S.owner = j.owner || null;
@@ -1332,6 +1365,7 @@
     dxb.events.on("rig", onRig);
     dxb.events.on("ptt", onPTT);
     dxb.events.on("guard", onGuard);
+    dxb.events.on("program", onProgram);
     // the release also comes from the window losing focus or the page going away
     window.addEventListener("blur", pttUp);
     window.addEventListener("pagehide", pttUp);
@@ -1342,17 +1376,18 @@
     document.addEventListener("visibilitychange", () => { if (document.hidden) pttUp(); });
     if (tracked()) window.dxbAudio.onChange(onAudio);
     armListen();
-    dxb.events.onOpen(() => { S.sock = true; watch(); loadAll(); });
-    dxb.events.onClose(() => { S.sock = false; paint(); });
+    dxb.events.onOpen(() => { S.sock = true; if (nativeStatus) nativeStatus.connection(true); watch(); loadAll(); });
+    dxb.events.onClose(() => { S.sock = false; if (nativeStatus) nativeStatus.connection(false); paint(); });
     // Hidden, the shell lets the events socket go, and the station drops a tab's claim with its
     // socket, ending any carrier or PTT. So it stays open while this tab holds the transmitter, is
     // keying or tuning, has a claim on its way (the answer is not known yet) or plays the radio's
     // audio. Otherwise nothing is lost: loadAll reads the owner, PTT and guard back when shown.
     dxb.events.keepOpenWhile(() => mine() || !!S.hold || !!S.tune || !!S.tuneAsked || !!S.ownerAsked || S.listening);
-    if (dxb.events.open) { S.sock = true; watch(); }
+    if (dxb.events.open) { S.sock = true; if (nativeStatus) nativeStatus.connection(true); watch(); }
     loadAll();
     // who holds the transmitter is not on the events stream; ask now and then
     setInterval(() => { if (!dxb.hidden && S.found) loadAll(); }, 5000);
+    if (nativeStatus) setInterval(() => { if (!dxb.hidden && S.found) nativeStatus.tick(); }, 1000);
     dxb.onVisible(() => { loadAll(); });
   }
 

@@ -119,3 +119,137 @@ func TestSettingsConcurrentSetAndProbed(t *testing.T) {
 		t.Fatal("stale temp file kept")
 	}
 }
+
+func TestRoutingApprovalPreservesGuardSettingsAndConcurrentUpdates(t *testing.T) {
+	s := &Store{Dir: t.TempDir()}
+	if err := s.Set("radio1", RadioSettings{SWRLimit: 2.5, PTTTimeoutS: 90}); err != nil {
+		t.Fatal(err)
+	}
+	approval := strings.Repeat("a", 64)
+	if err := s.SaveRoutingApproval("radio1", "", approval); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC()
+	if err := s.SetProbed("radio1", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Modify("radio1", func(v *RadioSettings) { v.SWRLimit = 2; v.PTTTimeoutS = 60 }); err != nil {
+		t.Fatal(err)
+	}
+	value, err := s.ReadStrict("radio1")
+	if err != nil || value.WSJTXRoutingApproval != approval || value.SWRLimit != 2 || value.PTTTimeoutS != 60 || !value.Probed.Equal(at) {
+		t.Fatal("an ordinary update lost consent or guard settings", value, err)
+	}
+	if err := s.SaveRoutingApproval("radio1", "", strings.Repeat("b", 64)); err == nil {
+		t.Fatal("stale consent overwrote newer approval")
+	}
+	if err := s.SaveRoutingApproval("radio1", approval, ""); err != nil {
+		t.Fatal(err)
+	}
+	value, err = s.ReadStrict("radio1")
+	if err != nil || value.WSJTXRoutingApproval != "" || value.SWRLimit != 2 || value.PTTTimeoutS != 60 {
+		t.Fatal("disabling reset guards", value, err)
+	}
+}
+
+func TestRoutingApprovalInventoryDistinguishesEmptyConsentAndDamage(t *testing.T) {
+	s := &Store{Dir: filepath.Join(t.TempDir(), "radios")}
+	if approved, err := s.HasRoutingApprovals(); err != nil || approved {
+		t.Fatal(approved, err)
+	}
+	if err := s.SaveRoutingApproval("radio1", "", strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if approved, err := s.HasRoutingApprovals(); err != nil || !approved {
+		t.Fatal(approved, err)
+	}
+	if err := s.SaveRoutingApproval("radio1", strings.Repeat("a", 64), ""); err != nil {
+		t.Fatal(err)
+	}
+	if approved, err := s.HasRoutingApprovals(); err != nil || approved {
+		t.Fatal(approved, err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Dir, "radio2.json"), []byte(`{broken`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.HasRoutingApprovals(); err == nil {
+		t.Fatal("damaged preferences hid possibly lost consent")
+	}
+}
+
+func TestStrictSettingsRefuseAmbiguousDamagedOrUnsafeFilesWithoutWrites(t *testing.T) {
+	for _, raw := range []string{
+		`null`, `{nope`, `{} {}`, `{"swr_limit":2,"swr_limit":3}`, `{"SWR_LIMIT":2}`,
+		`{"ptt_timeout_s":null}`, `{"wsjtx_routing_approval":null}`, `{"wsjtx_routing_approval":"bad"}`,
+		`{"WSJTX_ROUTING_APPROVAL":""}`, `{"future_setting":true}`, `{"swr_limit":0}`, strings.Repeat(" ", 16385),
+	} {
+		t.Run(raw[:min(len(raw), 40)], func(t *testing.T) {
+			s := &Store{Dir: t.TempDir()}
+			path := filepath.Join(s.Dir, "radio1.json")
+			if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.RoutingApproval("radio1"); err == nil {
+				t.Fatal("damaged approval became disabled")
+			}
+			if err := s.SetProbed("radio1", time.Now()); err == nil {
+				t.Fatal("probe replaced damaged settings with defaults")
+			}
+			if err := s.SaveRoutingApproval("radio1", "", strings.Repeat("a", 64)); err == nil {
+				t.Fatal("approval replaced damaged settings")
+			}
+			if got, _ := os.ReadFile(path); string(got) != raw {
+				t.Fatal("refusal changed existing bytes")
+			}
+		})
+	}
+	for _, kind := range []string{"symlink", "hardlink", "permissions", "directory"} {
+		t.Run(kind, func(t *testing.T) {
+			s := &Store{Dir: t.TempDir()}
+			original := filepath.Join(s.Dir, "original")
+			path := filepath.Join(s.Dir, "radio1.json")
+			if err := os.WriteFile(original, []byte(`{}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			switch kind {
+			case "symlink":
+				err = os.Symlink(original, path)
+			case "hardlink":
+				err = os.Link(original, path)
+			case "permissions":
+				err = os.WriteFile(path, []byte(`{}`), 0666)
+			case "directory":
+				err = os.Mkdir(path, 0700)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.ReadStrict("radio1"); err == nil {
+				t.Fatal("unsafe settings accepted")
+			}
+		})
+	}
+}
+
+func TestStrictSettingsKeepLegacyDefaultsAndGuardReaderIndependent(t *testing.T) {
+	s := &Store{Dir: t.TempDir()}
+	if value, err := s.ReadStrict("radio1"); err != nil || value != Defaults() {
+		t.Fatal(value, err)
+	}
+	path := filepath.Join(s.Dir, "radio1.json")
+	if err := os.WriteFile(path, []byte(`{"swr_limit":2.5,"ptt_timeout_s":90}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := s.ReadStrict("radio1"); err != nil || value.SWRLimit != 2.5 || value.WSJTXRoutingApproval != "" {
+		t.Fatal(value, err)
+	}
+	for _, approval := range []string{`"bad"`, `42`, `true`, `[]`, `null`, `"` + strings.Repeat("a", 64) + `"`} {
+		if err := os.WriteFile(path, []byte(`{"swr_limit":2.5,"ptt_timeout_s":90,"wsjtx_routing_approval":`+approval+`}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if value := s.Get("radio1"); value.SWRLimit != 2.5 || value.PTTTimeoutS != 90 || value.WSJTXRoutingApproval != "" {
+			t.Fatal("collection preference changed guard reads or supplied fallback consent", value)
+		}
+	}
+}

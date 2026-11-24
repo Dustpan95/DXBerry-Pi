@@ -1,0 +1,7 @@
+# Generate independent reference datagrams with Qt's serialization operators.
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pyqt5 bash mawk coreutils && rm -rf /var/lib/apt/lists/*
+WORKDIR /work
+COPY wsjtx-protocol-fixtures.py /work/fixtures.py
+ENTRYPOINT ["python3", "/work/fixtures.py"]

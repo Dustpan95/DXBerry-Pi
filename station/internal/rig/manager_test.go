@@ -234,26 +234,44 @@ func TestManagerInterestBeforeAndAfterStart(t *testing.T) {
 
 func TestManagerBroadcastsDeltas(t *testing.T) {
 	r := newMgRig(t, radio("hf", 4532, 3073))
+	// Discovery may publish capabilities before the first frequency arrives.
+	// Force that ordering rather than relying on goroutine scheduling.
+	frequencyGate := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(frequencyGate) }) }
+	defer unblock() // must release the read before r.run's cleanup waits for it
+	r.tune = func(l *plLink) { l.block["get_freq"] = frequencyGate }
 	// subscribe before the poller starts: its first update can go out before a later Subscribe
 	ups, cancel := r.m.Subscribe()
 	defer cancel()
 	r.run()
-	var got Update
-	select {
-	case got = <-ups:
-	case <-time.After(3 * time.Second):
-		t.Fatal("no update")
+	first := true
+	frequencyDeadline := time.After(3 * time.Second)
+	for {
+		select {
+		case got := <-ups:
+			var st struct {
+				Freq int64
+				Caps *Caps
+			}
+			if err := json.Unmarshal(got.Data, &st); err != nil || got.Radio != "hf" || st.Caps != nil {
+				t.Fatalf("update %+v err %v", got, err)
+			}
+			if first {
+				if st.Freq != 0 {
+					t.Fatal("fixture did not hold back the first frequency read")
+				}
+				first = false
+				unblock()
+			}
+			if st.Freq == 14074000 {
+				goto frequencyReceived
+			}
+		case <-frequencyDeadline:
+			t.Fatal("no frequency update")
+		}
 	}
-	var st struct {
-		Freq int64
-		Caps *Caps
-	}
-	if err := json.Unmarshal(got.Data, &st); err != nil || got.Radio != "hf" {
-		t.Fatalf("update %+v err %v", got, err)
-	}
-	if st.Freq != 14074000 || st.Caps != nil {
-		t.Fatalf("data %s", got.Data)
-	}
+frequencyReceived:
 	if snap, ok := r.m.Snapshot("hf"); !ok || len(snap) == 0 {
 		t.Fatal("no snapshot")
 	}

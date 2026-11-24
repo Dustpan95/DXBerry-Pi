@@ -5,6 +5,9 @@ cd "$(dirname "$0")/.." || exit 1
 export DXB_ROOT=$PWD
 export DXB_LIB=$DXB_ROOT/provision/lib
 export DXB_TEMPLATES=$DXB_ROOT/provision/templates
+# Shell fixtures simulate systemctl/devices and generation persistence. The
+# actual helper + record writer have their separate hardware-free integration.
+export DXB_PROGRAM_STATE_CMD=$DXB_ROOT/tests/fixtures/program-state.sh
 # shellcheck source=tests/lib.sh
 source "$DXB_ROOT/tests/lib.sh"
 for f in "$DXB_ROOT"/tests/test_*.sh; do

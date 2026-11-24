@@ -10,6 +10,7 @@ SYS_NET=${DXB_SYS_NET:-/sys/class/net}
 SIM_FILE=${DXB_NW_SIM_FILE:-/run/dxberry-netwatch.simulate}
 STATE_FILE=${DXB_NW_STATE_FILE:-/run/dxberry-netwatch.state}
 DEBOUNCE=${DXB_NW_DEBOUNCE:-2}
+ETH_GRACE=${DXB_NW_ETH_GRACE:-5}
 WIFI_GRACE=${DXB_NW_WIFI_GRACE:-30}
 RETRY=${DXB_NW_RETRY:-30}
 POLL=${DXB_NW_POLL:-5}
@@ -17,6 +18,8 @@ POLL=${DXB_NW_POLL:-5}
 NW_STATE=NONE
 NW_WIFI_SINCE=0
 NW_LAST_RETRY=0
+NW_MONITOR_PID=''
+NW_MONITOR_IDENTITY=''
 
 log() { printf 'dxberry-netwatch: %s\n' "$*" >&2; }
 
@@ -34,12 +37,46 @@ nw_carrier() {
 }
 
 nw_configured() { ifquery --state "$1" > /dev/null 2>&1; }
-nw_up() { log "ifup $1"; ifup "$1" || log "ifup $1 failed"; }
+# An absent adapter cannot hold an address. Otherwise both ifupdown and the kernel must
+# confirm teardown; an unreadable address list is not permission to bring up the other link.
+nw_is_down() {
+  local addresses
+  [[ -d $SYS_NET/$1 ]] || return 0
+  nw_configured "$1" && return 1
+  addresses=$(ip -o -4 addr show dev "$1" 2> /dev/null) || return 1
+  [[ -z $addresses ]]
+}
+
+nw_up() {
+  local iface=$1 other addresses
+  local -a args=()
+  if [[ $iface == "$ETH" ]]; then other=$WLAN; else other=$ETH; fi
+  # Also covers a partial ifup that left an address behind while our state returned to NONE.
+  if ! nw_is_down "$other"; then nw_down "$other" || return 1; fi
+  addresses=$(ip -o -4 addr show dev "$iface" 2> /dev/null) || { log "could not check $iface addresses; setup deferred"; return 1; }
+  if nw_configured "$iface"; then
+    [[ -z $addresses ]] || return 0
+    # A removed/reinserted adapter can retain stale ifupdown state without an address.
+    args+=(--force)
+  elif [[ -n $addresses ]]; then
+    # Clean up a failed setup before retrying its own interface, too.
+    nw_down "$iface" || return 1
+  fi
+  log "ifup ${args[*]:+${args[*]} }$iface"
+  ifup "${args[@]}" "$iface" || { log "ifup $iface failed"; return 1; }
+}
+
 nw_down() {
   log "ifdown $1"
-  ifdown "$1" 2> /dev/null || ifdown --force "$1" 2> /dev/null || true
+  if ! ifdown "$1" 2> /dev/null || ! nw_is_down "$1"; then
+    ifdown --force "$1" 2> /dev/null || true
+  fi
+  if ! nw_is_down "$1"; then
+    log "$1 is not confirmed down; keeping the other interface off"
+    return 1
+  fi
   # A link that stays administratively down reports no carrier, so eth0 is re-raised without an address.
-  if [[ $1 == "$ETH" ]]; then ip link set "$ETH" up 2> /dev/null; fi
+  if [[ $1 == "$ETH" && -d $SYS_NET/$ETH ]]; then ip link set "$ETH" up 2> /dev/null || true; fi
   return 0
 }
 
@@ -53,14 +90,15 @@ nw_decide() {
   esac
 }
 
+# 1: teardown blocked, so retain the old state. 2: setup failed after teardown, so retry from NONE.
 nw_do() {
   local a
   for a in "$@"; do
     case $a in
-      down_eth)  nw_down "$ETH" ;;
-      up_eth)    nw_up "$ETH" ;;
-      down_wifi) nw_down "$WLAN" ;;
-      up_wifi)   nw_up "$WLAN"; NW_WIFI_SINCE=$(date +%s) ;;
+      down_eth)  nw_down "$ETH" || return 1 ;;
+      up_eth)    nw_up "$ETH" || return 2 ;;
+      down_wifi) nw_down "$WLAN" || return 1 ;;
+      up_wifi)   nw_up "$WLAN" || return 2; NW_WIFI_SINCE=$(date +%s) ;;
     esac
   done
 }
@@ -69,13 +107,28 @@ nw_set_state() { NW_STATE=$1; printf '%s\n' "$1" > "$STATE_FILE" 2> /dev/null ||
 
 # One evaluation of the state machine. $1=1 skips the debounce (start-up).
 nw_tick() {
-  local immediate=${1:-0} ec wd wc decision new actions now
+  local immediate=${1:-0} ec wd wc decision new actions now rc keep discard
   now=$(date +%s)
   ec=$(nw_carrier "$ETH")
   if nw_wifi_defined; then wd=1; else wd=0; fi
   wc=$(nw_carrier "$WLAN")
   # Right after ifup, association takes a few seconds: treat the link as up during the grace period.
   if [[ $NW_STATE == WIFI ]] && (( now - NW_WIFI_SINCE < WIFI_GRACE )); then wc=1; fi
+  # Heal an already inconsistent startup state, and retry healing on later ticks if teardown
+  # fails. Prefer usable Ethernet; otherwise retain the configured WiFi connection.
+  if [[ -d $SYS_NET/$ETH && -d $SYS_NET/$WLAN ]] && nw_configured "$ETH" && nw_configured "$WLAN"; then
+    if (( ec )); then keep=$ETH; discard=$WLAN; else keep=$WLAN; discard=$ETH; fi
+    if ! nw_down "$discard"; then return 0; fi
+    if ! nw_up "$keep"; then
+      nw_set_state NONE; NW_LAST_RETRY=$now
+      return 0
+    fi
+    if [[ $keep == "$ETH" ]]; then nw_set_state ETH
+    else
+      nw_set_state WIFI; NW_WIFI_SINCE=$now
+      (( WIFI_GRACE <= 0 )) || wc=1
+    fi
+  fi
   decision=$(nw_decide "$NW_STATE" "$ec" "$wd" "$wc")
   new=${decision%% *}
   actions=${decision#"$new"}
@@ -95,48 +148,94 @@ nw_tick() {
   log "state $NW_STATE -> $new (eth carrier=$ec, wifi defined=$wd, wlan carrier=$wc)"
   # shellcheck disable=SC2086
   nw_do $actions
+  rc=$?
+  if (( rc == 1 )); then
+    log "handoff $NW_STATE -> $new blocked; will retry"
+    return 0
+  elif (( rc == 2 )); then
+    log "$new setup failed; will retry in ${RETRY}s"
+    nw_set_state NONE; NW_LAST_RETRY=$now
+    return 0
+  fi
   if [[ $new == ETH ]] && ! nw_configured "$ETH"; then
     log "$ETH did not come up; will retry in ${RETRY}s"
     nw_set_state NONE
+    NW_LAST_RETRY=$now
     return 0
   fi
   if [[ $new == WIFI ]] && ! nw_configured "$WLAN"; then
     log "$WLAN did not come up; will retry in ${RETRY}s"
     nw_set_state NONE
+    NW_LAST_RETRY=$now
     return 0
   fi
   nw_set_state "$new"
 }
 
-# Interface (eth0/wlan0) currently carrying an IPv4 address, or nothing.
-nw_holder() { ip -o -4 addr show up 2> /dev/null | awk -v e="$ETH" -v w="$WLAN" '$2 == e || $2 == w { print $2; exit }'; }
+# Report every live holder, including an overlap the watcher could not repair.
+nw_holders() {
+  ip -o -4 addr show up 2> /dev/null | awk -v e="$ETH" -v w="$WLAN" '
+    ($2 == e || $2 == w) && !seen[$2]++ { if (n++) printf ", "; printf "%s", $2 }
+    END { if (n) print "" }'
+}
 nw_status() {
   local st holder
   st=$(cat "$STATE_FILE" 2> /dev/null || echo unknown)
-  holder=$(nw_holder)
-  if [[ -n $holder ]]; then echo "$st ($holder holds the address)"; else echo "$st"; fi
+  holder=$(nw_holders)
+  if [[ $holder == *,* ]]; then echo "$st ($holder hold addresses)"
+  elif [[ -n $holder ]]; then echo "$st ($holder holds the address)"
+  else echo "$st"; fi
+}
+
+# Raising an unconfigured Ethernet link can take a few seconds to negotiate carrier.
+# Give it a bounded head start before choosing WiFi; an already configured link never waits.
+nw_wait_eth() {
+  local elapsed
+  [[ -d $SYS_NET/$ETH ]] || return 0
+  for ((elapsed=0; elapsed<ETH_GRACE; elapsed++)); do
+    [[ $(nw_carrier "$ETH") == 1 ]] && return 0
+    sleep 1
+  done
 }
 
 nw_startup() {
   ip link set "$ETH" up 2> /dev/null || true
   if nw_configured "$ETH"; then
     NW_STATE=ETH
-    if nw_configured "$WLAN"; then nw_down "$WLAN"; fi
   elif nw_configured "$WLAN"; then
     NW_STATE=WIFI; NW_WIFI_SINCE=$(date +%s)
-    if nw_configured "$ETH"; then nw_down "$ETH"; fi
   else
     NW_STATE=NONE
+    nw_wait_eth
   fi
   log "startup: ifupdown reports $NW_STATE"
   nw_tick 1
   nw_set_state "$NW_STATE"
 }
 
+nw_monitor_identity() {
+  # Strip comm before reading PPid/starttime; comm may itself contain spaces.
+  awk '{ sub(/^.*\) /, ""); print $2, $20 }' "/proc/$1/stat" 2> /dev/null
+}
+
+nw_cleanup_monitor() {
+  [[ -n $NW_MONITOR_PID && -n $NW_MONITOR_IDENTITY ]] || return 0
+  # Check ownership and starttime so an exited monitor's reused PID is never killed.
+  if [[ $NW_MONITOR_IDENTITY == "$BASHPID "* && $(nw_monitor_identity "$NW_MONITOR_PID") == "$NW_MONITOR_IDENTITY" ]]; then
+    kill "$NW_MONITOR_PID" 2> /dev/null || true
+    wait "$NW_MONITOR_PID" 2> /dev/null || true
+  fi
+  NW_MONITOR_PID=''; NW_MONITOR_IDENTITY=''
+}
+
 nw_run() {
   nw_startup
-  systemd-notify --ready 2> /dev/null || true
   exec 3< <(ip monitor link 2> /dev/null)
+  NW_MONITOR_PID=$!
+  NW_MONITOR_IDENTITY=$(nw_monitor_identity "$NW_MONITOR_PID") || NW_MONITOR_IDENTITY=''
+  trap nw_cleanup_monitor EXIT
+  trap 'exit 0' TERM INT
+  systemd-notify --ready 2> /dev/null || true
   local rc
   while true; do
     read -r -t "$POLL" -u 3 _; rc=$?

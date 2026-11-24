@@ -2,9 +2,11 @@ package status
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -42,6 +44,16 @@ type RigHub interface {
 // SetRig connects the rig layer; without it watch messages are ignored.
 func (s *Status) SetRig(h RigHub) { s.hub = h }
 
+// ProgramSource publishes coalesced changes to bounded replacement snapshots.
+// It shares the existing per-radio watch interest; watching never starts an app.
+type ProgramSource interface {
+	SetWatch(radio string, level int)
+	Snapshot(radio string) ([]byte, bool)
+	Subscribe() (<-chan struct{}, func())
+}
+
+func (s *Status) SetPrograms(p ProgramSource) { s.programs = p }
+
 // SocketHook is told when an events socket opens and returns the function to run when it
 // closes. The owner lock uses it to drop a tab's claim with its socket.
 type SocketHook func(r *http.Request) (closed func())
@@ -66,6 +78,17 @@ func (k *sock) level(radio string) int {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	return k.levels[radio]
+}
+
+func (k *sock) watched() []string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	names := make([]string, 0, len(k.levels))
+	for name := range k.levels {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // noticeBuffer is how many notices a socket may have waiting for its writer.
@@ -139,7 +162,18 @@ func (s *Status) setLevel(k *sock, radio string, level int) {
 		k.levels[radio] = level
 	}
 	k.mu.Unlock()
-	s.hub.SetWatch(radio, s.maxLevel(radio))
+	s.updateInterest(radio)
+}
+
+// s.smu is held while both consumers receive the same aggregate interest.
+func (s *Status) updateInterest(radio string) {
+	level := s.maxLevel(radio)
+	if s.hub != nil {
+		s.hub.SetWatch(radio, level)
+	}
+	if s.programs != nil {
+		s.programs.SetWatch(radio, level)
+	}
 }
 
 // dropSock forgets a closed socket's contributions.
@@ -153,11 +187,8 @@ func (s *Status) dropSock(k *sock) {
 		held = append(held, r)
 	}
 	k.mu.Unlock()
-	if s.hub == nil {
-		return
-	}
 	for _, r := range held {
-		s.hub.SetWatch(r, s.maxLevel(r))
+		s.updateInterest(r)
 	}
 }
 
@@ -174,12 +205,12 @@ func (s *Status) knownRadio(name string) bool {
 }
 
 // handleFrame acts on one client frame; only watch messages mean anything.
-// It returns the radio whose level was raised, for an immediate state.
+// It returns the changed radio, for an immediate state or watch cleanup.
 func (s *Status) handleFrame(k *sock, data []byte) (watched string) {
 	var m struct {
 		Type, Radio, Level string
 	}
-	if json.Unmarshal(data, &m) != nil || m.Type != "watch" || s.hub == nil {
+	if json.Unmarshal(data, &m) != nil || m.Type != "watch" || s.hub == nil && s.programs == nil {
 		return ""
 	}
 	level, ok := map[string]int{"none": watchNone, "dashboard": watchDashboard, "page": watchPage}[m.Level]
@@ -194,10 +225,21 @@ func (s *Status) handleFrame(k *sock, data []byte) (watched string) {
 		return ""
 	}
 	s.setLevel(k, m.Radio, level)
-	if level == watchNone {
-		return ""
-	}
 	return m.Radio
+}
+
+func programMessage(radio string, data []byte) []byte {
+	if len(data) > 256<<10 {
+		return nil
+	}
+	raw, _ := json.Marshal(struct {
+		Type    string          `json:"type"`
+		Program string          `json:"program"`
+		Radio   string          `json:"radio"`
+		SentAt  time.Time       `json:"sent_at"`
+		Data    json.RawMessage `json:"data"`
+	}{"program", "wsjtx", radio, time.Now(), data})
+	return raw
 }
 
 func rigMessage(radio string, data []byte) []byte {
@@ -233,6 +275,7 @@ const pollEvery = 5 * time.Second // how often an open events socket re-checks t
 // and same-origin rule; alive re-checks the login session of an open events socket.
 func (s *Status) Register(mux *http.ServeMux, alive func(*http.Request) bool) {
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		s.Request()
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(s.Snapshot())
@@ -249,9 +292,8 @@ func (s *Status) message() []byte {
 }
 
 // events serves one browser: the current status at once, then after every refresh, with a ping
-// in between. This goroutine writes; one reader goroutine drains and ignores what the browser
-// sends (a "watch" message is accepted and does nothing in this release). Both end with the
-// socket.
+// in between. This goroutine writes; one reader handles radio watch interest.
+// Both end with the socket.
 func (s *Status) eventsHandler(alive func(*http.Request) bool, every time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.events(w, r, alive, every) })
 }
@@ -302,6 +344,12 @@ func (s *Status) events(w http.ResponseWriter, r *http.Request, alive func(*http
 	}()
 
 	send := func(b []byte) bool {
+		// A batch of program snapshots can take several writes. Recheck
+		// authentication between frames rather than waiting for the ticker.
+		if !alive(r) {
+			_ = ws.Close(websocket.StatusPolicyViolation, "logged out")
+			return false
+		}
 		wctx, c := context.WithTimeout(ctx, writeTimeout)
 		defer c()
 		return ws.Write(wctx, websocket.MessageText, b) == nil
@@ -311,6 +359,33 @@ func (s *Status) events(w http.ResponseWriter, r *http.Request, alive func(*http
 		var stop func()
 		rigUpdates, stop = s.hub.Subscribe()
 		defer stop()
+	}
+	var programUpdates <-chan struct{}
+	if s.programs != nil {
+		var stop func()
+		programUpdates, stop = s.programs.Subscribe()
+		defer stop()
+	}
+	lastPrograms := map[string][32]byte{}
+	sendProgram := func(radio string, force bool) bool {
+		if s.programs == nil || sk.level(radio) == watchNone || !s.knownRadio(radio) {
+			delete(lastPrograms, radio)
+			return true
+		}
+		data, ok := s.programs.Snapshot(radio)
+		if !ok {
+			return true
+		}
+		sum := sha256.Sum256(data)
+		if old, exists := lastPrograms[radio]; !force && exists && old == sum {
+			return true
+		}
+		message := programMessage(radio, data)
+		if message == nil || !send(message) {
+			return false
+		}
+		lastPrograms[radio] = sum
+		return true
 	}
 	if !send(s.message()) {
 		return
@@ -341,6 +416,12 @@ func (s *Status) events(w http.ResponseWriter, r *http.Request, alive func(*http
 				return
 			}
 		case l := <-radioUpdates:
+			for _, name := range sk.watched() {
+				if !s.knownRadio(name) {
+					s.setLevel(sk, name, watchNone)
+					delete(lastPrograms, name)
+				}
+			}
 			if !send(radiosMessage(l)) {
 				return
 			}
@@ -351,8 +432,24 @@ func (s *Status) events(w http.ResponseWriter, r *http.Request, alive func(*http
 				}
 			}
 		case radio := <-watched:
-			if data, ok := s.hub.Snapshot(radio); ok && sk.level(radio) > watchNone {
-				if !send(rigMessage(radio, data)) {
+			if s.hub != nil {
+				if data, ok := s.hub.Snapshot(radio); ok && sk.level(radio) > watchNone {
+					if !send(rigMessage(radio, data)) {
+						return
+					}
+				}
+			}
+			if !sendProgram(radio, true) {
+				return
+			}
+		case <-programUpdates:
+			for name := range lastPrograms {
+				if sk.level(name) == watchNone {
+					delete(lastPrograms, name)
+				}
+			}
+			for _, name := range sk.watched() {
+				if !sendProgram(name, false) {
 					return
 				}
 			}

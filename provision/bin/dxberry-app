@@ -7,15 +7,16 @@
 #   stop RADIO                 stop it; the radio stays its own
 #   screen SESSION             a session's state and screen socket (needs no root)
 #   prepare|present|stopped SESSION   the session unit's root steps: before it, its condition, after it
+#   verify-present SESSION     read-only presence check; never marks a session waiting
 #   settings SESSION           write the program's settings (as dxbapps; prepare sends JSON on stdin)
 #   session SESSION            the session itself (its unit runs it as dxbapps)
 # SESSION is PROGRAM-RADIO, e.g. wsjtx-radio2. --json on any subcommand.
 # Exit: 0 ok, 1 not root (or root where dxbapps is meant), 2 usage, 3 no such program/radio/session,
-#  4 radio unplugged, 5 busy, 6 failed (nothing changed), 7 first fill or wiring failed, 8 changed with a failed later step, 9 did not start.
+#  4 radio unplugged, 5 busy or lock unavailable, 6 failed (nothing changed), 7 settings or native routing failed, 8 changed with a failed later step, 9 did not start.
 set -uo pipefail
 
 DXB_LIB=${DXB_LIB:-/opt/dxberry/lib}
-for _m in common config graywolf settings update gps radio rigctld inifile apps screen webproxy; do
+for _m in common config graywolf settings update gps radio rigctld inifile apps screen webproxy wsjtx; do
   # shellcheck disable=SC1090
   source "$DXB_LIB/$_m.sh"
 done
@@ -25,7 +26,7 @@ done
 # the libraries call systemctl by name; DXB_SYSTEMCTL stands in for it everywhere in this command
 if [[ $DXB_SYSTEMCTL != systemctl ]]; then systemctl() { "$DXB_SYSTEMCTL" "$@"; }; fi
 
-usage() { sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 JSON=0
 json_ok() { (( JSON )) && jq -cn '{ok: true}'; return 0; }
 
@@ -33,10 +34,14 @@ json_ok() { (( JSON )) && jq -cn '{ok: true}'; return 0; }
 # release or other change to the radio record is under way.
 lock_record() {
   local f=$DXB_RUN_DIR/record.lock
-  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
-  if ! exec 8> "$f"; then dxb_warn "could not open $f; going on without the record lock"; return 0; fi
-  command -v flock > /dev/null 2>&1 || return 0
-  flock -w "${DXB_RADIO_LOCK_WAIT:-180}" 8 || { dxb_error "a radio change is still running; try again when it has finished"; return 5; }
+  if ! command -v flock > /dev/null 2>&1; then dxb_error "flock is not installed; cannot lock the radio record"; return 5; fi
+  if ! mkdir -p "$DXB_RUN_DIR" 2> /dev/null; then dxb_error "could not create the record lock directory $DXB_RUN_DIR"; return 5; fi
+  if ! exec 8> "$f"; then dxb_error "could not open the record lock $f"; return 5; fi
+  if ! flock -w "${DXB_RADIO_LOCK_WAIT:-180}" 8; then
+    dxb_error "a radio change is still running; try again when it has finished"
+    exec 8>&-
+    return 5
+  fi
 }
 
 # load_config: dxberry.txt for the first fill (callsign, position); its absence is fine.
@@ -186,6 +191,7 @@ cmd_prepare() {
   dxb_radio_scan_cache
   load_config
   dxb_screen_prepare "$1"; rc=$?
+  (( rc == 0 )) && { dxb_wsjtx_hook start "$1"; rc=$?; }
   (( rc == 0 )) && json_ok
   return $rc
 }
@@ -193,13 +199,14 @@ cmd_prepare() {
 # cmd_present SESSION: 0 when the radio is plugged in; else the session waits for it, 1 (systemd
 # skips the start: the unit stays inactive, not failed).
 cmd_present() {
-  local ar r
+  local ar r mark=${2:-1}
   ar=$(dxb_screen_split "$1") || return 2
   r=${ar#* }
   dxb_radio_load || return 6
   dxb_radio_get "$r" > /dev/null || return 3
   dxb_radio_scan_cache
   if dxb_radio_present "$r"; then (( JSON )) && jq -cn '{present: true}'; return 0; fi
+  if (( mark == 0 )); then (( JSON )) && jq -cn '{present: false}'; return 1; fi
   if dxb_app_load "${1%%-*}" > /dev/null 2>&1 && [[ $(dxb_app_kind "${1%%-*}") == rigcontrol ]]; then
     dxb_info "radio $r is not plugged in; $1 is started again when it is back"
   else
@@ -211,9 +218,13 @@ cmd_present() {
 }
 
 cmd_stopped() {
-  dxb_radio_load 2> /dev/null || return 0
-  dxb_radio_scan_cache
-  dxb_screen_stopped "$1"
+  # Cleanup/unkey is owed even when collection restoration fails. Restoration
+  # also runs after a record is removed, independently of the current owner.
+  if dxb_radio_load 2> /dev/null; then
+    dxb_radio_scan_cache
+    dxb_screen_stopped "$1"
+  fi
+  dxb_wsjtx_hook stopped "$1" || return $?
   json_ok
 }
 
@@ -243,7 +254,7 @@ main() {
     list) [[ ${#args[@]} -eq 0 ]] || { echo "usage: dxberry-app list" >&2; return 2; } ;;
     install|remove) [[ ${#args[@]} -eq 1 ]] || { echo "usage: dxberry-app $cmd NAME" >&2; return 2; } ;;
     start|stop) [[ ${#args[@]} -eq 1 ]] || { echo "usage: dxberry-app $cmd RADIO" >&2; return 2; } ;;
-    screen|prepare|present|stopped|settings|session) [[ ${#args[@]} -eq 1 ]] || { echo "usage: dxberry-app $cmd SESSION" >&2; return 2; } ;;
+    screen|prepare|present|verify-present|stopped|settings|session) [[ ${#args[@]} -eq 1 ]] || { echo "usage: dxberry-app $cmd SESSION" >&2; return 2; } ;;
     '') usage >&2; return 2 ;;
     *) echo "unknown subcommand: $cmd" >&2; usage >&2; return 2 ;;
   esac
@@ -269,6 +280,7 @@ main() {
     start|stop) cmd_session_ctl "$cmd" "${args[0]}" ;;
     prepare) cmd_prepare "${args[0]}" ;;
     present) cmd_present "${args[0]}" ;;
+    verify-present) cmd_present "${args[0]}" 0 ;;
     stopped) cmd_stopped "${args[0]}" ;;
   esac
 }

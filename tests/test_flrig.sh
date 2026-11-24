@@ -119,9 +119,9 @@ FR_IC7300='{"cat":{"path":"usb-0:1.2:1.2"},"ptt_serial":null,"ptt":{"method":"ri
 test_flrig_rigctld_env_for_flrig_control() {
   local r
   r=$(jq -c '.rig.control = "flrig"' <<< "$FR_DIGIRIG")
-  assert_eq "$(dxb_rigctld_env radio1 "$r")" $'MODEL=4\nPORT=4532\nRIG_ARGS=-r 127.0.0.1:12345\nPTT_ARGS='
+  assert_eq "$(dxb_rigctld_env radio1 "$r" | sed '/^RIG_PINS_SHA256=/d')" $'MODEL=4\nPORT=4532\nRIG_ARGS=-r 127.0.0.1:12345\nPTT_ARGS='
   r=$(jq -c '.rig.control = "flrig"' <<< "$FR_IC7300")
-  assert_eq "$(dxb_rigctld_env radio2 "$r")" $'MODEL=4\nPORT=4534\nRIG_ARGS=-r 127.0.0.1:12346\nPTT_ARGS=-P RIG'
+  assert_eq "$(dxb_rigctld_env radio2 "$r" | sed '/^RIG_PINS_SHA256=/d')" $'MODEL=4\nPORT=4534\nRIG_ARGS=-r 127.0.0.1:12346\nPTT_ARGS=-P RIG'
   assert_not_contains "$(dxb_rigctld_env radio2 "$r")" "dxberry-cat"
   assert_not_contains "$(dxb_rigctld_env radio2 "$r")" "-cat"
 }
@@ -129,13 +129,13 @@ test_flrig_rigctld_env_keeps_cm108_and_gpio_ptt() {
   local r
   # (a CM108 pin is keyed only with its HID pinned: test_rigctld_env_never_keys_a_ptt_pin_it_was_not_given)
   r=$(jq -c '.rig.control = "flrig" | .ptt.method = "cm108" | .hid = {path: "usb-0:1.1:1.3", vidpid: "0d8c:013c", serial: ""}' <<< "$FR_IC7300")
-  assert_eq "$(dxb_rigctld_env radio2 "$r" session)" $'MODEL=4\nPORT=4534\nRIG_ARGS=-r 127.0.0.1:12346\nPTT_ARGS=-P CM108 -p /dev/dxberry/radio2-hid'
+  assert_eq "$(dxb_rigctld_env radio2 "$r" session | sed '/^RIG_PINS_SHA256=/d')" $'MODEL=4\nPORT=4534\nRIG_ARGS=-r 127.0.0.1:12346\nPTT_ARGS=-P CM108 -p /dev/dxberry/radio2-hid'
   r=$(jq -c '.rig.control = "flrig" | .ptt.method = "gpio" | .ptt.gpio_line = 17' <<< "$FR_IC7300")
-  assert_eq "$(dxb_rigctld_env radio2 "$r" session)" $'MODEL=4\nPORT=4534\nRIG_ARGS=-r 127.0.0.1:12346\nPTT_ARGS=-P GPIO -p 17'
+  assert_eq "$(dxb_rigctld_env radio2 "$r" session | sed '/^RIG_PINS_SHA256=/d')" $'MODEL=4\nPORT=4534\nRIG_ARGS=-r 127.0.0.1:12346\nPTT_ARGS=-P GPIO -p 17'
 }
 test_flrig_rigctld_env_without_control_is_unchanged() {
-  assert_eq "$(dxb_rigctld_env radio1 "$FR_DIGIRIG")" $'MODEL=1\nPORT=4532\nRIG_ARGS=-r /dev/dxberry/radio1-cat -s 57600\nPTT_ARGS=-P RTS -p /dev/dxberry/radio1-cat'
-  assert_eq "$(dxb_rigctld_env hf "$FR_IC7300")" $'MODEL=3073\nPORT=4534\nRIG_ARGS=-r /dev/dxberry/hf-cat -s 115200\nPTT_ARGS=-P RIG'
+  assert_eq "$(dxb_rigctld_env radio1 "$FR_DIGIRIG" | sed '/^RIG_PINS_SHA256=/d')" $'MODEL=1\nPORT=4532\nRIG_ARGS=-r /dev/dxberry/radio1-cat -s 57600\nPTT_ARGS=-P RTS -p /dev/dxberry/radio1-cat'
+  assert_eq "$(dxb_rigctld_env hf "$FR_IC7300" | sed '/^RIG_PINS_SHA256=/d')" $'MODEL=3073\nPORT=4534\nRIG_ARGS=-r /dev/dxberry/hf-cat -s 115200\nPTT_ARGS=-P RIG'
   assert_eq "$(dxb_rigctld_env hf "$(jq -c '.rig.control = "hamlib"' <<< "$FR_IC7300")")" "$(dxb_rigctld_env hf "$FR_IC7300")"
 }
 

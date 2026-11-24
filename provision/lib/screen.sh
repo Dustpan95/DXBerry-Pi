@@ -372,6 +372,7 @@ dxb_screen_prepare() {
   dxb_radio_present "$r" || { dxb_error "radio $r is not plugged in"; return 4; }
   w=$(dxb_apps_wiring "$r") || return 3
   h=$(jq -r .hash <<< "$w"); hf=$DXB_APPS_STATE/wired/$s
+  dxb_program_generation_advance || return 6
   dxb_apps_firstfill_done "$a" "$r" || steps+=(firstfill)
   if [[ $(jq -r --arg n "$r" '.radios[$n].wiring' <<< "$DXB_RADIOS") != names ]]; then
     if [[ $(cat "$hf" 2> /dev/null) != "$h" ]] || { declare -F "app_${a}_wire_each_start" > /dev/null && [[ $("app_${a}_wire_each_start") == yes ]]; }; then
@@ -456,13 +457,20 @@ _dxb_screen_unkey() {
   return 0
 }
 
-# dxb_screen_unit_state UNIT: running | starting | stopped | failed.
+# dxb_screen_unit_state UNIT: running | starting | stopped | failed | unknown.
+# One successful manager read distinguishes an inactive unit from a failed
+# query. Deactivation still holds the radio until stop/cleanup have completed.
 dxb_screen_unit_state() {
-  case $("$DXB_SYSTEMCTL" is-active "$1" 2> /dev/null) in
-    active|reloading) echo running ;;
+  local state
+  if ! state=$("$DXB_SYSTEMCTL" show --property=ActiveState --value -- "$1" 2> /dev/null); then
+    echo unknown; return 0
+  fi
+  case $state in
+    active|reloading|refreshing|deactivating) echo running ;;
     activating) echo starting ;;
+    inactive) echo stopped ;;
     failed) echo failed ;;
-    *) if "$DXB_SYSTEMCTL" is-failed --quiet "$1" 2> /dev/null; then echo failed; else echo stopped; fi ;;
+    *) echo unknown ;;
   esac
 }
 # dxb_screen_state S: dxb_screen_unit_state of S's unit.

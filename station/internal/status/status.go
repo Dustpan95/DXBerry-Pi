@@ -1,6 +1,6 @@
 // Package status keeps the station's last dxberry-status answer fresh and streams it to the
-// browsers that are watching. One loop runs the command: every 30 s while at least one events
-// socket is open, every 60 s otherwise, and soon after any call that changed something.
+// browsers that are watching. One loop runs the command at startup, every 30 s while an events
+// socket is open, on an aged one-shot read, and soon after a call that changed something.
 package status
 
 import (
@@ -12,7 +12,6 @@ import (
 
 const (
 	busyEvery = 30 * time.Second // while somebody listens
-	idleEvery = 60 * time.Second // while nobody does
 	pokeGap   = time.Second      // at most one poked refresh per second
 	runLimit  = 90 * time.Second
 )
@@ -33,11 +32,12 @@ func (realClock) At(t time.Time) <-chan time.Time {
 
 // Status is the cache and the refresh loop.
 type Status struct {
-	run    func(ctx context.Context) (string, error)
-	clock  Clock
-	radios RadioSource // nil until SetRadios
-	hub    RigHub      // nil until SetRig
-	onSock SocketHook  // nil until OnSocket
+	run      func(ctx context.Context) (string, error)
+	clock    Clock
+	radios   RadioSource   // nil until SetRadios
+	hub      RigHub        // nil until SetRig
+	programs ProgramSource // nil until SetPrograms
+	onSock   SocketHook    // nil until OnSocket
 
 	smu   sync.Mutex // guards socks and the order of hub interest updates
 	socks map[*sock]struct{}
@@ -50,6 +50,7 @@ type Status struct {
 	genAt   time.Time       // when raw was produced
 	failed  bool            // the most recent run failed
 	lastRun time.Time       // when the most recent run ended (zero before the first)
+	demand  bool            // an aged one-shot read requested a report
 	subs    map[chan struct{}]struct{}
 
 	poke chan struct{}
@@ -68,9 +69,14 @@ func New(run func(ctx context.Context) (string, error), clock Clock) *Status {
 
 // ChangesState says whether a finished CLI call may have changed what dxberry-status reports:
 // everything except reads (first argument get, list, check, job, recent, screen, status, models
-// or scan), log reading and the status command itself.
+// or scan), service-activity queries, log reading and the status command itself.
 func ChangesState(cmd string, args []string) bool {
-	if cmd == "journalctl" || cmd == "dxberry-status" || len(args) == 0 {
+	// Preset definitions are not part of the full-station report. Their own
+	// command response supplies the new revision without waking collectors.
+	if cmd == "journalctl" || cmd == "dxberry-status" || cmd == "dxberry-preset" || len(args) == 0 {
+		return false
+	}
+	if cmd == "systemctl" && args[0] == "is-active" {
 		return false
 	}
 	switch args[0] {
@@ -89,6 +95,18 @@ func nudge(c chan struct{}) {
 
 // Poke asks for a refresh soon (within a second of the previous run).
 func (s *Status) Poke() { nudge(s.poke) }
+
+// Request asks for an aged cache to be refreshed without waiting for the result.
+// Unlike mutation pokes, read demand is satisfied by any in-flight collection.
+// Both successful and failed attempts limit repeated reads to the usual cadence.
+func (s *Status) Request() {
+	s.mu.Lock()
+	if s.lastRun.IsZero() || !s.clock.Now().Before(s.lastRun.Add(busyEvery)) {
+		s.demand = true
+	}
+	s.mu.Unlock()
+	nudge(s.wake)
+}
 
 // Listeners is the number of open events sockets.
 func (s *Status) Listeners() int {
@@ -116,19 +134,12 @@ func (s *Status) Subscribe() (updates <-chan struct{}, cancel func()) {
 	}
 }
 
-func (s *Status) interval() time.Duration {
-	if len(s.subs) > 0 {
-		return busyEvery
-	}
-	return idleEvery
-}
-
 // Snapshot is {"generated": unix ms, "stale": bool, "status": <last answer or null>}. The answer
 // is stale when the last run failed, when nothing has been read yet, or when it is older than
-// three times the current interval.
+// three times the normal observed interval, regardless of whether a browser is connected.
 func (s *Status) Snapshot() []byte {
 	s.mu.Lock()
-	raw, gen, failed, iv := s.raw, s.genAt, s.failed, s.interval()
+	raw, gen, failed := s.raw, s.genAt, s.failed
 	s.mu.Unlock()
 	out := struct {
 		Generated int64           `json:"generated"`
@@ -139,7 +150,7 @@ func (s *Status) Snapshot() []byte {
 	if raw != nil {
 		out.Generated = gen.UnixMilli()
 		out.Status = raw
-		out.Stale = failed || s.clock.Now().Sub(gen) > 3*iv
+		out.Stale = failed || s.clock.Now().Sub(gen) > 3*busyEvery
 	}
 	b, err := json.Marshal(out)
 	if err != nil { // raw was validated before it was kept
@@ -153,16 +164,21 @@ func (s *Status) Run(ctx context.Context) {
 	for ctx.Err() == nil {
 		s.mu.Lock()
 		last := s.lastRun
-		due := last.Add(s.interval())
+		wanted := len(s.subs) > 0 || s.demand
+		due := last.Add(busyEvery)
 		s.mu.Unlock()
-		if last.IsZero() || !s.clock.Now().Before(due) {
+		if last.IsZero() || (wanted && !s.clock.Now().Before(due)) {
 			s.refresh(ctx)
 			continue
+		}
+		var deadline <-chan time.Time
+		if wanted {
+			deadline = s.clock.At(due)
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-s.clock.At(due):
+		case <-deadline:
 		case <-s.wake: // the listener count changed: work the deadline out again
 		case <-s.poke:
 			if t := last.Add(pokeGap); s.clock.Now().Before(t) {
@@ -187,6 +203,7 @@ func (s *Status) refresh(ctx context.Context) {
 	now := s.clock.Now()
 	s.mu.Lock()
 	s.lastRun = now
+	s.demand = false
 	if err == nil && json.Valid([]byte(out)) {
 		s.raw, s.genAt, s.failed = json.RawMessage(out), now, false
 	} else {

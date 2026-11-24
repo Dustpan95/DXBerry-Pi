@@ -454,6 +454,7 @@ dxb_apps_install() {
   src=$(_dxb_apps_source "$name") || return 6
   stype=$(jq -r .type <<< "$src"); label=$(jq -r .label <<< "$row"); kind=$(jq -r .kind <<< "$row")
   [[ $stype != builtin ]] || { _dxb_apps_builtin_refusal "$label"; return 6; }
+  dxb_program_generation_advance || return 6
   dxb_apps_user_ensure || { echo "the program user could not be prepared; $label was not installed" >&2; return 6; }
   if [[ $stype == apt ]]; then
     pkg=$(jq -r .package <<< "$src")
@@ -542,13 +543,17 @@ dxb_apps_in_use() {
 }
 
 # _dxb_apps_lock_record: dxberry-radio's record lock (record.lock, fd 8), so no radio is handed to
-# a program while it is being removed. 0 ok (also without flock), 5 busy.
+# a program while it is being removed. 0 locked, 5 busy/unavailable.
 _dxb_apps_lock_record() {
   local f=$DXB_RUN_DIR/record.lock
-  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
-  exec 8> "$f" || return 0
-  command -v flock > /dev/null 2>&1 || return 0
-  flock -w "${DXB_RADIO_LOCK_WAIT:-180}" 8 || { echo "a radio change is still running; try again when it has finished" >&2; return 5; }
+  if ! command -v flock > /dev/null 2>&1; then echo "flock is not installed; cannot lock the radio record" >&2; return 5; fi
+  if ! mkdir -p "$DXB_RUN_DIR" 2> /dev/null; then echo "could not create the record lock directory $DXB_RUN_DIR" >&2; return 5; fi
+  if ! exec 8> "$f"; then echo "could not open the record lock $f" >&2; return 5; fi
+  if ! flock -w "${DXB_RADIO_LOCK_WAIT:-180}" 8; then
+    echo "a radio change is still running; try again when it has finished" >&2
+    exec 8>&-
+    return 5
+  fi
 }
 
 # dxb_apps_remove NAME: _dxb_apps_remove under the record lock (released when it returns).
@@ -582,6 +587,7 @@ _dxb_apps_remove() {
   [[ -n ${DXB_RADIOS:-} ]] || DXB_RADIOS=$(dxb_radio_empty_record)
   why=$(dxb_apps_in_use "$name")
   [[ -z $why ]] || { echo "$why" >&2; return 5; }
+  dxb_program_generation_advance || return 6
   while IFS= read -r u; do
     [[ -n $u ]] || continue
     if "$DXB_SYSTEMCTL" is-active --quiet "$u" 2> /dev/null || [[ $("$DXB_SYSTEMCTL" is-enabled "$u" 2> /dev/null) == enabled ]]; then

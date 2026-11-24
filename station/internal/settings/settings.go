@@ -3,13 +3,17 @@
 package settings
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -25,9 +29,10 @@ var nameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
 // RadioSettings is one radio's file, <Dir>/<name>.json.
 type RadioSettings struct {
-	SWRLimit    float64   `json:"swr_limit"`
-	PTTTimeoutS int       `json:"ptt_timeout_s"`
-	Probed      time.Time `json:"probed"`
+	SWRLimit             float64   `json:"swr_limit"`
+	PTTTimeoutS          int       `json:"ptt_timeout_s"`
+	Probed               time.Time `json:"probed"`
+	WSJTXRoutingApproval string    `json:"wsjtx_routing_approval,omitempty"`
 }
 
 // Defaults is what a radio without a file gets.
@@ -37,6 +42,16 @@ func Defaults() RadioSettings {
 
 // Validate says what is wrong with s, naming the valid range, or returns nil.
 func (s RadioSettings) Validate() error {
+	if err := s.validateGuards(); err != nil {
+		return err
+	}
+	if a := s.WSJTXRoutingApproval; a != "" && (len(a) != 64 || strings.Trim(a, "0123456789abcdef") != "") {
+		return fmt.Errorf("invalid WSJT-X routing approval")
+	}
+	return nil
+}
+
+func (s RadioSettings) validateGuards() error {
 	if !(s.SWRLimit >= MinSWR && s.SWRLimit <= MaxSWR) {
 		return fmt.Errorf("the SWR limit must be between 1.5 and 10")
 	}
@@ -44,6 +59,122 @@ func (s RadioSettings) Validate() error {
 		return fmt.Errorf("the PTT timeout must be between 30 and 600 seconds")
 	}
 	return nil
+}
+
+// ReadStrict preserves absence as defaults but refuses damaged, ambiguous or
+// unsafe existing files. Configuration ownership must never infer disabled
+// collection from the fallback values used by the ordinary guard reader.
+func (st *Store) ReadStrict(name string) (RadioSettings, error) {
+	if !nameRe.MatchString(name) {
+		return RadioSettings{}, fmt.Errorf("no such radio")
+	}
+	fd, err := syscall.Open(filepath.Join(st.Dir, name+".json"), syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if os.IsNotExist(err) {
+		return Defaults(), nil
+	}
+	if err != nil {
+		return RadioSettings{}, err
+	}
+	f := os.NewFile(uintptr(fd), name)
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return RadioSettings{}, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || stat.Uid != uint32(os.Geteuid()) || stat.Nlink != 1 {
+		return RadioSettings{}, fmt.Errorf("unsafe radio settings file")
+	}
+	b, err := io.ReadAll(io.LimitReader(f, 16*1024+1))
+	if err != nil || len(b) > 16*1024 {
+		return RadioSettings{}, fmt.Errorf("radio settings unreadable or too large")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(b))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return RadioSettings{}, fmt.Errorf("invalid radio settings")
+	}
+	s := Defaults()
+	fields := map[string]any{"swr_limit": &s.SWRLimit, "ptt_timeout_s": &s.PTTTimeoutS, "probed": &s.Probed, "wsjtx_routing_approval": &s.WSJTXRoutingApproval}
+	seen := map[string]bool{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		key, ok := token.(string)
+		field, known := fields[key]
+		if err != nil || !ok || !known || seen[key] {
+			return RadioSettings{}, fmt.Errorf("ambiguous radio settings")
+		}
+		seen[key] = true
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return RadioSettings{}, fmt.Errorf("invalid radio settings field")
+		}
+		if err := json.Unmarshal(raw, field); err != nil {
+			return RadioSettings{}, fmt.Errorf("invalid radio settings field")
+		}
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return RadioSettings{}, fmt.Errorf("invalid radio settings")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return RadioSettings{}, fmt.Errorf("extra radio settings data")
+	}
+	return s, s.Validate()
+}
+
+func (st *Store) RoutingApproval(name string) (string, error) {
+	s, err := st.ReadStrict(name)
+	return s.WSJTXRoutingApproval, err
+}
+
+// HasRoutingApprovals is used only when release audit finds no inventory. A
+// retained consent or unreadable preference must not hide lost configured state.
+func (st *Store) HasRoutingApprovals() (bool, error) {
+	f, err := os.Open(st.Dir)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	entries, err := f.ReadDir(1025)
+	if err != nil && err != io.EOF || len(entries) > 1024 {
+		return false, fmt.Errorf("radio settings inventory unavailable")
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		name := strings.TrimSuffix(entry.Name(), ".json")
+		approval, err := st.RoutingApproval(name)
+		if err != nil {
+			return false, err
+		}
+		if approval != "" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// SaveRoutingApproval compares only the old approval, while preserving the
+// latest transmit limits/probe time under the same lock as ordinary writers.
+func (st *Store) SaveRoutingApproval(name, expected, approved string) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	s, err := st.ReadStrict(name)
+	if err != nil {
+		return err
+	}
+	if s.WSJTXRoutingApproval != expected {
+		return fmt.Errorf("WSJT-X routing approval changed")
+	}
+	s.WSJTXRoutingApproval = approved
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	return st.write(name, s)
 }
 
 // Store is the settings directory (<state>/radios).
@@ -55,8 +186,9 @@ type Store struct {
 	logged map[string]bool
 }
 
-// Get returns the radio's settings, or the defaults when the file is absent or unreadable
-// (an unreadable one is logged once per radio).
+// Get returns the radio's guard settings, or the defaults when the file is absent
+// or unreadable (logged once). Approval callers must use RoutingApproval or
+// ReadStrict; this fallback reader never supplies collection consent.
 func (st *Store) Get(name string) RadioSettings {
 	if !nameRe.MatchString(name) {
 		return Defaults()
@@ -74,11 +206,17 @@ func (st *Store) read(name string) RadioSettings {
 		return Defaults()
 	}
 	s := Defaults()
-	if err := json.Unmarshal(b, &s); err != nil {
+	guards := struct {
+		SWRLimit    float64   `json:"swr_limit"`
+		PTTTimeoutS int       `json:"ptt_timeout_s"`
+		Probed      time.Time `json:"probed"`
+	}{s.SWRLimit, s.PTTTimeoutS, s.Probed}
+	if err := json.Unmarshal(b, &guards); err != nil {
 		st.warn(name, err)
 		return Defaults()
 	}
-	if err := s.Validate(); err != nil {
+	s.SWRLimit, s.PTTTimeoutS, s.Probed = guards.SWRLimit, guards.PTTTimeoutS, guards.Probed
+	if err := s.validateGuards(); err != nil {
 		st.warn(name, err)
 		d := Defaults()
 		d.Probed = s.Probed
@@ -121,7 +259,10 @@ func (st *Store) Modify(name string, fn func(*RadioSettings)) error {
 	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	s := st.read(name)
+	s, err := st.ReadStrict(name)
+	if err != nil {
+		return err
+	}
 	fn(&s)
 	if err := s.Validate(); err != nil {
 		return err
@@ -166,7 +307,23 @@ func (st *Store) write(name string, s RadioSettings) error {
 		if err := f.Close(); err != nil {
 			return err
 		}
-		return os.Rename(tmp, filepath.Join(st.Dir, name+".json"))
+		if err := os.Rename(tmp, filepath.Join(st.Dir, name+".json")); err != nil {
+			return err
+		}
+		dir, err := os.Open(st.Dir)
+		if err != nil {
+			return err
+		}
+		defer dir.Close()
+		if err := dir.Sync(); err != nil {
+			return err
+		}
+		parent, err := os.Open(filepath.Dir(st.Dir))
+		if err != nil {
+			return err
+		}
+		defer parent.Close()
+		return parent.Sync()
 	}()
 	if err != nil {
 		os.Remove(tmp)

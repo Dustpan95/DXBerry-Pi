@@ -565,6 +565,7 @@ test_config_apply_pushes_position_log_and_gps_to_graywolf() {
 }
 
 test_config_job_reports_state_lines_and_the_undo() {
+  local run_id unit
   se_cli_env
   se_cli job --json
   assert_eq "$(jq -c '{job, pending, revert_at, reverted_at, reboot_required}' "$TEST_TMP/out")" \
@@ -576,7 +577,10 @@ test_config_job_reports_state_lines_and_the_undo() {
   assert_eq "$(jq -c '.job.lines' "$TEST_TMP/out")" '["applying: HOSTNAME","finished: all steps completed"]'
   [[ $(jq -r '.revert_at' "$TEST_TMP/out") =~ ^[0-9]+$ ]] || _fail "revert_at must be an epoch while the undo is armed"
   : > "$TEST_TMP/active"
-  echo '{"exit":8,"finished":1700000300}' > "$DXB_CONFIG_RESULT"
+  run_id=$(jq -r .run_id "$DXB_CONFIG_JOB_FILE"); unit=$(jq -r .unit "$DXB_CONFIG_JOB_FILE")
+  echo 1 > "$TEST_TMP/provision-rc"
+  DXB_CONFIG_RUN_ID=$run_id DXB_CONFIG_RUN_UNIT=$unit se_cli apply
+  assert_eq "$?" 8
   touch "$DXB_REBOOT_FLAG"
   se_cli job --json
   assert_eq "$(jq -r '.job.state, .job.exit, .reboot_required' "$TEST_TMP/out" | tr '\n' ' ')" "finished 8 true "
@@ -587,7 +591,7 @@ test_config_job_reports_state_lines_and_the_undo() {
 
 # Task 10: set answers with the unit under "job" (null when nothing started); job --json is uniform.
 test_config_job_answers_are_uniform() {
-  local unit
+  local unit run_id
   se_cli_env
   se_cli set HOSTNAME=shackpi --json
   assert_eq "$(jq -c '.job' "$TEST_TMP/out")" "null"
@@ -598,9 +602,12 @@ test_config_job_answers_are_uniform() {
   se_cli job --json
   assert_eq "$(jq -c '[.job.unit == "'"$unit"'", .job.kind, .job.name, .job.state, .job.status, .job.exit, (.job.lines|type), (.now|type)]' "$TEST_TMP/out")" \
     '[true,"config",null,"running","running",null,"array","number"]'
-  : > "$TEST_TMP/active"; echo '{"exit":0,"finished":1700000300}' > "$DXB_CONFIG_RESULT"
+  : > "$TEST_TMP/active"
+  run_id=$(jq -r .run_id "$DXB_CONFIG_JOB_FILE")
+  DXB_CONFIG_RUN_ID=$run_id DXB_CONFIG_RUN_UNIT=$unit se_cli apply; assert_eq "$?" 0
   se_cli job --json; assert_eq "$(jq -r '.job.status' "$TEST_TMP/out")" "done"
-  echo '{"exit":8,"finished":1700000300}' > "$DXB_CONFIG_RESULT"
+  echo 1 > "$TEST_TMP/provision-rc"
+  DXB_CONFIG_RUN_ID=$run_id DXB_CONFIG_RUN_UNIT=$unit se_cli apply; assert_eq "$?" 8
   se_cli job --json; assert_eq "$(jq -r '.job.status' "$TEST_TMP/out")" "failed"
 }
 

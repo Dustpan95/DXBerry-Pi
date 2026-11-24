@@ -3,6 +3,7 @@
 # One-key settings writers: change a single key in WSJT-X / JS8Call (Qt INI), fldigi (one tag per
 # line XML) and flrig (FLTK prefs) files and leave every other line exactly as it was.
 # Every writer returns 0 written, 1 unchanged, 6 could not write (checked by reading back).
+# Qt INI reads also return 6 for ambiguous/noncanonical layouts, before a writer changes them.
 # Values reach awk through the environment only, never through the program text.
 # Needs common.sh (dxb_write_if_changed).
 
@@ -66,9 +67,101 @@ _dxb_kv_set() {
   _dxb_commit "$file" "$out" || return $?
 }
 
-dxb_ini_get() { _dxb_kv_get "$1" "$2" "$3" '='; }
+# Qt accepts escaped names and repeated sections/keys, while the one-line
+# writer below deliberately edits one canonical occurrence. Reject layouts it
+# cannot verify before changing them; otherwise Qt may keep using a later or
+# aliased value even though our raw read-back says the write succeeded.
+_DXB_INI_CHECK_AWK='
+function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+function hex(s,    i,n,c) {
+  n = 0
+  for (i = 1; i <= length(s); i++) {
+    c = index("0123456789abcdef", tolower(substr(s, i, 1))) - 1
+    if (c < 0) { bad = 1; return 0 }
+    n = 16 * n + c
+  }
+  return n
+}
+function name(s,    i,c,n,v,out) {
+  out = ""
+  for (i = 1; i <= length(s); i++) {
+    c = substr(s, i, 1)
+    if (c == "%") {
+      n = (substr(s, i + 1, 1) ~ /^[Uu]$/) ? 4 : 2
+      if (i + n + (n == 4) > length(s)) { bad = 1; return "" }
+      v = hex(substr(s, i + 1 + (n == 4), n))
+      # Non-ASCII names cannot alias the canonical ASCII targets we accept.
+      c = v <= 127 ? sprintf("%c", v) : "\001"
+      i += n + (n == 4)
+    }
+    out = out c
+  }
+  gsub(/\\/, "/", out); gsub(/\/+/, "/", out)
+  sub(/^\//, "", out); sub(/\/$/, "", out)
+  return out
+}
+BEGIN {
+  wanted = ENVIRON["_DXB_S"]; key = ENVIRON["_DXB_K"]
+  target = wanted == "General" ? key : wanted "/" key
+  group = ""; canonical = 0
+}
+{
+  raw = $0
+  if (index(raw, "\r") || index(raw, "\357\273\277")) { bad = 1; next }
+  line = trim(raw)
+  if (line == "" || line ~ /^[#;]/) next
+  # Physical continuations are outside this writers one-line subset. Counting
+  # trailing slashes leaves literal, escaped backslashes usable in values.
+  tail = raw; slash = 0
+  while (length(tail) && substr(tail, length(tail), 1) == "\\") {
+    slash++; tail = substr(tail, 1, length(tail) - 1)
+  }
+  if (slash % 2) { bad = 1; next }
+  if (substr(line, 1, 1) == "[") {
+    end = index(line, "]")
+    if (!end) { bad = 1; next }
+    rest = trim(substr(line, end + 1))
+    if (rest != "" && rest !~ /^[#;]/) bad = 1
+    section = trim(substr(line, 2, end - 2))
+    if (section == "General") group = ""
+    else if (section == "%General") group = "General"
+    else group = name(section)
+    canonical = (raw == "[" wanted "]")
+    if (group == (wanted == "General" ? "" : wanted)) {
+      sections++
+      if (!canonical || sections > 1) bad = 1
+    }
+    next
+  }
+  eq = index(line, "=")
+  rawkey = trim(eq ? substr(line, 1, eq - 1) : line)
+  decoded = name(rawkey)
+  full = group == "" ? decoded : group "/" decoded
+  if (full == target) {
+    hits++
+    if (hits > 1 || !canonical || !eq || substr(raw, 1, length(key) + 1) != key "=") bad = 1
+  }
+}
+END { exit(bad ? 6 : 0) }'
+
+# Only canonical, one-level ASCII section/key names are supported by the raw
+# editor. Unknown layouts return 6, never a misleading absent/unchanged result.
+_dxb_ini_check() {
+  [[ $2 =~ ^[A-Za-z0-9_.-]+$ && $3 =~ ^[A-Za-z0-9_.-]+$ ]] || return 6
+  [[ -f $1 ]] || return 0
+  if ! _DXB_S=$2 _DXB_K=$3 _dxb_awk "$_DXB_INI_CHECK_AWK" "$1"; then
+    echo "cannot verify $2/$3 in $1: duplicate or unsupported INI layout" >&2
+    return 6
+  fi
+}
+
+dxb_ini_get() {
+  _dxb_ini_check "$1" "$2" "$3" || return 6
+  _dxb_kv_get "$1" "$2" "$3" '='
+}
 dxb_ini_set() {
   local rc
+  _dxb_ini_check "$1" "$2" "$3" || return 6
   _dxb_kv_set "$1" "$2" "$3" "$4" '='
   rc=$?
   (( rc == 6 )) && return 6

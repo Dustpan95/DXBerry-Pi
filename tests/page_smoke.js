@@ -224,7 +224,9 @@ const ctx = {
   document: doc, cockpit, console, dxb, run: (a, i) => dxb.run(a, i), // the not-yet-moved page files still call a bare run()
    setTimeout: (f, ms) => { timers.push(ms); timeouts.push({ f, ms }); return 0; }, clearTimeout: () => 0,
   setInterval: (fn, ms) => { intervals.set(++intervalId, { ms, fn }); return intervalId; }, clearInterval: id => { intervals.delete(id); },
-  window: { addEventListener() {} }, localStorage: { getItem: () => null }, location: { hostname: "10.0.0.90" }, Node: N,
+  window: { addEventListener() {} }, localStorage: { getItem: () => null },
+  location: { hostname: "10.0.0.90", pathname: "/", search: "", hash: "" }, URLSearchParams,
+  history: { state: null, replaceState() {} }, Node: N,
 };
 vm.createContext(ctx);
 const flush = () => new Promise(r => setImmediate(r));
@@ -252,6 +254,30 @@ const programsPath = sibling("programs.js");
   vm.runInContext(fs.readFileSync(programsPath, "utf8"), ctx, { filename: "programs.js" });
   await flush(); await flush(); await flush();
   const text = () => cards.textContent;
+  const notices = doc.getElementById("notices");
+  ok(!notices.textContent.includes("Pat’s web interface"), "a normal visit has no Pat warning");
+  ctx.location.search = "?keep=yes&pat=unavailable";
+  ctx.location.hash = "#programs";
+  ctx.history.state = { previous: "console" };
+  let replaced;
+  ctx.history.replaceState = (state, title, url) => {
+    replaced = { state, url };
+    ctx.location.search = "?keep=yes";
+  };
+  const beforePat = calls.length;
+  vm.runInContext("patUnavailableNotice()", ctx);
+  ok(notices.querySelectorAll(".warn").some(n => n.textContent.includes("Start Pat from its radio card")), "an idle Pat visit explains how to recover");
+  ok(replaced.url === "/?keep=yes#programs" && replaced.state === ctx.history.state, "the Pat marker is consumed without losing query, hash or history state");
+  vm.runInContext("patUnavailableNotice()", ctx);
+  ok(notices.querySelectorAll(".warn").filter(n => n.textContent.includes("Pat’s web interface")).length === 1, "the Pat warning is not repeated after its marker is consumed");
+  ok(calls.length === beforePat, "showing the Pat warning never starts a program or changes a radio");
+  const patNotice = notices.querySelectorAll(".warn").find(n => n.textContent.includes("Pat’s web interface"));
+  patNotice.querySelector("button").click();
+  ok(!notices.textContent.includes("Pat’s web interface"), "the Pat warning can be dismissed");
+  ctx.location.search = "?pat=other";
+  vm.runInContext("patUnavailableNotice()", ctx);
+  ok(!notices.textContent.includes("Pat’s web interface"), "unrecognized Pat query values do not create a warning");
+  ctx.location.search = ""; ctx.location.hash = "";
   ok(cards.querySelectorAll("section").length === 8, "eight cards render");
   ok(text().includes("radio1") && text().includes("TM-V71"), "the radio shows with its label");
   ok(text().includes("Icom IC-7300 (model 3073)"), "the rig name comes from Hamlib's list");

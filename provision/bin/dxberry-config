@@ -31,10 +31,10 @@ say() { (( JSON )) || printf '%s\n' "$*"; }
 # lock_config: one set / confirm / revert at a time (two browser tabs, or the page and SSH).
 lock_config() {
   local f=$DXB_RUN_DIR/config.lock
-  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
-  exec 7> "$f" || return 0
-  command -v flock > /dev/null 2>&1 || return 0
-  flock -w "$DXB_CONFIG_LOCK_WAIT" 7 || { echo "another settings change is in progress; try again" >&2; return 5; }
+  mkdir -p "$DXB_RUN_DIR" 2> /dev/null || { echo "could not create the settings lock directory" >&2; return 5; }
+  command -v flock > /dev/null 2>&1 || { echo "flock is not installed; cannot lock settings" >&2; return 5; }
+  exec 7> "$f" || { echo "could not open the settings lock" >&2; return 5; }
+  flock -w "$DXB_CONFIG_LOCK_WAIT" 7 || { echo "another settings change is in progress; try again" >&2; exec 7>&-; return 5; }
 }
 
 cmd_get() {
@@ -78,7 +78,7 @@ _rollback_write() {
 }
 
 cmd_set() {
-  local file content new a k v line errs rc unit n=0 net=0 others=0 rolled_back
+  local file content new a k v line errs rc unit run_id previous_id record n=0 net=0 others=0 rolled_back
   local -a changed=()
   file="$(dxb_boot_dir)/dxberry.txt"
   [[ -f $file ]] || { echo "no $file; nothing to change" >&2; return 4; }
@@ -130,6 +130,14 @@ cmd_set() {
     echo "save network settings ($DXB_NETWORK_KEYS) on their own, so the undo puts back exactly what changed" >&2
     return 2
   fi
+  previous_id=$(jq -r '.run_id // empty' "$DXB_CONFIG_JOB_FILE" 2>/dev/null) || previous_id=''
+  if ! run_id=$(_dxb_settings_new_run_id) || [[ ! $run_id =~ ^[0-9a-f]{32}$ || $run_id == 00000000000000000000000000000000 || $run_id == "$previous_id" ]]; then
+    echo 'could not identify the settings request; nothing changed' >&2
+    return 6
+  fi
+  unit="dxberry-job-config-$run_id"
+  record=$(jq -cn --arg u "$unit" --arg id "$run_id" --argjson t "$(date +%s)" --argjson n "$net" --argjson c "$(printf '%s\n' "${changed[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" \
+    '{version:2,run_id:$id,unit:$u,started:$t,network:($n == 1),changed:$c}') || return 6
   if (( net )) && ! dxb_netsafe_snapshot; then return 6; fi
   if ! dxb_settings_write "$file" "$new"; then
     (( net )) && rm -rf "$DXB_NETSAFE_DIR"
@@ -144,9 +152,13 @@ cmd_set() {
   fi
   mkdir -p "$DXB_RUN_DIR" 2> /dev/null
   printf '%s\n' "${changed[@]}" > "$DXB_CONFIG_PENDING"
-  rm -f "$DXB_CONFIG_RESULT" "$DXB_CONFIG_REVERTED"
-  unit="dxberry-job-config-$(date +%s)"
-  if ! "$DXB_SYSTEMD_RUN" --quiet --collect --unit="$unit" --description="DXBerry settings change" "$DXB_CONFIG_CMD" apply > /dev/null 2>&1; then
+  rc=6
+  if _dxb_settings_write_record "$DXB_CONFIG_JOB_FILE" "$record"; then
+    rm -f "$DXB_CONFIG_RESULT" "$DXB_CONFIG_REVERTED"
+    if "$DXB_SYSTEMD_RUN" --quiet --collect --setenv="DXB_CONFIG_RUN_ID=$run_id" --setenv="DXB_CONFIG_RUN_UNIT=$unit" \
+      --unit="$unit" --description="DXBerry settings change" "$DXB_CONFIG_CMD" apply > /dev/null 2>&1; then rc=0; fi
+  fi
+  if (( rc != 0 )); then
     rolled_back=1
     if (( net )); then
       dxb_netsafe_disarm
@@ -158,8 +170,6 @@ cmd_set() {
     (( rolled_back )) && echo "could not start the settings job, so nothing was changed" >&2
     return 6
   fi
-  jq -cn --arg u "$unit" --argjson t "$(date +%s)" --argjson n "$net" --argjson c "$(printf '%s\n' "${changed[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" \
-    '{unit: $u, started: $t, network: ($n == 1), changed: $c}' > "$DXB_CONFIG_JOB_FILE"
   if (( JSON )); then
     jq -c '{ok: true, changed: .changed, job: .unit, network: .network}' "$DXB_CONFIG_JOB_FILE"
   else
@@ -169,8 +179,49 @@ cmd_set() {
   return 0
 }
 
-cmd_apply() {
-  local rc=0 k net=0 gw=0
+# Only the apply worker takes this gate. Confirm/revert keep their existing
+# settings lock and remain available while this worker runs.
+_dxb_config_apply_lock() {
+  local dir=${DXB_RUN_DIR:-/run/dxberry} file lock_dir_identity fresh_dir_identity
+  file=$dir/config-apply.lock
+  command -v flock > /dev/null 2>&1 || { echo 'flock is required for settings execution' >&2; return 6; }
+  mkdir -p "$dir" 2> /dev/null || { echo 'could not create the settings execution lock directory' >&2; return 6; }
+  [[ -d $dir && ! -L $dir ]] || { echo 'unsafe settings execution lock directory' >&2; return 6; }
+  lock_dir_identity=$(stat -c '%d:%i:%u:%a' "$dir") || return 6
+  case ${lock_dir_identity#*:*:} in 0:700|0:750|0:755) ;; *) echo 'unsafe settings execution lock directory' >&2; return 6 ;; esac
+  if [[ ! -e $file && ! -L $file ]]; then
+    ( set -o noclobber; umask 077; : > "$file" ) 2> /dev/null || true
+  fi
+  [[ -f $file && ! -L $file && $(stat -c '%u:%h:%s:%a' "$file") == 0:1:0:600 ]] \
+    || { echo 'unsafe settings execution lock file' >&2; return 6; }
+  if ! exec {DXB_CONFIG_APPLY_LOCK_FD}< "$file"; then
+    echo 'could not open the settings execution lock' >&2
+    return 6
+  fi
+  if ! flock -w "${DXB_CONFIG_APPLY_LOCK_WAIT:-30}" "$DXB_CONFIG_APPLY_LOCK_FD"; then
+    echo 'another settings job is active; retry after it finishes' >&2
+    exec {DXB_CONFIG_APPLY_LOCK_FD}>&-
+    return 6
+  fi
+  fresh_dir_identity=$(stat -c '%d:%i:%u:%a' "$dir")
+  if [[ $lock_dir_identity != "$fresh_dir_identity" || -L $dir || -L $file || ! $file -ef /proc/self/fd/$DXB_CONFIG_APPLY_LOCK_FD \
+    || $(stat -Lc '%u:%h:%s:%a' "/proc/self/fd/$DXB_CONFIG_APPLY_LOCK_FD") != 0:1:0:600 ]]; then
+    echo 'settings execution lock changed while waiting' >&2
+    exec {DXB_CONFIG_APPLY_LOCK_FD}>&-
+    return 6
+  fi
+}
+
+cmd_apply() (
+  local rc=0 k net=0 gw=0 result run_id=${DXB_CONFIG_RUN_ID:-} run_unit=${DXB_CONFIG_RUN_UNIT:-}
+  local DXB_CONFIG_APPLY_LOCK_FD
+  if [[ -n $run_id || -n $run_unit ]]; then
+    if [[ ! $run_id =~ ^[0-9a-f]{32}$ || $run_id == 00000000000000000000000000000000 || $run_unit != "dxberry-job-config-$run_id" ]]; then
+      echo 'invalid settings request metadata; nothing changed' >&2
+      return 6
+    fi
+  fi
+  _dxb_config_apply_lock || return 6
   local -a keys=()
   [[ -f $DXB_CONFIG_PENDING ]] && mapfile -t keys < "$DXB_CONFIG_PENDING"
   for k in "${keys[@]}"; do
@@ -201,27 +252,36 @@ cmd_apply() {
   fi
   rm -f "$DXB_CONFIG_PENDING"
   mkdir -p "$DXB_RUN_DIR" 2> /dev/null
-  jq -cn --argjson e "$rc" --argjson t "$(date +%s)" '{exit: $e, finished: $t}' > "$DXB_CONFIG_RESULT"
+  if ! result=$(jq -cn --argjson e "$rc" --argjson t "$(date +%s)" --arg id "$run_id" --arg unit "$run_unit" \
+    '{version:2,run_id:(if $id == "" then null else $id end),unit:(if $unit == "" then null else $unit end),exit:$e,finished:$t}') \
+    || ! _dxb_settings_write_record "$DXB_CONFIG_RESULT" "$result"; then
+    echo 'settings work ended but its result could not be published; inspect its output' >&2
+    return 8
+  fi
   echo "finished with exit $rc"
   return $rc
-}
+)
 
 cmd_job() {
-  local unit='' state lines result='null' at reverted j
-  if [[ -f $DXB_CONFIG_JOB_FILE ]]; then
-    unit=$(dxb_settings_job_unit)
+  local unit state lines result=null at reverted j=null job latest
+  job=$(cat "$DXB_CONFIG_JOB_FILE" 2>/dev/null) || job=''
+  if unit=$(jq -ser 'select(length == 1) | .[0] | select(type == "object") | .unit | select(type == "string" and test("^dxberry-job-config-[a-z0-9_-]{1,160}$"))' <<< "$job" 2>/dev/null); then
     if [[ -n $unit ]] && systemctl is-active --quiet "$unit"; then state=running
-    elif [[ -f $DXB_CONFIG_RESULT ]]; then state=finished; result=$(jq -c . "$DXB_CONFIG_RESULT" 2> /dev/null || echo null)
-    else state=ended; fi
+    else
+      result=$(_dxb_settings_result_for_job "$job")
+      if [[ $result != null ]]; then state=finished; else state=ended; fi
+    fi
     # systemd's own "Failed to open /run/systemd/transient/..." lines, logged once a --collect
     # unit is gone, are not the job's output
     lines=$(journalctl -u "$unit" -o cat --no-pager -n 400 2> /dev/null \
       | jq -Rsc 'split("\n") | map(select(length > 0 and (test(": Failed to open /run/systemd/transient/") | not)))')
     j=$(jq -c --arg s "$state" --argjson r "$result" --argjson l "${lines:-[]}" \
       '{kind: "config", name: null} + . + {state: $s, exit: ($r.exit // null), finished: ($r.finished // null), lines: $l}
-      | . + {status: (if .state == "running" then "running" elif .exit == 0 then "done" else "failed" end)}' "$DXB_CONFIG_JOB_FILE")
-  else
-    j=null
+      | del(.run_id,.version)
+      | . + {status: (if .state == "running" then "running" elif .exit == 0 then "done" else "failed" end)}' <<< "$job" 2> /dev/null)
+    [[ -n $j ]] || j=null
+    latest=$(cat "$DXB_CONFIG_JOB_FILE" 2>/dev/null) || latest=''
+    [[ $latest == "$job" ]] || j=null
   fi
   at=$(dxb_netsafe_revert_at)
   reverted=$(cat "$DXB_CONFIG_REVERTED" 2> /dev/null)

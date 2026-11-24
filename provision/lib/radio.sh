@@ -24,6 +24,8 @@
 : "${DXB_PS:=ps}"
 : "${DXB_SLEEP:=sleep}"
 : "${DXB_READLINK:=readlink}"
+: "${DXB_FLOCK:=flock}"
+: "${DXB_RADIO_APPLY_LOCK_WAIT:=180}"
 # DXB_SYS_WRITE FILE VALUE writes VALUE into a sysfs file (the tests swap it to see or fail the write)
 : "${DXB_SYS_WRITE:=_dxb_radio_sys_write}"
 : "${DXB_APPS_DIR:=${DXB_LIB:-/opt/dxberry/lib}/apps}"
@@ -148,6 +150,15 @@ dxb_radio_save() {
   local j
   j=$(jq -S . <<< "$1" 2> /dev/null) || return 2
   dxb_radio_validate "$j" || return 2
+  # Publication cannot change the desired record while apply derives live
+  # state from it. Release this short phase before a caller starts/waits for
+  # services: their hotplug prerequisite may need the same apply gate.
+  _dxb_radio_with_apply_lock _dxb_radio_publish "$j"
+}
+
+_dxb_radio_publish() {
+  local j=$1
+  dxb_program_generation_advance || return 6
   mkdir -p "$(dirname "$DXB_RADIOS_FILE")" 2> /dev/null
   dxb_write_if_changed "$DXB_RADIOS_FILE" "$j" 600
   [[ -f $DXB_RADIOS_FILE && $(< "$DXB_RADIOS_FILE") == "$j" ]] || { dxb_error "could not write $DXB_RADIOS_FILE"; return 6; }
@@ -260,7 +271,7 @@ _dxb_radio_record_card_id() {
   local name=$1 radio=$2 path kernel id='' snd=${DXB_SYS_SOUND:-$DXB_SYSFS_ROOT/class/sound}
   path=$(jq -r '.audio.path // empty' <<< "$radio")
   [[ -n $path ]] || { printf '%s\n' "$radio"; return 0; }
-  kernel=$(_dxb_radio_kernel_for "$path" audio)
+  kernel=$(_dxb_radio_kernel_for "$path" audio "$(jq -c .audio <<< "$radio")")
   [[ -n $kernel && -f $snd/$kernel/id ]] && read -r id < "$snd/$kernel/id"
   if [[ -z $id ]]; then
     dxb_info "radio $name: could not read the sound card's id; it will not be restored on remove" >&2
@@ -384,7 +395,22 @@ _dxb_radio_card_restore() {
 _dxb_radio_set_owner() { dxb_radio_save "$(jq -c --arg n "$1" --arg a "$2" '.radios[$n].owner = $a' <<< "$DXB_RADIOS")"; }
 
 # ---- presence and runtime state ------------------------------------------------------------
-_dxb_radio_kernel_for() { jq -r --arg p "$1" --arg k "$2" '[.[].functions[] | select(.path == $p and .kind == $k)] | .[0].kernel // empty' <<< "$DXB_RADIO_SCAN"; }
+# A path identifies a USB function's location, not a replacement plugged into it.
+# Match any recorded identity fields, including a known empty serial. Legacy
+# path-only pins retain their existing behavior; duplicate observations are unknown.
+_dxb_radio_kernel_for() {
+  jq -r --arg p "$1" --arg k "$2" --argjson pin "${3:-null}" '
+    [.[].functions[] | select(.path == $p and .kind == $k)]
+    | if length == 1 then .[0]
+        | select($pin == null or
+            ((($pin | has("vidpid") | not) or
+                (($pin.vidpid | type) == "string" and
+                 ($pin.vidpid | test("^[0-9a-fA-F]{4}:[0-9a-fA-F]{4}$")) and .vidpid == $pin.vidpid)) and
+             (($pin | has("serial") | not) or
+                (($pin.serial | type) == "string" and .serial == $pin.serial))))
+        | select((.kernel | type) == "string" and (.kernel | length) > 0) | .kernel
+      else empty end' <<< "$DXB_RADIO_SCAN"
+}
 
 # dxb_radio_kernel_names NAME: {"audio":"card1","cat":"ttyUSB0","hid":null,"ptt_serial":null} for this boot.
 dxb_radio_kernel_names() {
@@ -394,7 +420,7 @@ dxb_radio_kernel_names() {
     case $k in audio) kind=audio ;; hid) kind=hid ;; *) kind=serial ;; esac
     path=$(jq -r --arg k "$k" '.[$k].path // empty' <<< "$r")
     if [[ -n $path ]]; then
-      out=$(jq -c --arg k "$k" --arg v "$(_dxb_radio_kernel_for "$path" "$kind")" '.[$k] = (if $v == "" then null else $v end)' <<< "$out")
+      out=$(jq -c --arg k "$k" --arg v "$(_dxb_radio_kernel_for "$path" "$kind" "$(jq -c --arg k "$k" '.[$k]' <<< "$r")")" '.[$k] = (if $v == "" then null else $v end)' <<< "$out")
     else
       out=$(jq -c --arg k "$k" '.[$k] = null' <<< "$out")
     fi
@@ -515,24 +541,39 @@ _dxb_radio_unmark_wired() {
 # dxb_radio_apply [hotplug]: derive everything from the record. 0 ok, 6 derived-state error, 7 re-wire error
 # (or an enabled session that could not be started again).
 # udev can start a hotplug apply at any moment, so the whole run is serialized on
-# $DXB_RUN_DIR/apply.lock (fd 9); a second apply waits there instead of interleaving its writes.
-# Without flock (or without the lock file) the run goes ahead with a warning: apply is idempotent,
-# so the worst an interleaved run can do is write the same files twice.
+# $DXB_RUN_DIR/apply.lock (fd 9); a second apply waits up to DXB_RADIO_APPLY_LOCK_WAIT
+# seconds instead of interleaving its writes. A failed lock returns 6 without applying.
+# Missing lock support or an inaccessible lock is also an error: concurrent runs
+# can read different desired records and interleave device and service changes.
 # shellcheck disable=SC2120,SC2119  # called with no argument (default "full") from provision_radio and the CLI's "apply"; only "hotplug" passes one
 dxb_radio_apply() {
-  local mode=${1:-full} rc
-  mkdir -p "$DXB_RUN_DIR" 2> /dev/null
+  _dxb_radio_with_apply_lock _dxb_radio_apply "${1:-full}"
+}
+
+# Fixed trusted synchronous callbacks only. Publication and derived apply use
+# the same gate; callers must not extend it across service-dependent waits.
+_dxb_radio_with_apply_lock() {
+  local rc
+  if ! mkdir -p "$DXB_RUN_DIR" 2> /dev/null; then
+    dxb_error "could not create the apply lock directory $DXB_RUN_DIR"
+    return 6
+  fi
   if ! exec 9> "$DXB_RUN_DIR/apply.lock"; then
-    dxb_warn "could not open $DXB_RUN_DIR/apply.lock; applying without the apply lock"
-    _dxb_radio_apply "$mode"
-    return $?
+    dxb_error "could not open the apply lock $DXB_RUN_DIR/apply.lock"
+    return 6
   fi
-  if command -v flock > /dev/null 2>&1; then
-    flock 9 || dxb_warn "could not lock $DXB_RUN_DIR/apply.lock; applying without the apply lock"
+  if command -v "$DXB_FLOCK" > /dev/null 2>&1; then
+    if ! "$DXB_FLOCK" -w "$DXB_RADIO_APPLY_LOCK_WAIT" 9; then
+      dxb_error "could not lock $DXB_RUN_DIR/apply.lock within $DXB_RADIO_APPLY_LOCK_WAIT seconds; another radio apply may still be running; try again"
+      exec 9>&-
+      return 6
+    fi
   else
-    dxb_warn "flock is not installed; a concurrent hotplug apply could interleave with this one"
+    dxb_error "flock is not installed; cannot lock the radio apply"
+    exec 9>&-
+    return 6
   fi
-  _dxb_radio_apply "$mode"; rc=$?
+  "$@"; rc=$?
   exec 9>&-
   return $rc
 }
@@ -541,6 +582,9 @@ _dxb_radio_apply() {
   local mode=${1:-full} n r present rc=0 wrc h wired owner
   local -A kinds=()
   dxb_radio_load || return 6
+  # Apply/hotplug can change routing without a record save. Invalidate old
+  # evidence under the apply lock before any scanner or derived-state work.
+  dxb_program_generation_advance || return 6
   dxb_radio_scan_cache
   if [[ $mode != hotplug ]]; then
     dxb_radio_udev_write "$DXB_RADIOS"; wrc=$?; (( wrc == 6 )) && rc=6
@@ -847,6 +891,7 @@ _dxb_session_marker() { printf '%s/%s-%s.waiting\n' "$(_dxb_sessions_dir)" "$1" 
 dxb_app_session_start() {
   local u i wait=${DXB_SESSION_WAIT_S:-30}
   u=$(dxb_app_session_unit "$1" "$2")
+  dxb_program_generation_advance || return 6
   rm -f "$(_dxb_session_marker "$1" "$2")"   # started by hand now: no longer waiting for the radio
   systemctl enable "$u" > /dev/null 2>&1 || { dxb_error "could not enable $u"; return 5; }
   systemctl reset-failed "$u" > /dev/null 2>&1
@@ -939,6 +984,15 @@ _dxb_radio_settle() {
   return 0
 }
 
+# _dxb_radio_claim_present NAME: waits can outlive an unplug or replacement.
+# Refresh scanner metadata without extending apply exclusion over service waits.
+# Existing caller record serialization remains unchanged.
+# This is a presence checkpoint, not complete handover/source authority.
+_dxb_radio_claim_present() {
+  dxb_radio_scan_cache
+  dxb_radio_present "$1" || { dxb_error "radio $1 is not plugged in"; return 4; }
+}
+
 # _dxb_radio_claim_session NAME APP CUR: claim for a session program (APP loaded). The old owner
 # lets go first (Graywolf must have closed the HID before rigctld opens it for CM108 PTT), then
 # rigctld follows, then the session starts; it wires itself in its own prepare step (ruling 7).
@@ -950,19 +1004,25 @@ _dxb_radio_claim_session() {
   fi
   if [[ $cur == "$app" ]]; then
     dxb_app_session_start "$app" "$name" || return 5
+    _dxb_radio_claim_present "$name" || return 4
     return 0
   fi
   if [[ -n $cur ]]; then
     _dxb_radio_let_go "$name" "$cur" || return 6
     dxb_info "radio $name released by $cur"
     _dxb_radio_settle "$name" "$cur"
+    _dxb_radio_claim_present "$name" || return 4
   fi
   _dxb_radio_set_owner "$name" "$app" || return 6
   dxb_radio_alsa_levels "$name"
   _dxb_radio_rigctld_for "$name" session
-  if ! dxb_app_session_start "$app" "$name"; then
+  if ! dxb_app_session_start "$app" "$name" || ! _dxb_radio_claim_present "$name"; then
     dxb_app_session_stop "$app" "$name"
-    _dxb_radio_set_owner "$name" ""
+    if ! _dxb_radio_set_owner "$name" ""; then
+      dxb_error "radio $name: $app could not take it; release could not be confirmed; check radio status"
+      return 8
+    fi
+    dxb_radio_scan_cache
     _dxb_radio_rigctld_for "$name" none
     dxb_error "radio $name: $app could not take it; left released"
     return 5
@@ -970,14 +1030,18 @@ _dxb_radio_claim_session() {
   dxb_info "radio $name now owned by $app"
 }
 
-# dxb_radio_claim NAME APP (spec section 9.2). 0 ok, 3 unknown, 4 absent, 5 failed (released), 6 record error.
+# dxb_radio_claim NAME APP (spec section 9.2). 0 ok, 3 unknown, 4 absent (possibly after a wait),
+# 5 failed (a new claim is released; a same-owner retry keeps its intent),
+# 6 tracking/record error, 8 failed with an unconfirmed compensating release.
 # rigctld belongs to the radio, not the hand-over (spec 9.2), so it is only touched when a session
 # program gains or loses the radio: its env follows the owner's kind (rigctld keys cm108/gpio PTT
 # for a session program). Between Graywolf-like owners nothing but the two apps' unit and
 # app_<app>_* functions runs; the mirror is refreshed only as a side effect of the wiring mark.
 dxb_radio_claim() {
-  local name=$1 app=$2 cur from_session=0
+  local name=$1 app=$2 cur from_session=0 present
   dxb_radio_get "$name" > /dev/null || return 3
+  # Handovers can stop/unwire the old owner before saving the new one.
+  dxb_program_generation_advance || return 6
   dxb_app_load_owner "$app" || return 3
   dxb_radio_present "$name" || { dxb_error "radio $name is not plugged in"; return 4; }
   cur=$(jq -r --arg n "$name" '.radios[$n].owner' <<< "$DXB_RADIOS")
@@ -985,7 +1049,9 @@ dxb_radio_claim() {
   if [[ $cur == "$app" ]]; then
     # the unit may be stopped (a re-wire skipped at boot tells the operator to run this)
     dxb_app_start "$app" || return 5
+    _dxb_radio_claim_present "$name" || return 4
     dxb_app_wire "$app" "$name" || return 5
+    _dxb_radio_claim_present "$name" || return 4
     _dxb_radio_mark_wired "$name" "$(dxb_radio_wire_hash "$(dxb_radio_get "$name")")" \
       || dxb_warn "radio $name: could not record the wiring hash; it will be re-wired on the next apply"
     return 0
@@ -994,17 +1060,27 @@ dxb_radio_claim() {
     [[ $(dxb_radio_owner_kind "$name") == session ]] && from_session=1
     _dxb_radio_let_go "$name" "$cur" || return 6
     dxb_info "radio $name released by $cur"
+    _dxb_radio_claim_present "$name" || return 4
   fi
   _dxb_radio_set_owner "$name" "$app" || return 6
   # a session program had rigctld key cm108/gpio PTT: hand that back before Graywolf opens the HID
   (( from_session )) && _dxb_radio_rigctld_for "$name" graywolf
   # the radio's sound server lets go of the card before the program opens it (no apply runs here)
   dxb_audio_sync "$name" 1
-  if ! dxb_app_start "$app" || ! dxb_app_wire "$app" "$name"; then
+  if ! dxb_app_start "$app" || ! _dxb_radio_claim_present "$name" \
+    || ! dxb_app_wire "$app" "$name" || ! _dxb_radio_claim_present "$name"; then
     dxb_app_unwire "$app" "$name"
-    _dxb_radio_set_owner "$name" ""
+    if ! _dxb_radio_set_owner "$name" ""; then
+      dxb_app_stop_if_idle "$app"
+      dxb_error "radio $name: $app could not take it; release could not be confirmed; check radio status"
+      return 8
+    fi
     dxb_app_stop_if_idle "$app"
-    dxb_audio_sync "$name" 1
+    # Startup itself may have failed after a device change, before the normal
+    # checkpoint ran. Cleanup remains owed; audio uses a fresh presence answer.
+    dxb_radio_scan_cache
+    present=0; dxb_radio_present "$name" && present=1
+    dxb_audio_sync "$name" "$present"
     dxb_error "radio $name: $app could not take it; left released"
     return 5
   fi
@@ -1020,6 +1096,7 @@ dxb_radio_release() {
   dxb_radio_get "$name" > /dev/null || return 3
   cur=$(jq -r --arg n "$name" '.radios[$n].owner' <<< "$DXB_RADIOS")
   [[ -n $cur ]] || return 0
+  dxb_program_generation_advance || return 6
   kind=$(dxb_radio_owner_kind "$name")
   _dxb_radio_let_go "$name" "$cur" || return 6
   [[ $kind == session ]] && _dxb_radio_rigctld_for "$name" none
@@ -1027,6 +1104,7 @@ dxb_radio_release() {
   # running for other radios (Graywolf) has let go of the card: its unwire only queued a restart
   [[ $kind == session ]] || _dxb_radio_settle "$name" "$cur"
   local present=0
+  dxb_radio_scan_cache
   dxb_radio_present "$name" && present=1
   dxb_audio_sync "$name" "$present"
   dxb_info "radio $name released"

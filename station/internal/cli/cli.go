@@ -54,8 +54,9 @@ type CLI struct {
 	// OnCall, when set, is told about every call the HTTP handler ran to completion (not a refused one).
 	OnCall func(cmd string, args []string)
 
-	mu    sync.Mutex
-	units map[string]bool // the services list from the last dxberry-status
+	mu          sync.Mutex
+	units       map[string]bool // the services list from the last dxberry-status
+	presetState string          // trusted server configuration; empty disables preset calls
 }
 
 var systemBin = map[string]string{"systemctl": "/usr/bin/systemctl", "journalctl": "/usr/bin/journalctl"}
@@ -92,6 +93,7 @@ var (
 // flag and its value, two arguments).
 var allow = map[string][][]string{
 	"dxberry-status": {{"--json"}},
+	"dxberry-preset": {{"--json"}},
 	"dxberry-radio": {
 		{"scan", "--json"},
 		{"status", "--json"},
@@ -296,7 +298,7 @@ func (c *CLI) Validate(call Call) error {
 	for _, p := range pats {
 		ok, pos, tok := c.match(p, call.Args)
 		if ok {
-			return nil
+			return c.validatePreset(call)
 		}
 		if pos >= best {
 			best, btok = pos, tok
@@ -336,7 +338,7 @@ func (c *CLI) Run(ctx context.Context, call Call) (Result, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
-	res, err := c.run(ctx, c.path(call.Command), call.Args, call.Stdin, append([]string(nil), runEnv...))
+	res, err := c.run(ctx, c.path(call.Command), c.executionArgs(call), call.Stdin, append([]string(nil), runEnv...))
 	if err != nil {
 		return Result{Exit: -1, Stderr: err.Error()}, nil
 	}

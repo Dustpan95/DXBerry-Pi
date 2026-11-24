@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -25,10 +26,10 @@ type ICECandidate struct {
 // AudioBridge is a radio's WebRTC bridge as the signalling socket needs it (an *audio.Bridge
 // behind a small adapter in dxberryd).
 type AudioBridge interface {
-	Connect(ctx context.Context, offerSDP string, tab string) (string, error)
+	ConnectGeneration(ctx context.Context, offerSDP string, tab string, generation uint64) (string, error)
 	AddICECandidate(tab string, c ICECandidate) error
 	Close(tab string)
-	OnLost(fn func(tab, reason string)) (cancel func())
+	OnLostGeneration(fn func(tab string, generation uint64, reason string)) (cancel func())
 }
 
 // AudioFix is the refusal's fix when a radio has no sound server.
@@ -65,11 +66,12 @@ type AudioAPI struct {
 // next connect, so a reconnecting tab's new socket is never closed by its old one, without
 // holding up any other tab.
 type tabSlot struct {
-	mu    sync.Mutex
-	radio string
-	login string // the session id (memory only, never logged)
-	owner uint64 // the socket that made the tab's current connection (0: none)
-	refs  int    // sockets on this slot
+	mu         sync.Mutex // orders the tab's connect and close operations
+	radio      string
+	login      string // the session id (memory only, never logged)
+	owner      uint64 // the socket that made the tab's current connection (0: none)
+	generation uint64 // exact offer; loss of an older peer cannot release this one
+	refs       int    // sockets on this slot
 }
 
 // connectionsLocked counts login's tabs with a connection to radio, other than skip.
@@ -178,6 +180,10 @@ func (a *AudioAPI) signal(w http.ResponseWriter, r *http.Request) {
 	a.serial++
 	me := a.serial
 	a.mu.Unlock()
+	// A confirmed loss ends this socket's audio lifecycle. The browser's
+	// reconnect opens a fresh socket; an old notice cannot race a fresh offer
+	// on the same socket and turn a new answer into a stale loss.
+	lost := false // guarded by a.mu
 	defer func() {
 		a.mu.Lock()
 		if sl.refs--; sl.refs == 0 && sl.owner == 0 {
@@ -200,27 +206,69 @@ func (a *AudioAPI) signal(w http.ResponseWriter, r *http.Request) {
 		was := sl.owner == me
 		if was {
 			sl.owner = 0
+			sl.generation = 0
 		}
 		a.mu.Unlock()
 		if was {
 			bridge.Close(id)
 		}
 	}
-	// claim makes this socket the tab's connection maker, unless the login has too many
-	claim := func() bool {
+	// connect reserves quota and serializes the entire offer against this tab's
+	// other sockets. Other tabs never wait for this tab's bridge operations.
+	connect := func(sdp string) (string, error, bool) {
 		sl.mu.Lock()
 		defer sl.mu.Unlock()
 		a.mu.Lock()
-		defer a.mu.Unlock()
-		if sl.owner == 0 && a.connectionsLocked(name, sess.ID, sl) >= MaxAudioPerLogin {
-			return false
+		if lost {
+			a.mu.Unlock()
+			return "", errors.New("the browser audio connection ended; reconnect"), true
 		}
+		if sl.owner == 0 && a.connectionsLocked(name, sess.ID, sl) >= MaxAudioPerLogin {
+			a.mu.Unlock()
+			return "", nil, false
+		}
+		a.serial++
+		generation := a.serial
 		sl.owner = me
-		return true
+		sl.generation = generation
+		a.mu.Unlock()
+		answer, err := bridge.ConnectGeneration(ctx, sdp, id, generation)
+		a.mu.Lock()
+		was := sl.owner == me && sl.generation == generation
+		if err != nil {
+			if was {
+				sl.owner = 0
+				sl.generation = 0
+			}
+		}
+		a.mu.Unlock()
+		if err != nil {
+			if was {
+				bridge.Close(id)
+			}
+		} else if !was {
+			// Loss may be reported before Connect returns. Do not send an
+			// answer for a peer already known to have ended.
+			err = errors.New("the browser audio connection was lost")
+		}
+		return answer, err, true
 	}
 	defer release()
-	stopLost := bridge.OnLost(func(t, reason string) {
-		if t == id && mine() {
+	stopLost := bridge.OnLostGeneration(func(t string, generation uint64, reason string) {
+		if t != id {
+			return
+		}
+		a.mu.Lock()
+		was := sl.owner == me && sl.generation == generation
+		if was {
+			lost = true
+			sl.owner = 0
+			sl.generation = 0
+		}
+		a.mu.Unlock()
+		if was {
+			// The bridge already removed this exact peer. Do not Close by tab:
+			// a replacement may have connected while the notice was delayed.
 			_ = send(signalNotice{Type: "audio-lost", Reason: reason})
 		}
 	})
@@ -263,12 +311,12 @@ func (a *AudioAPI) signal(w http.ResponseWriter, r *http.Request) {
 				refuse(why)
 				return
 			}
-			if !claim() {
+			answer, err, accepted := connect(m.SDP)
+			if !accepted {
 				_ = send(refusal{Type: "refused", Reason: "too many audio connections from this login", Fix: "close other tabs"})
 				_ = ws.Close(websocket.StatusNormalClosure, "too many audio connections")
 				return
 			}
-			answer, err := bridge.Connect(ctx, m.SDP, id)
 			if err != nil {
 				_ = send(signalNotice{Type: "error", Reason: err.Error(), Fix: "tap to reconnect"})
 				continue

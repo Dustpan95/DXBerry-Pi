@@ -57,6 +57,29 @@ dxb_net_render_iface() {
   dxb_render "$DXB_TEMPLATES/interfaces-$iface.tmpl" "METHOD=$method" "ADDRESS=$addr" "GATEWAY=$gw"
 }
 
+# Re-read critical files before handing the network to netwatch. A failed atomic rename can
+# leave a previously valid but now stale configuration behind, including an enabled old unit.
+dxb_net_files_ready() {
+  local iface file content
+  for iface in eth0 wlan0; do
+    file=$DXB_IFACES_DIR/$iface.conf
+    if [[ $iface == wlan0 ]] && (( ! DXB_CFG[_WIFI] )); then
+      [[ ! -e $file && ! -L $file ]] || return 1
+      continue
+    fi
+    content=$(dxb_net_render_iface "$iface") || return 1
+    [[ -f $file && $(< "$file") == "$content" ]] || return 1
+  done
+  if [[ ${DXB_CFG[_MODE]} == static ]]; then
+    # shellcheck disable=SC2086
+    content=$(printf 'nameserver %s\n' ${DXB_CFG[DNS]})
+    [[ -f $DXB_RESOLV_CONF && $(< "$DXB_RESOLV_CONF") == "$content" ]] || return 1
+  fi
+  content=$(dxb_render "$DXB_TEMPLATES/dxberry-netwatch.service") || return 1
+  file=$DXB_SYSTEMD_DIR/dxberry-netwatch.service
+  [[ -f $file && $(< "$file") == "$content" ]]
+}
+
 # Import WiFi credentials through DietPi's own tool so its WiFi menu keeps working.
 # Runs in every mode: dxberry-preboot and boot/dietpi.overrides.txt both set
 # AUTO_SETUP_NET_WIFI_ENABLED=0, and with WiFi disabled DietPi's automated first run never
@@ -181,6 +204,10 @@ dxb_net_install_netwatch() {
     return 1
   fi
   if dxb_write_if_changed "$unit" "$content"; then
+    if [[ ! -f $unit || $(< "$unit") != "$content" ]]; then
+      dxb_step_failed network "could not write $unit"
+      return 1
+    fi
     dxb_info "dxberry-netwatch unit installed"
     if ! systemctl daemon-reload; then
       dxb_step_failed network "systemctl daemon-reload failed after writing $unit"
@@ -200,10 +227,22 @@ provision_network() {
   local content wlan_ok=0 wlan_note=0 hw_rc
   mkdir -p "$DXB_IFACES_DIR"
   content=$(dxb_net_render_iface eth0) || { dxb_step_failed network "eth0 template failed"; return 1; }
-  dxb_write_if_changed "$DXB_IFACES_DIR/eth0.conf" "$content" && { DXB_NET_CHANGED=1; dxb_info "wrote eth0.conf (${DXB_CFG[_MODE]})"; }
+  if dxb_write_if_changed "$DXB_IFACES_DIR/eth0.conf" "$content"; then
+    if [[ ! -f $DXB_IFACES_DIR/eth0.conf || $(< "$DXB_IFACES_DIR/eth0.conf") != "$content" ]]; then
+      dxb_step_failed network "could not write $DXB_IFACES_DIR/eth0.conf"
+      return 1
+    fi
+    DXB_NET_CHANGED=1; dxb_info "wrote eth0.conf (${DXB_CFG[_MODE]})"
+  fi
   if (( DXB_CFG[_WIFI] )); then
     content=$(dxb_net_render_iface wlan0) || { dxb_step_failed network "wlan0 template failed"; return 1; }
-    dxb_write_if_changed "$DXB_IFACES_DIR/wlan0.conf" "$content" && { DXB_NET_CHANGED=1; dxb_info "wrote wlan0.conf"; }
+    if dxb_write_if_changed "$DXB_IFACES_DIR/wlan0.conf" "$content"; then
+      if [[ ! -f $DXB_IFACES_DIR/wlan0.conf || $(< "$DXB_IFACES_DIR/wlan0.conf") != "$content" ]]; then
+        dxb_step_failed network "could not write $DXB_IFACES_DIR/wlan0.conf"
+        return 1
+      fi
+      DXB_NET_CHANGED=1; dxb_info "wrote wlan0.conf"
+    fi
     dxb_net_enable_wifi_hw
     hw_rc=$?
     if (( hw_rc == 0 )); then
@@ -225,8 +264,12 @@ provision_network() {
       fi
     fi
     dxb_net_import_wifi
-  elif [[ -f $DXB_IFACES_DIR/wlan0.conf ]]; then
+  elif [[ -e $DXB_IFACES_DIR/wlan0.conf || -L $DXB_IFACES_DIR/wlan0.conf ]]; then
     rm -f "$DXB_IFACES_DIR/wlan0.conf"
+    if [[ -e $DXB_IFACES_DIR/wlan0.conf || -L $DXB_IFACES_DIR/wlan0.conf ]]; then
+      dxb_step_failed network "could not remove $DXB_IFACES_DIR/wlan0.conf"
+      return 1
+    fi
     # shellcheck disable=SC2034
     DXB_NET_CHANGED=1
     dxb_info "removed wlan0.conf (no WIFI_SSID)"
@@ -239,7 +282,13 @@ provision_network() {
   if [[ ${DXB_CFG[_MODE]} == static ]]; then
     # shellcheck disable=SC2086
     content=$(printf 'nameserver %s\n' ${DXB_CFG[DNS]})
-    dxb_write_if_changed "$DXB_RESOLV_CONF" "$content" && dxb_info "wrote resolv.conf"
+    if dxb_write_if_changed "$DXB_RESOLV_CONF" "$content"; then
+      if [[ ! -f $DXB_RESOLV_CONF || $(< "$DXB_RESOLV_CONF") != "$content" ]]; then
+        dxb_step_failed network "could not write $DXB_RESOLV_CONF"
+        return 1
+      fi
+      dxb_info "wrote resolv.conf"
+    fi
   fi
   dxb_net_install_netwatch
   if (( wlan_ok )); then dxb_status_add "network: ${DXB_CFG[_MODE]} ${DXB_CFG[STATIC_IP]:-} - eth0 primary, wlan0 (${DXB_CFG[WIFI_SSID]}) failover"

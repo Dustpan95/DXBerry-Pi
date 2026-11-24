@@ -111,6 +111,7 @@ test_provision_network_static_with_wifi_writes_everything_once() {
   assert_file_contains "$DXB_DIETPI_WIFI" "aWIFI_SSID[0]='Home'"
   assert_file_contains "$TEST_TMP/calls" "wifidb 1"
   assert_file_contains "$DXB_SYSTEMD_DIR/dxberry-netwatch.service" "ExecStart=/opt/dxberry/bin/dxberry-netwatch run"
+  assert_file_contains "$DXB_SYSTEMD_DIR/dxberry-netwatch.service" "KillMode=process"
   assert_file_contains "$TEST_TMP/calls" "systemctl daemon-reload"
   assert_file_contains "$TEST_TMP/calls" "systemctl enable dxberry-netwatch"
   DXB_NET_CHANGED=0; : > "$TEST_TMP/calls"
@@ -455,3 +456,85 @@ test_provision_run_mode_still_fails_when_wlan0_absent_and_no_overlay() {
   assert_contains "${DXB_FAILED_STEPS[*]}" "wlan0 not present under $DXB_SYS_NET"
   assert_eq "$DXB_NET_REBOOT_NEEDED" "0"
 }
+
+# Fixture changes stay inside each isolated test.
+# shellcheck disable=SC2030,SC2031
+test_network_rejects_failed_file_replacements_and_recovers() (
+  local TEST_TMP=$TEST_TMP
+  local -a DXB_FAILED_STEPS=()
+  local parent=$TEST_TMP role target failed_target
+  # Rejected renames leave an old file in place, just as a read-only/full filesystem can.
+  # shellcheck disable=SC2317
+  mv() {
+    [[ ${*: -1} != "$failed_target" ]] || return 1
+    command mv "$@"
+  }
+  for role in ethernet wifi resolver unit; do
+    TEST_TMP=$parent/$role; mkdir -p "$TEST_TMP"
+    net_env
+    net_cfg 'PASSWORD=secretpass' 'STATIC_IP=192.168.1.90/24' 'GATEWAY=192.168.1.1' 'DNS=1.1.1.1' 'WIFI_SSID=Home' 'WIFI_PASSWORD=wifipass1' 'WIFI_COUNTRY=US'
+    case $role in
+      ethernet) target=$DXB_IFACES_DIR/eth0.conf ;;
+      wifi) target=$DXB_IFACES_DIR/wlan0.conf ;;
+      resolver) target=$DXB_RESOLV_CONF ;;
+      unit) target=$DXB_SYSTEMD_DIR/dxberry-netwatch.service ;;
+    esac
+    mkdir -p "${target%/*}"; printf 'previous configuration\n' > "$target"
+    failed_target=$target
+    provision_network > /dev/null 2>&1
+    assert_contains "${DXB_FAILED_STEPS[*]}" "could not write $target"
+    assert_eq "$(< "$target")" 'previous configuration'
+    assert_fails dxb_net_files_ready
+    if [[ $role == ethernet ]]; then assert_eq "$DXB_NET_CHANGED" 0; fi
+    if [[ $role == unit ]]; then
+      assert_file_not_contains "$TEST_TMP/calls" 'systemctl enable dxberry-netwatch'
+      assert_file_not_contains "$TEST_TMP/calls" 'systemctl daemon-reload'
+    fi
+    failed_target=''; DXB_FAILED_STEPS=()
+    assert_ok provision_network > /dev/null 2>&1
+    assert_ok dxb_net_files_ready
+    assert_eq "${DXB_FAILED_STEPS[*]}" ''
+  done
+)
+
+# shellcheck disable=SC2030,SC2031
+test_network_cannot_claim_a_failed_wifi_config_removal() (
+  net_env; net_cfg 'PASSWORD=secretpass'
+  mkdir -p "$DXB_IFACES_DIR"; echo stale > "$DXB_IFACES_DIR/wlan0.conf"
+  # This Ethernet stanza is already current, so a rejected removal is the only attempted change.
+  dxb_net_render_iface eth0 > "$DXB_IFACES_DIR/eth0.conf"
+  # shellcheck disable=SC2317
+  rm() { [[ ${*: -1} != "$DXB_IFACES_DIR/wlan0.conf" ]] && command rm "$@"; }
+  assert_fails provision_network > /dev/null 2>&1
+  assert_contains "${DXB_FAILED_STEPS[*]}" "could not remove $DXB_IFACES_DIR/wlan0.conf"
+  assert_eq "$DXB_NET_CHANGED" 0
+  assert_file_not_contains "$DXB_LOG_FILE" 'removed wlan0.conf'
+  assert_fails dxb_net_files_ready
+)
+
+# shellcheck disable=SC2030,SC2031
+test_network_readiness_detects_stale_files_without_changing_them() (
+  net_env
+  net_cfg 'PASSWORD=secretpass' 'STATIC_IP=192.168.1.90/24' 'GATEWAY=192.168.1.1' 'DNS=1.1.1.1' 'WIFI_SSID=Home' 'WIFI_PASSWORD=wifipass1' 'WIFI_COUNTRY=US'
+  provision_network > /dev/null 2>&1
+  assert_ok dxb_net_files_ready
+  local target
+  : > "$TEST_TMP/calls"
+  for target in "$DXB_IFACES_DIR/eth0.conf" "$DXB_IFACES_DIR/wlan0.conf" "$DXB_RESOLV_CONF" "$DXB_SYSTEMD_DIR/dxberry-netwatch.service"; do
+    cp "$target" "$TEST_TMP/saved"
+    echo stale > "$target"
+    assert_fails dxb_net_files_ready
+    assert_eq "$(< "$target")" stale
+    cp "$TEST_TMP/saved" "$target"
+  done
+  assert_ok dxb_net_files_ready
+  assert_eq "$(< "$TEST_TMP/calls")" ''
+  net_cfg 'PASSWORD=secretpass'
+  provision_network > /dev/null 2>&1
+  rm -f "$DXB_RESOLV_CONF"
+  assert_ok dxb_net_files_ready  # DHCP owns resolver configuration.
+  ln -s "$TEST_TMP/missing" "$DXB_IFACES_DIR/wlan0.conf"
+  assert_fails dxb_net_files_ready
+  assert_ok provision_network > /dev/null 2>&1
+  assert_ok dxb_net_files_ready
+)

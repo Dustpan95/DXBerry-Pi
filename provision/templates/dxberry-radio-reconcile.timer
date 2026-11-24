@@ -1,0 +1,14 @@
+[Unit]
+Description=DXBerry-Pi retained hotplug retry backstop
+
+[Timer]
+OnBootSec=30
+# Independent of service activation timestamps: start-limited jobs may never
+# activate, but their retained marker still needs another attempt.
+OnCalendar=*-*-* *:*:00,30
+OnClockChange=yes
+AccuracySec=1
+Unit=dxberry-radio-reconcile.service
+
+[Install]
+WantedBy=timers.target
