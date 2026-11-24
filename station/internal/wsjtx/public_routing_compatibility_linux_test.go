@@ -69,6 +69,9 @@ type routingScreenFixture struct {
 	active     programstate.Generation
 	original   RoutingSettings
 	approval   string
+	server     *ProgramHookServer
+	cancel     context.CancelFunc
+	done       chan error
 }
 
 func newRoutingScreenFixture(t *testing.T, ctx context.Context) *routingScreenFixture {
@@ -87,7 +90,19 @@ func newRoutingScreenFixture(t *testing.T, ctx context.Context) *routingScreenFi
 	if err := store.Set("fixture1", settings.RadioSettings{SWRLimit: 2.5, PTTTimeoutS: 90}); err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewProgramService(ProgramServiceConfig{StatePath: routingFixtureState, Approvals: store,
+	bridge, err := NewSettingsBridge()
+	if err != nil {
+		t.Fatal("actual application-user helper unavailable:", err)
+	}
+	f := &routingScreenFixture{store: store, bridge: bridge, generation: generation}
+	t.Cleanup(func() { f.closeServer(t) })
+	f.openServer(t, ctx)
+	return f
+}
+
+func (f *routingScreenFixture) openServer(t *testing.T, ctx context.Context) {
+	t.Helper()
+	service, err := NewProgramService(ProgramServiceConfig{StatePath: routingFixtureState, Approvals: f.store,
 		Eligible: func(ctx context.Context, radio string) error {
 			// This guest has no physical radio. Only this synthetic assignment
 			// is eligible; physical eligibility is explicitly outside this gate.
@@ -109,25 +124,65 @@ func newRoutingScreenFixture(t *testing.T, ctx context.Context) *routingScreenFi
 	}
 	serveCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
+	f.service, f.server, f.cancel, f.done = service, server, cancel, done
 	go func() { done <- server.Serve(serveCtx) }()
-	t.Cleanup(func() {
-		cancel()
-		_ = server.Close()
-		if err := <-done; err != nil {
-			t.Error("public hook server failed:", err)
-		}
-		if err := service.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	bridge, err := NewSettingsBridge()
-	if err != nil {
-		t.Fatal("actual application-user helper unavailable:", err)
-	}
 	if info, err := os.Lstat(filepath.Join(routingFixtureRuntime, "wsjtx.sock")); err != nil || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0600 {
 		t.Fatal("private actual root hook socket unavailable")
 	}
-	return &routingScreenFixture{service: service, store: store, bridge: bridge, generation: generation}
+}
+
+func (f *routingScreenFixture) closeServer(t *testing.T) {
+	t.Helper()
+	if f.server == nil {
+		return
+	}
+	f.cancel()
+	_ = f.server.Close()
+	if err := <-f.done; err != nil {
+		t.Error("public hook server failed:", err)
+	}
+	if err := f.service.Close(); err != nil {
+		t.Error(err)
+	}
+	f.server, f.service, f.cancel, f.done = nil, nil, nil, nil
+}
+
+func (f *routingScreenFixture) restartWhileRunning(t *testing.T, ctx context.Context) {
+	t.Helper()
+	const unit = "dxberry-screen@wsjtx-fixture1.service"
+	before, err := showProgramUnit(ctx, unit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := f.bridge.Inspect(ctx, "fixture1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.closeServer(t)
+	f.openServer(t, ctx)
+	state, err := f.service.CollectionState(ctx, "fixture1")
+	if err != nil || !state.Configured || !state.Enabled || state.Phase != RoutingInstalled || !state.RecoveryRequired || state.Observation != nil || state.Transport != nil {
+		t.Fatal("reopened actual service lost its owed route or adopted an old observation:", err)
+	}
+	if _, err := f.service.Preview(ctx, "fixture1"); !errors.Is(err, ErrProgramLifecycle) {
+		t.Fatal("reopened service accepted a running routing preview:", err)
+	}
+	if err := f.service.Recover(ctx, "fixture1"); !errors.Is(err, ErrProgramLifecycle) {
+		t.Fatal("reopened service restored while the actual application was running:", err)
+	}
+	if err := f.service.Disable(ctx, "fixture1"); !errors.Is(err, ErrProgramLifecycle) {
+		t.Fatal("reopened service accepted a running disable:", err)
+	}
+	if restored, err := f.bridge.Inspect(ctx, "fixture1"); err != nil || restored.fingerprint() != view.fingerprint() {
+		t.Fatal("daemon replacement or refused recovery changed the live managed routing")
+	}
+	if after, err := f.generation.Read(ctx); err != nil || !after.Same(f.active) {
+		t.Fatal("daemon replacement or refused recovery advanced acquisition state")
+	}
+	if after, err := showProgramUnit(ctx, unit); err != nil || !bytes.Equal(before, after) {
+		t.Fatal("actual application invocation changed during daemon replacement")
+	}
+	f.checkPreferences(t)
 }
 
 func (f *routingScreenFixture) prepare(t *testing.T, ctx context.Context, cycle int) {

@@ -199,7 +199,7 @@ func runWSJTXScreenFixture(t *testing.T, nativeRouting bool) {
 		if routing != nil {
 			observer, binding = routing.started(t, ctx)
 		}
-		if generation > 0 && (binding.Generation() <= previousBinding.Generation() || binding.Address() == previousBinding.Address()) {
+		if generation > 0 && (binding.Address() == previousBinding.Address() || binding.owner == previousBinding.owner && binding.Generation() <= previousBinding.Generation()) {
 			t.Fatal("fresh observation generation and endpoint required")
 		}
 		previousBinding = binding
@@ -266,6 +266,9 @@ func runWSJTXScreenFixture(t *testing.T, nativeRouting bool) {
 		if info, err := os.Stat(dir + "/Xauthority"); err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Sys().(*syscall.Stat_t).Uid != uint32(uid) {
 			t.Fatal("actual private X cookie unavailable")
 		}
+		if routing != nil && generation == 0 {
+			routing.restartWhileRunning(t, ctx)
+		}
 		if ctl("stop", unit) != nil || g.check(ctx, "fixture1", "", programStopped) != nil {
 			t.Fatal("normal screen-session stop did not establish a safe restoration boundary")
 		}
@@ -294,8 +297,8 @@ func runWSJTXScreenFixture(t *testing.T, nativeRouting bool) {
 		"untested": []string{"physical eligibility and public prepare/session/stopped IPC", "native route restoration and update/rollback", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}}
 	if routing != nil {
 		report["kind"] = "wsjtx-public-hook-routing"
-		report["passed"] = append(report["passed"].([]string), "actual public root hook IPC", "actual application-user settings helper", "durable approval/generation/journal", "managed route installation and restoration on two normal stops", "running mutation refusal and routing/logging preservation")
-		report["untested"] = []string{"physical eligibility and public prepare/session CLI", "daemon restart and interrupted restoration", "update/rollback", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}
+		report["passed"] = append(report["passed"].([]string), "actual public root hook IPC", "actual application-user settings helper", "durable approval/generation/journal", "managed route installation and restoration on two normal stops", "running mutation refusal and routing/logging preservation", "actual service/receiver replacement while application remains running", "owed-route restoration after replacement and fresh persistent endpoint")
+		report["untested"] = []string{"physical eligibility and public prepare/session CLI", "whole-process replacement, abrupt death and interrupted helper write", "update/rollback", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}
 	}
 	raw, err := json.Marshal(report)
 	if err != nil {

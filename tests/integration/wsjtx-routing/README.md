@@ -28,11 +28,21 @@ SWR/PTT preferences and approval must survive. Cleanup must not advance the
 acquisition generation. A second fresh session repeats the real flow without
 rewriting the restored application profile.
 
+The first session also remains running while the fixture gracefully closes and
+reopens the production hook server, service, receiver and persistent stores.
+The reopened service must mark the owed route recovery-required without adopting
+the old observation. Running preview/recovery/disable must refuse, with identical actual
+unit identity and managed settings. Its subsequent real stop-post must restore
+the journaled original destination. The next start must use a different durable
+endpoint; generation counters are compared within each observer's identity.
+This replaces service instances inside the same controller process; it does not
+claim whole-process death or complete console restart acceptance.
+
 This is partial software acceptance. Eligibility accepts only the declared
 synthetic fixture assignment; physical eligibility and public radio preparation
 are not exercised. The hook processes use the actual IPC client function, not
-the complete console command-line entry point. Daemon restart, interrupted
-restoration, update/rollback, GUI changes, Decode/Clear, ARM64 capture workload
+the complete console command-line entry point. Whole-process replacement,
+abrupt death, interrupted helper writes, update/rollback, GUI changes, Decode/Clear, ARM64 capture workload
 and physical radio/RF remain separate. No station data or feature flags are used.
 
 Build with `tests/integration/wsjtx-routing/Dockerfile`. Use the screen fixture's
