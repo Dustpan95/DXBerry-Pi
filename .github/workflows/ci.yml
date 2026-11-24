@@ -74,6 +74,30 @@ jobs:
           path: ${{ runner.temp }}/systemd-evidence
           if-no-files-found: warn
           retention-days: 7
+  pat-manager:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build isolated actual Pat systemd guest
+        run: docker build -t dxberry-pat-manager -f tests/integration/pat-manager/Dockerfile .
+      - name: Exercise actual managed reader without host privileges or radio devices
+        run: |
+          mkdir -p "$RUNNER_TEMP/pat-manager-evidence"
+          docker run --rm --network none --cap-drop ALL --read-only \
+            --security-opt=no-new-privileges --pids-limit=128 \
+            --user "$(id -u):$(id -g)" --memory=3g \
+            --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            -v "$RUNNER_TEMP/pat-manager-evidence:/evidence" dxberry-pat-manager
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pat-manager-evidence
+          path: ${{ runner.temp }}/pat-manager-evidence
+          if-no-files-found: warn
+          retention-days: 7
   graywolf-api:
     runs-on: ubuntu-latest
     steps:

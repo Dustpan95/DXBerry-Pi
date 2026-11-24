@@ -82,7 +82,10 @@ The application protocol check does not exercise the public managed reader's
 ownership checks against a real systemd manager. A separate isolated fixture
 must establish actual unit/process/socket identity, start/stop ordering,
 replacement and refusal/recovery behavior. Do not mount the host system bus;
-mocked `systemctl` output does not close that gate.
+mocked `systemctl` output does not close that gate. The separate
+[`pat-manager` guest](pat-manager/README.md) now implements that isolated check;
+its complete job result supplies execution evidence. It does not exercise
+DXBerry's full public session hooks or physical-radio eligibility.
 
 Actual dialing/connected transitions, active Winlink shutdown and message
 persistence, station CPU/capture workload and physical radio/RF behavior remain
