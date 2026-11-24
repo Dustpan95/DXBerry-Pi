@@ -14,6 +14,22 @@ transactions. Receiver snapshots and binding identity come directly from the
 child's actual observer; the parent creates no fake binding owners, packets,
 manager responses or process metadata.
 
+Before the first successful session, a real inotify watch observes the actual
+application-user helper's atomic move from its pending file to the profile.
+The parent then kills and reaps the server. The unchanged helper and journal
+must show the managed route on disk while the durable phase remains `prepared`;
+missing that interruption window fails the test instead of retrying or claiming
+coverage. The actual console start-pre and stop-post must both refuse while the
+server is absent, and the manager must report no application process or screen
+socket. The negative phase evidence is retained.
+
+A new server must report recovery required with no adopted observation. Explicit
+recovery at the actual failed/stopped boundary must restore the original current
+and saved routing namespace, preserve consent and guard preferences, clear the
+journal, and retain the invalidated acquisition generation. Subsequent normal
+sessions must never reuse the interrupted endpoint. No production delay, helper
+replacement, journal edit or simulated manager response creates this fault.
+
 After an actual WSJT-X session supplies non-transmitting Heartbeat and Status,
 the parent sends SIGKILL to only the routing-server process and reaps its actual
 signal exit. No graceful service/store close runs. The application unit must
@@ -38,8 +54,9 @@ host device passthrough, only loopback and private null audio. Build with
 5 GiB invocation with a fresh `/evidence` bind only.
 
 This tests a real process running the routing services, not the complete
-console HTTP/PAM daemon. The kill occurs between completed operations, so an
-interrupted helper write is not covered. Update/rollback, physical eligibility
+console HTTP/PAM daemon. The second kill occurs between completed operations; the first covers only
+the atomic profile replacement before installed-journal commit. Other helper
+write boundaries, power loss, update/rollback, physical eligibility
 and public radio/session preparation, GUI/Decode/Clear, ARM64 capture workload
 and physical radio/RF remain separate. No Pi state, feature flag or RF control
 is used. A full passing job supplies process-death evidence; compilation alone
