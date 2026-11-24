@@ -5,6 +5,10 @@ guard against real systemd start-pre, stop-post and stopped boundaries. It
 installs the checksum-pinned official WSJT-X 3.0.2 package only in its disposable
 root, with private synthetic Qt/PulseAudio settings and no NIC or host devices.
 The outer Docker container has no capabilities, host bus or cgroup mounts.
+The GUI runtime needs a 4 GiB guest and a 5 GiB outer-container limit; the
+shared runner keeps the smaller 2 GiB default for the other manager fixtures.
+The packer records payload/compressed sizes in the build log. These resource
+settings provide a test environment, not station workload acceptance.
 
 The test controller and application have private device views. Root-prefixed
 unit helpers run with systemd's actual INVOCATION_ID, as the production root

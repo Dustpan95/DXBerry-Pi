@@ -8,10 +8,12 @@ if len(kernels) != 1:
 shutil.copyfile(kernels[0], dest/'vmlinuz')
 exclude = {'proc', 'sys', 'dev', 'run', 'tmp', 'boot', 'root', '.dockerenv', '.containerenv'}
 ino = 0
+payload_bytes = 0
 with gzip.open(dest/'root.cpio.gz', 'wb', compresslevel=1) as out:
     def emit(name, mode, data=b'', uid=0, gid=0, major=0, minor=0):
-        global ino
+        global ino, payload_bytes
         ino += 1
+        payload_bytes += len(data)
         encoded = name.encode() + b'\0'
         values = [ino, mode, uid, gid, 1, 0, len(data), 0, 0, major, minor, len(encoded), 0]
         header = b'070701' + b''.join(f'{v:08x}'.encode() for v in values)
@@ -44,4 +46,4 @@ with gzip.open(dest/'root.cpio.gz', 'wb', compresslevel=1) as out:
     emit('dev/console', stat.S_IFCHR | 0o600, major=5, minor=1)
     emit('dev/null', stat.S_IFCHR | 0o666, major=1, minor=3)
     emit('TRAILER!!!', 0)
-print('Packed complete isolated guest with one distribution kernel.')
+print(f'Packed complete isolated guest: payload={payload_bytes} bytes, compressed={(dest / "root.cpio.gz").stat().st_size} bytes, one distribution kernel.')

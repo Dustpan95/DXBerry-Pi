@@ -144,7 +144,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/wsjtx-manager-evidence"
           docker run --rm --network none --cap-drop ALL --read-only \
             --security-opt=no-new-privileges --pids-limit=128 \
-            --user "$(id -u):$(id -g)" --memory=3g \
+            --user "$(id -u):$(id -g)" --memory=5g \
             --tmpfs /tmp:rw,nosuid,nodev,size=64m \
             -v "$RUNNER_TEMP/wsjtx-manager-evidence:/evidence" dxberry-wsjtx-manager
       - uses: actions/upload-artifact@v4

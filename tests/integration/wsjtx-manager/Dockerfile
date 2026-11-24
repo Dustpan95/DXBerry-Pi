@@ -31,6 +31,7 @@ COPY tests/integration/wsjtx-manager/manager-test.sh /usr/local/libexec/dxb-wsjt
 RUN chmod 755 /init /usr/local/libexec/dxb-wsjtx-manager-test
 
 FROM debian:trixie-slim
+ENV DXB_GUEST_MEMORY_MIB=4096
 RUN apt-get update && apt-get install -y --no-install-recommends \
     qemu-system-x86 python3 coreutils ca-certificates \
  && rm -rf /var/lib/apt/lists/*
