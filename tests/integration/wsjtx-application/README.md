@@ -29,6 +29,9 @@ both actual application processes map the same QtCore library. The final JSON
 report is explicitly partial. No success report is printed on failure; process
 diagnostics include bounded text logs only from new synthetic profiles. The fixture terminates its
 own processes and does not claim graceful application shutdown acceptance.
+An exited child is reported separately from a mismatched library, with its wait
+status retained in failure diagnostics. CI runs three consecutive fresh fixtures;
+every run must pass, without retrying a failed result.
 
 After building the image separately, run on a Linux/amd64 Docker host:
 

@@ -117,7 +117,8 @@ jobs:
             --security-opt=no-new-privileges --pids-limit=256 --memory=2g \
             --user 65534:65534 --shm-size=128m \
             --tmpfs /tmp:rw,exec,nosuid,nodev,size=512m,mode=1777 \
-            dxberry-wsjtx-application | tee "$RUNNER_TEMP/wsjtx-application.log"
+            dxberry-wsjtx-application -test.v -test.timeout=450s -test.count=3 \
+            -test.run='^TestWSJTXApplicationCompatibility$' | tee "$RUNNER_TEMP/wsjtx-application.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
