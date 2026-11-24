@@ -107,6 +107,7 @@ type routingScreenFixture struct {
 	cancel      context.CancelFunc
 	done        chan error
 	process     *routingServiceProcess
+	console     *consoleDaemonFixture
 	processMode bool
 }
 
@@ -209,6 +210,13 @@ func fixtureNewRoutingService(store *settings.Store) (*ProgramService, error) {
 
 func (f *routingScreenFixture) closeServer(t *testing.T) {
 	t.Helper()
+	if f.console != nil {
+		if err := f.console.Close(); err != nil {
+			t.Error(err)
+		}
+		f.console, f.service = nil, nil
+		return
+	}
 	if f.process != nil {
 		if err := f.process.Close(); err != nil {
 			t.Error(err)

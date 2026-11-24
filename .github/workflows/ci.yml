@@ -273,6 +273,35 @@ jobs:
             ${{ runner.temp }}/wsjtx-crash-evidence
           if-no-files-found: warn
           retention-days: 7
+  wsjtx-daemon:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build isolated actual WSJT-X complete-console-daemon guest
+        run: |
+          set -o pipefail
+          docker build -t dxberry-wsjtx-daemon -f tests/integration/wsjtx-daemon/Dockerfile . \
+            2>&1 | tee "$RUNNER_TEMP/wsjtx-daemon-build.log"
+      - name: Exercise actual console daemon death, PAM sessions and retained routing recovery without host privileges or radio devices
+        run: |
+          mkdir -p "$RUNNER_TEMP/wsjtx-daemon-evidence"
+          docker run --rm --network none --cap-drop ALL --read-only \
+            --security-opt=no-new-privileges --pids-limit=128 \
+            --user "$(id -u):$(id -g)" --memory=5g \
+            --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            -v "$RUNNER_TEMP/wsjtx-daemon-evidence:/evidence" dxberry-wsjtx-daemon
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wsjtx-daemon-evidence
+          path: |
+            ${{ runner.temp }}/wsjtx-daemon-build.log
+            ${{ runner.temp }}/wsjtx-daemon-evidence
+          if-no-files-found: warn
+          retention-days: 7
   graywolf-api:
     runs-on: ubuntu-latest
     steps:

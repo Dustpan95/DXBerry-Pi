@@ -28,7 +28,7 @@ func TestWSJTXScreenSessionCompatibility(t *testing.T) {
 }
 
 type screenFixtureOptions struct {
-	nativeRouting, consoleCLI, processCrash bool
+	nativeRouting, consoleCLI, processCrash, consoleDaemon bool
 }
 
 type screenReceiver interface {
@@ -305,6 +305,9 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 		if routing != nil && generation == 0 {
 			routing.restartWhileRunning(t, ctx)
 		}
+		if options.consoleDaemon && generation == 1 {
+			routing.replaceWithConsoleDaemon(t, ctx)
+		}
 		if ctl("stop", unit) != nil || g.check(ctx, "fixture1", "", programStopped) != nil {
 			t.Fatal("normal screen-session stop did not establish a safe restoration boundary")
 		}
@@ -343,6 +346,11 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 			report["kind"] = "wsjtx-process-crash-routing"
 			report["passed"] = append(report["passed"].([]string), "separate real server process terminated with SIGKILL", "kernel file-lock/socket release and stale socket replacement", "recovery-required journal without observation adoption after process death", "actual helper atomic rename interrupted before installed journal commit", "failed real CLI pre/post with no application start", "prepared journal recovery restores original settings without endpoint reuse")
 			report["untested"] = []string{"full console HTTP/PAM daemon replacement", "other helper write boundaries and power loss", "update/rollback", "physical eligibility and public radio/session CLI", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}
+		}
+		if options.consoleDaemon {
+			report["kind"] = "wsjtx-console-daemon-recovery"
+			report["passed"] = append(report["passed"].([]string), "complete production console daemon under its actual systemd unit", "real PAM login and session cookie with unauthenticated/cross-origin refusal", "actual daemon SIGKILL and automatic manager restart", "old login session refused after process death", "recovery-required state and running refusal through actual authenticated HTTP", "normal actual CLI stop-post restores through complete restarted daemon")
+			report["untested"] = []string{"TLS/nginx/browser authentication flow", "physical eligibility and new acquisitions through full daemon", "other helper boundaries and power loss", "actual update/rollback", "public radio/session preparation", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}
 		}
 	}
 	raw, err := json.Marshal(report)
