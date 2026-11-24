@@ -112,10 +112,22 @@ func newRig(t *testing.T) *rig {
 	done := make(chan struct{})
 	go func() { r.st.Run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
+	r.waitPublished(t, 1)
 	return r
 }
 
 func (r *rig) count() int { return int(r.runs.Load()) }
+
+// The spy counts entry to run, before Status publishes lastRun and the cache.
+// Wait for publication before moving fake time or asserting another deadline.
+func (r *rig) waitPublished(t *testing.T, want int) {
+	t.Helper()
+	eventually(t, "published status run "+strconv.Itoa(want), func() bool {
+		r.st.mu.Lock()
+		defer r.st.mu.Unlock()
+		return r.count() == want && r.st.lastRun.Equal(r.clock.Now())
+	})
+}
 
 func snap(t *testing.T, st *Status) (gen int64, stale bool, status json.RawMessage) {
 	t.Helper()
@@ -174,7 +186,7 @@ func TestStatusRefreshesAfterChangingCall(t *testing.T) {
 	eventually(t, "the first run", func() bool { return r.count() == 1 })
 	r.clock.Advance(2 * time.Second)
 	r.st.Poke()
-	eventually(t, "the poked run", func() bool { return r.count() == 2 })
+	r.waitPublished(t, 2)
 	// a second poke inside the same second waits for the next second
 	r.st.Poke()
 	never(t, "an undebounced run", func() bool { return r.count() != 2 })
@@ -230,8 +242,24 @@ func serve(t *testing.T, st *Status, loggedIn bool) *httptest.Server {
 		Auth:   stubAuth{ok: loggedIn},
 		Routes: func(mux *http.ServeMux) { st.Register(mux, func(*http.Request) bool { return true }) },
 	})
-	ts := httptest.NewServer(srv.Handler)
-	t.Cleanup(ts.Close)
+	return serveHandler(t, srv.Handler)
+}
+
+func serveHandler(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	var handlers sync.WaitGroup
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlers.Add(1)
+		defer handlers.Done()
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() {
+		ts.Close()
+		// httptest.Close does not join hijacked WebSocket handlers. Client
+		// cleanup runs first; join their writers/readers before later tests
+		// change package timing settings or the collector fixture is stopped.
+		handlers.Wait()
+	})
 	return ts
 }
 
@@ -358,11 +386,11 @@ func TestEventsRateFollowsListeners(t *testing.T) {
 	readMsg(t, c)
 	eventually(t, "one listener", func() bool { return r.st.Listeners() == 1 })
 	// the cache was 30 s old when the listener came, so it is refreshed now
-	eventually(t, "a refresh for the new listener", func() bool { return r.count() == 2 })
+	r.waitPublished(t, 2)
 	r.clock.Advance(29 * time.Second)
 	never(t, "a run before 30 s while listened to", func() bool { return r.count() != 2 })
 	r.clock.Advance(time.Second)
-	eventually(t, "a 30 s run while listened to", func() bool { return r.count() == 3 })
+	r.waitPublished(t, 3)
 
 	c.CloseNow()
 	eventually(t, "no listeners", func() bool { return r.st.Listeners() == 0 })
@@ -377,7 +405,7 @@ func TestEventsRateFollowsListeners(t *testing.T) {
 func TestEventsSendsPings(t *testing.T) {
 	old := pingEvery
 	pingEvery = 30 * time.Millisecond
-	defer func() { pingEvery = old }()
+	t.Cleanup(func() { pingEvery = old })
 	r := newRig(t)
 	ts := serve(t, r.st, true)
 	c, err := dial(t, ts)
@@ -416,10 +444,12 @@ func TestEventsIgnoresClientFrames(t *testing.T) {
 func TestEventsSlowClientClosed(t *testing.T) {
 	old := writeTimeout
 	writeTimeout = 300 * time.Millisecond
-	defer func() { writeTimeout = old }()
+	t.Cleanup(func() { writeTimeout = old })
 	r := newRig(t)
 	r.out.Store(`{"pad":"` + strings.Repeat("x", 8<<20) + `"}`)
-	eventually(t, "the first run", func() bool { return r.count() == 1 })
+	r.clock.Advance(pokeGap)
+	r.st.Poke()
+	r.waitPublished(t, 2)
 	ts := serve(t, r.st, true)
 	c, err := dial(t, ts) // and never read: the socket buffers fill
 	if err != nil {
@@ -460,8 +490,7 @@ func TestEventsCloseOnLogout(t *testing.T) {
 			mux.Handle("GET /api/events", r.st.eventsHandler(func(*http.Request) bool { return alive.Load() }, 30*time.Millisecond))
 		},
 	})
-	ts := httptest.NewServer(srv.Handler)
-	defer ts.Close()
+	ts := serveHandler(t, srv.Handler)
 	c, err := dial(t, ts)
 	if err != nil {
 		t.Fatal(err)

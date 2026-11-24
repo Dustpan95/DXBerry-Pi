@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -169,8 +168,7 @@ func TestProgramEventBatchRechecksLoginBetweenFrames(t *testing.T) {
 	}
 	r.st.SetRadios(fakeRadios{names: []string{"a", "b"}})
 	r.st.SetPrograms(p)
-	ts := httptest.NewServer(r.st.eventsHandler(func(*http.Request) bool { return alive.Load() }, time.Hour))
-	defer ts.Close()
+	ts := serveHandler(t, r.st.eventsHandler(func(*http.Request) bool { return alive.Load() }, time.Hour))
 	c := openSock(t, ts)
 	for _, name := range []string{"a", "b"} {
 		watchMsg(t, c, name, "page")
