@@ -130,9 +130,9 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 		}
 		t.Cleanup(func() {
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			_ = cmd.Wait()
+			err := cmd.Wait()
 			if t.Failed() {
-				t.Log(filepath.Base(name), output.text())
+				t.Logf("%s wait: %v; output: %s", filepath.Base(name), err, output.text())
 			}
 		})
 		return cmd
@@ -267,14 +267,35 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 		t.Fatal("reference Qt library unavailable")
 	}
 	for _, app := range applications {
+		// Keep the child unreaped until cleanup so its PID cannot be reused
+		// while its process group is still ours to terminate. A zombie has no
+		// mapped libraries; report its state separately from a Qt mismatch.
+		processStatus, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", app.Process.Pid))
+		if err != nil {
+			t.Fatal("actual application process status unavailable:", err)
+		}
+		var state string
+		for _, line := range strings.Split(string(processStatus), "\n") {
+			if strings.HasPrefix(line, "State:") {
+				state = line
+			}
+		}
+		if state == "" || strings.Contains(state, "Z (zombie)") || strings.Contains(state, "X (dead)") {
+			t.Fatalf("actual application exited before runtime verification: %s; cleanup reports its exit status", state)
+		}
 		maps, err := os.ReadFile(fmt.Sprintf("/proc/%d/maps", app.Process.Pid))
 		if err != nil {
 			t.Fatal("actual application library identity unavailable")
 		}
 		matched := false
+		var mappedQt []string
 		for _, line := range strings.Split(string(maps), "\n") {
 			fields := strings.Fields(line)
-			if len(fields) != 6 || !strings.Contains(fields[5], "/libQt5Core.so.") {
+			if !strings.Contains(line, "/libQt5Core.so.") {
+				continue
+			}
+			mappedQt = append(mappedQt, line)
+			if len(fields) != 6 {
 				continue
 			}
 			if actual, err := os.Stat(fields[5]); err == nil && os.SameFile(actual, qtCore) {
@@ -282,7 +303,8 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 			}
 		}
 		if !matched {
-			t.Fatal("actual application Qt runtime differs from version reference")
+			executable, _ := os.Readlink(fmt.Sprintf("/proc/%d/exe", app.Process.Pid))
+			t.Fatalf("actual application Qt runtime differs from version reference: executable=%q state=%q reference=%q mappings=%q", executable, state, audio.QtCore, mappedQt)
 		}
 	}
 	for i, port := range ports {
