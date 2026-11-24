@@ -185,6 +185,28 @@ jobs:
           test "$(tar -xOzf "$archive" dxberry/VERSION)" = "$(station/out/dxberryd -version)"
           git rev-parse HEAD > "$out/SOURCE_COMMIT"
           git rev-parse 'HEAD^{tree}' > "$out/SOURCE_TREE"
+          (cd station/out && sha256sum dxberryd dxberry-wsjtx-settings dxberry-preset dxberry-program-state) > "$out/BINARY_SHA256SUMS"
+          jq -cn --arg version "$DXB_CANDIDATE_VERSION" \
+            --arg commit "$(cat "$out/SOURCE_COMMIT")" --arg tree "$(cat "$out/SOURCE_TREE")" \
+            --arg archive "$(basename "$archive")" --arg sha256 "$(sha256sum "$archive" | cut -d ' ' -f 1)" \
+            '{kind:"unpublished-update-candidate",version:$version,source_commit:$commit,source_tree:$tree,archive:$archive,sha256:$sha256,architecture:"arm64",pi_installed:false,hardware_acceptance:false}' \
+            | tee "$out/candidate.json"
+      - name: Start and restart actual update candidate without hardware
+        run: |
+          archives=("$RUNNER_TEMP/update-candidate/"*.tar.gz)
+          test "${#archives[@]}" = 1
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt=no-new-privileges --pids-limit=256 --memory=512m \
+            --tmpfs /opt/dxberry:rw,nosuid,nodev,exec,size=128m,mode=755 \
+            --tmpfs /var/lib/dxberry:rw,nosuid,nodev,noexec,size=8m,mode=700 \
+            --tmpfs /run/dxberry:rw,nosuid,nodev,noexec,size=8m,mode=755 \
+            --tmpfs /etc/dxberry:rw,nosuid,nodev,noexec,size=1m,mode=700 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777 \
+            -v "${archives[0]}:/fixture/update.tar.gz:ro" \
+            -v "$PWD/tests/integration/update-candidate.sh:/fixture/check:ro" \
+            -e DXB_UPDATE_CANDIDATE_FIXTURE=1 \
+            dxberry-program-state-runtime:fixture bash /fixture/check \
+            | tee "$RUNNER_TEMP/update-candidate/startup-check.log"
       - uses: actions/upload-artifact@v4
         with:
           name: dxberry-update-candidate
