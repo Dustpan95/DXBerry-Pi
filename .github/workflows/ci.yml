@@ -157,6 +157,35 @@ jobs:
             ${{ runner.temp }}/wsjtx-manager-evidence
           if-no-files-found: warn
           retention-days: 7
+  wsjtx-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build isolated actual WSJT-X screen-session guest
+        run: |
+          set -o pipefail
+          docker build -t dxberry-wsjtx-screen -f tests/integration/wsjtx-screen/Dockerfile . \
+            2>&1 | tee "$RUNNER_TEMP/wsjtx-screen-build.log"
+      - name: Exercise actual screen-session starts and normal stops without host privileges or radio devices
+        run: |
+          mkdir -p "$RUNNER_TEMP/wsjtx-screen-evidence"
+          docker run --rm --network none --cap-drop ALL --read-only \
+            --security-opt=no-new-privileges --pids-limit=128 \
+            --user "$(id -u):$(id -g)" --memory=5g \
+            --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            -v "$RUNNER_TEMP/wsjtx-screen-evidence:/evidence" dxberry-wsjtx-screen
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wsjtx-screen-evidence
+          path: |
+            ${{ runner.temp }}/wsjtx-screen-build.log
+            ${{ runner.temp }}/wsjtx-screen-evidence
+          if-no-files-found: warn
+          retention-days: 7
   graywolf-api:
     runs-on: ubuntu-latest
     steps:

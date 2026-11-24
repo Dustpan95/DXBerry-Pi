@@ -556,10 +556,12 @@ _dxb_screen_cookie() {
 # dxberry-audio@RADIO) / PULSE_CLIENTCONFIG set for every program (an ALSA one too). The program also sees APP, RADIO, INDEX, DEVICE, CARD, RIGCTLD
 # and DXB_APPS_OPT. Ends with the program's own exit status; on TERM the program gets TERM, then
 # KILL after DXB_SCREEN_STOP_WAIT_S (ruling 9), and the session ends 0 (a stop is not a failure).
-# Xvnc ending first ends the program too (status 1); the helpers always end with the program.
+# The program runs in its own process group, so its decoder children get TERM/KILL
+# even when their parent exits first. Xvnc ending first ends the program too
+# (status 1); the helpers always end with the program.
 dxb_screen_session_run() {
   local s=$1 envf dir sock n xs i rc=0 done_pid a r ps
-  local xpid='' opid='' prog='' why=''
+  local xpid='' opid='' prog='' program_group='' why=''
   local -a argv=() xv=() ob=() live=()
   envf=$(dxb_screen_envfile "$s"); dir=$(dxb_screen_dir "$s"); sock=$(dxb_screen_sock "$s")
   [[ -f $envf && -r $envf && -d $dir ]] || { echo "$envf or $dir is missing: the session's prepare step did not run" >&2; return 6; }
@@ -568,6 +570,7 @@ dxb_screen_session_run() {
   [[ "$a-$r" == "$s" ]] || { echo "$envf is not $s's" >&2; return 6; }
   dxb_app_load "$a" || return 3
   declare -F "app_${a}_command" > /dev/null || { echo "$a has no command to run" >&2; return 6; }
+  command -v setsid > /dev/null || { echo "setsid is required to isolate $a's child processes" >&2; return 6; }
   mapfile -t argv < <("app_${a}_command" "$r" "${DXB_SCREEN_ENV[INDEX]:-0}")
   [[ ${#argv[@]} -gt 0 && -n ${argv[0]} ]] || { echo "$a gave no command to run" >&2; return 6; }
   printf 'autospawn = no\n' > "$dir/client.conf" || { echo "could not write $dir/client.conf" >&2; return 6; }
@@ -607,8 +610,12 @@ dxb_screen_session_run() {
     opid=$!
   fi
   if (( _DXB_SCREEN_TERM )); then _dxb_screen_end "$opid" "$xpid"; return 0; fi
-  "${argv[@]}" &
+  # This non-interactive runner has job control off: the background setsid
+  # process is not a group leader, so it creates its group and execs the app
+  # without forking. Its PID is the group's ID, retained after the app exits.
+  setsid -- "${argv[@]}" &
   prog=$!
+  program_group=$prog
   live=("$prog")
   for i in "$xpid" "$opid"; do [[ -z $i ]] || live+=("$i"); done
   while :; do
@@ -634,17 +641,19 @@ dxb_screen_session_run() {
     why=helper
     break
   done
-  if [[ -n $prog ]]; then
-    kill -TERM "$prog" 2> /dev/null
+  if [[ -n $program_group ]]; then
+    # TERM can arrive before setsid establishes the new group. In that case
+    # terminate the still-owned launcher PID and keep watching both identities.
+    kill -TERM -- "-$program_group" 2> /dev/null || { [[ -z $prog ]] || kill -TERM "$prog" 2> /dev/null; }
     for (( i = 0; i < DXB_SCREEN_STOP_WAIT_S * 10; i++ )); do
-      kill -0 "$prog" 2> /dev/null || break
+      if ! kill -0 -- "-$program_group" 2> /dev/null && { [[ -z $prog ]] || ! kill -0 "$prog" 2> /dev/null; }; then break; fi
       command sleep 0.1
     done
-    if kill -0 "$prog" 2> /dev/null; then
+    if kill -0 -- "-$program_group" 2> /dev/null || { [[ -n $prog ]] && kill -0 "$prog" 2> /dev/null; }; then
       echo "$a did not end within ${DXB_SCREEN_STOP_WAIT_S}s of TERM; killing it" >&2
-      kill -KILL "$prog" 2> /dev/null
+      kill -KILL -- "-$program_group" 2> /dev/null || { [[ -z $prog ]] || kill -KILL "$prog" 2> /dev/null; }
     fi
-    wait "$prog" 2> /dev/null
+    [[ -z $prog ]] || wait "$prog" 2> /dev/null
   fi
   _dxb_screen_end "$opid" "$xpid"
   rm -f "$sock"
