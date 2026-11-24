@@ -76,10 +76,19 @@ neither an application acceptance pass nor a new automatic CI claim.
 
 ## Current result
 
-The official package is not available in the cached environment. Cloud VPN
-enrollment failure blocks its download and dependency acquisition. Staging failure
-checks can run offline, but successful staging and actual application/systemd
-acceptance remain unverified. Offline staging checks passed in Docker: invalid
+The cached local environment has not run the official application. The separate
+[`wsjtx-application` CI fixture](wsjtx-application/README.md) now stages the pinned
+package and implements passive idle-profile checks with dummy audio; its complete
+execution result is required before claiming those checks pass. The remaining
+GUI, Decode/Clear, lifecycle and workload acceptance points stay open.
+The [actual application job in run 101](https://github.com/Dustpan95/DXBerry-Pi/actions/runs/45369512366/job/138359914379)
+passed on November 24: WSJT-X 3.0.2 with mapped Qt 5.15.15, actual schema-2
+Heartbeat/Status, two rig-name profiles and measured heartbeat intervals of
+14.44 and 15.00 seconds. That report is explicitly partial; it does not close
+the remaining application or station gates. Its build/runtime evidence is
+artifact `14909060466`, ZIP SHA-256
+`c183f9c5fe78c33a69f0ff3fbb756a7ea69a15ff0f5b5a7dc04e0f5a4fad14d9`.
+Offline staging checks passed in Docker: invalid
 arguments, non-regular files, incorrect size, a real SHA-256 mismatch at the
 expected size, interrupted and corrupt transfers, temporary-file cleanup and
 preserving an existing mismatched package without attempting a download.
