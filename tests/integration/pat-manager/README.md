@@ -43,4 +43,6 @@ This unit omits DXBerry prepare/session/stopped hooks and physical-radio
 eligibility. Passing it would establish managed-reader evidence, not the whole
 public session lifecycle, active Winlink shutdown/message persistence, ARM64
 capture workload or RF acceptance. Collection remains off on the maintained
-Pi. The gate is pending its first complete CI execution.
+Pi. The complete job must pass before these checks count as acceptance; local
+compilation alone establishes no guest behavior. Execution evidence is linked
+from [PR #16](https://github.com/Dustpan95/DXBerry-Pi/pull/16).
