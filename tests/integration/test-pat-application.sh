@@ -29,7 +29,7 @@ docker_call image inspect "$go_image" "$run_image" >/dev/null
 docker_call run --rm --pull=never --network none \
   -v "$root/station:/src:ro" -v "$work:/out" -w /src \
   -e CGO_ENABLED=0 -e GOTOOLCHAIN=local -e GOPROXY=off -e GOMAXPROCS=4 \
-  "$go_image" go test -c -tags=patcompat -o /out/pat-compat.test ./internal/pat
+  "$go_image" bash -c 'go test -tags=patcompat -run "^TestPatCompatibility(PackageRejectsInvalidInput|ReportNeverReplacesExistingEvidence)$" ./internal/pat && go test -c -tags=patcompat -o /out/pat-compat.test ./internal/pat'
 docker_call run --rm --pull=never --network none --read-only \
   --cap-drop=ALL --cap-add=SETUID --cap-add=SETGID --cap-add=CHOWN --cap-add=KILL --cap-add=DAC_OVERRIDE \
   --security-opt=no-new-privileges --pids-limit=128 --memory=512m \

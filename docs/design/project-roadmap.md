@@ -272,13 +272,14 @@ reader checks the sole fresh assignment,
 reviewed package version, unit invocation, actual process and owned listener on
 both sides of each HTTP read, discarding replacements and file rewrites.
 Docker fixtures, real proc/socket metadata checks, vet/race suites and ARM64
-compilation passed. Actual running-Pat/systemd compatibility, workload acceptance
-and native display remain before station activation. The pinned
-x86_64 fixture download is still blocked by HTTP 503; the cached runtime also
-cannot execute the Pi's ARM64 program as an alternative.
+compilation passed. The pinned Pat 1.0.1 application subsequently passed its
+idle-only compatibility check in isolated CI. Real managed-systemd compatibility,
+connected-session and workload acceptance, and native display remain before
+station activation. The local download limitation was resolved for this
+acceptance path through CI, without using the Pi as a package proxy.
 An [idle-only application runner](../../tests/integration/README.pat-compatibility.md)
-is now prepared for that official package. Its Docker isolation and invalid-input
-failure path are checked; its actual application success path remains unverified.
+now checks that official package automatically. Its Docker isolation, invalid-input
+failure path and actual application idle success path are checked.
 It cannot close the separate real systemd, connected-session or workload gates.
 
 ## Follow-on slices

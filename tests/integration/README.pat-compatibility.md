@@ -98,14 +98,24 @@ The complete isolated runner rejected an invalid package with a nonzero exit
 and produced no application report. These results establish failure behavior,
 not real application compatibility.
 
-The local cloud workspace's ordinary download remains unavailable. The CI job
-now supplies an independent route for the actual application check; its result
-must be inspected before claiming a pass. The earlier negative-path evidence
-is retained at `/workspace/dxberry-pat-application-tests/`. Real systemd,
-connected-session and station-workload acceptance remain open even when the
-idle-only application report succeeds. Native collection stays disabled.
+On November 24, the
+[actual-application job in CI run 84](https://github.com/Dustpan95/DXBerry-Pi/actions/runs/45361576931/job/138332715392)
+successfully staged the pinned package and passed `TestPatApplicationCompatibility`.
+The real application ran unprivileged, supplied three actual idle status reads
+and became unavailable after TERM. Its explicitly partial report and runner
+log are retained as `pat-application-evidence` (artifact `14903839825`, ZIP
+SHA-256 `f43a102ce4b3f3235533f1d68b78a149ec6508b052ca3945439809404f890c3a`).
+The job also prints the synthetic report for review without requiring an
+artifact download.
+
+The local cloud workspace's ordinary download remains unavailable; the CI
+check required no Pi proxy or station application execution. Earlier
+negative-path evidence is retained at `/workspace/dxberry-pat-application-tests/`.
+Real systemd, connected-session and station-workload acceptance remain open.
+Native collection stays disabled.
 
 The tagged driver now owns its bounded, synchronized diagnostic capture. This
 repairs its stale call to a formatter removed from production evidence types;
 those production types retain their private serialization behavior. Compiling
-the actual tagged driver is part of the application job.
+the actual tagged driver and running its package-refusal/evidence-preservation
+regressions are part of the application job, before starting the application.

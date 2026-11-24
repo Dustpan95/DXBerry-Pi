@@ -120,6 +120,7 @@ jobs:
             bash tests/integration/test-pat-application.sh \
               "$RUNNER_TEMP/pat-package/pat_1.0.1_linux_amd64.deb" "$RUNNER_TEMP/pat-application" \
             | tee "$RUNNER_TEMP/pat-application.log"
+          tee -a "$RUNNER_TEMP/pat-application.log" < "$RUNNER_TEMP/pat-application/pat-application.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
