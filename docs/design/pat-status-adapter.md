@@ -70,9 +70,10 @@ The dedicated reader described below supplies local verification code. The
 daemon's HTTP wiring is implemented behind its default-off flag; actual
 application/systemd acceptance, native display and activation remain required.
 
-1. Complete real application and service-manager acceptance for the dedicated
-   version/session/process checks. A source review and fixture metadata are
-   not evidence that the installed Pat/systemd combination behaves correctly.
+1. Complete the public managed-session hooks and physical-eligibility
+   acceptance. The actual idle application and dedicated reader's real-manager
+   checks have passed in isolated CI; they do not establish the whole station
+   session lifecycle.
 2. Add the native display and any watched-only polling/bounded publication, with
    independent observation age, after compatibility acceptance. Preserve the
    full Pat window. A failed read must clear its live label rather than
@@ -183,7 +184,7 @@ responses, and verifies unavailable status after stopping its own fixture.
 Missing or invalid packages fail rather than skip, and existing reports cannot
 be overwritten. Any successful report is explicitly partial: real systemd
 authority, dialing/connected transitions, active-session shutdown/persistence,
-capture workload and physical RF remain untested.
+capture workload and physical RF remain untested by that idle-only runner.
 
 On November 24, the pinned actual application passed the
 [idle compatibility check in CI](https://github.com/Dustpan95/DXBerry-Pi/actions/runs/45361576931/job/138332715392):
@@ -192,6 +193,18 @@ idle HTTP responses, and unavailable status after TERM. This closes the
 idle-protocol application subgate. Its report remains partial and does not
 establish the real managed reader, graceful active-session shutdown, persistence,
 workload or physical radio gates. Native collection remains off on the Pi.
+
+The separate [real-manager reader check in CI run 95](https://github.com/Dustpan95/DXBerry-Pi/actions/runs/45368164976/job/138355321232)
+then passed with the official Pat package installed in a private QEMU guest.
+The production reader accepted idle status using real package, unit invocation,
+process, cgroup and owned-socket metadata. It rejected an actual unit restart
+between successful probes, an atomic identical-content assignment replacement,
+multiple owners and a stopped unit, and accepted recovery of the sole owner.
+No manager/proc metadata or HTTP response was substituted. Private device
+namespaces, loopback-only networking and new synthetic settings kept this
+separate from the maintained Pi. Public prepare/session/stopped hooks,
+physical eligibility, active-session persistence, capture workload and RF
+remain outside that explicitly partial result.
 
 ## Software evidence
 
@@ -206,9 +219,9 @@ Linux/ARM64; that binary was not executed on the Pi. Evidence is retained at
 `/workspace/dxberry-pat-status-tests/` (`vet.log`, `race.log`, and
 `arm64-compile.log`). No actual Pat application compatibility, station integration
 or physical acceptance is claimed by these tests.
-The CI-required Staticcheck pass remains outstanding: that tool is absent from
-the cached build image/PATH, and dependency/tool acquisition remains blocked by
-cloud connectivity. The other checks are not a substitute for that pass.
+Staticcheck was unavailable in that cached local build image. The subsequent
+GitHub-hosted station job now runs it and passed in CI run 95; the earlier
+local checks alone did not establish that result.
 
 The guarded-reader tests additionally cover invalid/ambiguous assignments,
 unknown package versions, stopped/stopping or changed units, wrong process UID,
@@ -244,8 +257,9 @@ shared-library dependencies remain Opus, PAM and libc. Its SHA-256 is
 The artifacts were not installed on the Pi. Evidence is retained at
 `/workspace/dxberry-pat-http-tests/`, including `focused.log`, `go-vet-all.log`,
 `go-all.log`, `arm64-build.log`, `elf.txt`, `libraries.txt` and
-`binaries.sha256`. Staticcheck and real application/systemd/workload acceptance
-remain outstanding. The maintained Pi stays on the isolated `.2` console.
+`binaries.sha256`. At that checkpoint Staticcheck and real
+application/systemd/workload acceptance were outstanding, and the Pi ran the
+isolated `.2` console. The November 24 evidence above records later progress.
 
 The metadata-output limiter subsequently received a subprocess regression fix.
 Embedding `bytes.Buffer` promoted its `ReadFrom` method, allowing Go's subprocess

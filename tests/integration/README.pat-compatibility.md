@@ -114,8 +114,17 @@ artifact download.
 The local cloud workspace's ordinary download remains unavailable; the CI
 check required no Pi proxy or station application execution. Earlier
 negative-path evidence is retained at `/workspace/dxberry-pat-application-tests/`.
-Real systemd, connected-session and station-workload acceptance remain open.
-Native collection stays disabled.
+The separate [real-manager reader job in run 95](https://github.com/Dustpan95/DXBerry-Pi/actions/runs/45368164976/job/138355321232)
+also passed on November 24. With the actual installed package, systemd,
+process/cgroup metadata and owned socket, it accepted idle status and rejected
+unit replacement, identical-content assignment replacement, multiple owners
+and a stopped unit. Both fixture services have checked private device views.
+Its partial report and serial log are retained in `pat-manager-evidence`
+(artifact `14907846573`, ZIP SHA-256
+`2a454db21c4294909426be1bfe84e11383c8a18a5a3a16cec5bacc6d9d8a432a`).
+The full public DXBerry hooks/physical eligibility, connected-session
+persistence, station workload and RF acceptance remain open. Native
+collection stays disabled.
 
 The tagged driver now owns its bounded, synchronized diagnostic capture. This
 repairs its stale call to a formatter removed from production evidence types;

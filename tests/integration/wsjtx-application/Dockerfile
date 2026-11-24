@@ -1,5 +1,7 @@
 FROM golang:1.24.4-bookworm AS compile
 WORKDIR /src
+COPY station/go.mod station/go.sum ./
+RUN GOTOOLCHAIN=local go mod download golang.org/x/sys
 COPY station/ ./
 RUN --network=none CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off GOMAXPROCS=4 \
     go test -c -tags=wsjtxcompat -o /wsjtx-application.test ./internal/wsjtx
