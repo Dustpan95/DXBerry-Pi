@@ -154,7 +154,7 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 	var applications []*exec.Cmd
 	for i, port := range ports {
 		profile := fmt.Sprintf("fixture%d", i+1)
-		settings := fmt.Sprintf("[Configuration]\nMyCall=N0CALL\nMyGrid=AA00aa\nRig=None\nSoundInName=%q\nSoundOutName=%q\nAudioInputChannel=Mono\nAudioOutputChannel=Mono\nUDPServer=127.0.0.1\nUDPServerPort=%d\nAcceptUDPRequests=false\nBroadcastToN1MM=true\nN1MMServer=127.0.0.1\nN1MMServerPort=2333\n[Common]\nMode=FT8\n[MainWindow]\nRxFreq=1500\nAutoSeq=false\n", audio.Input, audio.Output, port)
+		settings := fmt.Sprintf("[Configuration]\nMyCall=N0CALL\nMyGrid=AA00aa\nRig=None\nSoundInName=%q\nSoundOutName=%q\nAudioInputChannel=Mono\nAudioOutputChannel=Mono\nUDPServer=127.0.0.1\nUDPServerPort=%d\nAcceptUDPRequests=false\nBroadcastToN1MM=true\nN1MMServer=127.0.0.2\nN1MMServerPort=23333\n[Common]\nMode=FT8\n[MainWindow]\nRxFreq=1500\nAutoSeq=false\n", audio.Input, audio.Output, port)
 		if err := os.WriteFile(filepath.Join(root, "config", "WSJT-X - "+profile+".ini"), []byte(settings), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -243,8 +243,15 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 			t.Fatal("selected profile unavailable")
 		}
 		doc, err := ParseSettingsDocument(raw)
-		if err != nil || doc.Routing().Current.Port.Value != fmt.Sprint(port) || !bytes.Contains(raw, []byte("AcceptUDPRequests=false")) || !bytes.Contains(raw, []byte("N1MMServerPort=2333")) {
+		if err != nil || doc.Routing().Current.Server.Value != "127.0.0.1" || doc.Routing().Current.Port.Value != fmt.Sprint(port) {
 			t.Fatal("fixture routing or independent logging configuration changed")
+		}
+		// Nondefault logging sentinels distinguish preservation from a reset
+		// to WSJT-X defaults. Check all logging keys, not only its port.
+		for _, line := range []string{"AcceptUDPRequests=false", "BroadcastToN1MM=true", "N1MMServer=127.0.0.2", "N1MMServerPort=23333"} {
+			if !bytes.Contains(raw, []byte("\n"+line+"\n")) {
+				t.Fatal("fixture request policy or independent logging configuration changed")
+			}
 		}
 	}
 	report := map[string]any{"kind": "wsjtx-idle-application", "result": "partial", "package_sha256": applicationPackageHash,

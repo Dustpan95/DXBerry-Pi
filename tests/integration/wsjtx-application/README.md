@@ -21,7 +21,8 @@ protocol messages or invokes application controls.
 Success requires actual Heartbeat and Status with the expected rig identities,
 application-reported 3.0.2, three heartbeat arrivals with bounded cadence, both
 synthetic call/grid identities, non-transmitting status, separate destinations
-and retained N1MM configuration. The Qt version reference is accepted only if
+and retained N1MM enable/server/port keys, using nondefault logging sentinels
+to distinguish preservation from a reset. The Qt version reference is accepted only if
 both actual application processes map the same QtCore library. The final JSON
 report is explicitly partial. No success report is printed on failure; process
 diagnostics contain only new synthetic profiles. The fixture terminates its
