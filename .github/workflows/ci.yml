@@ -98,6 +98,30 @@ jobs:
           path: ${{ runner.temp }}/pat-manager-evidence
           if-no-files-found: warn
           retention-days: 7
+  wsjtx-application:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build checksum-pinned official WSJT-X fixture
+        run: docker build -t dxberry-wsjtx-application -f tests/integration/wsjtx-application/Dockerfile .
+      - name: Observe actual idle profiles without network or radio devices
+        run: |
+          set -o pipefail
+          docker run --rm --network none --cap-drop ALL --read-only \
+            --security-opt=no-new-privileges --pids-limit=256 --memory=2g \
+            --user 65534:65534 --shm-size=128m \
+            --tmpfs /tmp:rw,exec,nosuid,nodev,size=512m,mode=1777 \
+            dxberry-wsjtx-application | tee "$RUNNER_TEMP/wsjtx-application.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wsjtx-application-evidence
+          path: ${{ runner.temp }}/wsjtx-application.log
+          if-no-files-found: warn
+          retention-days: 7
   graywolf-api:
     runs-on: ubuntu-latest
     steps:

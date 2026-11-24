@@ -76,10 +76,12 @@ neither an application acceptance pass nor a new automatic CI claim.
 
 ## Current result
 
-The official package is not available in the cached environment. Cloud VPN
-enrollment failure blocks its download and dependency acquisition. Staging failure
-checks can run offline, but successful staging and actual application/systemd
-acceptance remain unverified. Offline staging checks passed in Docker: invalid
+The cached local environment has not run the official application. The separate
+[`wsjtx-application` CI fixture](wsjtx-application/README.md) now stages the pinned
+package and implements passive idle-profile checks with dummy audio; its complete
+execution result is required before claiming those checks pass. The remaining
+GUI, Decode/Clear, lifecycle and workload acceptance points stay open.
+Offline staging checks passed in Docker: invalid
 arguments, non-regular files, incorrect size, a real SHA-256 mismatch at the
 expected size, interrupted and corrupt transfers, temporary-file cleanup and
 preserving an existing mismatched package without attempting a download.
