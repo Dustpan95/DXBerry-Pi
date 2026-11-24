@@ -1,9 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 log=/evidence/systemd-guest.log
+memory=${DXB_GUEST_MEMORY_MIB:-2048}
+case $memory in 2048|4096) ;; *) echo 'Unsupported guest memory size' >&2; exit 2;; esac
 set +e
 timeout --signal=TERM --kill-after=5 420 qemu-system-x86_64 \
-  -accel tcg,thread=multi -machine q35,usb=off -cpu max -smp 2 -m 2048 \
+  -accel tcg,thread=multi -machine q35,usb=off -cpu max -smp 2 -m "$memory" \
   -nodefaults -nic none -display none -serial stdio -monitor none -no-reboot \
   -kernel /vm/vmlinuz -initrd /vm/root.cpio.gz \
   -append 'console=ttyS0 rdinit=/init panic=-1 loglevel=4 systemd.show_status=no module_blacklist=gpio_ich,snd,snd_pcm,snd_hda_intel,snd_pcsp,usbcore' \
@@ -16,7 +18,7 @@ set -e
 # that fixture's known journal prefix, retaining every failure marker.
 markers=$(mktemp)
 trap 'rm -f -- "$markers"' EXIT
-sed -E 's/^\[[ 0-9.]+\] dxb-pat-manager-test\[[0-9]+\]: (DXB_MANAGER_RESULT=)/\1/; s/\r$//' "$log" > "$markers"
+sed -E 's/^\[[ 0-9.]+\] dxb-(pat|wsjtx)-manager-test\[[0-9]+\]: (DXB_MANAGER_RESULT=)/\2/; s/\r$//' "$log" > "$markers"
 [[ $(grep -c '^DXB_MANAGER_RESULT=PASS$' "$markers") == 1 ]]
 if grep -q '^DXB_MANAGER_RESULT=FAIL' "$markers"; then exit 1; fi
 echo 'Real guest systemd checks passed; hardware and full lifecycle acceptance remain separate.'

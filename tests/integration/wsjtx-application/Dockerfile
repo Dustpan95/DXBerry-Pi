@@ -4,6 +4,8 @@ COPY station/go.mod station/go.sum ./
 RUN GOTOOLCHAIN=local go mod download golang.org/x/sys
 COPY station/ ./
 RUN --network=none CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off GOMAXPROCS=4 \
+    go vet -tags=wsjtxcompat ./internal/wsjtx \
+ && CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off GOMAXPROCS=4 \
     go test -c -tags=wsjtxcompat -o /wsjtx-application.test ./internal/wsjtx
 
 FROM debian:trixie-slim AS package

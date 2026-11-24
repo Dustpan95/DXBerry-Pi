@@ -127,6 +127,35 @@ jobs:
             ${{ runner.temp }}/wsjtx-application.log
           if-no-files-found: warn
           retention-days: 7
+  wsjtx-manager:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build isolated actual WSJT-X manager guest
+        run: |
+          set -o pipefail
+          docker build -t dxberry-wsjtx-manager -f tests/integration/wsjtx-manager/Dockerfile . \
+            2>&1 | tee "$RUNNER_TEMP/wsjtx-manager-build.log"
+      - name: Exercise actual start and stop guards without host privileges or radio devices
+        run: |
+          mkdir -p "$RUNNER_TEMP/wsjtx-manager-evidence"
+          docker run --rm --network none --cap-drop ALL --read-only \
+            --security-opt=no-new-privileges --pids-limit=128 \
+            --user "$(id -u):$(id -g)" --memory=5g \
+            --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            -v "$RUNNER_TEMP/wsjtx-manager-evidence:/evidence" dxberry-wsjtx-manager
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wsjtx-manager-evidence
+          path: |
+            ${{ runner.temp }}/wsjtx-manager-build.log
+            ${{ runner.temp }}/wsjtx-manager-evidence
+          if-no-files-found: warn
+          retention-days: 7
   graywolf-api:
     runs-on: ubuntu-latest
     steps:
