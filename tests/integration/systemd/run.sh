@@ -16,7 +16,7 @@ set -e
 # that fixture's known journal prefix, retaining every failure marker.
 markers=$(mktemp)
 trap 'rm -f -- "$markers"' EXIT
-sed -E 's/^\[[ 0-9.]+\] dxb-pat-manager-test\[[0-9]+\]: (DXB_MANAGER_RESULT=)/\1/; s/\r$//' "$log" > "$markers"
+sed -E 's/^\[[ 0-9.]+\] dxb-(pat|wsjtx)-manager-test\[[0-9]+\]: (DXB_MANAGER_RESULT=)/\2/; s/\r$//' "$log" > "$markers"
 [[ $(grep -c '^DXB_MANAGER_RESULT=PASS$' "$markers") == 1 ]]
 if grep -q '^DXB_MANAGER_RESULT=FAIL' "$markers"; then exit 1; fi
 echo 'Real guest systemd checks passed; hardware and full lifecycle acceptance remain separate.'

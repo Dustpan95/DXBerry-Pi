@@ -3,6 +3,8 @@ WORKDIR /src
 COPY station/go.mod station/go.sum ./
 COPY station/internal/pat ./internal/pat
 RUN --network=none CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off GOMAXPROCS=4 \
+    go vet -tags=patcompat,patmanager ./internal/pat \
+ && CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off GOMAXPROCS=4 \
     go test -c -tags=patcompat,patmanager -o /pat-manager.test ./internal/pat
 
 FROM debian:trixie-slim AS package

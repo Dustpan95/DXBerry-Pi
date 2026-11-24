@@ -1,0 +1,30 @@
+#!/bin/bash
+set -eu
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts
+mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+mount -t tmpfs tmpfs /run
+hostname dxb-wsjtx-guest
+ip link set lo up
+cat > /etc/systemd/system/dxb-wsjtx-test.service <<'UNIT'
+[Unit]
+After=sysinit.target
+[Service]
+Type=oneshot
+PrivateDevices=yes
+TimeoutStartSec=220
+ExecStart=/usr/local/libexec/dxb-wsjtx-manager-test
+StandardOutput=journal+console
+StandardError=journal+console
+UNIT
+cat > /etc/systemd/system/dxb-wsjtx.target <<'UNIT'
+[Unit]
+Requires=sysinit.target
+After=sysinit.target
+Wants=dxb-wsjtx-test.service
+AllowIsolate=yes
+UNIT
+exec /lib/systemd/systemd --system --unit=dxb-wsjtx.target
