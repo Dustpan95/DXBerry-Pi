@@ -44,7 +44,7 @@ func TestPatRealManagerCompatibility(t *testing.T) {
 	for _, pattern := range []string{"/dev/snd", "/dev/ttyUSB*", "/dev/ttyACM*", "/dev/gpiochip*", "/dev/bus/usb"} {
 		paths, err := filepath.Glob(pattern)
 		if err != nil || len(paths) != 0 {
-			t.Fatal("radio devices must not enter the fixture")
+			t.Fatalf("radio devices must not enter the fixture: pattern %s, matches %v, error %v", pattern, paths, err)
 		}
 	}
 	if _, err := compatibilityPackage("/fixture/pat_1.0.1_linux_amd64.deb"); err != nil {
