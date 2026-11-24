@@ -28,7 +28,8 @@ COPY --from=compile /wsjtx-manager.test /fixture/wsjtx-manager.test
 COPY tests/integration/wsjtx-application/audio-info.py /fixture/audio-info.py
 COPY tests/integration/wsjtx-manager/init /init
 COPY tests/integration/wsjtx-manager/manager-test.sh /usr/local/libexec/dxb-wsjtx-manager-test
-RUN chmod 755 /init /usr/local/libexec/dxb-wsjtx-manager-test
+COPY tests/integration/wsjtx-manager/run-app.sh /fixture/run-app
+RUN chmod 755 /init /usr/local/libexec/dxb-wsjtx-manager-test /fixture/run-app
 
 FROM debian:trixie-slim
 ENV DXB_GUEST_MEMORY_MIB=4096

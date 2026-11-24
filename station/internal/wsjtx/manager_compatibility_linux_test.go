@@ -76,6 +76,24 @@ func TestWSJTXManagerBoundary(t *testing.T) {
 	result := "pass"
 	if err != nil {
 		result = "refused"
+		// Classify only an independently observed, real application-owned
+		// child at the otherwise valid stop-post boundary. No identity
+		// evidence is serialized into the result trace.
+		if phase == "post" {
+			ctx, done := context.WithTimeout(context.Background(), time.Second)
+			raw, showErr := showProgramUnit(ctx, "dxberry-screen@wsjtx-fixture1.service")
+			done()
+			unit, parseErr := parseProgramUnit(raw)
+			pidRaw, pidErr := os.ReadFile("/var/lib/dxb-wsjtx-home/runtime/held-child.pid")
+			pid := strings.TrimSpace(string(pidRaw))
+			if showErr == nil && parseErr == nil && unit.matches("dxberry-screen@wsjtx-fixture1.service", os.Getenv("INVOCATION_ID"), boundary) && pidErr == nil && processID(pid) {
+				info, statErr := os.Stat(filepath.Join("/proc", pid))
+				group, groupErr := os.ReadFile(filepath.Join("/proc", pid, "cgroup"))
+				if statErr == nil && groupErr == nil && uint64(info.Sys().(*syscall.Stat_t).Uid) == g.uid && strings.Contains(string(group), "0::"+unit.cgroup+"\n") {
+					result = "refused-owned-child"
+				}
+			}
+		}
 	}
 	f, writeErr := os.OpenFile("/run/dxb-wsjtx/phase-events", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
 	if writeErr != nil {
@@ -150,7 +168,7 @@ func TestWSJTXRealManagerCompatibility(t *testing.T) {
 	unitEnvironment := "Environment=" + strings.Join(env, " ") + "\n"
 	units := map[string]string{
 		"dxb-wsjtx-pulse.service": "[Service]\nUser=dxbapps\nGroup=dxbapps\nPrivateDevices=yes\nNoNewPrivileges=yes\n" + unitEnvironment + "ExecStart=/usr/bin/pulseaudio --daemonize=no --exit-idle-time=-1 --disallow-exit -n --file=" + pulseConfig + "\nTimeoutStopSec=5\n",
-		unit:                      "[Unit]\nStartLimitIntervalSec=60\nStartLimitBurst=3\n[Service]\nType=simple\nUser=dxbapps\nGroup=dxbapps\nUMask=0007\nPrivateDevices=yes\nNoNewPrivileges=yes\nKillMode=mixed\nTimeoutStartSec=20\nTimeoutStopSec=20\n" + unitEnvironment + "Environment=DXB_WSJTX_MANAGER_FIXTURE=1\nExecStartPre=+/usr/bin/env DXB_WSJTX_MANAGER_BOUNDARY=pre /fixture/wsjtx-manager.test -test.run=^TestWSJTXManagerBoundary$\nExecStart=/usr/bin/wsjtx --rig-name=fixture1\nExecStopPost=+/usr/bin/env DXB_WSJTX_MANAGER_BOUNDARY=post /fixture/wsjtx-manager.test -test.run=^TestWSJTXManagerBoundary$\n",
+		unit:                      "[Unit]\nStartLimitIntervalSec=60\nStartLimitBurst=3\n[Service]\nType=simple\nUser=dxbapps\nGroup=dxbapps\nUMask=0007\nPrivateDevices=yes\nNoNewPrivileges=yes\nKillMode=mixed\nTimeoutStartSec=20\nTimeoutStopSec=20\n" + unitEnvironment + "Environment=DXB_WSJTX_MANAGER_FIXTURE=1 DXB_WSJTX_RETAIN_CHILD=1\nExecStartPre=+/usr/bin/env DXB_WSJTX_MANAGER_BOUNDARY=pre /fixture/wsjtx-manager.test -test.run=^TestWSJTXManagerBoundary$\nExecStart=/fixture/run-app\nExecStopPost=+/usr/bin/env DXB_WSJTX_MANAGER_BOUNDARY=post /fixture/wsjtx-manager.test -test.run=^TestWSJTXManagerBoundary$\n",
 	}
 	for name, contents := range units {
 		if err := os.WriteFile("/etc/systemd/system/"+name, []byte(contents), 0644); err != nil {
@@ -233,8 +251,13 @@ func TestWSJTXRealManagerCompatibility(t *testing.T) {
 	if g.check(ctx, "fixture1", "", programStopped) == nil {
 		t.Fatal("active actual unit accepted as stopped")
 	}
-	if ctl("stop", unit) != nil || g.check(ctx, "fixture1", "", programStopped) != nil {
-		t.Fatal("actual stop-post/stopped boundary failed")
+	_ = ctl("stop", unit) // the deliberately unsafe stop-post check must fail
+	if g.check(ctx, "fixture1", "", programStopped) != nil {
+		t.Fatal("manager final cleanup did not establish an actual stopped boundary")
+	}
+	firstPhases, err := os.ReadFile("/run/dxb-wsjtx/phase-events")
+	if err != nil || string(firstPhases) != "pre:pass\npost:refused-owned-child\n" {
+		t.Fatal("actual retained owned child did not cause the expected stop-post refusal")
 	}
 	prepare()
 	manual := exec.CommandContext(ctx, "/usr/bin/wsjtx", "--rig-name=fixture1")
@@ -266,21 +289,32 @@ func TestWSJTXRealManagerCompatibility(t *testing.T) {
 	if !recovered {
 		t.Fatal("actual manual process cleanup did not recover stopped checks")
 	}
+	if err := os.Remove(home + "/runtime/held-child.pid"); err != nil {
+		t.Fatal(err)
+	}
+	// The positive case explicitly stops all unit members through the real
+	// manager. This is not a claim about the station's mixed-stop wrapper.
+	if err := os.WriteFile("/etc/systemd/system/"+unit, []byte(strings.Replace(units[unit], "DXB_WSJTX_RETAIN_CHILD=1", "DXB_WSJTX_RETAIN_CHILD=0", 1)), 0644); err != nil || ctl("daemon-reload") != nil {
+		t.Fatal("positive fixture setup failed")
+	}
 	prepare()
 	if ctl("start", unit) != nil {
 		t.Fatal("actual managed restart failed")
 	}
 	waitActual()
+	if ctl("kill", "--kill-whom=all", "--signal=TERM", unit) != nil {
+		t.Fatal("explicit whole-unit fixture stop failed")
+	}
 	if ctl("stop", unit) != nil || g.check(ctx, "fixture1", "", programStopped) != nil {
 		t.Fatal("actual recovered stop failed")
 	}
 	phases, err := os.ReadFile("/run/dxb-wsjtx/phase-events")
-	if err != nil || strings.Count(string(phases), "pre:pass\n") != 2 || strings.Count(string(phases), "post:pass\n") != 2 || !strings.Contains(string(phases), "pre:refused\n") {
+	if err != nil || string(phases) != "pre:pass\npost:refused-owned-child\npre:refused\npost:refused\npre:pass\npost:pass\n" {
 		t.Fatal("real manager phase evidence incomplete")
 	}
 	report := map[string]any{"kind": "wsjtx-real-manager-boundaries", "result": "partial", "package_sha256": applicationPackageHash,
-		"passed":   []string{"real start-pre/stop-post/stopped guard", "actual managed idle WSJT-X", "active-unit refusal", "actual same-profile manual process refusal", "fresh observed recovery"},
-		"untested": []string{"public session IPC and settings restoration", "physical-radio eligibility", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}}
+		"passed":   []string{"real start-pre/stopped guard", "positive stop-post after explicit whole-unit stop", "actual managed idle WSJT-X", "active-unit refusal", "mixed-stop retained owned-child refusal", "actual same-profile manual process refusal", "fresh observed recovery"},
+		"untested": []string{"normal station mixed-stop wrapper and automatic restoration", "public session IPC and settings restoration", "update/rollback lifecycle", "physical-radio eligibility", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}}
 	raw, err := json.Marshal(report)
 	if err != nil {
 		t.Fatal(err)

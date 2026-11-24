@@ -17,15 +17,23 @@ Those helpers perform only metadata checks in this fully emulated guest. The
 application runs as dxbapps with rig None and UDP requests disabled. No GUI,
 connect, transmit, CAT or PTT control is invoked.
 
-The test requires real positive pre/post/stopped checks, actual managed idle
-Heartbeat/Status, active-unit refusal, refusal of an actual same-profile manual
-process and a fresh observed managed recovery. No unit metadata, process tree,
+The mixed-stop negative case deliberately retains a real application-owned
+helper child. Stop-post must refuse while that child's actual UID and cgroup
+still identify it inside the unit; only after the manager's final cleanup may
+the stopped check accept. A separate positive stop-post case first sends TERM
+to the whole unit through the manager. This controlled positive stop is not
+the station's ordinary mixed-stop wrapper or automatic routing restoration.
+
+The test also requires actual managed idle Heartbeat/Status, active-unit
+refusal, refusal of an actual same-profile manual process and a fresh observed
+managed recovery. No unit metadata, process tree,
 cgroup or application datagram is substituted. The two-second production guard
 deadline remains unchanged. Phase logs contain pass/refusal labels only, never
 private identity structures.
 
 A complete successful job is required before claiming execution acceptance;
 compilation alone is insufficient. The report remains partial: the public
-session IPC, settings routing/restoration, physical-radio eligibility,
+normal station mixed-stop wrapper, automatic restoration, public session IPC,
+settings routing/restoration, update/rollback lifecycle, physical-radio eligibility,
 GUI/Decode/Clear input, ARM64 capture workload and RF remain separate. No
 collection is enabled and no development test runs on the maintained Pi.
