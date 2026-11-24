@@ -178,6 +178,8 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 	var receiver screenReceiver = observer
 	var previousInvocation string
 	var previousBinding screenBinding
+	phasePrefix := ""
+	var interruptedPort string
 	for generation := 0; generation < 2; generation++ {
 		var binding screenBinding
 		port := 2237
@@ -220,11 +222,18 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 		if err := os.Chown(envf, 0, gid); err != nil {
 			t.Fatal(err)
 		}
+		if options.processCrash && generation == 0 {
+			interruptedPort = routing.interruptWrite(t, ctx, unit, path)
+			phasePrefix = "pre:refused\npost:refused\n"
+		}
 		if ctl("start", unit) != nil {
 			t.Fatal("real screen-session start failed")
 		}
 		if routing != nil {
 			receiver, binding = routing.started(t, ctx)
+			if fmt.Sprint(binding.Address.Port()) == interruptedPort {
+				t.Fatal("interrupted acquisition endpoint was reused")
+			}
 		}
 		if generation > 0 && (binding.Address == previousBinding.Address || binding.Owner == previousBinding.Owner && binding.Generation <= previousBinding.Generation) {
 			t.Fatal("fresh observation generation and endpoint required")
@@ -303,7 +312,7 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 			routing.stopped(t, ctx)
 		}
 		phases, err := os.ReadFile("/run/dxb-wsjtx/phase-events")
-		if err != nil || string(phases) != strings.Repeat("pre:pass\npost:pass\n", generation+1) {
+		if err != nil || string(phases) != phasePrefix+strings.Repeat("pre:pass\npost:pass\n", generation+1) {
 			t.Fatalf("normal screen-session boundary phase mismatch: %q", phases)
 		}
 		if _, err := os.Lstat(run + "/screens/" + session + ".sock"); !os.IsNotExist(err) {
@@ -316,7 +325,7 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 		}
 	}
 	phases, err := os.ReadFile("/run/dxb-wsjtx/phase-events")
-	if err != nil || string(phases) != "pre:pass\npost:pass\npre:pass\npost:pass\n" {
+	if err != nil || string(phases) != phasePrefix+"pre:pass\npost:pass\npre:pass\npost:pass\n" {
 		t.Fatal("normal screen-session start/stop phase evidence incomplete")
 	}
 	report := map[string]any{"kind": "wsjtx-real-screen-session", "result": "partial", "package_sha256": applicationPackageHash,
@@ -332,8 +341,8 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 		}
 		if options.processCrash {
 			report["kind"] = "wsjtx-process-crash-routing"
-			report["passed"] = append(report["passed"].([]string), "separate real server process terminated with SIGKILL", "kernel file-lock/socket release and stale socket replacement", "recovery-required journal without observation adoption after process death")
-			report["untested"] = []string{"full console HTTP/PAM daemon replacement", "interrupted helper write", "update/rollback", "physical eligibility and public radio/session CLI", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}
+			report["passed"] = append(report["passed"].([]string), "separate real server process terminated with SIGKILL", "kernel file-lock/socket release and stale socket replacement", "recovery-required journal without observation adoption after process death", "actual helper atomic rename interrupted before installed journal commit", "failed real CLI pre/post with no application start", "prepared journal recovery restores original settings without endpoint reuse")
+			report["untested"] = []string{"full console HTTP/PAM daemon replacement", "other helper write boundaries and power loss", "update/rollback", "physical eligibility and public radio/session CLI", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}
 		}
 	}
 	raw, err := json.Marshal(report)
