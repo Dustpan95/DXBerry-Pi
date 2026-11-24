@@ -4,7 +4,8 @@ The `pat-manager` job builds a private Debian guest and boots its distribution
 kernel and real systemd with QEMU software emulation inside Docker. The outer
 container has no capabilities, network, host devices, host system bus or host
 cgroup mounts. Only a fresh evidence directory is writable on the host. The
-guest has loopback only and no sound, USB, GPIO or radio devices.
+guest has loopback only. Both the test and Pat service use systemd private
+device namespaces, checked to exclude sound, USB, GPIO and radio devices.
 
 The image downloads and verifies the same official Pat 1.0.1 amd64 package as
 the [idle application gate](../README.pat-compatibility.md), then installs it

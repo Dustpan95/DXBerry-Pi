@@ -112,6 +112,7 @@ ExecStart=/usr/bin/pat http --addr 127.0.0.1:8180
 KillMode=mixed
 TimeoutStopSec=5
 NoNewPrivileges=yes
+PrivateDevices=yes
 `, home)
 	if err := os.WriteFile("/etc/systemd/system/"+unit, []byte(unitText), 0644); err != nil {
 		t.Fatal(err)
@@ -157,6 +158,20 @@ NoNewPrivileges=yes
 	}
 	manager(ctx, "start", unit)
 	waitRead()
+	owned, err := r.probe(ctx, "fixture1")
+	if err != nil {
+		t.Fatal("managed application identity unavailable")
+	}
+	deviceRoot := filepath.Join("/proc", owned.pid, "root/dev")
+	if info, err := os.Stat(filepath.Join(deviceRoot, "null")); err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		t.Fatal("managed application device view inaccessible")
+	}
+	for _, pattern := range []string{"snd", "ttyUSB*", "ttyACM*", "gpiochip*", "bus/usb"} {
+		paths, err := filepath.Glob(filepath.Join(deviceRoot, pattern))
+		if err != nil || len(paths) != 0 {
+			t.Fatal("managed application must have a private device view")
+		}
+	}
 	probe, read := r.probe, r.read
 	var probes []instance
 	r.probe = func(ctx context.Context, radio string) (instance, error) {

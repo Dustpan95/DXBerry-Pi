@@ -13,6 +13,7 @@ cat > /etc/systemd/system/dxb-pat-test.service <<'UNIT'
 After=sysinit.target
 [Service]
 Type=oneshot
+PrivateDevices=yes
 TimeoutStartSec=110
 ExecStart=/usr/local/libexec/dxb-pat-manager-test
 StandardOutput=journal+console
