@@ -96,6 +96,40 @@ jobs:
         run: docker build -t dxberry-webproxy -f tests/integration/Dockerfile.webproxy tests/integration
       - name: Test Pat routing and authentication without network or radio devices
         run: docker run --rm --network none -v "$PWD:/repo:ro" dxberry-webproxy
+  pat-application:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare isolated Pat application and compilation images
+        run: |
+          docker build -t dxberry-pat-application -f tests/integration/Dockerfile.pat-application tests/integration
+          docker pull golang:1.24.4-bookworm
+      - name: Stage checksum-pinned official Pat package
+        run: |
+          mkdir -p "$RUNNER_TEMP/pat-package"
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD:/repo:ro" -v "$RUNNER_TEMP/pat-package:/evidence" \
+            dxberry-pat-application bash tests/integration/download-pat.sh /evidence
+      - name: Exercise actual idle application without network or radio devices
+        run: |
+          set -o pipefail
+          DXB_PAT_RUN_IMAGE=dxberry-pat-application \
+            bash tests/integration/test-pat-application.sh \
+              "$RUNNER_TEMP/pat-package/pat_1.0.1_linux_amd64.deb" "$RUNNER_TEMP/pat-application" \
+            | tee "$RUNNER_TEMP/pat-application.log"
+          tee -a "$RUNNER_TEMP/pat-application.log" < "$RUNNER_TEMP/pat-application/pat-application.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pat-application-evidence
+          path: |
+            ${{ runner.temp }}/pat-application/
+            ${{ runner.temp }}/pat-application.log
+          if-no-files-found: warn
+          retention-days: 7
   browser-ptt:
     runs-on: ubuntu-latest
     steps:

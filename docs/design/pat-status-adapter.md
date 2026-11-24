@@ -4,13 +4,16 @@ The local `station/internal/pat` package verifies a managed Pat instance and
 reads its existing status endpoint. The development daemon has a read-only
 route behind the default-off `-pat-native-status` flag. No reader or route is
 created when that option is off; there is no native browser panel or background
-poller. This work has not been installed or invoked on the maintained Pi. It
+poller. Its code is in the coordinated station bundle, with the flag off on the
+maintained Pi. It
 never starts Pat or changes radio/program configuration.
 This independent client work does not close the WSJT-X compatibility gate.
-As of November 23 the maintained Pi runs the isolated
+On November 23 the maintained Pi ran the isolated
 [`.4` maintenance console](program-ownership.md), which includes neither
 this native Pat reader nor its HTTP option. The dated `.2` evidence below
-describes the preceding maintenance baseline.
+describes the preceding maintenance baseline. The
+[November 24 deployment](station-deployment-2026-11-24.md) installed the matching
+software foundations while preserving the default-off activation boundary.
 
 ## Verified upstream contract
 
@@ -75,10 +78,10 @@ application/systemd acceptance, native display and activation remain required.
    full Pat window. A failed read must clear its live label rather than
    manufacturing false booleans or retaining live state. The implemented HTTP
    endpoint performs explicit reads only and adds no periodic work.
-3. Run actual Pat 1.0.1 in an isolated Docker fixture with temporary synthetic
-   settings and no radio/serial/audio devices, account or outbound network.
-   Verify the real handler's initial/idle data and lifecycle behavior. Parser
-   and HTTP fixtures do not substitute for that evidence.
+3. The actual Pat 1.0.1 initial/idle handler and TERM-unavailability check passed
+   in isolated Docker with synthetic settings and no radio/serial/audio devices,
+   station account or outbound network. Its partial report is linked below;
+   active-session lifecycle and persistence remain untested.
 4. Measure the eventual observed-client workload, including its metadata
    subprocesses, before station activation. Preserve idle reporting behavior;
    the current capture fault makes a fixture CPU result insufficient acceptance.
@@ -164,11 +167,11 @@ bytes, SHA-256
 See the [upstream release](https://github.com/la5nta/pat/releases/tag/v1.0.1).
 This digest pins the inspected release asset; it is not an independent signature.
 
-An ordinary Docker download to private staging failed with HTTP 503 and removed
+The earlier ordinary Docker download to private staging failed with HTTP 503 and removed
 its partial file. The maintained Pi's ARM64 executable is present, but the cached
 AMD64 Docker runtime has no usable ARM64 emulation (`exec format error` on a
 version-only candidate probe). No Pat instance was started on the Pi as a
-substitute, and no application/systemd acceptance pass is claimed. The staged
+substitute. The staged
 download command/log and runtime probe remain in
 `/workspace/dxberry-pat-managed-tests/`.
 
@@ -180,8 +183,15 @@ responses, and verifies unavailable status after stopping its own fixture.
 Missing or invalid packages fail rather than skip, and existing reports cannot
 be overwritten. Any successful report is explicitly partial: real systemd
 authority, dialing/connected transitions, active-session shutdown/persistence,
-capture workload and physical RF remain untested. The actual successful
-application path has not run while the package download is blocked.
+capture workload and physical RF remain untested.
+
+On November 24, the pinned actual application passed the
+[idle compatibility check in CI](https://github.com/Dustpan95/DXBerry-Pi/actions/runs/45361576931/job/138332715392):
+version/architecture and package integrity, unprivileged execution, three actual
+idle HTTP responses, and unavailable status after TERM. This closes the
+idle-protocol application subgate. Its report remains partial and does not
+establish the real managed reader, graceful active-session shutdown, persistence,
+workload or physical radio gates. Native collection remains off on the Pi.
 
 ## Software evidence
 
@@ -247,5 +257,6 @@ bound. This source correction does not enable the reader or establish actual
 Pat application acceptance. Evidence is retained with the service work at
 `/workspace/dxberry-service-binding-tests/`.
 
-The maintained Pi is now on the separate `0.5.0-rc4+idle-reporting.4` console;
-this development reader remains outside that deployment. Pi access uses DockerPC.
+That maintenance checkpoint used the separate `0.5.0-rc4+idle-reporting.4`
+console. The November 24 coordinated candidate includes this reader's code
+with its activation flag off. Pi access uses DockerPC.

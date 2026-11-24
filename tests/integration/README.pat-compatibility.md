@@ -21,6 +21,12 @@ signature. The runner refuses missing, non-regular, symlinked, wrong-size and
 wrong-checksum inputs. It extracts a private copy of the verified bytes without
 installing the package or executing package-maintainer scripts.
 
+`download-pat.sh DIRECTORY` stages this exact package using the pinned size and
+digest, preserves existing files and removes failed partial downloads. Its
+`--verify-only PACKAGE` mode checks a supplied archive offline. The `pat-application`
+CI job prepares the downloader/runtime image and pinned Go image, stages the
+official package, then runs the application with networking disabled.
+
 ## Isolated application check
 
 On a Linux/AMD64 Docker host, prepare cached Go 1.24.4 and Debian runtime images
@@ -67,6 +73,8 @@ Only after all these checks succeed does the runner publish
 has `result: "partial"` and explicitly lists untested acceptance points.
 Failure exits nonzero and creates no success report. Use a fresh destination
 for every run and retain the command output alongside its report.
+After success, a separate capability-free container makes only the newly
+published synthetic report readable by the calling account/artifact uploader.
 
 ## Remaining acceptance
 
@@ -90,8 +98,24 @@ The complete isolated runner rejected an invalid package with a nonzero exit
 and produced no application report. These results establish failure behavior,
 not real application compatibility.
 
-The official package download remains unavailable through the ordinary cloud
-connection. No actual Pat application run, real systemd acceptance or station
-workload pass is claimed. Evidence is retained at
-`/workspace/dxberry-pat-application-tests/`. This runner is not an automatic CI
-acceptance claim; its successful application path remains unverified.
+On November 24, the
+[actual-application job in CI run 84](https://github.com/Dustpan95/DXBerry-Pi/actions/runs/45361576931/job/138332715392)
+successfully staged the pinned package and passed `TestPatApplicationCompatibility`.
+The real application ran unprivileged, supplied three actual idle status reads
+and became unavailable after TERM. Its explicitly partial report and runner
+log are retained as `pat-application-evidence` (artifact `14903839825`, ZIP
+SHA-256 `f43a102ce4b3f3235533f1d68b78a149ec6508b052ca3945439809404f890c3a`).
+The job also prints the synthetic report for review without requiring an
+artifact download.
+
+The local cloud workspace's ordinary download remains unavailable; the CI
+check required no Pi proxy or station application execution. Earlier
+negative-path evidence is retained at `/workspace/dxberry-pat-application-tests/`.
+Real systemd, connected-session and station-workload acceptance remain open.
+Native collection stays disabled.
+
+The tagged driver now owns its bounded, synchronized diagnostic capture. This
+repairs its stale call to a formatter removed from production evidence types;
+those production types retain their private serialization behavior. Compiling
+the actual tagged driver and running its package-refusal/evidence-preservation
+regressions are part of the application job, before starting the application.

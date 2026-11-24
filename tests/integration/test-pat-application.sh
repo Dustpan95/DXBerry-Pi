@@ -29,7 +29,7 @@ docker_call image inspect "$go_image" "$run_image" >/dev/null
 docker_call run --rm --pull=never --network none \
   -v "$root/station:/src:ro" -v "$work:/out" -w /src \
   -e CGO_ENABLED=0 -e GOTOOLCHAIN=local -e GOPROXY=off -e GOMAXPROCS=4 \
-  "$go_image" go test -c -tags=patcompat -o /out/pat-compat.test ./internal/pat
+  "$go_image" bash -c 'go test -tags=patcompat -run "^TestPatCompatibility(PackageRejectsInvalidInput|ReportNeverReplacesExistingEvidence)$" ./internal/pat && go test -c -tags=patcompat -o /out/pat-compat.test ./internal/pat'
 docker_call run --rm --pull=never --network none --read-only \
   --cap-drop=ALL --cap-add=SETUID --cap-add=SETGID --cap-add=CHOWN --cap-add=KILL --cap-add=DAC_OVERRIDE \
   --security-opt=no-new-privileges --pids-limit=128 --memory=512m \
@@ -39,3 +39,9 @@ docker_call run --rm --pull=never --network none --read-only \
   -e GOMAXPROCS=2 \
   -e DXB_PAT_COMPAT_PACKAGE=/input/package.deb -e DXB_PAT_COMPAT_REPORT=/evidence/pat-application.json \
   "$run_image" /test/pat-compat.test -test.v -test.timeout=60s -test.run '^TestPatApplicationCompatibility$'
+# The root extraction driver publishes only synthetic fixture status. Make its
+# newly produced report readable by the invoking account and artifact uploader.
+# A failed test exits above, preserving any existing evidence unchanged.
+docker_call run --rm --pull=never --network none --read-only --cap-drop=ALL \
+  --security-opt=no-new-privileges -v "$evidence:/evidence" \
+  "$run_image" chmod 644 /evidence/pat-application.json

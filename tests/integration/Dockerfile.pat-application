@@ -1,0 +1,7 @@
+FROM debian:trixie-slim
+# libax25 is the official Debian package's native build dependency. No modem,
+# radio utilities, host devices or service-manager sockets are provided.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash curl ca-certificates libax25 \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /repo

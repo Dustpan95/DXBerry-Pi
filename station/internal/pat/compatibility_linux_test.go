@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -26,6 +27,26 @@ import (
 
 const compatibilityPackageSize = 4940336
 const compatibilityPackageHash = "21b5c7cbf96375d10da977a014c83d5bd11b2119d72b303db75b4ff168e163c0"
+
+// Only the application fixture explicitly reads these bounded diagnostics.
+// Keep a general String formatter absent from production evidence types, and
+// serialize reads with output still arriving from the synthetic application.
+type compatibilityOutput struct {
+	mu     sync.Mutex
+	output boundedOutput
+}
+
+func (b *compatibilityOutput) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.output.Write(p)
+}
+
+func (b *compatibilityOutput) text() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.output.buffer.String()
+}
 
 // This fixture is newly created data, not a copy of station settings. Explicit
 // empty backends/listeners/schedule and disabled reporting supplement Docker's
@@ -223,13 +244,13 @@ func TestPatApplicationCompatibility(t *testing.T) {
 	}
 	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 	versionCmd := compatibilityCommand(ctx, binary, home, "version")
-	var versionLog boundedOutput
+	var versionLog compatibilityOutput
 	versionCmd.Stdout, versionCmd.Stderr = &versionLog, &versionLog
 	err = versionCmd.Run()
 	cancel()
-	version := strings.TrimSpace(versionLog.String())
+	version := strings.TrimSpace(versionLog.text())
 	if err != nil || !strings.HasPrefix(version, "Pat v1.0.1 (") || !strings.Contains(version, ") linux/amd64 - go") {
-		t.Fatal("application-reported version check failed:", err)
+		t.Fatal("application-reported version check failed:", err, versionLog.text())
 	}
 	// Refuse a pre-existing listener; this namespace contains only the driver
 	// and its spawned fixture process, never a host/shared program server.
@@ -241,7 +262,7 @@ func TestPatApplicationCompatibility(t *testing.T) {
 	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	app := compatibilityCommand(ctx, binary, home, "--config", config, "--mbox", home+"/mailbox", "--forms", home+"/forms", "--prehooks", home+"/prehooks", "--log", home+"/state/pat.log", "--event-log", home+"/state/events.json", "http", "--addr", "127.0.0.1:8180")
-	var appLog boundedOutput
+	var appLog compatibilityOutput
 	app.Stdout, app.Stderr = &appLog, &appLog
 	if err := app.Start(); err != nil {
 		t.Fatal("application start failed:", err)
@@ -262,7 +283,7 @@ func TestPatApplicationCompatibility(t *testing.T) {
 		select {
 		case err := <-done:
 			stopped = true
-			t.Fatal("application exited before HTTP readiness:", err)
+			t.Fatal("application exited before HTTP readiness:", err, appLog.text())
 		default:
 		}
 		status, err := client.read(ctx)
@@ -273,7 +294,7 @@ func TestPatApplicationCompatibility(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if len(samples) == 0 {
-		t.Fatal("actual application did not produce a compatible idle status")
+		t.Fatal("actual application did not produce a compatible idle status:", appLog.text())
 	}
 	if !compatibilityChildUnprivileged(app.Process.Pid) {
 		t.Fatal("application is not running as the unprivileged fixture identity")
