@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/user"
@@ -23,11 +24,32 @@ import (
 // The guest supplies synthetic session data instead of preparing a physical
 // radio. It uses the production screen runner, module loader and lifecycle guard.
 func TestWSJTXScreenSessionCompatibility(t *testing.T) {
-	runWSJTXScreenFixture(t, false, false)
+	runWSJTXScreenFixture(t, screenFixtureOptions{})
 }
 
-func runWSJTXScreenFixture(t *testing.T, nativeRouting, consoleCLI bool) {
+type screenFixtureOptions struct {
+	nativeRouting, consoleCLI, processCrash bool
+}
+
+type screenReceiver interface {
+	Snapshot(string) (ReceiverSnapshot, bool)
+}
+
+// These values come from the actual observer, including its process-local
+// identity; no parent-side Binding with a fabricated owner is constructed.
+type screenBinding struct {
+	Address    netip.AddrPort
+	Generation uint64
+	Owner      string
+}
+
+func fixtureDescribeBinding(b Binding) screenBinding {
+	return screenBinding{Address: b.Address(), Generation: b.Generation(), Owner: b.owner.instance}
+}
+
+func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 	t.Helper()
+	nativeRouting, consoleCLI := options.nativeRouting, options.consoleCLI
 	requireWSJTXManagerGuest(t)
 	requireWSJTXPrivateDevices(t, "/dev")
 	f, err := os.Open("/fixture/wsjtx.deb")
@@ -95,7 +117,7 @@ func runWSJTXScreenFixture(t *testing.T, nativeRouting, consoleCLI bool) {
 	t.Cleanup(cancel)
 	var routing *routingScreenFixture
 	if nativeRouting {
-		routing = newRoutingScreenFixture(t, ctx, consoleCLI)
+		routing = newRoutingScreenFixture(t, ctx, consoleCLI, options.processCrash)
 	}
 	ctl := func(args ...string) error {
 		cmd := exec.CommandContext(ctx, "/usr/bin/systemctl", args...)
@@ -153,17 +175,19 @@ func runWSJTXScreenFixture(t *testing.T, nativeRouting, consoleCLI bool) {
 	}
 	observer := NewObserver(nil)
 	defer observer.Close()
+	var receiver screenReceiver = observer
 	var previousInvocation string
-	var previousBinding Binding
+	var previousBinding screenBinding
 	for generation := 0; generation < 2; generation++ {
-		var binding Binding
+		var binding screenBinding
 		port := 2237
 		if routing == nil {
-			binding, err = observer.Start("fixture1", "WSJT-X - fixture1")
+			actual, err := observer.Start("fixture1", "WSJT-X - fixture1")
 			if err != nil {
 				t.Fatal(err)
 			}
-			port = int(binding.Address().Port())
+			binding = fixtureDescribeBinding(actual)
+			port = int(binding.Address.Port())
 		}
 		path := configDir + "/WSJT-X - fixture1.ini"
 		if routing == nil || generation == 0 {
@@ -200,15 +224,15 @@ func runWSJTXScreenFixture(t *testing.T, nativeRouting, consoleCLI bool) {
 			t.Fatal("real screen-session start failed")
 		}
 		if routing != nil {
-			observer, binding = routing.started(t, ctx)
+			receiver, binding = routing.started(t, ctx)
 		}
-		if generation > 0 && (binding.Address() == previousBinding.Address() || binding.owner == previousBinding.owner && binding.Generation() <= previousBinding.Generation()) {
+		if generation > 0 && (binding.Address == previousBinding.Address || binding.Owner == previousBinding.Owner && binding.Generation <= previousBinding.Generation) {
 			t.Fatal("fresh observation generation and endpoint required")
 		}
 		previousBinding = binding
 		observed := false
 		for deadline := time.Now().Add(35 * time.Second); time.Now().Before(deadline); {
-			s, ok := observer.Snapshot("fixture1")
+			s, ok := receiver.Snapshot("fixture1")
 			if ok && s.Observation.Availability == Live && s.Observation.Status != nil && s.Observation.Heartbeat != nil {
 				o := s.Observation
 				if o.Heartbeat.Version == nil || *o.Heartbeat.Version != "3.0.2" || o.Status.TXEnabled || o.Status.Transmitting || o.Status.DECall == nil || *o.Status.DECall != "N0CALL" || o.Status.DEGrid == nil || *o.Status.DEGrid != "AA00aa" || o.Counters.Malformed != 0 || o.Counters.WrongIdentity != 0 || s.Transport.QueueDrops != 0 || s.Transport.WrongPeer != 0 {
@@ -305,6 +329,11 @@ func runWSJTXScreenFixture(t *testing.T, nativeRouting, consoleCLI bool) {
 		if consoleCLI {
 			report["kind"] = "wsjtx-console-cli-routing"
 			report["passed"] = append(report["passed"].([]string), "actual console initialization CLI", "actual console root hook CLI and deadlines")
+		}
+		if options.processCrash {
+			report["kind"] = "wsjtx-process-crash-routing"
+			report["passed"] = append(report["passed"].([]string), "separate real server process terminated with SIGKILL", "kernel file-lock/socket release and stale socket replacement", "recovery-required journal without observation adoption after process death")
+			report["untested"] = []string{"full console HTTP/PAM daemon replacement", "interrupted helper write", "update/rollback", "physical eligibility and public radio/session CLI", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}
 		}
 	}
 	raw, err := json.Marshal(report)

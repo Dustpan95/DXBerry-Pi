@@ -23,11 +23,15 @@ const routingFixturePreferences = "/var/lib/dxb-native-state/preferences"
 const routingFixtureRuntime = "/run/dxb-native-hooks"
 
 func TestWSJTXPublicRoutingCompatibility(t *testing.T) {
-	runWSJTXScreenFixture(t, true, false)
+	runWSJTXScreenFixture(t, screenFixtureOptions{nativeRouting: true})
 }
 
 func TestWSJTXPublicCLICompatibility(t *testing.T) {
-	runWSJTXScreenFixture(t, true, true)
+	runWSJTXScreenFixture(t, screenFixtureOptions{nativeRouting: true, consoleCLI: true})
+}
+
+func TestWSJTXProcessCrashCompatibility(t *testing.T) {
+	runWSJTXScreenFixture(t, screenFixtureOptions{nativeRouting: true, consoleCLI: true, processCrash: true})
 }
 
 // Only the guest manager invokes this process at its actual unit boundaries.
@@ -81,18 +85,29 @@ func runWSJTXPublicBoundary(t *testing.T, consoleCLI bool) {
 	}
 }
 
+type fixtureRoutingService interface {
+	Preview(context.Context, string) (ProgramRoutingPreview, error)
+	Enable(context.Context, string, string) error
+	Disable(context.Context, string) error
+	Recover(context.Context, string) error
+	CollectionState(context.Context, string) (ProgramCollectionState, error)
+	Close() error
+}
+
 type routingScreenFixture struct {
-	service    *ProgramService
-	store      *settings.Store
-	bridge     *SettingsBridge
-	generation *programstate.Store
-	before     programstate.Generation
-	active     programstate.Generation
-	original   RoutingSettings
-	approval   string
-	server     *ProgramHookServer
-	cancel     context.CancelFunc
-	done       chan error
+	service     fixtureRoutingService
+	store       *settings.Store
+	bridge      *SettingsBridge
+	generation  *programstate.Store
+	before      programstate.Generation
+	active      programstate.Generation
+	original    RoutingSettings
+	approval    string
+	server      *ProgramHookServer
+	cancel      context.CancelFunc
+	done        chan error
+	process     *routingServiceProcess
+	processMode bool
 }
 
 func fixtureConsoleCommand(ctx context.Context, args ...string) error {
@@ -109,8 +124,11 @@ func fixtureConsoleCommand(ctx context.Context, args ...string) error {
 	return nil
 }
 
-func newRoutingScreenFixture(t *testing.T, ctx context.Context, consoleCLI bool) *routingScreenFixture {
+func newRoutingScreenFixture(t *testing.T, ctx context.Context, consoleCLI, processCrash bool) *routingScreenFixture {
 	t.Helper()
+	if processCrash && !consoleCLI {
+		t.Fatal("process crash fixture requires the actual console CLI")
+	}
 	generation, err := programstate.NewStore(filepath.Dir(routingFixtureState))
 	if err != nil {
 		t.Fatal("fresh native generation parent unavailable")
@@ -143,7 +161,7 @@ func newRoutingScreenFixture(t *testing.T, ctx context.Context, consoleCLI bool)
 	if err != nil {
 		t.Fatal("actual application-user helper unavailable:", err)
 	}
-	f := &routingScreenFixture{store: store, bridge: bridge, generation: generation}
+	f := &routingScreenFixture{store: store, bridge: bridge, generation: generation, processMode: processCrash}
 	t.Cleanup(func() { f.closeServer(t) })
 	f.openServer(t, ctx)
 	return f
@@ -151,18 +169,12 @@ func newRoutingScreenFixture(t *testing.T, ctx context.Context, consoleCLI bool)
 
 func (f *routingScreenFixture) openServer(t *testing.T, ctx context.Context) {
 	t.Helper()
-	service, err := NewProgramService(ProgramServiceConfig{StatePath: routingFixtureState, Approvals: f.store,
-		Eligible: func(ctx context.Context, radio string) error {
-			// This guest has no physical radio. Only this synthetic assignment
-			// is eligible; physical eligibility is explicitly outside this gate.
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if radio != "fixture1" {
-				return ErrInvalidSession
-			}
-			return nil
-		}})
+	if f.processMode {
+		f.process = startRoutingServiceProcess(t, ctx)
+		f.service = f.process
+		return
+	}
+	service, err := fixtureNewRoutingService(f.store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,8 +192,30 @@ func (f *routingScreenFixture) openServer(t *testing.T, ctx context.Context) {
 	}
 }
 
+func fixtureNewRoutingService(store *settings.Store) (*ProgramService, error) {
+	return NewProgramService(ProgramServiceConfig{StatePath: routingFixtureState, Approvals: store,
+		Eligible: func(ctx context.Context, radio string) error {
+			// This guest has no physical radio. Only this synthetic assignment
+			// is eligible; physical eligibility is explicitly outside this gate.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if radio != "fixture1" {
+				return ErrInvalidSession
+			}
+			return nil
+		}})
+}
+
 func (f *routingScreenFixture) closeServer(t *testing.T) {
 	t.Helper()
+	if f.process != nil {
+		if err := f.process.Close(); err != nil {
+			t.Error(err)
+		}
+		f.process, f.service = nil, nil
+		return
+	}
 	if f.server == nil {
 		return
 	}
@@ -207,8 +241,30 @@ func (f *routingScreenFixture) restartWhileRunning(t *testing.T, ctx context.Con
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.closeServer(t)
-	f.openServer(t, ctx)
+	if f.process != nil {
+		oldPID := f.process.cmd.Process.Pid
+		oldSocket, err := os.Lstat(filepath.Join(routingFixtureRuntime, "wsjtx.sock"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.process.killAndWait(t)
+		f.process, f.service = nil, nil
+		stale, err := os.Lstat(filepath.Join(routingFixtureRuntime, "wsjtx.sock"))
+		if err != nil || !os.SameFile(oldSocket, stale) {
+			t.Fatal("abrupt server death did not leave the actual stale socket")
+		}
+		f.openServer(t, ctx)
+		if f.process.cmd.Process.Pid == oldPID {
+			t.Fatal("new server process identity required")
+		}
+		fresh, err := os.Lstat(filepath.Join(routingFixtureRuntime, "wsjtx.sock"))
+		if err != nil || os.SameFile(oldSocket, fresh) {
+			t.Fatal("new process did not replace the stale root hook socket")
+		}
+	} else {
+		f.closeServer(t)
+		f.openServer(t, ctx)
+	}
 	state, err := f.service.CollectionState(ctx, "fixture1")
 	if err != nil || !state.Configured || !state.Enabled || state.Phase != RoutingInstalled || !state.RecoveryRequired || state.Observation != nil || state.Transport != nil {
 		t.Fatal("reopened actual service lost its owed route or adopted an old observation:", err)
@@ -266,38 +322,33 @@ func (f *routingScreenFixture) prepare(t *testing.T, ctx context.Context, cycle 
 	f.checkPreferences(t)
 }
 
-func (f *routingScreenFixture) started(t *testing.T, ctx context.Context) (*Observer, Binding) {
+func (f *routingScreenFixture) started(t *testing.T, ctx context.Context) (screenReceiver, screenBinding) {
 	t.Helper()
 	state, err := f.service.CollectionState(ctx, "fixture1")
 	if err != nil || !state.Configured || !state.Enabled || state.Phase != RoutingInstalled || state.RecoveryRequired {
 		t.Fatal("actual public start did not install a tracked route:", err)
 	}
-	var session programSession
-	var observer *Observer
-	var ok bool
-	func() {
-		ctx, finish, err := f.service.begin(ctx)
+	var receiver screenReceiver
+	var binding screenBinding
+	if f.process != nil {
+		reply, err := f.process.call(ctx, routingProcessRequest{Action: "receiver"})
+		if err != nil || reply.Binding == nil {
+			t.Fatal("actual remote session missing:", err)
+		}
+		binding, receiver = *reply.Binding, f.process
+	} else {
+		observer, actualBinding, err := fixtureRoutingReceiver(ctx, f.service.(*ProgramService))
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer finish()
-		c, err := f.service.get()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := c.acquire(ctx); err != nil {
-			t.Fatal(err)
-		}
-		defer c.release()
-		session, ok = c.sessions["fixture1"]
-		observer = c.observer
-	}()
-	if !ok {
-		t.Fatal("actual installed session missing")
+		receiver, binding = observer, actualBinding
+	}
+	if binding.Owner == "" || binding.Generation == 0 || !binding.Address.IsValid() || !binding.Address.Addr().IsLoopback() || binding.Address.Port() == 0 {
+		t.Fatal("actual observer binding identity unavailable")
 	}
 	managed, err := f.bridge.Inspect(ctx, "fixture1")
 	expected := cloneRouting(f.original)
-	expected.Current = UDPSettings{RawSetting{true, "127.0.0.1"}, RawSetting{true, fmt.Sprint(session.binding.Address().Port())}}
+	expected.Current = UDPSettings{RawSetting{true, "127.0.0.1"}, RawSetting{true, fmt.Sprint(binding.Address.Port())}}
 	if err != nil || managed.fingerprint() != expected.fingerprint() {
 		t.Fatal("actual helper did not install only the current routing destination")
 	}
@@ -315,7 +366,28 @@ func (f *routingScreenFixture) started(t *testing.T, ctx context.Context) (*Obse
 		t.Fatal("refused running operations changed the actual routing namespace")
 	}
 	f.checkPreferences(t)
-	return observer, session.binding
+	return receiver, binding
+}
+
+func fixtureRoutingReceiver(ctx context.Context, service *ProgramService) (*Observer, screenBinding, error) {
+	ctx, finish, err := service.begin(ctx)
+	if err != nil {
+		return nil, screenBinding{}, err
+	}
+	defer finish()
+	c, err := service.get()
+	if err != nil {
+		return nil, screenBinding{}, err
+	}
+	if err := c.acquire(ctx); err != nil {
+		return nil, screenBinding{}, err
+	}
+	defer c.release()
+	session, ok := c.sessions["fixture1"]
+	if !ok {
+		return nil, screenBinding{}, ErrProgramController
+	}
+	return c.observer, fixtureDescribeBinding(session.binding), nil
 }
 
 func (f *routingScreenFixture) stopped(t *testing.T, ctx context.Context) {
