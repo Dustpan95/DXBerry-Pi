@@ -302,6 +302,33 @@ jobs:
             ${{ runner.temp }}/wsjtx-daemon-evidence
           if-no-files-found: warn
           retention-days: 7
+  wsjtx-crash-diagnostics:
+    if: startsWith(github.head_ref || github.ref_name, 'ci/wsjtx-crash-diagnostics-')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build isolated official application debugger fixture
+        run: |
+          set -o pipefail
+          docker build -t dxberry-wsjtx-debug -f tests/integration/wsjtx-application/Dockerfile . \
+            2>&1 | tee "$RUNNER_TEMP/wsjtx-debug-build.log"
+      - name: Collect actual fault diagnostics in fresh device-free containers
+        run: |
+          set -o pipefail
+          bash tests/integration/wsjtx-application/debug-test.sh \
+            2>&1 | tee "$RUNNER_TEMP/wsjtx-debug.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wsjtx-crash-diagnostics
+          path: |
+            ${{ runner.temp }}/wsjtx-debug-build.log
+            ${{ runner.temp }}/wsjtx-debug.log
+          if-no-files-found: warn
+          retention-days: 7
   graywolf-api:
     runs-on: ubuntu-latest
     steps:

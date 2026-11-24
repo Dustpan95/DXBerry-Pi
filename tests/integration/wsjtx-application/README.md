@@ -47,3 +47,35 @@ The gate still needs a reproducible non-transmitting GUI change and its Status
 cadence, independent application Decode/Clear input, profile restoration and
 replacement generations, real public systemd lifecycle, ARM64 capture workload
 and physical radio/RF evidence. No native collection is enabled on the Pi.
+
+## Intermittent application crash diagnostics
+
+Post-merge run 142 failed its first of three fresh cases: the actual official
+WSJT-X process was a zombie and its wait status reported SIGSEGV with a core
+flag. The later two cases passed, and the job correctly remained failed. This
+identifies that occurrence as actual application death; it does not establish
+the cause of the older run 114 Qt-map failure or fix either finding.
+
+Explicit `DXB_WSJTX_DEBUGGER=1` starts each real application as GDB's child.
+Kernel parent/child, executable and exact argument metadata identify the actual
+inferior for the original protocol/library checks. A pidfd makes cleanup safe
+if GDB has already reaped that task. ASLR remains enabled; no host ptrace policy,
+capability, privileged container, sound device or service socket is added. GDB
+reports the faulting stack first and then bounded per-thread stacks. A tracing
+stop cannot count as a running application; fault diagnostics get up to five
+seconds to finish before cleanup. Only the newly generated synthetic processes
+are debugged, with filtered fixture environment and bounded output. No core,
+recording, station profile or credential is exported.
+
+The diagnostic job runs only on the named crash-diagnostics branch. It executes
+20 independent fresh containers, stopping on the first failure and retaining its
+actual debugger output. Each uses private IPC, three GiB memory and a 512-task
+limit to allow debugger overhead; the ordinary untraced gate retains its original
+limits and all three cases must pass. Each debug container runs exactly one case,
+so its process and IPC namespaces retire any debugger descendants on exit.
+
+Passing diagnostic samples mean only that no failure was observed under the
+debugger. Reports explicitly label that mode and leave untraced reliability and
+the intermittent crash's root cause open. The normal job neither retries failed
+cases nor accepts a debugger-only pass as a fix. Reproduce a faulting stack before
+choosing a behavior change; do not relax actual application or Qt identity checks.

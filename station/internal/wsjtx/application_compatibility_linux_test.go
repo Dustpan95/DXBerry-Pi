@@ -199,14 +199,14 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	ports := []int{conn.LocalAddr().(*net.UDPAddr).Port, int(binding.Address().Port())}
-	var applications []*exec.Cmd
+	var applications []compatibilityApplication
 	for i, port := range ports {
 		profile := fmt.Sprintf("fixture%d", i+1)
 		settings := fmt.Sprintf("[Configuration]\nMyCall=N0CALL\nMyGrid=AA00aa\nRig=None\nSoundInName=%q\nSoundOutName=%q\nAudioInputChannel=Mono\nAudioOutputChannel=Mono\nUDPServer=127.0.0.1\nUDPServerPort=%d\nAcceptUDPRequests=false\nBroadcastToN1MM=true\nN1MMServer=127.0.0.2\nN1MMServerPort=23333\n[Common]\nMode=FT8\n[MainWindow]\nRxFreq=1500\nAutoSeq=false\n", audio.Input, audio.Output, port)
 		if err := os.WriteFile(filepath.Join(root, "config", "WSJT-X - "+profile+".ini"), []byte(settings), 0600); err != nil {
 			t.Fatal(err)
 		}
-		applications = append(applications, start("/usr/bin/wsjtx", "--rig-name="+profile))
+		applications = append(applications, startCompatibilityApplication(t, start, profile))
 	}
 	var heartbeats []time.Time
 	var heartbeat *Heartbeat
@@ -266,11 +266,13 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 	if err != nil || !qtCore.Mode().IsRegular() {
 		t.Fatal("reference Qt library unavailable")
 	}
-	for _, app := range applications {
-		// Keep the child unreaped until cleanup so its PID cannot be reused
-		// while its process group is still ours to terminate. A zombie has no
+	for _, application := range applications {
+		application.requireDebuggerRunning(t)
+		pid := application.pid
+		// Untraced children stay unreaped until cleanup; traced children have
+		// a kernel handle and an actual debugger-liveness check. A zombie has no
 		// mapped libraries; report its state separately from a Qt mismatch.
-		processStatus, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", app.Process.Pid))
+		processStatus, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
 		if err != nil {
 			t.Fatal("actual application process status unavailable:", err)
 		}
@@ -283,7 +285,7 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 		if state == "" || strings.Contains(state, "Z (zombie)") || strings.Contains(state, "X (dead)") {
 			t.Fatalf("actual application exited before runtime verification: %s; cleanup reports its exit status", state)
 		}
-		maps, err := os.ReadFile(fmt.Sprintf("/proc/%d/maps", app.Process.Pid))
+		maps, err := os.ReadFile(fmt.Sprintf("/proc/%d/maps", pid))
 		if err != nil {
 			t.Fatal("actual application library identity unavailable")
 		}
@@ -303,7 +305,7 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 			}
 		}
 		if !matched {
-			executable, _ := os.Readlink(fmt.Sprintf("/proc/%d/exe", app.Process.Pid))
+			executable, _ := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
 			t.Fatalf("actual application Qt runtime differs from version reference: executable=%q state=%q reference=%q mappings=%q", executable, state, audio.QtCore, mappedQt)
 		}
 	}
@@ -328,6 +330,10 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 		"application_version": *heartbeat.Version, "qt_runtime": audio.Qt, "schema": schema, "heartbeat_intervals_seconds": intervals,
 		"passed":   []string{"official package integrity", "unprivileged device-free execution", "actual rig-name profiles", "passive actual heartbeat and status parsing", "actual heartbeat cadence", "independent profile through production observer", "separate N1MM configuration retained"},
 		"untested": []string{"non-transmitting GUI change and status cadence", "reproducible Decode/Clear application input", "profile restoration and replacement lifecycle", "real systemd public lifecycle", "ARM64 capture workload", "physical radio/RF"}}
+	if os.Getenv("DXB_WSJTX_DEBUGGER") == "1" {
+		report["debugger_attached"] = true
+		report["untested"] = append(report["untested"].([]string), "untraced reliability and intermittent segmentation-fault root cause")
+	}
 	raw, err := json.Marshal(report)
 	if err != nil {
 		t.Fatal(err)
