@@ -106,7 +106,10 @@ jobs:
         with:
           persist-credentials: false
       - name: Build checksum-pinned official WSJT-X fixture
-        run: docker build -t dxberry-wsjtx-application -f tests/integration/wsjtx-application/Dockerfile .
+        run: |
+          set -o pipefail
+          docker build -t dxberry-wsjtx-application -f tests/integration/wsjtx-application/Dockerfile . \
+            2>&1 | tee "$RUNNER_TEMP/wsjtx-application-build.log"
       - name: Observe actual idle profiles without network or radio devices
         run: |
           set -o pipefail
@@ -119,7 +122,9 @@ jobs:
         if: always()
         with:
           name: wsjtx-application-evidence
-          path: ${{ runner.temp }}/wsjtx-application.log
+          path: |
+            ${{ runner.temp }}/wsjtx-application-build.log
+            ${{ runner.temp }}/wsjtx-application.log
           if-no-files-found: warn
           retention-days: 7
   graywolf-api:
