@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/programstate"
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/settings"
@@ -21,13 +23,26 @@ const routingFixturePreferences = "/var/lib/dxb-native-state/preferences"
 const routingFixtureRuntime = "/run/dxb-native-hooks"
 
 func TestWSJTXPublicRoutingCompatibility(t *testing.T) {
-	runWSJTXScreenFixture(t, true)
+	runWSJTXScreenFixture(t, true, false)
+}
+
+func TestWSJTXPublicCLICompatibility(t *testing.T) {
+	runWSJTXScreenFixture(t, true, true)
 }
 
 // Only the guest manager invokes this process at its actual unit boundaries.
 // The production client authenticates the root peer and talks to the real
 // ProgramService over its private socket; no lifecycle or settings stand-in.
 func TestWSJTXPublicRoutingBoundary(t *testing.T) {
+	runWSJTXPublicBoundary(t, false)
+}
+
+func TestWSJTXPublicCLIBoundary(t *testing.T) {
+	runWSJTXPublicBoundary(t, true)
+}
+
+func runWSJTXPublicBoundary(t *testing.T, consoleCLI bool) {
+	t.Helper()
 	requireWSJTXManagerGuest(t)
 	phase := os.Getenv("DXB_WSJTX_MANAGER_BOUNDARY")
 	action := ""
@@ -39,8 +54,14 @@ func TestWSJTXPublicRoutingBoundary(t *testing.T) {
 	default:
 		t.Fatal("explicit real manager boundary required")
 	}
-	err := CallProgramHook(context.Background(), routingFixtureRuntime, routingFixtureState,
-		&settings.Store{Dir: routingFixturePreferences}, action, "fixture1", os.Getenv("INVOCATION_ID"))
+	var err error
+	if consoleCLI {
+		err = fixtureConsoleCommand(context.Background(), "-state", filepath.Dir(routingFixtureState), "-program-run", routingFixtureRuntime,
+			"-wsjtx-hook", action, "-wsjtx-radio", "fixture1", "-wsjtx-invocation", os.Getenv("INVOCATION_ID"))
+	} else {
+		err = CallProgramHook(context.Background(), routingFixtureRuntime, routingFixtureState,
+			&settings.Store{Dir: routingFixturePreferences}, action, "fixture1", os.Getenv("INVOCATION_ID"))
+	}
 	result := "pass"
 	if err != nil {
 		result = "refused"
@@ -74,19 +95,47 @@ type routingScreenFixture struct {
 	done       chan error
 }
 
-func newRoutingScreenFixture(t *testing.T, ctx context.Context) *routingScreenFixture {
+func fixtureConsoleCommand(ctx context.Context, args ...string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/opt/dxberry/bin/dxberryd", args...)
+	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8", "GOMAXPROCS=2"}
+	cmd.WaitDelay = 200 * time.Millisecond
+	var output applicationOutput
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("actual console CLI failed: %w: %s", err, output.text())
+	}
+	return nil
+}
+
+func newRoutingScreenFixture(t *testing.T, ctx context.Context, consoleCLI bool) *routingScreenFixture {
 	t.Helper()
 	generation, err := programstate.NewStore(filepath.Dir(routingFixtureState))
-	if err != nil || generation.PrepareParent(ctx) != nil {
+	if err != nil {
 		t.Fatal("fresh native generation parent unavailable")
 	}
-	if _, err := generation.Advance(ctx); err != nil {
-		t.Fatal(err)
+	preferences := routingFixturePreferences
+	if consoleCLI {
+		preferences = filepath.Join(filepath.Dir(routingFixtureState), "radios")
+		if err := fixtureConsoleCommand(ctx, "-state", filepath.Dir(routingFixtureState), "-program-release-run", "/run/dxb-cli-initialize", "-wsjtx-initialize"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := generation.Read(ctx); err != nil {
+			t.Fatal("actual console initializer did not establish generation state:", err)
+		}
+	} else {
+		if err := generation.PrepareParent(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := generation.Advance(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := InitializeProgramState(routingFixtureState); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := InitializeProgramState(routingFixtureState); err != nil {
-		t.Fatal(err)
-	}
-	store := &settings.Store{Dir: routingFixturePreferences}
+	store := &settings.Store{Dir: preferences}
 	if err := store.Set("fixture1", settings.RadioSettings{SWRLimit: 2.5, PTTTimeoutS: 90}); err != nil {
 		t.Fatal(err)
 	}

@@ -215,6 +215,35 @@ jobs:
             ${{ runner.temp }}/wsjtx-routing-evidence
           if-no-files-found: warn
           retention-days: 7
+  wsjtx-cli:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build isolated actual WSJT-X console-CLI guest
+        run: |
+          set -o pipefail
+          docker build -t dxberry-wsjtx-cli -f tests/integration/wsjtx-cli/Dockerfile . \
+            2>&1 | tee "$RUNNER_TEMP/wsjtx-cli-build.log"
+      - name: Exercise actual console initialization and root-hook CLI without host privileges or radio devices
+        run: |
+          mkdir -p "$RUNNER_TEMP/wsjtx-cli-evidence"
+          docker run --rm --network none --cap-drop ALL --read-only \
+            --security-opt=no-new-privileges --pids-limit=128 \
+            --user "$(id -u):$(id -g)" --memory=5g \
+            --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            -v "$RUNNER_TEMP/wsjtx-cli-evidence:/evidence" dxberry-wsjtx-cli
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wsjtx-cli-evidence
+          path: |
+            ${{ runner.temp }}/wsjtx-cli-build.log
+            ${{ runner.temp }}/wsjtx-cli-evidence
+          if-no-files-found: warn
+          retention-days: 7
   graywolf-api:
     runs-on: ubuntu-latest
     steps:
