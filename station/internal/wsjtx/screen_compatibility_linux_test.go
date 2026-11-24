@@ -23,10 +23,10 @@ import (
 // The guest supplies synthetic session data instead of preparing a physical
 // radio. It uses the production screen runner, module loader and lifecycle guard.
 func TestWSJTXScreenSessionCompatibility(t *testing.T) {
-	runWSJTXScreenFixture(t, false)
+	runWSJTXScreenFixture(t, false, false)
 }
 
-func runWSJTXScreenFixture(t *testing.T, nativeRouting bool) {
+func runWSJTXScreenFixture(t *testing.T, nativeRouting, consoleCLI bool) {
 	t.Helper()
 	requireWSJTXManagerGuest(t)
 	requireWSJTXPrivateDevices(t, "/dev")
@@ -54,6 +54,9 @@ func runWSJTXScreenFixture(t *testing.T, nativeRouting bool) {
 	if nativeRouting {
 		home, configDir = settingsAppHome, settingsAppHome+"/.config"
 		boundaryTest = "TestWSJTXPublicRoutingBoundary"
+		if consoleCLI {
+			boundaryTest = "TestWSJTXPublicCLIBoundary"
+		}
 	}
 	const run = "/run/dxb-screen"
 	const session = "wsjtx-fixture1"
@@ -92,7 +95,7 @@ func runWSJTXScreenFixture(t *testing.T, nativeRouting bool) {
 	t.Cleanup(cancel)
 	var routing *routingScreenFixture
 	if nativeRouting {
-		routing = newRoutingScreenFixture(t, ctx)
+		routing = newRoutingScreenFixture(t, ctx, consoleCLI)
 	}
 	ctl := func(args ...string) error {
 		cmd := exec.CommandContext(ctx, "/usr/bin/systemctl", args...)
@@ -299,6 +302,10 @@ func runWSJTXScreenFixture(t *testing.T, nativeRouting bool) {
 		report["kind"] = "wsjtx-public-hook-routing"
 		report["passed"] = append(report["passed"].([]string), "actual public root hook IPC", "actual application-user settings helper", "durable approval/generation/journal", "managed route installation and restoration on two normal stops", "running mutation refusal and routing/logging preservation", "actual service/receiver replacement while application remains running", "owed-route restoration after replacement and fresh persistent endpoint")
 		report["untested"] = []string{"physical eligibility and public prepare/session CLI", "whole-process replacement, abrupt death and interrupted helper write", "update/rollback", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}
+		if consoleCLI {
+			report["kind"] = "wsjtx-console-cli-routing"
+			report["passed"] = append(report["passed"].([]string), "actual console initialization CLI", "actual console root hook CLI and deadlines")
+		}
 	}
 	raw, err := json.Marshal(report)
 	if err != nil {
