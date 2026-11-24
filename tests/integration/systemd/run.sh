@@ -13,4 +13,4 @@ set -e
 (( result == 0 ))
 [[ $(grep -c '^DXB_MANAGER_RESULT=PASS' "$log") == 1 ]]
 if grep -q '^DXB_MANAGER_RESULT=FAIL' "$log"; then exit 1; fi
-echo 'Real guest systemd queue checks passed; hardware and retirement acceptance remain separate.'
+echo 'Real guest systemd checks passed; hardware and full lifecycle acceptance remain separate.'

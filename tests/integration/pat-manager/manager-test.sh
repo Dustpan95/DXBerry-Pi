@@ -1,0 +1,10 @@
+#!/bin/bash
+set -uo pipefail
+export DXB_PAT_MANAGER_FIXTURE=1
+if /fixture/pat-manager.test -test.v -test.timeout=90s -test.run '^TestPatRealManagerCompatibility$'; then
+  echo 'DXB_MANAGER_RESULT=PASS'
+else
+  journalctl --no-pager -n 60 -u dxberry-screen@pat-fixture1.service
+  echo 'DXB_MANAGER_RESULT=FAIL'
+fi
+systemctl poweroff --force --force

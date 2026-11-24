@@ -1,0 +1,28 @@
+#!/bin/bash
+set -eu
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /run
+hostname dxb-pat-guest
+ip link set lo up
+cat > /etc/systemd/system/dxb-pat-test.service <<'UNIT'
+[Unit]
+After=sysinit.target
+[Service]
+Type=oneshot
+TimeoutStartSec=110
+ExecStart=/usr/local/libexec/dxb-pat-manager-test
+StandardOutput=journal+console
+StandardError=journal+console
+UNIT
+cat > /etc/systemd/system/dxb-pat.target <<'UNIT'
+[Unit]
+Requires=sysinit.target
+After=sysinit.target
+Wants=dxb-pat-test.service
+AllowIsolate=yes
+UNIT
+exec /lib/systemd/systemd --system --unit=dxb-pat.target
