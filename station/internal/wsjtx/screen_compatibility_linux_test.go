@@ -21,7 +21,7 @@ import (
 )
 
 // The guest supplies synthetic session data instead of preparing a physical
-// radio. The module loader, screen runner and lifecycle guard are unchanged.
+// radio. It uses the production screen runner, module loader and lifecycle guard.
 func TestWSJTXScreenSessionCompatibility(t *testing.T) {
 	requireWSJTXManagerGuest(t)
 	requireWSJTXPrivateDevices(t, "/dev")
@@ -136,11 +136,16 @@ func TestWSJTXScreenSessionCompatibility(t *testing.T) {
 	observer := NewObserver(nil)
 	defer observer.Close()
 	var previousInvocation string
+	var previousBinding Binding
 	for generation := 0; generation < 2; generation++ {
 		binding, err := observer.Start("fixture1", "WSJT-X - fixture1")
 		if err != nil {
 			t.Fatal(err)
 		}
+		if generation > 0 && (binding.Generation() <= previousBinding.Generation() || binding.Address() == previousBinding.Address()) {
+			t.Fatal("fresh observation generation and endpoint required")
+		}
+		previousBinding = binding
 		profile := fmt.Sprintf("[Configuration]\nMyCall=N0CALL\nMyGrid=AA00aa\nRig=None\nSoundInName=%q\nSoundOutName=%q\nUDPServer=127.0.0.1\nUDPServerPort=%d\nAcceptUDPRequests=false\nBroadcastToN1MM=true\nN1MMServer=127.0.0.2\nN1MMServerPort=23333\n[Common]\nMode=FT8\n[MainWindow]\nAutoSeq=false\n", audio.Input, audio.Output, binding.Address().Port())
 		path := home + "/config/WSJT-X - fixture1.ini"
 		if err := os.WriteFile(path, []byte(profile), 0600); err != nil {
@@ -232,6 +237,10 @@ func TestWSJTXScreenSessionCompatibility(t *testing.T) {
 		if ctl("stop", unit) != nil || g.check(ctx, "fixture1", "", programStopped) != nil {
 			t.Fatal("normal screen-session stop did not establish a safe restoration boundary")
 		}
+		phases, err := os.ReadFile("/run/dxb-wsjtx/phase-events")
+		if err != nil || string(phases) != strings.Repeat("pre:pass\npost:pass\n", generation+1) {
+			t.Fatalf("normal screen-session boundary phase mismatch: %q", phases)
+		}
 		if _, err := os.Lstat(run + "/screens/" + session + ".sock"); !os.IsNotExist(err) {
 			t.Fatal("screen socket remained after normal stop")
 		}
@@ -246,7 +255,7 @@ func TestWSJTXScreenSessionCompatibility(t *testing.T) {
 		t.Fatal("normal screen-session start/stop phase evidence incomplete")
 	}
 	report := map[string]any{"kind": "wsjtx-real-screen-session", "result": "partial", "package_sha256": applicationPackageHash,
-		"passed":   []string{"unchanged screen runner and WSJT-X module", "actual Xvnc/Openbox with private UNIX VNC and X cookie", "two fresh actual application observations and manager invocations", "normal mixed-mode stop and real stop-post guard", "fresh stopped checks before synthetic reprepare"},
+		"passed":   []string{"production screen runner and WSJT-X module", "actual Xvnc/Openbox with private UNIX VNC and X cookie", "two fresh actual application observations and manager invocations", "normal mixed-mode stop and real stop-post guard", "fresh stopped checks before synthetic reprepare"},
 		"untested": []string{"physical eligibility and public prepare/session/stopped IPC", "native route restoration and update/rollback", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}}
 	raw, err := json.Marshal(report)
 	if err != nil {

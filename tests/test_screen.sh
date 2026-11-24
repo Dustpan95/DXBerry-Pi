@@ -573,6 +573,12 @@ case $PROG_MODE in
   exit) exit 3 ;;
   wait) trap 'echo TERM >> "$TEST_TMP/prog-log"; exit 0' TERM ;;
   stubborn) trap 'echo TERM >> "$TEST_TMP/prog-log"' TERM ;;
+  group_child|orphan_child)
+    bash -c 'trap "" TERM; : > "$TEST_TMP/child-ready"; while :; do sleep 0.1; done' &
+    echo "$!" > "$TEST_TMP/child-pid"
+    while [[ ! -e $TEST_TMP/child-ready ]]; do sleep 0.01; done
+    [[ $PROG_MODE == orphan_child ]] && exit 3
+    trap 'exit 0' TERM ;;
 esac
 : > "$TEST_TMP/prog-started"
 while :; do sleep 0.1; done
@@ -661,6 +667,34 @@ test_screen_session_forwards_term_then_kills() {
   done
   assert_contains "$(cat "$TEST_TMP/err-stubborn")" "did not end within 1s of TERM; killing it"
   assert_not_contains "$(cat "$TEST_TMP/err-wait")" "killing it"
+}
+
+# A decoder that ignores TERM must be killed even when its parent exits first.
+# These are real private child processes; no kill or process-group lookup shim.
+test_screen_session_stops_child_group_after_parent_term() {
+  local pid child
+  sc_env; sc_owned radio2 gamma; sc_app prepare gamma-radio2; sc_fakes
+  PROG_MODE=group_child DXB_FAKE_EUID=900 timeout 15 "$DXB_ROOT/provision/bin/dxberry-app" session gamma-radio2 2> "$TEST_TMP/err" &
+  pid=$!
+  sc_wait_for "$TEST_TMP/child-ready" || _fail "the child never started"
+  child=$(cat "$TEST_TMP/child-pid")
+  # Signal the runner, not timeout's process group.
+  local runner; runner=$(pgrep -P "$pid" -f 'dxberry-app.*session')
+  [[ $runner =~ ^[0-9]+$ ]] || { _fail "the runner was not found"; return; }
+  kill -TERM "$runner"; wait "$pid"
+  assert_eq "$?" "0"
+  if [[ -e /proc/$child/status && $(awk '/^State:/ {print $2}' "/proc/$child/status") != Z ]]; then _fail "the child survived its parent's stop"; fi
+  assert_contains "$(cat "$TEST_TMP/err")" "did not end within 1s of TERM; killing it"
+}
+
+test_screen_session_stops_child_group_after_parent_exit() {
+  local child
+  sc_env; sc_owned radio2 gamma; sc_app prepare gamma-radio2; sc_fakes
+  PROG_MODE=orphan_child sc_session 2> "$TEST_TMP/err"
+  assert_eq "$?" "3"
+  child=$(cat "$TEST_TMP/child-pid")
+  if [[ -e /proc/$child/status && $(awk '/^State:/ {print $2}' "/proc/$child/status") != Z ]]; then _fail "the child survived its parent's exit"; fi
+  assert_eq "$(LC_ALL=C sort "$TEST_TMP/helpers" | tr '\n' ';')" "Xvnc ended;openbox ended;"
 }
 
 # the removal job reads the record again under the record lock: a radio handed to the program

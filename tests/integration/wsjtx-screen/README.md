@@ -1,13 +1,13 @@
 # Actual WSJT-X screen-session runner
 
-This separate QEMU guest extends the manager component fixture with the unchanged
+This separate QEMU guest extends the manager component fixture with the actual
 production `dxb_screen_session_run`, real module loader and WSJT-X command module.
 It installs the checksum-pinned official package plus real TigerVNC, Openbox and
 xauth in a disposable Debian guest. The outer Docker container uses no host
 devices, privileges, networking, display, audio, service-manager or cgroup mounts.
 The guest has loopback only and private radio-free device views.
 
-The driver creates synthetic session data with the production file permissions,
+The driver creates synthetic session data with root ownership and the session file modes,
 N0CALL/AA00aa, rig None, disabled UDP requests and automatic sequencing off.
 Audio uses only a private PulseAudio null sink/source. Actual Xvnc uses the
 runner's private X cookie and VNC UNIX socket; TCP listeners are refused.
@@ -21,6 +21,12 @@ observer bindings. Each normal stop uses the production mixed kill mode,
 Both actual stop-post hooks and subsequent stopped checks must accept, before
 synthetic re-preparation. No whole-unit kill substitutes for a normal stop.
 The existing guard continues to refuse any remaining application-owned child.
+
+The initial full-runner execution exposed a surviving `jt9` child at both
+stop-post boundaries; the manager killed it only after each refused hook.
+The runner now launches the program in a private process group and applies its
+existing TERM/KILL grace to that group, including children whose parent exited.
+The unit kill mode, lifecycle guard and radio cleanup policy remain unchanged.
 
 This is partial session-runner acceptance. Synthetic preparation bypasses
 physical eligibility and public prepare/session/stopped IPC. It does not prove
