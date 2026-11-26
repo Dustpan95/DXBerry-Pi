@@ -18,7 +18,7 @@ FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
 COPY --from=package --chmod=644 /package/wsjtx-3.0.2-linux-x86_64.deb /fixture/wsjtx.deb
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    /fixture/wsjtx.deb pulseaudio pulseaudio-utils python3-pyqt5.qtmultimedia \
+    /fixture/wsjtx.deb pulseaudio pulseaudio-utils python3-pyqt5.qtmultimedia gdb \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 COPY --from=compile /wsjtx-application.test /fixture/wsjtx-application.test
 COPY tests/integration/wsjtx-application/audio-info.py /fixture/audio-info.py
