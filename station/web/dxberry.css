@@ -157,10 +157,19 @@ pre.log { max-height: 260px; overflow: auto; margin: 8px 0 0; padding: 8px 10px;
 #switch-dialog, #logbook-dialog { max-width: min(92vw, 560px); width: 100%; max-height: 90vh; overflow: auto; }
 
 /* The program tab (screen.html): a slim bar over a screen that fills the rest of the window. */
-body.screen-page { height: 100vh; padding: 0; display: flex; flex-direction: column; }
+body.screen-page { margin: 0; max-width: none; height: 100vh; height: 100dvh; padding: 0; display: flex; flex-direction: column; }
 .screenbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 16px; background: var(--card); border-bottom: 1px solid var(--line); }
 .screenbar a { margin-left: auto; }
-#screen { flex: 1; min-height: 0; background: #000; overflow: auto; }
+#screen-area { position: relative; flex: 1; min-height: 0; min-width: 0; padding: 0; margin: 0; max-width: none; overflow: hidden; }
+#screen { width: 100%; height: 100%; background: #000; overflow: hidden; }
+#screen-area.trackpad { touch-action: none; }
+#pointer { position: absolute; pointer-events: none; width: 14px; height: 14px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 0 1px black, inset 0 0 0 1px black; transform: translate(-50%, -50%); }
+.pad-help { margin: 0; padding: 4px 12px; font-size: 12px; text-align: center; }
+@media (max-width: 700px), (pointer: coarse) {
+  .screenbar { gap: 4px 10px; padding: 4px 8px; }
+  .screenbar .btn, #pad-label { min-height: 36px; }
+  #pad-label:not([hidden]) { display: inline-flex; align-items: center; }
+}
 .screen-note { margin: 16px; padding: 12px 16px; background: var(--card); color: var(--text); border-radius: 6px; }
 
 /* The station app's top bar and log panel (app.js). */

@@ -2,6 +2,8 @@
 // socket) with noVNC over the station's own authenticated WebSocket relay (/api/vnc/SESSION).
 import RFB from "./vendor/novnc/core/rfb.js";
 
+import { releaseCapture } from "./vendor/novnc/core/util/events.js";
+
 const SCR_APP = "/opt/dxberry/bin/dxberry-app";
 const SCR_SESSION = /^[a-z][a-z0-9_]{0,15}-[a-z][a-z0-9]{0,11}$/;
 const SCR_STATION = "/";
@@ -10,6 +12,115 @@ const SCR_CLOSED = "The program window closed. Reconnect?";
 
 const scrEl = id => document.getElementById(id);
 const scr = { session: "", rfb: null, run: 0 };
+
+const mobile = matchMedia("(any-pointer: coarse), (max-width: 700px)").matches;
+const pad = scrEl("trackpad");
+let fitted = mobile;
+let active = false;
+let gesture = null;
+const position = { x: 0.5, y: 0.5 }; // Fractions of the framebuffer, preserved across rotation.
+
+function surface() { return scrEl("screen").querySelector("canvas"); }
+
+function cursorPoint() {
+  const rect = surface().getBoundingClientRect();
+  return { clientX: rect.left + position.x * rect.width, clientY: rect.top + position.y * rect.height };
+}
+
+function drawPointer() {
+  const marker = scrEl("pointer");
+  marker.hidden = !active || !pad.checked || !surface();
+  if (marker.hidden) return;
+  const origin = scrEl("screen-area").getBoundingClientRect();
+  const point = cursorPoint();
+  marker.style.left = (point.clientX - origin.left) + "px";
+  marker.style.top = (point.clientY - origin.top) + "px";
+}
+
+function mouse(type, buttons) {
+  surface().dispatchEvent(new MouseEvent(type, { ...cursorPoint(), bubbles: true, cancelable: true, button: 0, buttons }));
+}
+
+function endGesture() {
+  if (!gesture) return;
+  clearTimeout(gesture.timer);
+  if (gesture.down) {
+    if (surface()) mouse("mouseup", 0);
+    // Synthetic mouseup goes to the canvas, bypassing noVNC's window capture proxy.
+    releaseCapture();
+  }
+  gesture = null;
+}
+
+function controls(on) {
+  endGesture();
+  active = on;
+  scrEl("zoom").hidden = !on || !mobile;
+  scrEl("pad-label").hidden = !on || !mobile;
+  scrEl("pad-help").hidden = !on || !pad.checked;
+  scrEl("screen-area").classList.toggle("trackpad", on && pad.checked);
+  drawPointer();
+}
+
+function followPointer() {
+  const canvas = surface();
+  if (!active || !canvas) return;
+  const view = canvas.parentElement;
+  const bounds = view.getBoundingClientRect(), point = cursorPoint();
+  if (point.clientX < bounds.left || point.clientX >= bounds.right)
+    view.scrollLeft += point.clientX - (bounds.left + bounds.width / 2);
+  if (point.clientY < bounds.top || point.clientY >= bounds.bottom)
+    view.scrollTop += point.clientY - (bounds.top + bounds.height / 2);
+  drawPointer();
+}
+
+// Capture only touch input in trackpad mode. Physical mice and direct-touch
+// gestures retain noVNC's native behavior.
+function trackTouch(e) {
+  if (!active || !pad.checked || !surface()) return;
+  e.stopPropagation();
+  e.preventDefault();
+  if (e.type === "touchcancel" || e.touches.length > 1) { endGesture(); return; }
+  if (e.type === "touchstart") {
+    const t = e.touches[0];
+    gesture = { id: t.identifier, x: t.clientX, y: t.clientY, travel: 0, down: false };
+    gesture.timer = setTimeout(() => { gesture.down = true; mouse("mousedown", 1); }, 450);
+    return;
+  }
+  if (!gesture) return;
+  if (e.type === "touchend") {
+    if (!gesture.down && gesture.travel < 5) { mouse("mousedown", 1); gesture.down = true; }
+    endGesture();
+    return;
+  }
+  const t = e.touches[0];
+  if (!t || t.identifier !== gesture.id) return;
+  const dx = t.clientX - gesture.x, dy = t.clientY - gesture.y;
+  gesture.travel += Math.hypot(dx, dy);
+  if (gesture.travel >= 5) clearTimeout(gesture.timer);
+  gesture.x = t.clientX; gesture.y = t.clientY;
+  const canvas = surface();
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  position.x = Math.max(0, Math.min(1 - 1 / canvas.width, position.x + dx / rect.width));
+  position.y = Math.max(0, Math.min(1 - 1 / canvas.height, position.y + dy / rect.height));
+  followPointer();
+  mouse("mousemove", gesture.down ? 1 : 0);
+}
+
+pad.checked = mobile;
+pad.addEventListener("change", () => controls(active));
+scrEl("zoom").addEventListener("click", () => {
+  if (!active) return;
+  fitted = !fitted;
+  scr.rfb.scaleViewport = fitted;
+  scrEl("zoom").textContent = fitted ? "Actual size" : "Fit screen";
+  requestAnimationFrame(followPointer);
+});
+for (const type of ["touchstart", "touchmove", "touchend", "touchcancel"])
+  scrEl("screen").addEventListener(type, trackTouch, { capture: true, passive: false });
+window.addEventListener("blur", endGesture);
+window.addEventListener("resize", () => requestAnimationFrame(drawPointer));
 
 function scrSay(text, withLink) {
   const p = document.createElement("p");
@@ -26,6 +137,7 @@ function scrSay(text, withLink) {
 
 function scrDrop() {
   if (scr.rfb) {
+    controls(false);
     try { scr.rfb.disconnect(); } catch (e) { /* already gone */ }
     scr.rfb = null;
   }
@@ -41,13 +153,14 @@ function scrConnect(run) {
   if (run !== scr.run) return;
   let connected = false;
   const rfb = new RFB(scrEl("screen"), scrChannel(), { shared: true });
-  rfb.scaleViewport = false;
-  rfb.resizeSession = true;
+  rfb.scaleViewport = fitted;
+  rfb.resizeSession = !mobile;
   scr.rfb = rfb;
-  rfb.addEventListener("connect", () => { connected = true; scrEl("state").textContent = "Connected"; });
+  rfb.addEventListener("connect", () => { if (run !== scr.run) return; connected = true; controls(true); scrEl("state").textContent = "Connected"; });
   rfb.addEventListener("credentialsrequired", () => { scrEl("state").textContent = "Disconnected"; scrSay("The program's screen asked for a password, which this page cannot give."); });
   rfb.addEventListener("disconnect", () => {
     if (run !== scr.run) return;
+    controls(false);
     scrEl("state").textContent = "Disconnected";
     if (!connected) scrRecheck(run);
   });
