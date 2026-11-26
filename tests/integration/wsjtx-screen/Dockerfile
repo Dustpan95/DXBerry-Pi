@@ -25,6 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && useradd --system --user-group --create-home --home-dir /var/lib/dxb-wsjtx-home dxbapps \
  && printf 'isolated-wsjtx-manager\n' > /fixture/wsjtx-manager-guest \
  && printf '11223344556677889900aabbccddeeff00\n' > /etc/machine-id
+RUN --network=none cd /fixture \
+ && ft8sim 'CQ K1ABC FN42' 1500 0 0 0 1 10 \
+ && mv 000000_000001.wav 260101_120000.wav
 COPY --from=compile /wsjtx-manager.test /fixture/wsjtx-manager.test
 COPY tests/integration/wsjtx-application/audio-info.py /fixture/audio-info.py
 COPY tests/integration/wsjtx-manager/init /init

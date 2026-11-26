@@ -15,9 +15,8 @@ import (
 
 const screenFT8DialHz = 14074000
 
-// Unmodified F12/F11 move only the FT8 receive offset. Use the application
-// owner's private display and the window belonging to its verified service PID.
-func checkScreenReceiveOffset(t *testing.T, ctx context.Context, receiver screenReceiver, dir, pid string, uid, gid int) {
+// Use the application owner's private display and the verified service PID.
+func openScreenWindow(t *testing.T, ctx context.Context, dir, pid string, uid, gid int) (func(...string) string, string) {
 	t.Helper()
 	x := func(args ...string) string {
 		t.Helper()
@@ -25,10 +24,10 @@ func checkScreenReceiveOffset(t *testing.T, ctx context.Context, receiver screen
 		defer cancel()
 		cmd := exec.CommandContext(commandCtx, "/usr/bin/xdotool", args...)
 		cmd.Env = []string{"DISPLAY=:102", "XAUTHORITY=" + filepath.Join(dir, "Xauthority"), "LANG=C.UTF-8"}
-		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}}
+		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: []uint32{}}}
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			t.Fatalf("receive offset GUI command %s: %v (%s)", args[0], err, out)
+			t.Fatalf("screen GUI command %s: %v (%s)", args[0], err, out)
 		}
 		return strings.TrimSpace(string(out))
 	}
@@ -37,6 +36,11 @@ func checkScreenReceiveOffset(t *testing.T, ctx context.Context, receiver screen
 		t.Fatal("expected one managed WSJT-X main window")
 	}
 	x("windowactivate", "--sync", window)
+	return x, window
+}
+
+func checkScreenReceiveOffset(t *testing.T, receiver screenReceiver, x func(...string) string, window string) {
+	t.Helper()
 	original, ok := receiver.Snapshot("fixture1")
 	if !ok || original.Observation.Status == nil || original.Observation.StatusSeenAt == nil {
 		t.Fatal("initial receive status unavailable")
