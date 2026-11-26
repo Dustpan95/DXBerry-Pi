@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func checkScreenOfflineDecode(t *testing.T, receiver screenReceiver, x func(...string) string, window, pid string) {
+func checkScreenOfflineDecode(t *testing.T, receiver screenReceiver, x func(...string) string, window, pid, wav string) {
 	t.Helper()
 	start, ok := receiver.Snapshot("fixture1")
 	if !ok || len(start.Observation.Decodes) != 0 {
@@ -38,7 +38,7 @@ func checkScreenOfflineDecode(t *testing.T, receiver screenReceiver, x func(...s
 	if _, err := strconv.ParseUint(dialog, 10, 32); err != nil || x("getwindowpid", dialog) != pid || x("getactivewindow") != dialog {
 		t.Fatal("expected the managed application's active Open File dialog")
 	}
-	x("type", "/fixture/260101_120000.wav")
+	x("type", wav)
 	opened := time.Now()
 	x("key", "Return")
 	var decode ReceivedDecode
