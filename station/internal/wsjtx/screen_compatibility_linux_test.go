@@ -250,11 +250,8 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 				if o.Heartbeat.Version == nil || *o.Heartbeat.Version != "3.0.2" || o.Status.TXEnabled || o.Status.Transmitting || o.Status.DECall == nil || *o.Status.DECall != "N0CALL" || o.Status.DEGrid == nil || *o.Status.DEGrid != "AA00aa" || o.Counters.Malformed != 0 || o.Counters.WrongIdentity != 0 || s.Transport.QueueDrops != 0 || s.Transport.WrongPeer != 0 {
 					t.Fatal("actual screen-session application evidence mismatch")
 				}
-				// Startup can publish intermediate dial values before the saved FT8 profile is applied.
-				if routing != nil || o.Status.DialFrequency == screenFT8DialHz {
-					observed = true
-					break
-				}
+				observed = true
+				break
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
@@ -313,7 +310,11 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 			t.Fatal("actual private X cookie unavailable")
 		}
 		if routing == nil {
-			checkScreenReceiveOffset(t, ctx, receiver, dir, appPID, uid, gid)
+			x, window := openScreenWindow(t, ctx, dir, appPID, uid, gid)
+			checkScreenReceiveOffset(t, receiver, x, window)
+			if generation == 1 {
+				checkScreenOfflineDecode(t, receiver, x, window, appPID)
+			}
 		}
 		if routing != nil && generation == 0 {
 			routing.restartWhileRunning(t, ctx)
@@ -350,9 +351,9 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 	}
 	report := map[string]any{"kind": "wsjtx-real-screen-session", "result": "partial", "package_sha256": applicationPackageHash,
 		"passed":   []string{"production screen runner and WSJT-X module", "actual Xvnc/Openbox with private UNIX VNC and X cookie", "two fresh actual application observations and manager invocations", "normal mixed-mode stop and real stop-post guard", "fresh stopped checks before synthetic reprepare"},
-		"untested": []string{"physical eligibility and public prepare/session/stopped IPC", "native route restoration and update/rollback", "Decode/Clear application input", "ARM64 capture workload", "physical radio/RF"}}
+		"untested": []string{"physical eligibility and public prepare/session/stopped IPC", "native route restoration and update/rollback", "ARM64 capture workload", "physical radio/RF"}}
 	if routing == nil {
-		report["passed"] = append(report["passed"].([]string), "receive-offset GUI changes and Status latency on both managed starts")
+		report["passed"] = append(report["passed"].([]string), "receive-offset GUI changes and Status latency on both managed starts", "actual FT8 WAV file decode with OffAir flag and GUI band-activity clear")
 	} else {
 		report["kind"] = "wsjtx-public-hook-routing"
 		report["passed"] = append(report["passed"].([]string), "actual public root hook IPC", "actual application-user settings helper", "durable approval/generation/journal", "managed route installation and restoration on two normal stops", "running mutation refusal and routing/logging preservation", "actual service/receiver replacement while application remains running", "owed-route restoration after replacement and fresh persistent endpoint")

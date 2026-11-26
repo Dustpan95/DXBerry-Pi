@@ -15,9 +15,8 @@ import (
 
 const screenFT8DialHz = 14074000
 
-// Unmodified F12/F11 move only the FT8 receive offset. Use the application
-// owner's private display and the window belonging to its verified service PID.
-func checkScreenReceiveOffset(t *testing.T, ctx context.Context, receiver screenReceiver, dir, pid string, uid, gid int) {
+// Use the application owner's private display and the verified service PID.
+func openScreenWindow(t *testing.T, ctx context.Context, dir, pid string, uid, gid int) (func(...string) string, string) {
 	t.Helper()
 	x := func(args ...string) string {
 		t.Helper()
@@ -25,10 +24,10 @@ func checkScreenReceiveOffset(t *testing.T, ctx context.Context, receiver screen
 		defer cancel()
 		cmd := exec.CommandContext(commandCtx, "/usr/bin/xdotool", args...)
 		cmd.Env = []string{"DISPLAY=:102", "XAUTHORITY=" + filepath.Join(dir, "Xauthority"), "LANG=C.UTF-8"}
-		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}}
+		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: []uint32{}}}
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			t.Fatalf("receive offset GUI command %s: %v (%s)", args[0], err, out)
+			t.Fatalf("screen GUI command %s: %v (%s)", args[0], err, out)
 		}
 		return strings.TrimSpace(string(out))
 	}
@@ -37,15 +36,49 @@ func checkScreenReceiveOffset(t *testing.T, ctx context.Context, receiver screen
 		t.Fatal("expected one managed WSJT-X main window")
 	}
 	x("windowactivate", "--sync", window)
-	original, ok := receiver.Snapshot("fixture1")
-	if !ok || original.Observation.Status == nil || original.Observation.StatusSeenAt == nil {
-		t.Fatal("initial receive status unavailable")
+	return x, window
+}
+
+// WSJT-X suppresses UDP decodes for 0.6 FT8 periods after a band change.
+// Require the configured idle profile throughout that interval before using
+// the GUI. Startup can briefly report the saved dial and then change away.
+func waitScreenFT8Ready(t *testing.T, receiver screenReceiver) Snapshot {
+	t.Helper()
+	var stableSince time.Time
+	var last Snapshot
+	for deadline := time.Now().Add(35 * time.Second); time.Now().Before(deadline); {
+		current, ok := receiver.Snapshot("fixture1")
+		last = current.Observation
+		s := last.Status
+		if !ok || last.Availability != Live || s == nil || last.StatusSeenAt == nil {
+			t.Fatal("initial receive status unavailable")
+		}
+		if s.TXEnabled || s.Transmitting {
+			t.Fatal("transmit active during receive-only fixture startup")
+		}
+		if s.Mode != nil && *s.Mode == "FT8" && s.DialFrequency == screenFT8DialHz && s.RXOffset < 4999 {
+			if stableSince.IsZero() {
+				stableSince = time.Now()
+			} else if time.Since(stableSince) >= 10*time.Second {
+				return last
+			}
+		} else {
+			stableSince = time.Time{}
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	o := original.Observation
+	mode := ""
+	if last.Status != nil && last.Status.Mode != nil {
+		mode = *last.Status.Mode
+	}
+	t.Fatalf("FT8 profile did not settle: mode=%q dial=%d RX=%d", mode, last.Status.DialFrequency, last.Status.RXOffset)
+	return Snapshot{}
+}
+
+func checkScreenReceiveOffset(t *testing.T, receiver screenReceiver, x func(...string) string, window string) {
+	t.Helper()
+	o := waitScreenFT8Ready(t, receiver)
 	initial := o.Status
-	if initial.Mode == nil || *initial.Mode != "FT8" || initial.DialFrequency != screenFT8DialHz || initial.RXOffset >= 4999 || initial.TXEnabled || initial.Transmitting {
-		t.Fatal("expected an idle FT8 receive offset")
-	}
 	for _, step := range []struct {
 		key    string
 		offset uint32

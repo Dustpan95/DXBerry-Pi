@@ -28,11 +28,16 @@ The runner now launches the program in a private process group and applies its
 existing TERM/KILL grace to that group, including children whose parent exited.
 The unit kill mode, lifecycle guard and radio cleanup policy remain unchanged.
 
+The second managed start also opens a synthetic FT8 WAV through the real file dialog.
+The pinned WSJT-X package generates the file at image build time with ft8sim.
+The observer must receive the known text, UTC time, audio offset, FT8 mode
+and off-air flag. The Erase button mnemonic then clears band activity.
+The test checks for a new Clear and an empty observer history.
+
 This is partial session-runner acceptance. Synthetic preparation bypasses
 physical eligibility and public prepare/session/stopped IPC. It does not prove
-native route restoration, update/rollback, GUI changes, Decode/Clear input,
-ARM64 capture workload or physical radio/RF operation. The fixture sends no
-application controls, touches no station settings and enables no feature.
+native route restoration, update/rollback,
+ARM64 capture workload or physical radio/RF operation.
 
 Build the image with `tests/integration/wsjtx-screen/Dockerfile`, then use the
 same isolated invocation as the manager fixture: an unprivileged host UID,
