@@ -1,17 +1,19 @@
 FROM golang:1.24.4-bookworm AS compile
+RUN apt-get update && apt-get install -y --no-install-recommends libpam0g-dev libopus-dev pkg-config \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY station/go.mod station/go.sum ./
-COPY station/internal/pat ./internal/pat
+RUN GOTOOLCHAIN=local go mod download
+COPY station/ ./
 RUN --network=none CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off GOMAXPROCS=4 \
     go vet -tags=patcompat,patmanager ./internal/pat \
  && CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off GOMAXPROCS=4 \
     go test -c -tags=patcompat,patmanager -o /pat-manager.test ./internal/pat
 
-COPY station/internal/programstate ./internal/programstate
-COPY station/cmd/dxberry-program-state ./cmd/dxberry-program-state
-RUN GOTOOLCHAIN=local go mod download golang.org/x/sys
 RUN --network=none CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off \
-    go build -mod=readonly -o /dxberry-program-state ./cmd/dxberry-program-state
+    go build -mod=readonly -o /dxberry-program-state ./cmd/dxberry-program-state \
+ && CGO_ENABLED=1 GOTOOLCHAIN=local GOPROXY=off GOMAXPROCS=4 \
+    go build -tags=nolibopusfile -trimpath -o /dxberryd ./cmd/dxberryd
 
 WORKDIR /peer
 COPY tests/integration/pat-manager/peer/ ./
@@ -28,14 +30,21 @@ FROM debian:trixie-slim AS guest
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     systemd-sysv dbus bash util-linux coreutils procps iproute2 jq libax25 linux-image-amd64 \
+    curl nginx openssl passwd libpam0g libpam-modules libpam-runtime libopus0 \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 COPY --from=package /package/pat_1.0.1_linux_amd64.deb /fixture/pat_1.0.1_linux_amd64.deb
 RUN dpkg --install /fixture/pat_1.0.1_linux_amd64.deb \
  && useradd --system --user-group --create-home --home-dir /var/lib/dxb-pat-home dxbapps \
+ && groupadd -f sudo && useradd --create-home --user-group --groups sudo fixtureadmin \
  && groupadd --system dxbscreen \
  && usermod -aG dxbscreen,audio,dialout dxbapps \
  && printf 'isolated-pat-manager\n' > /fixture/pat-manager-guest \
  && printf '11223344556677889900aabbccddeeff00\n' > /etc/machine-id
+COPY --from=compile /dxberryd /opt/dxberry/bin/dxberryd
+COPY provision/templates/pam-dxberry /etc/pam.d/dxberry
+COPY provision/templates/dxberryd.service /etc/systemd/system/dxberryd.service
+COPY provision/templates/nginx-dxberry.conf /fixture/nginx-dxberry.conf
+COPY tests/integration/pat-manager/console-fixture.sh /fixture/console-fixture.sh
 COPY --from=compile /dxberry-program-state /opt/dxberry/bin/dxberry-program-state
 COPY provision/bin/dxberry-app /opt/dxberry/bin/dxberry-app
 COPY provision/lib/ /opt/dxberry/lib/

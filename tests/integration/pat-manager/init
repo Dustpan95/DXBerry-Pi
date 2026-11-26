@@ -14,7 +14,7 @@ After=sysinit.target
 [Service]
 Type=oneshot
 PrivateDevices=yes
-TimeoutStartSec=195
+TimeoutStartSec=215
 ExecStart=/usr/local/libexec/dxb-pat-manager-test
 StandardOutput=journal+console
 StandardError=journal+console

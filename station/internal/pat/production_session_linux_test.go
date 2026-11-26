@@ -14,7 +14,7 @@ import (
 // Exercise the shipped session template with a synthetic sysfs inventory.
 func TestPatProductionSession(t *testing.T) {
 	requirePatManagerGuest(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 	defer cancel()
 	run := func(phase, input string) {
 		t.Helper()
@@ -61,6 +61,7 @@ func TestPatProductionSession(t *testing.T) {
 	if err != nil || string(client) != "autospawn = no\n" {
 		t.Fatal("session runner did not prepare its private client configuration")
 	}
+	run("observe", "")
 	run("stop", "")
 	if _, err := reader.Read(ctx, radio); err != ErrUnavailable {
 		t.Fatalf("stopped production session supplied a status: %v", err)

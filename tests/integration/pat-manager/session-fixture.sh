@@ -33,6 +33,7 @@ RECORD
     systemctl start "$unit"
     [[ $(systemctl show "$unit" -p ActiveState --value) == inactive ]]
     [[ -f $session.waiting && ! -e $session.env && ! -e $session.d ]]
+    bash /fixture/console-fixture.sh setup
     ;;
   start)
     fx_usb_device "$sys" 1-1.3 f00d 0002 fixture2 'Fixture serial function'
@@ -48,11 +49,13 @@ RECORD
       and .ardop.ptt_ctrl == false and .hamlib_rigs.fixture2.address == "127.0.0.1:4534"
       and .auto_download_size_limit == 321 and .listen == []' "$settings" >/dev/null
     ;;
+  observe) bash /fixture/console-fixture.sh running ;;
   stop)
     rm "$sys/class/tty/ttyUSB0"
     systemctl stop "$unit"
     [[ $(systemctl show "$unit" -p Result --value) == success ]]
     [[ -f $session.waiting && ! -e $session.d ]]
+    bash /fixture/console-fixture.sh stopped
     ;;
   *) exit 2 ;;
 esac
