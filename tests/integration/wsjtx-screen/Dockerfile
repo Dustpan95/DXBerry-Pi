@@ -20,7 +20,7 @@ COPY --from=package --chmod=644 /package/wsjtx-3.0.2-linux-x86_64.deb /fixture/w
 RUN apt-get update && apt-get install -y --no-install-recommends \
     /fixture/wsjtx.deb pulseaudio pulseaudio-utils python3-pyqt5.qtmultimedia \
     systemd-sysv dbus bash util-linux coreutils procps iproute2 linux-image-amd64 \
-    tigervnc-standalone-server openbox xauth \
+    tigervnc-standalone-server openbox xauth xdotool \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/* \
  && useradd --system --user-group --create-home --home-dir /var/lib/dxb-wsjtx-home dxbapps \
  && printf 'isolated-wsjtx-manager\n' > /fixture/wsjtx-manager-guest \

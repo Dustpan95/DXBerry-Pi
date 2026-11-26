@@ -195,7 +195,9 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 		path := configDir + "/WSJT-X - fixture1.ini"
 		if routing == nil || generation == 0 {
 			profile := fmt.Sprintf("[Configuration]\nMyCall=N0CALL\nMyGrid=AA00aa\nRig=None\nSoundInName=%q\nSoundOutName=%q\nUDPServer=127.0.0.1\nUDPServerPort=%d\nAcceptUDPRequests=false\nBroadcastToN1MM=true\nN1MMServer=127.0.0.2\nN1MMServerPort=23333\n[Common]\nMode=FT8\n[MainWindow]\nAutoSeq=false\n", audio.Input, audio.Output, port)
-			if routing != nil {
+			if routing == nil {
+				profile = strings.Replace(profile, "[Common]\n", fmt.Sprintf("[Common]\nDialFreq=%d\n", screenFT8DialHz), 1)
+			} else {
 				profile = strings.Replace(profile, "UDPServer=127.0.0.1\nUDPServerPort=2237\n", "UDPServer=\"localhost\"\nUDPServerPort=02237\n", 1)
 				profile += "[MultiSettings]\nCurrentName=Default\nOther%20Profile\\Configuration\\UDPServer=127.0.0.2\nOther%20Profile\\Configuration\\UDPServerPort=2238\nOther%20Profile\\OtherKey=keep\nBlank\\MultiSettingsPlaceHolder=@Invalid()\n"
 			}
@@ -248,8 +250,11 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 				if o.Heartbeat.Version == nil || *o.Heartbeat.Version != "3.0.2" || o.Status.TXEnabled || o.Status.Transmitting || o.Status.DECall == nil || *o.Status.DECall != "N0CALL" || o.Status.DEGrid == nil || *o.Status.DEGrid != "AA00aa" || o.Counters.Malformed != 0 || o.Counters.WrongIdentity != 0 || s.Transport.QueueDrops != 0 || s.Transport.WrongPeer != 0 {
 					t.Fatal("actual screen-session application evidence mismatch")
 				}
-				observed = true
-				break
+				// Startup can publish intermediate dial values before the saved FT8 profile is applied.
+				if routing != nil || o.Status.DialFrequency == screenFT8DialHz {
+					observed = true
+					break
+				}
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
@@ -267,6 +272,7 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 		if err != nil {
 			t.Fatal("actual session cgroup unavailable")
 		}
+		var appPID string
 		for _, name := range []string{"wsjtx", "Xvnc", "openbox"} {
 			reference, err := os.Stat("/usr/bin/" + name)
 			if err != nil {
@@ -280,6 +286,9 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 				actual, err := os.Stat(filepath.Join("/proc", pid, "exe"))
 				if err == nil && os.SameFile(actual, reference) {
 					found = true
+					if name == "wsjtx" {
+						appPID = pid
+					}
 				}
 			}
 			if !found {
@@ -302,6 +311,9 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 		}
 		if info, err := os.Stat(dir + "/Xauthority"); err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Sys().(*syscall.Stat_t).Uid != uint32(uid) {
 			t.Fatal("actual private X cookie unavailable")
+		}
+		if routing == nil {
+			checkScreenReceiveOffset(t, ctx, receiver, dir, appPID, uid, gid)
 		}
 		if routing != nil && generation == 0 {
 			routing.restartWhileRunning(t, ctx)
@@ -338,8 +350,10 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 	}
 	report := map[string]any{"kind": "wsjtx-real-screen-session", "result": "partial", "package_sha256": applicationPackageHash,
 		"passed":   []string{"production screen runner and WSJT-X module", "actual Xvnc/Openbox with private UNIX VNC and X cookie", "two fresh actual application observations and manager invocations", "normal mixed-mode stop and real stop-post guard", "fresh stopped checks before synthetic reprepare"},
-		"untested": []string{"physical eligibility and public prepare/session/stopped IPC", "native route restoration and update/rollback", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}}
-	if routing != nil {
+		"untested": []string{"physical eligibility and public prepare/session/stopped IPC", "native route restoration and update/rollback", "Decode/Clear application input", "ARM64 capture workload", "physical radio/RF"}}
+	if routing == nil {
+		report["passed"] = append(report["passed"].([]string), "receive-offset GUI changes and Status latency on both managed starts")
+	} else {
 		report["kind"] = "wsjtx-public-hook-routing"
 		report["passed"] = append(report["passed"].([]string), "actual public root hook IPC", "actual application-user settings helper", "durable approval/generation/journal", "managed route installation and restoration on two normal stops", "running mutation refusal and routing/logging preservation", "actual service/receiver replacement while application remains running", "owed-route restoration after replacement and fresh persistent endpoint")
 		report["untested"] = []string{"physical eligibility and public prepare/session CLI", "whole-process replacement, abrupt death and interrupted helper write", "update/rollback", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}
