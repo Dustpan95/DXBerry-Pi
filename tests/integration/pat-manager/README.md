@@ -57,7 +57,11 @@ the same radio before startup, while Pat is running, and after shutdown. The
 test checks the public response fields and requires both unavailable responses
 to omit the earlier status. An anonymous request must require login.
 
-The fixture uses Pat alone with an empty transport list and PTT disabled.
+The stock ARDOP companion runs the upstream 1.0.4.1.3 release source against
+an ALSA null PCM. The session supplies the device argument through its normal
+environment file. The check reads the modem version on its local command
+socket and verifies that the companion stops with Pat. Pat has an empty
+transport list and PTT is disabled.
 
 After preparing the image, run from the repository on Linux/amd64:
 
@@ -75,4 +79,4 @@ guest completion marker, with no failure marker. The console log contains an
 explicitly partial synthetic report. Failure to obtain assets, boot the guest,
 start Pat or verify ownership fails the job; it is never converted to a skip.
 
-ARDOP, physical eligibility, ARM64 capture workload and RF acceptance remain open. Native collection stays disabled on the maintained Pi.
+ARDOP over a physical sound card, physical eligibility, ARM64 capture workload and RF acceptance remain open. Native collection stays disabled on the maintained Pi.

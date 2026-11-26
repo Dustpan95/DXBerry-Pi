@@ -5,6 +5,7 @@ trap 'echo "Fixture phase $1 failed on line $LINENO" >&2' ERR
 # shellcheck source=tests/fixtures/sysfs.sh
 source /fixture/sysfs.sh
 unit=dxberry-screen@pat-fixture2.service
+modem=dxberry-ardop@pat-fixture2.service
 home=/var/lib/dxberry-apps
 session=/run/dxberry/sessions/pat-fixture2
 sys=/run/fixture2-sysfs
@@ -19,6 +20,12 @@ case "$1" in
     cat > "/etc/systemd/system/$unit.d/fixture.conf" <<UNIT
 [Service]
 Environment=DXB_SYSFS_ROOT=$sys
+PrivateDevices=yes
+UNIT
+    install -d -m 0755 "/etc/systemd/system/$modem.d"
+    cat > "/etc/systemd/system/$modem.d/fixture.conf" <<'UNIT'
+[Service]
+Environment=ALSA_CONFIG_PATH=/fixture/asound.conf
 PrivateDevices=yes
 UNIT
     # Only the class link models presence. Nothing creates a device node.
@@ -40,6 +47,11 @@ RECORD
     fx_usb_function "$sys" 1-1.3 0 serial ttyUSB0
     DXB_SYSFS_ROOT=$sys /opt/dxberry/bin/dxberry-app start fixture2
     [[ ! -e $session.waiting ]]
+    systemctl is-active --quiet "$modem"
+    [[ $(systemctl show "$modem" -p NRestarts --value) == 0 ]]
+    modem_pid=$(systemctl show "$modem" -p MainPID --value)
+    [[ $(readlink "/proc/$modem_pid/exe") == /opt/dxberry-apps/ardop/ardopcf ]]
+    [[ ! -e /proc/$modem_pid/root/dev/snd ]]
     [[ -f /var/lib/dxberry/apps/firstfill/pat-fixture2 ]]
     [[ -s /var/lib/dxberry/apps/wired/pat-fixture2 ]]
     [[ $(stat -c '%U:%G:%a' "$session.env") == root:dxbscreen:640 ]]
@@ -54,6 +66,8 @@ RECORD
     rm "$sys/class/tty/ttyUSB0"
     systemctl stop "$unit"
     [[ $(systemctl show "$unit" -p Result --value) == success ]]
+    [[ $(systemctl show "$modem" -p ActiveState --value) == inactive ]]
+    [[ $(systemctl show "$modem" -p NRestarts --value) == 0 ]]
     [[ -f $session.waiting && ! -e $session.d ]]
     bash /fixture/console-fixture.sh stopped
     ;;
