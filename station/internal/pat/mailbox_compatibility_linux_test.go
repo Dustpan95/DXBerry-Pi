@@ -50,30 +50,31 @@ func queueFixtureMessage(t *testing.T, ctx context.Context) {
 	}
 }
 
-func readFixtureMessage(t *testing.T, ctx context.Context) string {
+func readFixtureMailbox(t *testing.T, ctx context.Context, endpoint string, dst any) {
 	t.Helper()
 	client := fixtureMailboxClient()
 	defer client.CloseIdleConnections()
-	read := func(endpoint string, dst any) {
-		t.Helper()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatal("could not read fixture mailbox", err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("fixture mailbox returned HTTP %d", resp.StatusCode)
-		}
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 32768)).Decode(dst); err != nil {
-			t.Fatal("invalid fixture mailbox response", err)
-		}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal("could not read fixture mailbox", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("fixture mailbox returned HTTP %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 32768)).Decode(dst); err != nil {
+		t.Fatal("invalid fixture mailbox response", err)
+	}
+}
+
+func readFixtureMessage(t *testing.T, ctx context.Context) string {
+	t.Helper()
 	var rows []struct{ MID string }
-	read(fixtureOutboxURL, &rows)
+	readFixtureMailbox(t, ctx, fixtureOutboxURL, &rows)
 	if len(rows) != 1 || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`).MatchString(rows[0].MID) {
 		t.Fatal("expected one queued fixture message")
 	}
@@ -81,9 +82,19 @@ func readFixtureMessage(t *testing.T, ctx context.Context) string {
 		MID, Subject, Body string
 		P2POnly            bool
 	}
-	read(fixtureOutboxURL+"/"+rows[0].MID, &message)
+	readFixtureMailbox(t, ctx, fixtureOutboxURL+"/"+rows[0].MID, &message)
 	if message.MID != rows[0].MID || message.Subject != fixtureSubject || strings.TrimSpace(message.Body) != fixtureBody || !message.P2POnly {
 		t.Fatal("queued fixture content mismatch")
 	}
 	return message.MID
+}
+
+func checkFixtureDelivery(t *testing.T, ctx context.Context, mid string) {
+	t.Helper()
+	var out, sent []struct{ MID string }
+	readFixtureMailbox(t, ctx, fixtureOutboxURL, &out)
+	readFixtureMailbox(t, ctx, "http://127.0.0.1:8180/api/mailbox/sent", &sent)
+	if len(out) != 0 || len(sent) != 1 || sent[0].MID != mid {
+		t.Fatal("expected empty Pat outbox and original MID in sent mailbox")
+	}
 }

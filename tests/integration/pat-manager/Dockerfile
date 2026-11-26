@@ -7,6 +7,11 @@ RUN --network=none CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off GOMAXPROCS=4 \
  && CGO_ENABLED=0 GOTOOLCHAIN=local GOPROXY=off GOMAXPROCS=4 \
     go test -c -tags=patcompat,patmanager -o /pat-manager.test ./internal/pat
 
+WORKDIR /peer
+COPY tests/integration/pat-manager/peer/ ./
+RUN GOTOOLCHAIN=local go mod download github.com/la5nta/wl2k-go github.com/paulrosania/go-charset
+RUN --network=none CGO_ENABLED=0 GOPROXY=off GOTOOLCHAIN=local go build -mod=readonly -o /pat-peer .
+
 FROM debian:trixie-slim AS package
 RUN apt-get update && apt-get install -y --no-install-recommends bash curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
@@ -23,6 +28,7 @@ RUN dpkg --install /fixture/pat_1.0.1_linux_amd64.deb \
  && useradd --system --user-group --create-home --home-dir /var/lib/dxb-pat-home dxbapps \
  && printf 'isolated-pat-manager\n' > /fixture/pat-manager-guest \
  && printf '11223344556677889900aabbccddeeff00\n' > /etc/machine-id
+COPY --from=compile /pat-peer /fixture/pat-peer
 COPY --from=compile /pat-manager.test /fixture/pat-manager.test
 COPY tests/integration/pat-manager/init /init
 COPY tests/integration/pat-manager/manager-test.sh /usr/local/libexec/dxb-pat-manager-test
