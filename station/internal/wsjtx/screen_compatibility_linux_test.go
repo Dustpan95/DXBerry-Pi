@@ -195,7 +195,9 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 		path := configDir + "/WSJT-X - fixture1.ini"
 		if routing == nil || generation == 0 {
 			profile := fmt.Sprintf("[Configuration]\nMyCall=N0CALL\nMyGrid=AA00aa\nRig=None\nSoundInName=%q\nSoundOutName=%q\nUDPServer=127.0.0.1\nUDPServerPort=%d\nAcceptUDPRequests=false\nBroadcastToN1MM=true\nN1MMServer=127.0.0.2\nN1MMServerPort=23333\n[Common]\nMode=FT8\n[MainWindow]\nAutoSeq=false\n", audio.Input, audio.Output, port)
-			if routing != nil {
+			if routing == nil {
+				profile = strings.Replace(profile, "[Common]\n", fmt.Sprintf("[Common]\nDialFreq=%d\n", screenFT8DialHz), 1)
+			} else {
 				profile = strings.Replace(profile, "UDPServer=127.0.0.1\nUDPServerPort=2237\n", "UDPServer=\"localhost\"\nUDPServerPort=02237\n", 1)
 				profile += "[MultiSettings]\nCurrentName=Default\nOther%20Profile\\Configuration\\UDPServer=127.0.0.2\nOther%20Profile\\Configuration\\UDPServerPort=2238\nOther%20Profile\\OtherKey=keep\nBlank\\MultiSettingsPlaceHolder=@Invalid()\n"
 			}
@@ -248,9 +250,8 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 				if o.Heartbeat.Version == nil || *o.Heartbeat.Version != "3.0.2" || o.Status.TXEnabled || o.Status.Transmitting || o.Status.DECall == nil || *o.Status.DECall != "N0CALL" || o.Status.DEGrid == nil || *o.Status.DEGrid != "AA00aa" || o.Counters.Malformed != 0 || o.Counters.WrongIdentity != 0 || s.Transport.QueueDrops != 0 || s.Transport.WrongPeer != 0 {
 					t.Fatal("actual screen-session application evidence mismatch")
 				}
-				// The first startup Status can still have a zero dial frequency.
-				// Begin the GUI comparison only after the application publishes its dial.
-				if routing != nil || o.Status.DialFrequency != 0 {
+				// Startup can publish intermediate dial values before the saved FT8 profile is applied.
+				if routing != nil || o.Status.DialFrequency == screenFT8DialHz {
 					observed = true
 					break
 				}

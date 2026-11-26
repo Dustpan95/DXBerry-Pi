@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const screenFT8DialHz = 14074000
+
 // Unmodified F12/F11 move only the FT8 receive offset. Use the application
 // owner's private display and the window belonging to its verified service PID.
 func checkScreenReceiveOffset(t *testing.T, ctx context.Context, receiver screenReceiver, dir, pid string, uid, gid int) {
@@ -41,7 +43,7 @@ func checkScreenReceiveOffset(t *testing.T, ctx context.Context, receiver screen
 	}
 	o := original.Observation
 	initial := o.Status
-	if initial.Mode == nil || *initial.Mode != "FT8" || initial.DialFrequency == 0 || initial.RXOffset >= 4999 || initial.TXEnabled || initial.Transmitting {
+	if initial.Mode == nil || *initial.Mode != "FT8" || initial.DialFrequency != screenFT8DialHz || initial.RXOffset >= 4999 || initial.TXEnabled || initial.Transmitting {
 		t.Fatal("expected an idle FT8 receive offset")
 	}
 	for _, step := range []struct {
