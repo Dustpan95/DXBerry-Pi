@@ -34,11 +34,17 @@ be rejected. A new real PAM login must produce a different cookie, with the same
 recovery/refusal evidence. The live application identity, managed profile,
 generation, approval and guard preferences must remain unchanged throughout.
 
-Finally, the actual console CLI in the application's normal stop-post must
+The guest invokes the updater's release guard against an incompatible staged
+tree while the application still owns its route. The guard must refuse the
+update and block fresh acquisitions. The actual console CLI in the application's normal stop-post must
 restore the entire owed routing namespace through the complete restarted daemon.
 Authenticated status must then show no retained route or observation. Original
 raw spellings, saved profiles, request/N1MM policy and SWR/PTT preferences retain
-the shared fixture checks. Test cleanup stops the actual daemon through systemd.
+the shared fixture checks. After restoration, the guard must complete its audit. The guest checks that
+a held update lock, a stale receipt, and an active systemd update job each
+prevent resume. Once the job stops, the current receipt must resume acquisition
+exactly once and preserve the saved endpoint history. The job runs a sleep
+process to exercise manager state. Test cleanup stops the daemon through systemd.
 
 The client explicitly carries the actual returned cookie to the private HTTP
 backend. This is not browser cookie transport or nginx/TLS acceptance. No fake

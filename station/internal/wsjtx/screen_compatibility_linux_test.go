@@ -179,6 +179,7 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 	var previousInvocation string
 	var previousBinding screenBinding
 	phasePrefix := ""
+	var release *releaseCoordinationFixture
 	var interruptedPort string
 	for generation := 0; generation < 2; generation++ {
 		var binding screenBinding
@@ -307,12 +308,16 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 		}
 		if options.consoleDaemon && generation == 1 {
 			routing.replaceWithConsoleDaemon(t, ctx)
+			release = routing.pauseForRelease(t, ctx)
 		}
 		if ctl("stop", unit) != nil || g.check(ctx, "fixture1", "", programStopped) != nil {
 			t.Fatal("normal screen-session stop did not establish a safe restoration boundary")
 		}
 		if routing != nil {
 			routing.stopped(t, ctx)
+			if release != nil {
+				release.reconcile(t, ctx, routing)
+			}
 		}
 		phases, err := os.ReadFile("/run/dxb-wsjtx/phase-events")
 		if err != nil || string(phases) != phasePrefix+strings.Repeat("pre:pass\npost:pass\n", generation+1) {
@@ -349,7 +354,7 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 		}
 		if options.consoleDaemon {
 			report["kind"] = "wsjtx-console-daemon-recovery"
-			report["passed"] = append(report["passed"].([]string), "complete production console daemon under its actual systemd unit", "real PAM login and session cookie with unauthenticated/cross-origin refusal", "actual daemon SIGKILL and automatic manager restart", "old login session refused after process death", "recovery-required state and running refusal through actual authenticated HTTP", "normal actual CLI stop-post restores through complete restarted daemon")
+			report["passed"] = append(report["passed"].([]string), "complete production console daemon under its actual systemd unit", "real PAM login and session cookie with unauthenticated/cross-origin refusal", "actual daemon SIGKILL and automatic manager restart", "old login session refused after process death", "recovery-required state and running refusal through actual authenticated HTTP", "normal actual CLI stop-post restores through complete restarted daemon", "update guard retains a pause while routing cleanup is owed", "lock, stale receipt and active update job refuse early resume", "exact receipt resumes once after restoration")
 			report["untested"] = []string{"TLS/nginx/browser authentication flow", "physical eligibility and new acquisitions through full daemon", "other helper boundaries and power loss", "actual update/rollback", "public radio/session preparation", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}
 		}
 	}
