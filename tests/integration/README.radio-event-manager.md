@@ -83,7 +83,7 @@ when the job fails.
 This job is being introduced for remote execution; its source/syntax checks do
 not establish a successful guest run. Actual workflow results provide that
 separate evidence. It does not claim hardware or real udev-device delivery,
-consumer retirement, release-tree replacement or rollback recovery acceptance.
+consumer retirement or release-tree replacement while the queue is active.
 The queue stays off on the maintained Pi.
 
 The first hosted guest booted successfully and passed coalescing and
@@ -92,3 +92,14 @@ the service's earlier `exit-code` result when a new start is rate-limited, while
 the path reports `unit-start-limit-hit`. The rate-limit check therefore requires
 that actual path result together with a failed service, before testing timer
 recovery without resetting it. This initial failed run is not full acceptance.
+
+### Software update and rollback with the production queue disabled
+
+After the queue checks, the same guest uses two local packages built with the
+station build and update-packaging scripts. It requests an update and a rollback
+through the public CLI. Each request starts a real transient systemd job. The
+guest checks its result, the version served by the managed console, the running
+executable, both tree identities and file contents, and preserved operator data.
+The release list and archive are local files. The setup hook runs the installed
+provisioner's configuration check and restarts the console. Machine provisioning,
+power loss, and an exchange with an enabled queue remain separate acceptance items.

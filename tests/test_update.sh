@@ -568,10 +568,28 @@ test_update_apply_dxberry_reports_8_when_the_release_file_does_not_take() {
     dxb_update_apply_dxberry > "$TEST_TMP/out" 2>&1; local rc=$?
     chmod 700 "$(dirname "$DXB_RELEASE_FILE")"
     assert_eq "$rc" "8"
-    assert_contains "$(cat "$TEST_TMP/out")" "does not show the new version"
+    assert_contains "$(cat "$TEST_TMP/out")" "does not match the new release record"
     assert_eq "$(cat "$DXB_OPT/VERSION")" "0.3.0-rc4"
   fi
 }
+
+# Two builds can share a version. A failed release-record rename must still be
+# reported after the exchange, including when the suite runs as root.
+test_update_rollback_requires_the_restored_commit_record() (
+  up_env; up_provision_stub
+  up_tree "$DXB_OPT" 0.3.0-rc3
+  up_tree "$DXB_OPT.prev" 0.3.0-rc3
+  sed 's/abc1234/def5678/' "$DXB_RELEASE_FILE" > "$DXB_OPT.prev/RELEASE"
+  mv() {
+    if [[ ${*: -1} == "$DXB_RELEASE_FILE" ]]; then return 1; fi
+    command mv "$@"
+  }
+  dxb_update_apply_rollback > "$TEST_TMP/out" 2>&1; assert_eq "$?" "8"
+  assert_file_contains "$DXB_OPT/RELEASE" 'DXBERRY_COMMIT=def5678'
+  assert_file_contains "$DXB_RELEASE_FILE" 'DXBERRY_COMMIT=abc1234'
+  assert_file_contains "$TEST_TMP/out" 'does not match the restored release record'
+  [[ ! -e $TEST_TMP/provision-ran ]] || _fail 'setup ran with stale release metadata'
+)
 
 # up_station_env: stand-ins for the station teardown: systemctl and nginx record to calls, a
 # station unit and site exist, and nginx is active.
