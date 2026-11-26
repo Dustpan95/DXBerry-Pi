@@ -6,12 +6,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -244,13 +246,44 @@ PrivateDevices=yes
 	if value, err := r.Read(ctx, "fixture1"); err != ErrUnavailable || !reflect.DeepEqual(value, Observation{}) {
 		t.Fatal("stopped actual unit supplied a current observation")
 	}
+	// A separate startup enables one synthetic incoming transport after all
+	// idle-reader checks. The queued message belongs to a different callsign.
+	configureFixturePeer(t, config)
+	manager(ctx, "start", unit)
+	waitFixturePeerStatus(t, ctx, r, false)
+	peer := openFixturePeer(t)
+	waitFixturePeerStatus(t, ctx, r, true)
+	manager(ctx, "stop", unit)
+	result, err := exec.CommandContext(ctx, "/usr/bin/systemctl", "show", unit, "-p", "Result", "--value").Output()
+	if err != nil || strings.TrimSpace(string(result)) != "success" {
+		t.Fatalf("active session did not stop normally: %q, %v", result, err)
+	}
+	if _, err := r.Read(ctx, "fixture1"); err != ErrUnavailable {
+		t.Fatal("stopped unit still supplied a managed status")
+	}
+	// The remote endpoint must actually close even while our socket is open.
+	if err := peer.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := io.Copy(io.Discard, io.LimitReader(peer, 8192)); err != nil || n == 8192 {
+		t.Fatalf("fixture peer failed to see the service close: bytes=%d err=%v", n, err)
+	}
+	if err := peer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	manager(ctx, "start", unit)
+	waitFixturePeerStatus(t, ctx, r, false)
+	if readFixtureMessage(t, ctx) != messageID {
+		t.Fatal("active service stop replaced the waiting outbox message")
+	}
+	manager(ctx, "stop", unit)
 	var files syscall.Statfs_t
 	if err := syscall.Statfs("/sys/fs/cgroup", &files); err != nil || uint64(files.Type) != 0x63677270 {
 		t.Fatal("private guest cgroup v2 required")
 	}
 	report := map[string]any{"kind": "pat-real-manager-reader", "result": "partial", "package_sha256": compatibilityPackageHash,
-		"passed":   []string{"actual owned idle read", "real systemd/proc/cgroup/socket metadata", "restart replacement refusal", "assignment ABA refusal", "multiple owner refusal", "queued P2P message preserved across managed restart", "stopped unit refusal"},
-		"untested": []string{"public DXBerry prepare/session/stopped hooks", "physical radio eligibility", "active Winlink session persistence", "ARM64 station workload", "physical radio/RF"}}
+		"passed":   []string{"actual owned idle read", "real systemd/proc/cgroup/socket metadata", "restart replacement refusal", "assignment ABA refusal", "multiple owner refusal", "queued P2P message preserved across managed restart", "incoming loopback P2P connection observed, normal stop during active exchange and queued message verified on restart", "stopped unit refusal"},
+		"untested": []string{"public DXBerry prepare/session/stopped hooks", "physical radio eligibility", "outbound dialing and completed peer message exchange", "ARM64 station workload", "physical radio/RF"}}
 	raw, err := json.Marshal(report)
 	if err != nil {
 		t.Fatal(err)
