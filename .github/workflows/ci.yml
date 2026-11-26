@@ -12,25 +12,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          path: fixture
+          sparse-checkout: tests/integration/graywolf-capture
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: upstream
           repository: chrissnell/graywolf
           ref: 4978244d2ea61bf5635e882ad650c46f873bd9ca
           persist-credentials: false
       - name: Build the pinned upstream audio tests on ARM64
         run: |
           set -euo pipefail
+          cd upstream
           test "$(uname -m)" = aarch64
           test "$(git rev-parse HEAD^{tree})" = 83781b3498cfb0dc7ff8fa6ed91935f0607de922
+          cp ../fixture/tests/integration/graywolf-capture/pcm.rs graywolf-modem/tests/station_pcm.rs
           docker build -t graywolf-audio-tests -f - . <<'DOCKERFILE'
           FROM rust:1-bookworm AS build
           RUN apt-get update && apt-get install -y --no-install-recommends libasound2-dev libudev-dev protobuf-compiler jq && rm -rf /var/lib/apt/lists/*
           WORKDIR /src
           COPY . .
-          RUN rustc -Vv && cargo test --locked --package graywolf-demod --lib --no-run --message-format=json > /tmp/build.json && \
-              cp "$(jq -ers '[.[] | select(.reason=="compiler-artifact" and .target.name=="graywolfmodem" and .profile.test and .executable!=null) | .executable] | select(length==1) | .[0]' /tmp/build.json)" /audio-tests
+          RUN rustc -Vv && cargo test --locked --package graywolf-demod --lib --test station_pcm --no-run --message-format=json > /tmp/build.json && \
+              cp "$(jq -ers '[.[] | select(.reason=="compiler-artifact" and .target.name=="graywolfmodem" and .profile.test and .executable!=null) | .executable] | select(length==1) | .[0]' /tmp/build.json)" /audio-tests && \
+              cp "$(jq -ers '[.[] | select(.reason=="compiler-artifact" and .target.name=="station_pcm" and .profile.test and .executable!=null) | .executable] | select(length==1) | .[0]' /tmp/build.json)" /pcm-tests
           FROM debian:bookworm-slim
           RUN apt-get update && apt-get install -y --no-install-recommends libasound2 libudev1 && rm -rf /var/lib/apt/lists/*
-          RUN printf '%s\n' 'pcm.!default { type null }' > /etc/asound.conf
+          RUN printf '%s\n' 'pcm.!default { type null }' 'pcm.dxb_fixture { type null hint { show on description "DXBerry synthetic PCM" } }' > /etc/asound.conf
           COPY --from=build /audio-tests /audio-tests
+          COPY --from=build /pcm-tests /pcm-tests
           ENTRYPOINT ["/audio-tests"]
           DOCKERFILE
       - name: Run the upstream soundcard tests without devices or network
@@ -44,3 +54,10 @@ jobs:
             output_state_survives_rebuild_sharing_receiver; do
             grep -Fx "test audio::soundcard::tests::$name ... ok" "$RUNNER_TEMP/audio-tests.log"
           done
+      - name: Reopen a named synthetic input through the modem
+        run: |
+          set -euo pipefail
+          timeout 30s docker run --rm --read-only --network none --cap-drop ALL --user 65534:65534 \
+            --security-opt no-new-privileges --entrypoint /pcm-tests graywolf-audio-tests \
+            --exact named_pcm_reopens_and_delivers_input | tee "$RUNNER_TEMP/named-pcm.log"
+          grep -F '1 passed; 0 failed' "$RUNNER_TEMP/named-pcm.log"
