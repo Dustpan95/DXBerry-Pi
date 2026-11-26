@@ -550,7 +550,8 @@ test_apps_mercury_source_uses_a_scoped_key_and_limits_packages() {
     source "$DXB_LIB/apps/mercury.sh"
     DXB_ETC_APT=$TEST_TMP/apt DXB_SHARE=$DXB_ROOT/provision/share
     mkdir -p "$DXB_ETC_APT"/{sources.list.d,preferences.d}
-    app_mercury_prepare_source && app_mercury_prepare_source || _fail "Mercury source setup failed"
+    app_mercury_prepare_source || _fail "Mercury source setup failed"
+    app_mercury_prepare_source || _fail "Mercury source could not be reused"
     assert_file_contains "$DXB_ETC_APT/sources.list.d/dxberry-mercury.list" "signed-by=$DXB_SHARE/hermes-archive.asc"
     assert_file_contains "$DXB_ETC_APT/preferences.d/dxberry-mercury" "Package: mercury mercury-ui"
     assert_file_contains "$DXB_ETC_APT/preferences.d/dxberry-mercury" "Pin-Priority: -1"
