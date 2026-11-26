@@ -20,7 +20,8 @@ COPY tests/integration/pat-manager/peer/ ./
 RUN GOTOOLCHAIN=local go mod download github.com/la5nta/wl2k-go github.com/paulrosania/go-charset
 RUN --network=none CGO_ENABLED=0 GOPROXY=off GOTOOLCHAIN=local go build -mod=readonly -o /pat-peer .
 
-FROM debian:trixie-slim AS ardop
+# The release predates GCC 14. Use the Bookworm toolchain for this source.
+FROM debian:bookworm-slim AS ardop
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git build-essential libasound2-dev \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
