@@ -68,18 +68,51 @@ _dxb_lb_recent_cache() { printf '%s\n' "${DXB_LOGBOOK_RECENT:-$DXB_RUN_DIR/logbo
 _dxb_lb_fetch_error() { printf '%s\n' "${DXB_LOGBOOK_FETCH_ERROR:-$DXB_RUN_DIR/logbook-fetch-error.json}"; }
 
 # ---- the setting ---------------------------------------------------------------------------
-# dxb_logbook_url URL: URL as it is stored - a trailing slash added, a trailing index.php dropped.
-# Only https:// (a host name or address, an optional port and a plain path), or this Pi's own
-# Wavelog on its loopback listener (http://127.0.0.1:8083/ or http://localhost:8083/): the key
-# must never cross the network in clear. 2 refused.
+# Validate a LAN HTTP authority. For a DNS name, give curl the checked address so
+# the connection uses the same answer even if a subsequent lookup would differ.
+_dxb_lb_lan_target() {
+  timeout 5 python3 - "$1" <<'PYTHON'
+import ipaddress
+import socket
+import sys
+from urllib.parse import urlsplit
+
+networks = tuple(map(ipaddress.ip_network, ("10.0.0.0/8", "172.16.0.0/12",
+                                          "192.168.0.0/16", "fc00::/7")))
+try:
+    target = urlsplit("http://" + sys.argv[1])
+    host, port = target.hostname, target.port or 80
+    try:
+        addresses = [ipaddress.ip_address(host)]
+        literal = True
+    except ValueError:
+        addresses = [ipaddress.ip_address(info[4][0]) for info in
+                     socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
+        literal = False
+    if not addresses or not all(any(ip in net for net in networks) for ip in addresses):
+        sys.exit(1)
+    if not literal:
+        ip = addresses[0]
+        print(f"{host}:{port}:{f'[{ip}]' if ip.version == 6 else ip}")
+except (OSError, ValueError, UnicodeError):
+    sys.exit(1)
+PYTHON
+}
+
+# Normalize the base URL. External HTTP requires an explicit LAN opt-in.
 dxb_logbook_url() {
-  local u=$1 port
+  local u=$1 allow=${2:-false} port authority
   [[ -n $u && $u != *[[:space:][:cntrl:]]* ]] || return 2
   u=${u%/}; u=${u%/index.php}
   if [[ $u =~ ^http://(127\.0\.0\.1|localhost):8083$ ]]; then printf '%s/\n' "$u"; return 0; fi
-  [[ $u =~ ^https://([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*|\[[0-9A-Fa-f:.]+\])(:([0-9]{1,5}))?(/[A-Za-z0-9._~%-]+)*$ ]] || return 2
+  [[ $u =~ ^https?://([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*|\[[0-9A-Fa-f:.]+\])(:([0-9]{1,5}))?(/[A-Za-z0-9._~%-]+)*$ ]] || return 2
   port=${BASH_REMATCH[6]}
   [[ -z $port ]] || (( 10#$port >= 1 && 10#$port <= 65535 )) || return 2
+  if [[ $u == http://* ]]; then
+    [[ $allow == true ]] || return 2
+    authority=${u#http://}
+    _dxb_lb_lan_target "${authority%%/*}" > /dev/null || return 2
+  fi
   printf '%s/\n' "$u"
 }
 
@@ -114,7 +147,15 @@ _dxb_lb_input() {
        station_id: (if (.station_id // "" | tostring) != "" then (.station_id | tostring) else "1" end),
        slug: (.slug // "" | tostring)}' <<< "$in") || { echo "the logbook setting could not be read" >&2; return 2; }
   url=$(jq -r .url <<< "$c")
-  url=$(dxb_logbook_url "$url") || { echo "the logbook URL must start with https:// (or be this Pi's own Wavelog, http://127.0.0.1:8083/)" >&2; return 2; }
+  url=$(dxb_logbook_url "$url" "$(jq -r '.allow_lan_http == true' <<< "$in")") || {
+    echo "Use an HTTPS address, this Pi's Wavelog, or enable LAN HTTP and enter an address that resolves to a private network." >&2
+    return 2
+  }
+  if [[ $url == http://* && ! $url =~ ^http://(127\.0\.0\.1|localhost):8083/$ ]] &&
+      ! jq -e --arg url "$url" --slurpfile old "$old" '(.key // "") != "" or $old[0].url == $url' <<< "$in" > /dev/null; then
+    echo "Enter the API key for this LAN logbook." >&2
+    return 2
+  fi
   key=$(jq -r .key <<< "$c")
   [[ -n $key ]] || { echo "the logbook needs an API key" >&2; return 2; }
   [[ $key =~ ^[A-Za-z0-9._~-]{1,128}$ ]] || { echo "that is not an API key (letters, digits and . _ ~ - only)" >&2; return 2; }
@@ -142,17 +183,26 @@ _dxb_lb_fingerprint() { jq -r '[.url, (.type // ""), .station_id, .slug] | join(
 # ---- requests ------------------------------------------------------------------------------
 # _dxb_lb_request URL MAX_S [post]: one request. The URL, headers and write-out are a curl config
 # on a pipe (-K), so nothing in them is in an argument; a post's body is stdin. https:// may only
-# be fetched (and redirected) over https; the local Wavelog's http:// over http too. Prints the
+# be fetched (and redirected) over https; approved HTTP logbooks may use HTTP too. Prints the
 # answer, then a last line with the HTTP code (000 when nothing answered); exits with curl's
 # status. curl's own messages are dropped, never shown: a Cloudlog URL carries the key.
 _dxb_lb_request() {
-  local url=$1 max=$2 p='=https'
-  [[ $url == http://* ]] && p='=https,http'
+  local url=$1 max=$2 p='=https' authority pin
+  local -a transport=()
+  if [[ $url == http://* ]]; then
+    p='=https,http'
+    transport=(--noproxy '*')
+    authority=${url#http://}; authority=${authority%%/*}
+    if [[ $authority != 127.0.0.1:8083 && $authority != localhost:8083 ]]; then
+      pin=$(_dxb_lb_lan_target "$authority") || return 6
+      [[ -z $pin ]] || transport+=(--resolve "$pin")
+    fi
+  fi
   if [[ ${3:-} == post ]]; then
-    "$DXB_LOGBOOK_CURL" -sS --connect-timeout 5 --max-time "$max" --proto "$p" --proto-redir "$p" -K <(
+    "$DXB_LOGBOOK_CURL" -q "${transport[@]}" -sS --connect-timeout 5 --max-time "$max" --proto "$p" --proto-redir "$p" -K <(
       printf 'url = "%s"\nheader = "Content-Type: application/json"\nheader = "Accept: application/json"\ndata-binary = "@-"\nwrite-out = "\\n%%{http_code}"\n' "$url") 2> /dev/null
   else
-    "$DXB_LOGBOOK_CURL" -sS --connect-timeout 5 --max-time "$max" --proto "$p" --proto-redir "$p" -K <(
+    "$DXB_LOGBOOK_CURL" -q "${transport[@]}" -sS --connect-timeout 5 --max-time "$max" --proto "$p" --proto-redir "$p" -K <(
       printf 'url = "%s"\nwrite-out = "\\n%%{http_code}"\n' "$url") < /dev/null 2> /dev/null
   fi
 }

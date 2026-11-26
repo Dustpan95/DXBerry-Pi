@@ -139,6 +139,9 @@ function progInput(id, value, attrs) {
 function progLogbookOpen(url) {
   const lb = (last && last.apps && last.apps.logbook) || {};
   const keySet = lb.key === "set";
+  const address = url || lb.url || "";
+  const lan = el("input", { type: "checkbox", id: "lb-lan-http", "aria-describedby": "lb-lan-hint" });
+  lan.checked = address.startsWith("http://") && !PROG_LOCAL_RE.test(address);
   programs.form = { saving: false, testing: false };
   document.getElementById("logbook-dialog-title").textContent = "Logbook";
   progSetError("");
@@ -146,8 +149,10 @@ function progLogbookOpen(url) {
   progSetSaving(false);
   progSetTesting(false);
   document.getElementById("logbook-fields").replaceChildren(
-    field("Address", "lb-url", progInput("lb-url", url || lb.url || "", { placeholder: "https://log.example.org/" }),
-      "Your Wavelog or Cloudlog, starting with https://. This Pi's own logbook is offered as a choice once it is installed."),
+    field("Address", "lb-url", progInput("lb-url", address, { placeholder: "https://log.example.org/" }),
+      "The address of your Wavelog or Cloudlog server."),
+    el("div", {}, el("label", { for: "lb-lan-http" }, lan, " Allow HTTP on my LAN"),
+      el("p", { id: "lb-lan-hint", class: "hint muted" }, "HTTP sends the API key without encryption. Use it only on a trusted network.")),
     field("API key", "lb-key", progInput("lb-key", "", { type: "password", autocomplete: "new-password", placeholder: keySet ? "Leave empty to keep the stored key" : "" }),
       keySet ? "Leave empty to keep the stored key." : "Made in the logbook, under your account's API keys; it needs to read and write."),
     field("Station ID", "lb-station", progInput("lb-station", lb.station_id || "1", { inputmode: "numeric" }),
@@ -188,7 +193,9 @@ function progLogbookStdin() {
   const v = id => { const e = document.getElementById(id); return e ? e.value.trim() : ""; };
   const o = { url: v("lb-url"), station_id: v("lb-station"), slug: v("lb-slug") };
   const key = v("lb-key");
-  return JSON.stringify(key ? { url: o.url, key, station_id: o.station_id, slug: o.slug } : o);
+  const request = key ? { url: o.url, key, station_id: o.station_id, slug: o.slug } : o;
+  if (document.getElementById("lb-lan-http").checked) request.allow_lan_http = true;
+  return JSON.stringify(request);
 }
 
 // progProblem EX DATA: why a logbook command failed - its JSON answer's error when Cockpit hands

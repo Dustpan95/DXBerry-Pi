@@ -253,8 +253,10 @@ and `sudo dxberry-logbook get`.
   ask for the console's login first.
 - **Before you roll back to 0.3.x**, set every radio to Graywolf or to No program. 0.3.x does not
   know the programs, so a radio left with one would have nothing running it.
-- **The logbook's address must start with https://**, except this Pi's own Wavelog. A logbook on
-  your network over plain http (or with a self-signed certificate) is not accepted in this release.
+- For a Wavelog or Cloudlog server on your network, open **Programs → Logbook → Use my own…**.
+  To use an `http://` address, select **Allow HTTP on my LAN**. Enter the address and API key,
+  then select **Save**. The Pi accepts private IPv4 addresses, IPv6 unique-local addresses, and
+  names that resolve to those addresses. HTTP sends the key without encryption.
 
 ## Radio plumbing
 

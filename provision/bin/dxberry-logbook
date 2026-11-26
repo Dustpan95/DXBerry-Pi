@@ -9,7 +9,7 @@
 #                      (dxberry-logbook-flush.timer)
 #   recent [N]         the newest N contacts (1-25, default 10), cached a minute; a Wavelog's as the
 #                      last flush fetched them
-# The url is https://, or this Pi's own Wavelog: http://127.0.0.1:8083/. --json on any subcommand.
+# LAN HTTP requires allow_lan_http:true on set/test. HTTPS and this Pi's Wavelog work by default.
 # Exit: 0 ok, 1 not root, 2 usage or bad input, 6 the server refused or did not answer (nothing saved),
 #  could not queue, or contacts still wait.
 set -uo pipefail

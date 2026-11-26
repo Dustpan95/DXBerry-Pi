@@ -110,7 +110,7 @@ function dashLogbookUrl(lb) {
   if (/^http:\/\/(127\.0\.0\.1|localhost):8083\/?$/.test(lb.url || "")) {
     return (lb.local && lb.local.web) || `https://${location.hostname}:8082/`;
   }
-  return /^https:\/\//.test(lb.url || "") ? lb.url : null;
+  return /^https?:\/\//.test(lb.url || "") ? lb.url : null;
 }
 
 function dashLogbookName(lb) {

@@ -254,6 +254,52 @@ test_logbook_url_must_be_https_or_the_local_wavelog() {
   printf '{"url":"https://w/","station_id":"1"}' | "$LB_CMD" set --json > /dev/null 2>&1; assert_eq "$?" "2"   # no key stored yet
   assert_eq "$(wc -c < "$TEST_TMP/argv")" "0"
 }
+test_logbook_http_lan_requires_consent_and_private_destination() {
+  lb_env
+  local url request
+  url=http://192.168.7.19:8088/log/
+  request=$(jq -cn --arg url "$url" '{url:$url,key:"k"}')
+  "$LB_CMD" set --json <<< "$request" >/dev/null 2>&1; assert_eq "$?" "2"
+  request=$(jq '.allow_lan_http = true' <<< "$request")
+  "$LB_CMD" set --json <<< "$request" >/dev/null; assert_eq "$?" "0"
+  assert_eq "$(jq -r .url "$DXB_LOGBOOK_FILE")" "$url"
+  assert_file_contains "$TEST_TMP/argv" "--noproxy *"
+  "$LB_CMD" test --json </dev/null >/dev/null; assert_eq "$?" "0"
+  : > "$TEST_TMP/argv"
+  for url in http://192.0.2.1/ http://169.254.1.1/ 'http://[::1]/'; do
+    jq --arg url "$url" '.url = $url' <<< "$request" | "$LB_CMD" set --json >/dev/null 2>&1
+    assert_eq "$?" "2"
+  done
+  jq '.url = "http://10.0.0.2/" | del(.key)' <<< "$request" | "$LB_CMD" test --json >/dev/null 2>&1
+  assert_eq "$?" "2"
+  assert_eq "$(wc -l < "$TEST_TMP/argv")" "0"
+  jq 'del(.key)' <<< "$request" | "$LB_CMD" test --json >/dev/null; assert_eq "$?" "0"
+  jq '.url = "http://[fd12::1]/"' <<< "$request" | "$LB_CMD" test --json >/dev/null; assert_eq "$?" "0"
+}
+
+test_logbook_http_lan_hostname_is_checked_on_each_request() {
+  lb_env
+  cat > "$TEST_TMP/sitecustomize.py" <<'PYTHON'
+import os
+import socket
+
+def addresses(host, port, **kwargs):
+    assert host == "log.home.arpa"
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port))
+            for ip in os.environ["LB_ANSWERS"].split(",")]
+
+socket.getaddrinfo = addresses
+PYTHON
+  local request='{"url":"http://log.home.arpa:8080/log","key":"k","allow_lan_http":true}'
+  PYTHONPATH="$TEST_TMP" LB_ANSWERS=192.168.7.19 "$LB_CMD" set --json <<< "$request" >/dev/null
+  assert_eq "$?" "0"
+  assert_file_contains "$TEST_TMP/argv" "--resolve log.home.arpa:8080:192.168.7.19"
+  : > "$TEST_TMP/argv"
+  PYTHONPATH="$TEST_TMP" LB_ANSWERS=192.168.7.19,192.0.2.10 "$LB_CMD" test --json </dev/null >/dev/null
+  assert_eq "$?" "6"
+  assert_eq "$(wc -l < "$TEST_TMP/argv")" "0"
+}
+
 test_logbook_https_is_https_only_and_the_local_wavelog_may_use_http() {
   lb_env
   printf '{"url":"https://w/wavelog/index.php","key":"k","station_id":"1"}' | "$LB_CMD" set --json > /dev/null; assert_eq "$?" "0"
