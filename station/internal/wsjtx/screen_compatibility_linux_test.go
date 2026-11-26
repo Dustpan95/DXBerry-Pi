@@ -314,7 +314,7 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 			x, window := openScreenWindow(t, ctx, dir, appPID, uid, gid)
 			checkScreenReceiveOffset(t, receiver, ready, x, window)
 			if generation == 1 {
-				checkScreenOfflineDecode(t, receiver, x, window, appPID)
+				checkScreenOfflineDecode(t, receiver, x, window, appPID, "/fixture/260101_120000.wav")
 			}
 		}
 		if routing != nil && generation == 0 {
