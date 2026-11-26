@@ -10,6 +10,9 @@ shopt -s nullglob
 cards=(/sys/class/sound/card[0-9]* /dev/snd/controlC* /dev/snd/pcmC* /dev/snd/midiC* /dev/ttyUSB* /dev/ttyACM*)
 printf 'Guest sound entries: %s\n' /dev/snd/*
 (( ${#cards[@]} == 0 ))
+# The queue driver exports a private run directory for its renamed units.
+# Public admission, transient workers and result readers use the station default.
+unset DXB_RUN_DIR
 root=/opt/dxberry
 state=/var/lib/dxberry
 evidence=/run/dxb-ci
