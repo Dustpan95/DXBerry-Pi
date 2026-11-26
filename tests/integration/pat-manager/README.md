@@ -46,6 +46,13 @@ B2F handshake boundaries while the managed reader checks dialing and connected
 status. An empty exchange must finish successfully, restore idle status, and
 preserve the earlier sent message.
 
+A second radio record exercises the shipped systemd template and public Pat
+launcher. An absent USB function leaves the unit waiting. A synthetic sysfs
+class link then lets the normal start command run first fill, wiring and the
+headless session. The reader must identify Pat as a child of the launcher.
+Removing the class link before stopping the unit exercises waiting and cleanup.
+The fixture uses Pat alone with an empty transport list and PTT disabled.
+
 After preparing the image, run from the repository on Linux/amd64:
 
 ```sh
@@ -57,11 +64,9 @@ docker run --rm --network none --cap-drop ALL --read-only \
   -v /absolute/path/new-evidence:/evidence dxberry-pat-manager
 ```
 
-Success requires the actual tagged Go test to pass and exactly one positive
+Success requires both tagged Go tests to pass and exactly one positive
 guest completion marker, with no failure marker. The console log contains an
 explicitly partial synthetic report. Failure to obtain assets, boot the guest,
 start Pat or verify ownership fails the job; it is never converted to a skip.
 
-Public DXBerry prepare/session/stopped hooks, physical eligibility,
-ARM64 capture workload and RF acceptance
-remain open. Native collection stays disabled on the maintained Pi.
+ARDOP, physical eligibility, ARM64 capture workload and RF acceptance remain open. Native collection stays disabled on the maintained Pi.
