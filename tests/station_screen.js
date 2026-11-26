@@ -89,7 +89,7 @@ const mk = (tag, id, cls) => { const e = new E(tag); if (id) e.setAttribute("id"
     const src = fs.readFileSync(process.argv[2], "utf8");
     const importLine = /^import RFB from "\.\/vendor\/novnc\/core\/rfb\.js";$/m;
     ok(importLine.test(src), "screen.js imports RFB from ./vendor/novnc/core/rfb.js");
-    const code = src.replace(importLine, "const RFB = globalThis.FakeRFB;");
+    const code = src.replace(importLine, "const RFB = globalThis.FakeRFB;").replace(/^import \{ releaseCapture \}.*;$/m, "const releaseCapture = () => {};");
     const flush2 = () => new Promise(r => setImmediate(r));
     const run = async (hash, info, fail, mobile = false) => {
       doc.body.replaceChildren();

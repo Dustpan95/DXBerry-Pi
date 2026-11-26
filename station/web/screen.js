@@ -2,6 +2,8 @@
 // socket) with noVNC over the station's own authenticated WebSocket relay (/api/vnc/SESSION).
 import RFB from "./vendor/novnc/core/rfb.js";
 
+import { releaseCapture } from "./vendor/novnc/core/util/events.js";
+
 const SCR_APP = "/opt/dxberry/bin/dxberry-app";
 const SCR_SESSION = /^[a-z][a-z0-9_]{0,15}-[a-z][a-z0-9]{0,11}$/;
 const SCR_STATION = "/";
@@ -42,7 +44,11 @@ function mouse(type, buttons) {
 function endGesture() {
   if (!gesture) return;
   clearTimeout(gesture.timer);
-  if (gesture.down && surface()) mouse("mouseup", 0);
+  if (gesture.down) {
+    if (surface()) mouse("mouseup", 0);
+    // Synthetic mouseup goes to the canvas, bypassing noVNC's window capture proxy.
+    releaseCapture();
+  }
   gesture = null;
 }
 
