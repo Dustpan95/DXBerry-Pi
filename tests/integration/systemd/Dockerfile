@@ -30,7 +30,7 @@ COPY tests/integration/systemd/manager-test.sh /usr/local/libexec/dxb-manager-te
 COPY tests/integration/systemd/inert-apply.sh /usr/local/libexec/dxb-inert-apply
 RUN chmod 755 /init /usr/local/libexec/dxb-* /opt/dxberry/bin/dxberry-radio-event \
  && mkdir -p /run/dxb-ci \
- && printf '11223344556677889900aabbccddeeff00\n' > /etc/machine-id
+ && printf '11223344556677889900aabbccddeeff\n' > /etc/machine-id
 
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \

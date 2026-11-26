@@ -83,7 +83,7 @@ when the job fails.
 This job is being introduced for remote execution; its source/syntax checks do
 not establish a successful guest run. Actual workflow results provide that
 separate evidence. It does not claim hardware or real udev-device delivery,
-consumer retirement, release-tree replacement or rollback recovery acceptance.
+consumer retirement or release-tree replacement while the queue is active.
 The queue stays off on the maintained Pi.
 
 The first hosted guest booted successfully and passed coalescing and

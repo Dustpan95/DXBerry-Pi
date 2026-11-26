@@ -219,19 +219,22 @@ dxb_update_run_provision() {
 # other line already in the release file (DIETPI_IMAGE, DIETPI_IMAGE_SHA256 - see
 # build/build-image.sh) is kept as-is: this writes only the DXBERRY_* lines, never erases the rest.
 dxb_update_release_from_tree() {
-  local t=$1 v c=unknown d other
-  v=$(head -1 "$t/VERSION" 2> /dev/null)
+  local t=$1 v c=unknown d other record
+  v=$(head -1 "$t/VERSION" 2> /dev/null) && [[ -n $v ]] || return 1
   d=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
   if [[ -f $t/RELEASE ]]; then
     c=$(sed -n 's/^DXBERRY_COMMIT=//p' "$t/RELEASE" | head -1); c=${c:-unknown}
     d=$(sed -n 's/^DXBERRY_BUILD_DATE=//p' "$t/RELEASE" | head -1)
   fi
-  other=$(grep -v '^DXBERRY_' "$DXB_RELEASE_FILE" 2> /dev/null)
-  mkdir -p "$(dirname "$DXB_RELEASE_FILE")" 2> /dev/null
-  dxb_write_if_changed "$DXB_RELEASE_FILE" \
-    "$(printf 'DXBERRY_VERSION=%s\nDXBERRY_COMMIT=%s\nDXBERRY_BUILD_DATE=%s' "$v" "$c" "$d")${other:+$'\n'$other}" \
-    644 > /dev/null 2>&1
-  return 0
+  other=''
+  if [[ -e $DXB_RELEASE_FILE ]]; then
+    other=$(grep -v '^DXBERRY_' "$DXB_RELEASE_FILE") || [[ $? == 1 ]] || return 1
+  fi
+  mkdir -p "$(dirname "$DXB_RELEASE_FILE")" || return 1
+  record=$(printf 'DXBERRY_VERSION=%s\nDXBERRY_COMMIT=%s\nDXBERRY_BUILD_DATE=%s' "$v" "$c" "$d")
+  record+=${other:+$'\n'$other}
+  dxb_write_if_changed "$DXB_RELEASE_FILE" "$record" 644 > /dev/null 2>&1 || true
+  [[ -f $DXB_RELEASE_FILE && ! -L $DXB_RELEASE_FILE && $(< "$DXB_RELEASE_FILE") == "$record" ]]
 }
 
 # dxb_update_link_commands: /usr/local/sbin links for every dxberry-* command in the tree (a newer
@@ -462,13 +465,12 @@ dxb_update_apply_dxberry() (
   sync
   trap - TERM INT HUP
   rm -rf "$old"
-  dxb_update_release_from_tree "$DXB_OPT"
   dxb_update_link_commands
-  if [[ $(sed -n 's/^DXBERRY_VERSION=//p' "$DXB_RELEASE_FILE" 2> /dev/null | head -1) != "$(head -1 "$DXB_OPT/VERSION" 2> /dev/null)" ]]; then
+  if ! dxb_update_release_from_tree "$DXB_OPT"; then
     # 8, never 6: the swap itself succeeded - the new tree is in place (the check reads what is
     # installed from its VERSION, so it is not offered again) and only the record in the release
     # file, which the About card and dxberry-status show, is behind; the setup run is skipped
-    echo "$DXB_RELEASE_FILE does not show the new version; treating the update as failed" >&2
+    echo "$DXB_RELEASE_FILE does not match the new release record; treating the update as failed" >&2
     return 8
   fi
   echo "DXBerry $(head -1 "$prev/VERSION" 2> /dev/null) -> $(head -1 "$DXB_OPT/VERSION"); running the setup"
@@ -524,10 +526,9 @@ dxb_update_apply_rollback() (
   if ! mv -T "$next" "$prev"; then dxb_warn "the newer DXBerry stays at $next"; fi
   sync
   trap - TERM INT HUP
-  dxb_update_release_from_tree "$DXB_OPT"
   dxb_update_link_commands
-  if [[ $(sed -n 's/^DXBERRY_VERSION=//p' "$DXB_RELEASE_FILE" 2> /dev/null | head -1) != "$(head -1 "$DXB_OPT/VERSION" 2> /dev/null)" ]]; then
-    echo "$DXB_RELEASE_FILE does not show the restored version; treating the rollback as failed" >&2
+  if ! dxb_update_release_from_tree "$DXB_OPT"; then
+    echo "$DXB_RELEASE_FILE does not match the restored release record; treating the rollback as failed" >&2
     return 8
   fi
   if [[ ! -e $DXB_OPT/bin/dxberryd ]]; then

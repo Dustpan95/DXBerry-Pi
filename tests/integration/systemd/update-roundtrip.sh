@@ -3,7 +3,7 @@
 set -euo pipefail
 trap 'echo "Update round trip failed at line $LINENO" >&2' ERR
 [[ $(hostname) == dxb-ci-guest && $(< /proc/1/comm) == systemd ]]
-[[ $(cat /etc/machine-id) == 11223344556677889900aabbccddeeff00 ]]
+[[ $(cat /etc/machine-id) == 11223344556677889900aabbccddeeff ]]
 [[ ! -e /dev/snd && ! -e /opt/dxberry.prev && ! -e /run/dxberry/update-job.json ]]
 root=/opt/dxberry
 state=/var/lib/dxberry
