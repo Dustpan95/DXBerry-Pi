@@ -43,7 +43,15 @@ post auth/login "$creds" >/dev/null
 input=$(post audio-devices '{"name":"Fixture RX","direction":"input","source_type":"soundcard","device_path":"dxb_fixture","sample_rate":48000,"channels":1,"format":"s16le"}' | jq -er '.id')
 channel=$(post channels "$(jq -cn --argjson id "$input" '{name:"Fixture RX",enabled:true,input_device_id:$id,modem_type:"afsk",bit_rate:1200}')" | jq -er '.id')
 settings() {
-  for endpoint in audio-devices channels; do api "$url/$endpoint" | jq -Sc .; done
+  api "$url/audio-devices" | jq -Sc .
+  api "$url/channels" | jq -Sc 'map(del(.backing))'
+  python3 - <<'DB'
+import json
+import sqlite3
+with sqlite3.connect("file:/var/lib/graywolf/graywolf.db?mode=ro", uri=True) as db:
+    for table in ("audio_devices", "channels", "ptt_configs", "beacons", "digipeater_configs", "i_gate_configs"):
+        print(json.dumps(db.execute("SELECT * FROM " + table + " ORDER BY id").fetchall()))
+DB
 }
 settings > "$work/expected.json"
 verify() {
@@ -61,7 +69,8 @@ verify() {
         test "$(pid)" = "$parent"
         test "$(sha /proc/"$child"/exe)" = "$expected"
         settings > "$work/current.json"
-        cmp "$work/expected.json" "$work/current.json"
+        diff -u "$work/expected.json" "$work/current.json"
+        api "$url/channels" | jq -e --argjson id "$channel" 'any(.[]; .id==$id and .backing.modem.active and (.backing.tx.capable==false))' >/dev/null
         test "$(sha /usr/bin/graywolf-modem)" = "$released_hash"
         echo "$label verified: parent $parent, modem $child, input RMS $level dBFS, modem SHA256 $expected"
         return 0
