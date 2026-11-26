@@ -67,6 +67,13 @@ jobs:
             --user "$(id -u):$(id -g)" --memory=3g \
             --tmpfs /tmp:rw,nosuid,nodev,size=64m \
             -v "$RUNNER_TEMP/systemd-evidence:/evidence" dxberry-systemd-ci
+      - name: Boot twice with an interrupted exchange on a disposable virtual disk
+        run: |
+          docker run --rm --network none --cap-drop ALL --read-only \
+            --user "$(id -u):$(id -g)" --memory=3g \
+            --tmpfs /tmp:rw,nosuid,nodev,size=320m \
+            -v "$RUNNER_TEMP/systemd-evidence:/evidence" \
+            --entrypoint /run-recovery dxberry-systemd-ci
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -54,4 +54,9 @@ After=sysinit.target
 Wants=dxb-ci-hotplug.service dxb-ci-graywolf.service dxb-ci-test.service
 AllowIsolate=yes
 UNIT
+if grep -Eq '(^| )dxb_recovery=(prepare|verify)( |$)' /proc/cmdline; then
+  mkdir -p /etc/systemd/system/dxb-ci-test.service.d
+  printf '%s\n' '[Service]' 'ExecStart=' 'ExecStart=/usr/local/libexec/dxb-recovery-test' \
+    > /etc/systemd/system/dxb-ci-test.service.d/recovery.conf
+fi
 exec /lib/systemd/systemd --system --unit=dxb-ci.target

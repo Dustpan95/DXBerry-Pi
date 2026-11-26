@@ -1,14 +1,27 @@
 #!/bin/bash
 set -euo pipefail
 log=/evidence/systemd-guest.log
+devices=()
+boot_args=''
+case ${DXB_RECOVERY_PHASE:-} in
+  '') ;;
+  prepare|verify)
+    [[ -f /tmp/update-recovery.img && ! -L /tmp/update-recovery.img ]]
+    log=/evidence/update-recovery-$DXB_RECOVERY_PHASE.log
+    devices=(-drive "file=/tmp/update-recovery.img,format=raw,if=none,id=fixture,cache=writethrough"
+             -device "virtio-blk-pci,drive=fixture,serial=DXB-CI-RECOVERY")
+    boot_args=" dxb_recovery=$DXB_RECOVERY_PHASE"
+    ;;
+  *) exit 2 ;;
+esac
 memory=${DXB_GUEST_MEMORY_MIB:-2048}
 case $memory in 2048|4096) ;; *) echo 'Unsupported guest memory size' >&2; exit 2;; esac
 set +e
 timeout --signal=TERM --kill-after=5 420 qemu-system-x86_64 \
   -accel tcg,thread=multi -machine q35,usb=off -cpu max -smp 2 -m "$memory" \
   -nodefaults -nic none -display none -serial stdio -monitor none -no-reboot \
-  -kernel /vm/vmlinuz -initrd /vm/root.cpio.gz \
-  -append 'console=ttyS0 rdinit=/init panic=-1 loglevel=4 systemd.show_status=no module_blacklist=gpio_ich,snd,snd_pcm,snd_hda_intel,snd_pcsp,usbcore' \
+  "${devices[@]}" -kernel /vm/vmlinuz -initrd /vm/root.cpio.gz \
+  -append 'console=ttyS0 rdinit=/init panic=-1 loglevel=4 systemd.show_status=no module_blacklist=gpio_ich,snd,snd_pcm,snd_hda_intel,snd_pcsp,usbcore'"$boot_args" \
   2>&1 | tee "$log"
 result=${PIPESTATUS[0]}
 set -e
