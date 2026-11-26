@@ -51,6 +51,12 @@ launcher. An absent USB function leaves the unit waiting. A synthetic sysfs
 class link then lets the normal start command run first fill, wiring and the
 headless session. The reader must identify Pat as a child of the launcher.
 Removing the class link before stopping the unit exercises waiting and cleanup.
+The same guest runs the station daemon with the Pat status option enabled.
+Through the shipped nginx HTTPS configuration, a disposable PAM login reads
+the same radio before startup, while Pat is running, and after shutdown. The
+test checks the public response fields and requires both unavailable responses
+to omit the earlier status. An anonymous request must require login.
+
 The fixture uses Pat alone with an empty transport list and PTT disabled.
 
 After preparing the image, run from the repository on Linux/amd64:
