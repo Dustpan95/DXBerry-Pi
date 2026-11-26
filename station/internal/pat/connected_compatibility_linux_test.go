@@ -9,7 +9,9 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -39,17 +41,17 @@ func configureFixturePeer(t *testing.T, path string) {
 	}
 }
 
-func waitFixturePeerStatus(t *testing.T, ctx context.Context, r *Reader, connected bool) {
+func waitFixturePeerStatus(t *testing.T, ctx context.Context, r *Reader, dialing, connected bool) {
 	t.Helper()
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
 		v, err := r.Read(ctx, "fixture1")
-		if err == nil && v.Radio == "fixture1" && !v.Status.Dialing && v.Status.Connected == connected &&
+		if err == nil && v.Radio == "fixture1" && v.Status.Dialing == dialing && v.Status.Connected == connected &&
 			len(v.Status.ActiveListeners) == 1 && v.Status.ActiveListeners[0] == "telnet" && !v.Status.ObservedAt.IsZero() {
 			return
 		}
 		time.Sleep(75 * time.Millisecond)
 	}
-	t.Fatalf("missing connected=%t from the managed loopback peer listener", connected)
+	t.Fatalf("missing dialing=%t connected=%t from the managed loopback peer listener", dialing, connected)
 }
 
 func openFixturePeer(t *testing.T) net.Conn {
@@ -75,4 +77,13 @@ func openFixturePeer(t *testing.T) net.Conn {
 		}
 	}
 	return conn
+}
+
+func fixturePeerCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "/fixture/pat-peer", args...)
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "TMPDIR=/tmp"}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{
+		Uid: 65534, Gid: 65534, Groups: []uint32{},
+	}}
+	return cmd
 }
