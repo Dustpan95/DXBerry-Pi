@@ -469,6 +469,9 @@ dxb_apps_install() {
     echo "$label $ver ($(jq -r .asset <<< "$latest"))"
     dxb_apps_download "$latest" || { rm -rf "$DXB_APPS_WORK"; return 6; }
   fi
+  if _dxb_apps_has "$name" prepare_source; then
+    "app_${name}_prepare_source" || { echo "$label package source could not be prepared" >&2; return 6; }
+  fi
   _dxb_apps_apt update || echo "apt-get update failed; using the package lists already on the Pi"
   [[ $kind == service ]] || read -ra pkgs <<< "$DXB_APPS_BASE_PACKAGES"
   mapfile -t -O "${#pkgs[@]}" pkgs < <(jq -r '.packages[]' <<< "$row")

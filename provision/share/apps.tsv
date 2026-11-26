@@ -12,3 +12,5 @@ qsstv	QSSTV	radio	apt:qsstv	pulseaudio	Slow-scan TV pictures, analog and digital
 pat	Pat (Winlink)	radio	github:la5nta/pat:deb=^pat_[0-9.]+_linux_arm64\.deb$	-	Winlink email over the air with ARDOP
 flrig	flrig	rigcontrol	apt:flrig	-	Rig control with your radio's full front panel
 wavelog	Wavelog	service	tag:wavelog/wavelog	php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd mariadb-server	A logbook on this Pi
+mercury	Mercury HF	radio	apt:mercury-ui	mercury pulseaudio crudini	HF modem and chat for direct ARQ connections and broadcasts
+hfpacket	HF Packet	radio	apt:direwolf	xterm	300-baud AX.25 packet terminal with a local KISS interface

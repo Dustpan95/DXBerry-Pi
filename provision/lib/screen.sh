@@ -370,6 +370,11 @@ dxb_screen_prepare() {
   _dxb_screen_session_ok "$a" "$r" || return 3
   dxb_app_is_session "$a" || { dxb_error "$a does not run in a screen session"; return 3; }
   dxb_radio_present "$r" || { dxb_error "radio $r is not plugged in"; return 4; }
+  # These TNCs listen on all interfaces. Only the local client and rigctld need IP access.
+  case $a in
+    mercury|hfpacket)
+      "$DXB_SYSTEMCTL" set-property --runtime "$(dxb_app_session_unit "$a" "$r")" IPAddressDeny=any IPAddressAllow=localhost || return 6 ;;
+  esac
   w=$(dxb_apps_wiring "$r") || return 3
   h=$(jq -r .hash <<< "$w"); hf=$DXB_APPS_STATE/wired/$s
   dxb_program_generation_advance || return 6
