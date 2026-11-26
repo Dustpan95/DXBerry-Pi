@@ -233,6 +233,13 @@ PrivateDevices=yes
 	}
 	writeRecords(oneOwner)
 	waitRead()
+	queueFixtureMessage(t, ctx)
+	messageID := readFixtureMessage(t, ctx)
+	manager(ctx, "restart", unit)
+	waitRead()
+	if readFixtureMessage(t, ctx) != messageID {
+		t.Fatal("managed restart replaced the queued message")
+	}
 	manager(ctx, "stop", unit)
 	if value, err := r.Read(ctx, "fixture1"); err != ErrUnavailable || !reflect.DeepEqual(value, Observation{}) {
 		t.Fatal("stopped actual unit supplied a current observation")
@@ -242,7 +249,7 @@ PrivateDevices=yes
 		t.Fatal("private guest cgroup v2 required")
 	}
 	report := map[string]any{"kind": "pat-real-manager-reader", "result": "partial", "package_sha256": compatibilityPackageHash,
-		"passed":   []string{"actual owned idle read", "real systemd/proc/cgroup/socket metadata", "restart replacement refusal", "assignment ABA refusal", "multiple owner refusal", "stopped unit refusal"},
+		"passed":   []string{"actual owned idle read", "real systemd/proc/cgroup/socket metadata", "restart replacement refusal", "assignment ABA refusal", "multiple owner refusal", "queued P2P message preserved across managed restart", "stopped unit refusal"},
 		"untested": []string{"public DXBerry prepare/session/stopped hooks", "physical radio eligibility", "active Winlink session persistence", "ARM64 station workload", "physical radio/RF"}}
 	raw, err := json.Marshal(report)
 	if err != nil {
