@@ -1,10 +1,15 @@
 #!/bin/bash
 # Runs only inside the disposable no-NIC guest after the independent queue test.
-set -euo pipefail
-trap 'echo "Update round trip failed at line $LINENO" >&2' ERR
+set -Eeuo pipefail
+trap 'echo "Update round trip failed at line $LINENO: $BASH_COMMAND" >&2; journalctl -q --no-pager -n 12 -u dxberryd.service >&2' ERR
 [[ $(hostname) == dxb-ci-guest && $(< /proc/1/comm) == systemd ]]
 [[ $(cat /etc/machine-id) == 11223344556677889900aabbccddeeff ]]
-[[ ! -e /dev/snd && ! -e /opt/dxberry.prev && ! -e /run/dxberry/update-job.json ]]
+[[ ! -e /opt/dxberry.prev && ! -e /run/dxberry/update-job.json ]]
+# A kernel can expose the ALSA timer or sequencer without a sound card.
+shopt -s nullglob
+cards=(/sys/class/sound/card[0-9]* /dev/snd/controlC* /dev/snd/pcmC* /dev/snd/midiC* /dev/ttyUSB* /dev/ttyACM*)
+printf 'Guest sound entries: %s\n' /dev/snd/*
+(( ${#cards[@]} == 0 ))
 root=/opt/dxberry
 state=/var/lib/dxberry
 evidence=/run/dxb-ci
