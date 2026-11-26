@@ -310,8 +310,9 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 			t.Fatal("actual private X cookie unavailable")
 		}
 		if routing == nil {
+			ready := waitScreenFT8Ready(t, receiver)
 			x, window := openScreenWindow(t, ctx, dir, appPID, uid, gid)
-			checkScreenReceiveOffset(t, receiver, x, window)
+			checkScreenReceiveOffset(t, receiver, ready, x, window)
 			if generation == 1 {
 				checkScreenOfflineDecode(t, receiver, x, window, appPID)
 			}

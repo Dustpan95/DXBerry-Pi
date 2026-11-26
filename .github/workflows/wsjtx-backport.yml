@@ -1,0 +1,27 @@
+name: WSJT-X ARM64 backport
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - tests/integration/wsjtx-backport/**
+      - .github/workflows/wsjtx-backport.yml
+  push:
+    branches: [main]
+    paths:
+      - tests/integration/wsjtx-backport/**
+      - .github/workflows/wsjtx-backport.yml
+permissions:
+  contents: read
+jobs:
+  backport-decode:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned Debian packages in a disposable ARM64 image
+        run: docker build -f tests/integration/wsjtx-backport/Dockerfile -t dxberry-wsjtx-backport .
+      - name: Decode a synthetic FT8 WAV with guest-local files
+        run: |
+          docker run --rm --network none --cap-drop ALL --read-only \
+            --security-opt no-new-privileges --pids-limit 128 --memory 2g \
+            --tmpfs /tmp:rw,nosuid,nodev,size=256m dxberry-wsjtx-backport

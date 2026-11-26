@@ -27,7 +27,7 @@ func openScreenWindow(t *testing.T, ctx context.Context, dir, pid string, uid, g
 		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: []uint32{}}}
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			t.Fatalf("screen GUI command %s: %v (%s)", args[0], err, out)
+			t.Fatalf("screen GUI command %q: %v (context %v, output %q)", args, err, commandCtx.Err(), out)
 		}
 		return strings.TrimSpace(string(out))
 	}
@@ -75,9 +75,17 @@ func waitScreenFT8Ready(t *testing.T, receiver screenReceiver) Snapshot {
 	return Snapshot{}
 }
 
-func checkScreenReceiveOffset(t *testing.T, receiver screenReceiver, x func(...string) string, window string) {
+func checkScreenReceiveOffset(t *testing.T, receiver screenReceiver, o Snapshot, x func(...string) string, window string) {
 	t.Helper()
-	o := waitScreenFT8Ready(t, receiver)
+	now, ok := receiver.Snapshot("fixture1")
+	afterFocus := now.Observation
+	if !ok || afterFocus.Availability != Live || afterFocus.Generation != o.Generation || afterFocus.Epoch != o.Epoch ||
+		afterFocus.InstanceID != o.InstanceID || afterFocus.Status == nil || afterFocus.Status.Mode == nil ||
+		*afterFocus.Status.Mode != "FT8" || afterFocus.Status.DialFrequency != screenFT8DialHz ||
+		afterFocus.Status.RXOffset != o.Status.RXOffset || afterFocus.Status.TXOffset != o.Status.TXOffset ||
+		afterFocus.Status.TXEnabled || afterFocus.Status.Transmitting {
+		t.Fatal("settled FT8 session changed before the first receive action")
+	}
 	initial := o.Status
 	for _, step := range []struct {
 		key    string
