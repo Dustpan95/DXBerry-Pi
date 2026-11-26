@@ -29,6 +29,7 @@ jobs:
               cp "$(jq -ers '[.[] | select(.reason=="compiler-artifact" and .target.name=="graywolfmodem" and .profile.test and .executable!=null) | .executable] | select(length==1) | .[0]' /tmp/build.json)" /audio-tests
           FROM debian:bookworm-slim
           RUN apt-get update && apt-get install -y --no-install-recommends libasound2 libudev1 && rm -rf /var/lib/apt/lists/*
+          RUN printf '%s\n' 'pcm.!default { type null }' > /etc/asound.conf
           COPY --from=build /audio-tests /audio-tests
           ENTRYPOINT ["/audio-tests"]
           DOCKERFILE
