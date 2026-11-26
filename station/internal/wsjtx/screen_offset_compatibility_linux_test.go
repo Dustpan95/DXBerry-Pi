@@ -62,7 +62,10 @@ func checkScreenReceiveOffset(t *testing.T, ctx context.Context, receiver screen
 			}
 			status := current.Status
 			if status.TXEnabled || status.Transmitting || status.TXOffset != initial.TXOffset || status.DialFrequency != initial.DialFrequency || current.Counters.Malformed != o.Counters.Malformed || current.Counters.WrongIdentity != o.Counters.WrongIdentity {
-				t.Fatal("unexpected status while changing the receive offset")
+				t.Fatalf("%s changed unexpected status: RX=%d TX-enabled=%t transmitting=%t TX-offset=%d (was %d) dial=%d (was %d) malformed=%d (was %d) wrong-identity=%d (was %d)",
+					step.key, status.RXOffset, status.TXEnabled, status.Transmitting, status.TXOffset, initial.TXOffset,
+					status.DialFrequency, initial.DialFrequency, current.Counters.Malformed, o.Counters.Malformed,
+					current.Counters.WrongIdentity, o.Counters.WrongIdentity)
 			}
 			if status.RXOffset == step.offset && current.StatusSeenAt.After(start) {
 				t.Logf("Receive offset %d Hz observed %v after %s", step.offset, current.StatusSeenAt.Sub(start), step.key)
