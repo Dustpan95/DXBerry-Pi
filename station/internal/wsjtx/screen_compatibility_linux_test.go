@@ -248,8 +248,12 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 				if o.Heartbeat.Version == nil || *o.Heartbeat.Version != "3.0.2" || o.Status.TXEnabled || o.Status.Transmitting || o.Status.DECall == nil || *o.Status.DECall != "N0CALL" || o.Status.DEGrid == nil || *o.Status.DEGrid != "AA00aa" || o.Counters.Malformed != 0 || o.Counters.WrongIdentity != 0 || s.Transport.QueueDrops != 0 || s.Transport.WrongPeer != 0 {
 					t.Fatal("actual screen-session application evidence mismatch")
 				}
-				observed = true
-				break
+				// The first startup Status can still have a zero dial frequency.
+				// Begin the GUI comparison only after the application publishes its dial.
+				if routing != nil || o.Status.DialFrequency != 0 {
+					observed = true
+					break
+				}
 			}
 			time.Sleep(100 * time.Millisecond)
 		}

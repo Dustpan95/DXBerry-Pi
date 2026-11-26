@@ -41,7 +41,7 @@ func checkScreenReceiveOffset(t *testing.T, ctx context.Context, receiver screen
 	}
 	o := original.Observation
 	initial := o.Status
-	if initial.Mode == nil || *initial.Mode != "FT8" || initial.RXOffset >= 4999 || initial.TXEnabled || initial.Transmitting {
+	if initial.Mode == nil || *initial.Mode != "FT8" || initial.DialFrequency == 0 || initial.RXOffset >= 4999 || initial.TXEnabled || initial.Transmitting {
 		t.Fatal("expected an idle FT8 receive offset")
 	}
 	for _, step := range []struct {
