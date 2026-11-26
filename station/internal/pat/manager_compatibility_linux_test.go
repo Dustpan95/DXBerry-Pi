@@ -278,8 +278,11 @@ PrivateDevices=yes
 	}
 	exchangeCtx, finishExchange := context.WithTimeout(ctx, 20*time.Second)
 	defer finishExchange()
-	exchange := exec.CommandContext(exchangeCtx, "/usr/bin/runuser", "-u", "nobody", "--",
-		"/fixture/pat-peer", messageID, fixtureSubject, fixtureBody)
+	exchange := exec.CommandContext(exchangeCtx, "/fixture/pat-peer", messageID, fixtureSubject, fixtureBody)
+	exchange.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "TMPDIR=/tmp"}
+	exchange.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{
+		Uid: 65534, Gid: 65534, Groups: []uint32{},
+	}}
 	if output, err := exchange.CombinedOutput(); err != nil {
 		t.Fatalf("fixture peer exchange failed: %v (%s)", err, output)
 	}
