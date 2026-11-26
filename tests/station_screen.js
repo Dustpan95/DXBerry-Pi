@@ -23,7 +23,7 @@ function match(e, sel) {
 class E extends N {
   constructor(tag) {
     super(); this.tagName = tag.toUpperCase(); this.attributes = {}; this.listeners = {}; this.dataset = {};
-    this.hidden = false; this.className = ""; this._value = ""; this.disabled = false; this.open = false; this.id = "";
+    this.hidden = false; this.className = ""; this.classList = {toggle() {}}; this._value = ""; this.disabled = false; this.open = false; this.id = "";
     this.returnValue = ""; this._sel = undefined;
   }
   setAttribute(k, v) {
@@ -91,9 +91,9 @@ const mk = (tag, id, cls) => { const e = new E(tag); if (id) e.setAttribute("id"
     ok(importLine.test(src), "screen.js imports RFB from ./vendor/novnc/core/rfb.js");
     const code = src.replace(importLine, "const RFB = globalThis.FakeRFB;");
     const flush2 = () => new Promise(r => setImmediate(r));
-    const run = async (hash, info, fail) => {
+    const run = async (hash, info, fail, mobile = false) => {
       doc.body.replaceChildren();
-      for (const [tag, id, cls] of [["strong", "program"], ["span", "radio"], ["span", "state"], ["button", "reconnect", "btn"], ["a", "back"], ["main", "screen"]]) doc.body.append(mk(tag, id, cls));
+      for (const [tag, id, cls] of [["strong", "program"], ["span", "radio"], ["span", "state"], ["button", "reconnect", "btn"], ["a", "back"], ["main", "screen-area"], ["div", "screen"], ["span", "pointer"], ["input", "trackpad"], ["label", "pad-label"], ["button", "zoom"], ["p", "pad-help"]]) doc.body.append(mk(tag, id, cls));
       const spawns = []; const rfbs = []; const sockets = [];
       class FakeRFB {
         constructor(target, url, opts) { this.target = target; this.url = url; this.opts = opts; this.listeners = {}; rfbs.push(this); }
@@ -103,7 +103,7 @@ const mk = (tag, id, cls) => { const e = new E(tag); if (id) e.setAttribute("id"
         disconnect() { this.gone = true; this.emit("disconnect"); }
       }
       const sctx = {
-        document: doc, console, FakeRFB, decodeURIComponent, Error, JSON,
+        window: { addEventListener() {} }, matchMedia: () => ({matches: mobile}), document: doc, console, FakeRFB, decodeURIComponent, Error, JSON,
         location: { hash, host: "pi" },
         dxb: {
           run(args, input) { spawns.push({ args, input }); return fail ? Promise.reject(fail) : Promise.resolve(JSON.stringify(info)); },
@@ -125,6 +125,13 @@ const mk = (tag, id, cls) => { const e = new E(tag); if (id) e.setAttribute("id"
     ok(r.text().includes("Go to the station page"), "stopped: links to the station page");
 
     const runningInfo = { ...base, state: "running", socket: "/run/dxberry/screens/wsjtx-radio2.sock" };
+    r = await run("#wsjtx-radio2", runningInfo, false, true);
+    r.rfbs[0].emit("connect");
+    ok(r.rfbs[0].scaleViewport && !r.rfbs[0].resizeSession, "phone fits the desktop without shrinking the remote session");
+    ok(r.el("trackpad").checked && !r.el("pad-label").hidden, "phone starts with trackpad controls");
+    r.el("trackpad").checked = false;
+    r.el("trackpad").fire("change");
+    ok(r.el("pad-help").hidden, "direct touch hides trackpad instructions");
     r = await run("#wsjtx-radio2", runningInfo);
     ok(r.rfbs.length === 1, "running: one RFB is created");
     const u = r.rfbs[0] ? r.rfbs[0].url : null;
