@@ -82,9 +82,10 @@ The idle-only runner covers the Pat application protocol. The separate systemd
 guest checks unit, process and socket ownership, replacement, refusal and
 recovery. It exercises incoming and outgoing loopback connections, a managed
 stop during a connection, mailbox persistence, and the shipped Pat launcher
-with simulated USB discovery. [Manager guest](pat-manager/README.md)
+with simulated USB discovery. It also checks authenticated station HTTPS status
+and the ARDOP companion using null audio. [Manager guest](pat-manager/README.md)
 
-ARDOP, station CPU and capture workload, physical eligibility and RF acceptance
+Physical ARDOP audio, station CPU and capture workload, physical eligibility and RF acceptance
 remain open. Native Pat collection stays disabled on the maintained Pi.
 
 ## Current evidence

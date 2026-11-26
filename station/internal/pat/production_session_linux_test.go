@@ -3,7 +3,10 @@
 package pat
 
 import (
+	"bufio"
 	"context"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -61,9 +64,37 @@ func TestPatProductionSession(t *testing.T) {
 	if err != nil || string(client) != "autospawn = no\n" {
 		t.Fatal("session runner did not prepare its private client configuration")
 	}
+	checkARDOPCompanion(t)
 	run("observe", "")
 	run("stop", "")
 	if _, err := reader.Read(ctx, radio); err != ErrUnavailable {
 		t.Fatalf("stopped production session supplied a status: %v", err)
+	}
+}
+
+// Ask the actual companion for its version over its local control socket.
+// Other startup notifications can precede the command response.
+func checkARDOPCompanion(t *testing.T) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp4", "127.0.0.1:8515", 2*time.Second)
+	if err != nil {
+		t.Fatal("ARDOP command socket:", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(conn, "VERSION\r"); err != nil {
+		t.Fatal(err)
+	}
+	replies := bufio.NewReader(io.LimitReader(conn, 8192))
+	for {
+		line, err := replies.ReadString('\r')
+		if err != nil {
+			t.Fatal("expected ARDOP version response:", err)
+		}
+		if strings.EqualFold(strings.TrimSpace(line), "VERSION ardopcf_1.0.4.1.3") {
+			return
+		}
 	}
 }

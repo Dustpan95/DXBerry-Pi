@@ -20,6 +20,17 @@ COPY tests/integration/pat-manager/peer/ ./
 RUN GOTOOLCHAIN=local go mod download github.com/la5nta/wl2k-go github.com/paulrosania/go-charset
 RUN --network=none CGO_ENABLED=0 GOPROXY=off GOTOOLCHAIN=local go build -mod=readonly -o /pat-peer .
 
+# The release predates GCC 14. Use the Bookworm toolchain for this source.
+FROM debian:bookworm-slim AS ardop
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git build-essential libasound2-dev \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+# Upstream release 1.0.4.1.3, built for the guest architecture.
+ARG ardop_commit=96dec85fc96d7e6d3dd90379fd809ba6cf83b6cc
+RUN git init && git fetch --depth=1 https://github.com/pflarue/ardop.git "$ardop_commit" \
+ && git checkout --detach FETCH_HEAD && test "$(git rev-parse HEAD)" = "$ardop_commit"
+RUN --network=none make -j2 ardopcf
+
 FROM debian:trixie-slim AS package
 RUN apt-get update && apt-get install -y --no-install-recommends bash curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
@@ -30,7 +41,7 @@ FROM debian:trixie-slim AS guest
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     systemd-sysv dbus bash util-linux coreutils procps iproute2 jq libax25 linux-image-amd64 \
-    curl nginx openssl passwd libpam0g libpam-modules libpam-runtime libopus0 \
+    curl nginx openssl passwd libasound2t64 libpam0g libpam-modules libpam-runtime libopus0 \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 COPY --from=package /package/pat_1.0.1_linux_amd64.deb /fixture/pat_1.0.1_linux_amd64.deb
 RUN dpkg --install /fixture/pat_1.0.1_linux_amd64.deb \
@@ -40,6 +51,9 @@ RUN dpkg --install /fixture/pat_1.0.1_linux_amd64.deb \
  && usermod -aG dxbscreen,audio,dialout dxbapps \
  && printf 'isolated-pat-manager\n' > /fixture/pat-manager-guest \
  && printf '11223344556677889900aabbccddeeff00\n' > /etc/machine-id
+COPY --from=ardop /src/ardopcf /opt/dxberry-apps/ardop/ardopcf
+COPY provision/templates/dxberry-ardop@.service /etc/systemd/system/dxberry-ardop@.service
+COPY tests/integration/pat-manager/asound.conf /fixture/asound.conf
 COPY --from=compile /dxberryd /opt/dxberry/bin/dxberryd
 COPY provision/templates/pam-dxberry /etc/pam.d/dxberry
 COPY provision/templates/dxberryd.service /etc/systemd/system/dxberryd.service
