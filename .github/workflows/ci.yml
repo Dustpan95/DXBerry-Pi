@@ -36,10 +36,12 @@ jobs:
           RUN rustc -Vv && cargo test --locked --package graywolf-demod --lib --test station_pcm --no-run --message-format=json > /tmp/build.json && \
               cp "$(jq -ers '[.[] | select(.reason=="compiler-artifact" and .target.name=="graywolfmodem" and .profile.test and .executable!=null) | .executable] | select(length==1) | .[0]' /tmp/build.json)" /audio-tests && \
               cp "$(jq -ers '[.[] | select(.reason=="compiler-artifact" and .target.name=="station_pcm" and .profile.test and .executable!=null) | .executable] | select(length==1) | .[0]' /tmp/build.json)" /pcm-tests
+          RUN GRAYWOLF_GIT_COMMIT=4978244d cargo build --locked --release --bin graywolf-modem
           FROM debian:bookworm-slim
           RUN apt-get update && apt-get install -y --no-install-recommends libasound2 libudev1 && rm -rf /var/lib/apt/lists/*
           RUN printf '%s\n' 'pcm.!default { type null }' 'pcm.dxb_fixture { type null hint { show on description "DXBerry synthetic PCM" } }' > /etc/asound.conf
           COPY --from=build /audio-tests /audio-tests
+          COPY --from=build /src/target/release/graywolf-modem /candidate/graywolf-modem
           COPY --from=build /pcm-tests /pcm-tests
           ENTRYPOINT ["/audio-tests"]
           DOCKERFILE
@@ -61,3 +63,23 @@ jobs:
             --security-opt no-new-privileges --entrypoint /pcm-tests graywolf-audio-tests \
             --exact named_pcm_reopens_and_delivers_input | tee "$RUNNER_TEMP/named-pcm.log"
           grep -F '1 passed; 0 failed' "$RUNNER_TEMP/named-pcm.log"
+      - name: Rehearse the modem trial and automatic rollback with the packaged service
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/modem-rehearsal"
+          mkdir -p "$stage"
+          container=$(docker create graywolf-audio-tests)
+          docker cp "$container:/candidate/graywolf-modem" "$stage/graywolf-modem"
+          docker rm "$container"
+          curl -fsSL --retry 2 --max-time 90 -o "$stage/graywolf.deb" https://github.com/chrissnell/graywolf/releases/download/v0.14.14/graywolf_0.14.14_arm64.deb
+          sudo env GITHUB_ACTIONS=true bash fixture/tests/integration/graywolf-capture/rehearse.sh "$stage/graywolf-modem" "$stage/graywolf.deb"
+          cd "$stage"
+          sha256sum graywolf-modem > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: graywolf-modem-4978244d-arm64
+          path: |
+            ${{ runner.temp }}/modem-rehearsal/graywolf-modem
+            ${{ runner.temp }}/modem-rehearsal/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
