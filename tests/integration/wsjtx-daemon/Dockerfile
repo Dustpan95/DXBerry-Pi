@@ -42,7 +42,11 @@ COPY provision/templates/pam-dxberry /etc/pam.d/dxberry
 COPY provision/templates/dxberryd.service /fixture/dxberryd.service
 COPY tests/integration/wsjtx-daemon/daemon-test.sh /usr/local/libexec/dxb-wsjtx-manager-test
 COPY tests/integration/wsjtx-screen/run-session.sh /fixture/run-session
-COPY provision/lib/ /fixture/lib/
+COPY provision/lib/ /opt/dxberry/lib/
+COPY provision/share/wsjtx-native-protocol /opt/dxberry/share/wsjtx-native-protocol
+COPY --chmod=755 provision/bin/dxberry-app /opt/dxberry/bin/dxberry-app
+COPY tests/integration/wsjtx-daemon/release-guard.sh /fixture/release-guard.sh
+RUN ln -s /opt/dxberry/lib /fixture/lib
 RUN chmod 755 /init /usr/local/libexec/dxb-wsjtx-manager-test /fixture/run-session
 
 FROM debian:trixie-slim

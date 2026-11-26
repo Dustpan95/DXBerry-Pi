@@ -265,7 +265,7 @@ func (f *routingScreenFixture) replaceWithConsoleDaemon(t *testing.T, ctx contex
 	if err := os.WriteFile("/etc/systemd/system/dxberryd.service", template, 0644); err != nil {
 		t.Fatal(err)
 	}
-	dropin := "[Service]\nExecStart=\nExecStart=/opt/dxberry/bin/dxberryd -listen 127.0.0.1:18090 -state /var/lib/dxb-native-state -bin /opt/dxberry/bin -radios /run/dxb-console/radios.json -tls /run/dxb-console/tls -screens /run/dxb-screen/screens -audio-run /run/dxb-console/no-audio -program-run /run/dxb-native-hooks -program-release-run /run/dxb-console\n"
+	dropin := "[Service]\nExecStart=\nExecStart=/opt/dxberry/bin/dxberryd -listen 127.0.0.1:18090 -state /var/lib/dxb-native-state/station -bin /opt/dxberry/bin -radios /run/dxb-console/radios.json -tls /run/dxb-console/tls -screens /run/dxb-screen/screens -audio-run /run/dxb-console/no-audio -program-run /run/dxb-native-hooks -program-release-run /run/dxb-console\n"
 	if err := os.WriteFile("/etc/systemd/system/dxberryd.service.d/fixture.conf", []byte(dropin), 0644); err != nil {
 		t.Fatal(err)
 	}

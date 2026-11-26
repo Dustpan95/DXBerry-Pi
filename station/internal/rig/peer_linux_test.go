@@ -16,12 +16,29 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestPeerProcessFixture(t *testing.T) {
 	if os.Getenv("DXB_PEER_FIXTURE") == "held" {
 		socket := os.NewFile(3, "accepted")
 		defer socket.Close()
+		// Acknowledge the inherited TCP socket after the original process has
+		// closed both of its copies. Start alone only confirms exec succeeded.
+		var probe [1]byte
+		if _, err := io.ReadFull(os.Stdin, probe[:]); err != nil || probe[0] != '?' {
+			t.Fatal("missing handoff probe", err)
+		}
+		info, err := unix.GetsockoptTCPInfo(3, unix.IPPROTO_TCP, unix.TCP_INFO)
+		if err != nil || info.State != 1 { // TCP_ESTABLISHED
+			t.Fatal("inherited connection is not established", err)
+		}
+		link, err := os.Readlink("/proc/self/fd/3")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Println(link)
 		io.Copy(io.Discard, os.Stdin)
 		return
 	}
@@ -57,6 +74,15 @@ func TestPeerProcessFixture(t *testing.T) {
 			held := exec.Command(os.Args[0], "-test.run=^TestPeerProcessFixture$")
 			held.Env = append(os.Environ(), "DXB_PEER_FIXTURE=held", "GORACE=atexit_sleep_ms=0")
 			held.ExtraFiles = []*os.File{file}
+			held.Stderr = os.Stderr
+			ack, err := held.StdoutPipe()
+			if err != nil {
+				panic(err)
+			}
+			want, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", file.Fd()))
+			if err != nil {
+				panic(err)
+			}
 			input, err := held.StdinPipe()
 			if err != nil {
 				panic(err)
@@ -67,6 +93,13 @@ func TestPeerProcessFixture(t *testing.T) {
 			defer func() { input.Close(); held.Process.Kill(); held.Wait() }()
 			file.Close()
 			conn.Close()
+			if _, err := io.WriteString(input, "?"); err != nil {
+				panic(err)
+			}
+			line, err := bufio.NewReader(ack).ReadString('\n')
+			if err != nil || line != want+"\n" {
+				t.Fatalf("socket holder reply %q, want %q (%v)", line, want, err)
+			}
 		case "exit":
 			return
 		default:

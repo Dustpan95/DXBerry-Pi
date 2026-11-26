@@ -18,8 +18,8 @@ import (
 	"github.com/Dustpan95/DXBerry-Pi/station/internal/settings"
 )
 
-const routingFixtureState = "/var/lib/dxb-native-state/wsjtx"
-const routingFixturePreferences = "/var/lib/dxb-native-state/preferences"
+const routingFixtureState = "/var/lib/dxb-native-state/station/wsjtx"
+const routingFixturePreferences = "/var/lib/dxb-native-state/station/preferences"
 const routingFixtureRuntime = "/run/dxb-native-hooks"
 
 func TestWSJTXPublicRoutingCompatibility(t *testing.T) {
@@ -129,6 +129,9 @@ func newRoutingScreenFixture(t *testing.T, ctx context.Context, consoleCLI, proc
 	t.Helper()
 	if processCrash && !consoleCLI {
 		t.Fatal("process crash fixture requires the actual console CLI")
+	}
+	if err := os.Mkdir(filepath.Dir(filepath.Dir(routingFixtureState)), 0700); err != nil {
+		t.Fatal("fresh private state root required:", err)
 	}
 	generation, err := programstate.NewStore(filepath.Dir(routingFixtureState))
 	if err != nil {

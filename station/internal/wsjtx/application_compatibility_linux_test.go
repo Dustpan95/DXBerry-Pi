@@ -266,7 +266,7 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 	if err != nil || !qtCore.Mode().IsRegular() {
 		t.Fatal("reference Qt library unavailable")
 	}
-	for _, application := range applications {
+	for i, application := range applications {
 		application.requireDebuggerRunning(t)
 		pid := application.pid
 		// Untraced children stay unreaped until cleanup; traced children have
@@ -283,7 +283,7 @@ func TestWSJTXApplicationCompatibility(t *testing.T) {
 			}
 		}
 		if state == "" || strings.Contains(state, "Z (zombie)") || strings.Contains(state, "X (dead)") {
-			t.Fatalf("actual application exited before runtime verification: %s; cleanup reports its exit status", state)
+			t.Fatalf("actual application fixture%d exited before runtime verification: %s; cleanup reports its exit status", i+1, state)
 		}
 		maps, err := os.ReadFile(fmt.Sprintf("/proc/%d/maps", pid))
 		if err != nil {

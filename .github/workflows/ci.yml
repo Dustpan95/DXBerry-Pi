@@ -111,14 +111,42 @@ jobs:
           docker build -t dxberry-wsjtx-application -f tests/integration/wsjtx-application/Dockerfile . \
             2>&1 | tee "$RUNNER_TEMP/wsjtx-application-build.log"
       - name: Observe actual idle profiles without network or radio devices
+        id: idle
         run: |
           set -o pipefail
+          echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
           docker run --rm --network none --cap-drop ALL --read-only \
             --security-opt=no-new-privileges --pids-limit=256 --memory=2g \
             --user 65534:65534 --shm-size=128m \
             --tmpfs /tmp:rw,exec,nosuid,nodev,size=512m,mode=1777 \
             dxberry-wsjtx-application -test.v -test.timeout=450s -test.count=3 \
             -test.run='^TestWSJTXApplicationCompatibility$' | tee "$RUNNER_TEMP/wsjtx-application.log"
+      - name: Identify the faulting module after an idle check failure
+        if: failure() && steps.idle.outcome == 'failure'
+        env:
+          STARTED: ${{ steps.idle.outputs.started }}
+        run: |
+          set -o pipefail
+          if ! sudo -n journalctl -k -b --since="@$STARTED" --no-pager -o cat |
+            awk '
+              /(^|[[:space:]])wsjtx\[[0-9]+\]: segfault at / {
+                seen = 1
+                module = "unavailable"
+                for (i = 1; i < NF; i++) {
+                  if ($i == "in" && $(i+1) ~ /^[[:alnum:]_.+-]+(\[|$)/) {
+                    module = $(i+1)
+                    sub(/\[.*/, "", module)
+                    break
+                  }
+                }
+                print "WSJT-X kernel fault record, module=" module
+              }
+              END { if (!seen) print "No matching WSJT-X kernel fault record" }
+            ' > "$RUNNER_TEMP/wsjtx-kernel-summary.log"
+          then
+            echo "Kernel journal unavailable" > "$RUNNER_TEMP/wsjtx-kernel-summary.log"
+          fi
+          cat "$RUNNER_TEMP/wsjtx-kernel-summary.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -126,6 +154,7 @@ jobs:
           path: |
             ${{ runner.temp }}/wsjtx-application-build.log
             ${{ runner.temp }}/wsjtx-application.log
+            ${{ runner.temp }}/wsjtx-kernel-summary.log
           if-no-files-found: warn
           retention-days: 7
   wsjtx-manager:
