@@ -64,11 +64,18 @@ run_job() {
   local kind=$1 version=$2 response unit report i
   response=$("$update" "$kind" --json)
   unit=$(jq -er --arg k "$kind" 'select(.ok and .kind==$k) | .job' <<< "$response")
+  # The worker exchanges the tree containing the public CLI. Wait through
+  # that interval using the manager that owns the admitted transient unit.
   for ((i=0; i<60; i++)); do
-    report=$("$update" job --json)
-    if jq -e --arg u "$unit" '.job.unit==$u and .job.state=="finished"' <<< "$report" >/dev/null; then break; fi
+    systemctl is-active --quiet "$unit" || break
     sleep .5
   done
+  if (( i == 60 )); then
+    journalctl --no-pager -u "$unit"
+    echo "Timed out waiting for $unit" >&2
+    return 1
+  fi
+  report=$("$update" job --json)
   if ! jq -e --arg u "$unit" '.job.unit==$u and .job.state=="finished" and .job.exit==0' <<< "$report" >/dev/null; then
     journalctl --no-pager -u "$unit"
     echo "$report" >&2
