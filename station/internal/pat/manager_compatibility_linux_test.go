@@ -276,14 +276,26 @@ PrivateDevices=yes
 	if readFixtureMessage(t, ctx) != messageID {
 		t.Fatal("active service stop replaced the waiting outbox message")
 	}
+	exchangeCtx, finishExchange := context.WithTimeout(ctx, 20*time.Second)
+	defer finishExchange()
+	exchange := exec.CommandContext(exchangeCtx, "/fixture/pat-peer", messageID, fixtureSubject, fixtureBody)
+	exchange.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "TMPDIR=/tmp"}
+	exchange.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{
+		Uid: 65534, Gid: 65534, Groups: []uint32{},
+	}}
+	if output, err := exchange.CombinedOutput(); err != nil {
+		t.Fatalf("fixture peer exchange failed: %v (%s)", err, output)
+	}
+	checkFixtureDelivery(t, ctx, messageID)
+	waitFixturePeerStatus(t, ctx, r, false)
 	manager(ctx, "stop", unit)
 	var files syscall.Statfs_t
 	if err := syscall.Statfs("/sys/fs/cgroup", &files); err != nil || uint64(files.Type) != 0x63677270 {
 		t.Fatal("private guest cgroup v2 required")
 	}
 	report := map[string]any{"kind": "pat-real-manager-reader", "result": "partial", "package_sha256": compatibilityPackageHash,
-		"passed":   []string{"actual owned idle read", "real systemd/proc/cgroup/socket metadata", "restart replacement refusal", "assignment ABA refusal", "multiple owner refusal", "queued P2P message preserved across managed restart", "incoming loopback P2P connection observed, normal stop during active exchange and queued message verified on restart", "stopped unit refusal"},
-		"untested": []string{"public DXBerry prepare/session/stopped hooks", "physical radio eligibility", "outbound dialing and completed peer message exchange", "ARM64 station workload", "physical radio/RF"}}
+		"passed":   []string{"actual owned idle read", "real systemd/proc/cgroup/socket metadata", "restart replacement refusal", "assignment ABA refusal", "multiple owner refusal", "queued P2P message preserved across managed restart", "incoming loopback P2P connection observed, normal stop during active exchange and queued message verified on restart", "complete queued peer delivery with matching sender and recipient mailboxes and empty reconnect", "stopped unit refusal"},
+		"untested": []string{"public DXBerry prepare/session/stopped hooks", "physical radio eligibility", "outbound Pat dialing", "ARM64 station workload", "physical radio/RF"}}
 	raw, err := json.Marshal(report)
 	if err != nil {
 		t.Fatal(err)

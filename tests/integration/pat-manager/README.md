@@ -32,6 +32,14 @@ socket and make status unavailable. A fresh start must report an idle listener
 and recover the queued message addressed to a different synthetic callsign.
 The actual guest passed these checks. [Guest log](https://github.com/Dustpan95/DXBerry-Pi/actions/runs/45896391337/job/140171226466).
 
+The addressed peer then connects to the same loopback listener and receives
+the message using the wl2k-go v1.0.1 B2F implementation used by Pat 1.0.1.
+The peer runs unprivileged with a fresh temporary inbox. It checks the MID,
+sender, recipient, subject and body, then reconnects to verify an empty
+exchange. The managed Pat API must show an empty outbox and exactly one sent
+entry with that MID. Dependencies for this guest helper are pinned in its own
+Go module. The station binaries do not include it.
+
 After preparing the image, run from the repository on Linux/amd64:
 
 ```sh
@@ -49,5 +57,5 @@ explicitly partial synthetic report. Failure to obtain assets, boot the guest,
 start Pat or verify ownership fails the job; it is never converted to a skip.
 
 Public DXBerry prepare/session/stopped hooks, physical eligibility, outgoing
-dialing, completed message exchange, ARM64 capture workload and RF acceptance
+dialing, ARM64 capture workload and RF acceptance
 remain open. Native collection stays disabled on the maintained Pi.

@@ -1,0 +1,4 @@
+github.com/la5nta/wl2k-go v1.0.1 h1:OCxkWQOMKKyCqxl5+zDoaivAzKlEA9elrgCJvZ+6Fi4=
+github.com/la5nta/wl2k-go v1.0.1/go.mod h1:DuuDzLELrEoDA8nYPa5KnJSQjGnxYS1HhveAJLNgENk=
+github.com/paulrosania/go-charset v0.0.0-20190326053356-55c9d7a5834c h1:P6XGcuPTigoHf4TSu+3D/7QOQ1MbL6alNwrGhcW7sKw=
+github.com/paulrosania/go-charset v0.0.0-20190326053356-55c9d7a5834c/go.mod h1:YnNlZP7l4MhyGQ4CBRwv6ohZTPrUJJZtEv4ZgADkbs4=
