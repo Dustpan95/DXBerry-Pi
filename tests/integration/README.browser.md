@@ -51,3 +51,10 @@ socket messages verify that reading and refreshing status do not change radio
 or collection state; the simulated transmitter remains unkeyed. Output follows
 `DXB_BROWSER_OUTPUT` as above. These checks establish neither compatibility with
 the actual WSJT-X application nor physical radio/device acceptance.
+
+The HTTPS login case starts the production console and nginx station site
+inside the isolated image. An ephemeral CA signs the test host certificate,
+which Chromium validates with its private trust store. A disposable OS
+administrator logs in using the normal form and PAM. The check follows the
+session through reload and logout, verifies the cookie attributes, and checks
+anonymous and authenticated responses. It uses no station accounts or radio devices.
