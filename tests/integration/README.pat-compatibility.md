@@ -78,20 +78,14 @@ published synthetic report readable by the calling account/artifact uploader.
 
 ## Remaining acceptance
 
-The application protocol check does not exercise the public managed reader's
-ownership checks against a real systemd manager. A separate isolated fixture
-must establish actual unit/process/socket identity, start/stop ordering,
-replacement and refusal/recovery behavior. Do not mount the host system bus;
-mocked `systemctl` output does not close that gate. The separate
-[`pat-manager` guest](pat-manager/README.md) now implements that isolated check;
-its complete job result supplies execution evidence. It does not exercise
-DXBerry's full public session hooks or physical-radio eligibility.
+The idle-only runner covers the Pat application protocol. The separate systemd
+guest checks unit, process and socket ownership, replacement, refusal and
+recovery. It exercises incoming and outgoing loopback connections, a managed
+stop during a connection, mailbox persistence, and the shipped Pat launcher
+with simulated USB discovery. [Manager guest](pat-manager/README.md)
 
-Actual dialing/connected transitions, active Winlink shutdown and message
-persistence, station CPU/capture workload and physical radio/RF behavior remain
-separate acceptance items. No real connections or RF transmissions are part of
-this idle-only runner. Native Pat collection stays disabled on the maintained
-Pi until the applicable gates are satisfied.
+ARDOP, station CPU and capture workload, physical eligibility and RF acceptance
+remain open. Native Pat collection stays disabled on the maintained Pi.
 
 ## Current evidence
 

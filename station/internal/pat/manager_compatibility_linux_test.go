@@ -19,10 +19,8 @@ import (
 	"time"
 )
 
-// This driver runs only in the disposable QEMU guest, never on a station. It
-// verifies the production reader against real manager/process/socket metadata;
-// the synthetic unit does not claim full DXBerry session-hook acceptance.
-func TestPatRealManagerCompatibility(t *testing.T) {
+func requirePatManagerGuest(t *testing.T) {
+	t.Helper()
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" || os.Geteuid() != 0 || os.Getenv("DXB_PAT_MANAGER_FIXTURE") != "1" {
 		t.Fatal("isolated Linux/amd64 root manager fixture required")
 	}
@@ -52,6 +50,13 @@ func TestPatRealManagerCompatibility(t *testing.T) {
 	if _, err := compatibilityPackage("/fixture/pat_1.0.1_linux_amd64.deb"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// This driver runs only in the disposable QEMU guest, never on a station. It
+// verifies the production reader against real manager/process/socket metadata;
+// the synthetic unit does not claim full DXBerry session-hook acceptance.
+func TestPatRealManagerCompatibility(t *testing.T) {
+	requirePatManagerGuest(t)
 	uid, err := localAppsUID()
 	if err != nil || uid == 0 {
 		t.Fatal("fixture application identity unavailable")
