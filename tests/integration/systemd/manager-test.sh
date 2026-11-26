@@ -116,4 +116,5 @@ wait_for 10 child_gone
 empty_queue
 sha256sum -c "$state/source.before"
 echo 'PASS successful oneshot removes surviving child and preserves production inputs'
-echo 'NOT ACCEPTED: hardware, actual udev device delivery, tree retirement and rollback recovery'
+bash /usr/local/libexec/dxb-update-roundtrip
+echo 'NOT ACCEPTED: physical hardware, actual udev delivery or release swaps with an enabled queue'
