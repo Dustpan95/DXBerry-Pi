@@ -18,7 +18,7 @@ RUN --network=none set -eu; export GOTOOLCHAIN=local GOPROXY=off; \
 FROM debian:trixie-slim AS guest
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    systemd-sysv dbus bash jq util-linux coreutils procps curl iproute2 libopus0 linux-image-amd64 \
+    systemd-sysv dbus bash jq util-linux coreutils procps curl iproute2 libopus0 e2fsprogs kmod linux-image-amd64 \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 COPY --from=bundles /baseline/ /opt/dxberry/
 COPY --from=bundles /packages/dxberry-pi-0.0.2.tar.gz* /fixture/packages/
@@ -26,6 +26,8 @@ COPY tests/integration/systemd/update-roundtrip.sh /usr/local/libexec/dxb-update
 COPY --chmod=755 tests/integration/systemd/check-update-setup.sh /fixture/check-update-setup
 COPY provision/templates/dxberry-radio-reconcile.service provision/templates/dxberry-radio-reconcile.path provision/templates/dxberry-radio-reconcile.timer /fixture/templates/
 COPY tests/integration/systemd/init /init
+COPY --chmod=755 tests/integration/systemd/recovery-guest.sh /usr/local/libexec/dxb-recovery-test
+COPY provision/templates/dxberry-netwatch.service /etc/systemd/system/dxberry-netwatch.service
 COPY tests/integration/systemd/manager-test.sh /usr/local/libexec/dxb-manager-test
 COPY tests/integration/systemd/inert-apply.sh /usr/local/libexec/dxb-inert-apply
 RUN chmod 755 /init /usr/local/libexec/dxb-* /opt/dxberry/bin/dxberry-radio-event \
@@ -40,5 +42,6 @@ COPY --from=guest / /guest/
 COPY tests/integration/systemd/pack.py /pack.py
 RUN mkdir /vm && python3 /pack.py /guest /vm && rm -rf /guest /pack.py
 COPY tests/integration/systemd/run.sh /run-test
+COPY --chmod=755 tests/integration/systemd/recovery-run.sh /run-recovery
 RUN chmod 755 /run-test
 ENTRYPOINT ["/run-test"]

@@ -103,3 +103,12 @@ executable, both tree identities and file contents, and preserved operator data.
 The release list and archive are local files. The setup hook runs the installed
 provisioner's configuration check and restarts the console. Machine provisioning,
 power loss, and an exchange with an enabled queue remain separate acceptance items.
+
+A separate rehearsal boots two fresh kernels with the same temporary virtio
+disk. The first boot records both package manifests and persists the directory
+layout between the updater's two renames. The second starts the production
+netwatch unit with the live tree missing. It checks that the service becomes
+ready, that its startup hook restores the exact previous directory and files,
+and that the staged candidate survives. Each boot has its own serial log. This
+covers recovery from a durable intermediate layout. Loss of unflushed writes
+and physical storage behavior remain open.
