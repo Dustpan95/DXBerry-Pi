@@ -250,11 +250,8 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 				if o.Heartbeat.Version == nil || *o.Heartbeat.Version != "3.0.2" || o.Status.TXEnabled || o.Status.Transmitting || o.Status.DECall == nil || *o.Status.DECall != "N0CALL" || o.Status.DEGrid == nil || *o.Status.DEGrid != "AA00aa" || o.Counters.Malformed != 0 || o.Counters.WrongIdentity != 0 || s.Transport.QueueDrops != 0 || s.Transport.WrongPeer != 0 {
 					t.Fatal("actual screen-session application evidence mismatch")
 				}
-				// Startup can publish intermediate dial values before the saved FT8 profile is applied.
-				if routing != nil || o.Status.DialFrequency == screenFT8DialHz {
-					observed = true
-					break
-				}
+				observed = true
+				break
 			}
 			time.Sleep(100 * time.Millisecond)
 		}

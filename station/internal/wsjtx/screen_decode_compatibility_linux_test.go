@@ -29,9 +29,6 @@ func checkScreenOfflineDecode(t *testing.T, receiver screenReceiver, x func(...s
 		return s
 	}
 
-	// WSJT-X 3.0.2 suppresses outbound decodes for 0.6 FT8 periods
-	// after a band change. Allow that startup guard to expire before opening audio.
-	time.Sleep(10 * time.Second)
 	read()
 	if x("getactivewindow") != window {
 		t.Fatal("expected the verified main window before opening audio")

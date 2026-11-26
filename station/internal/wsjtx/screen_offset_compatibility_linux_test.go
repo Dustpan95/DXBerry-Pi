@@ -39,17 +39,46 @@ func openScreenWindow(t *testing.T, ctx context.Context, dir, pid string, uid, g
 	return x, window
 }
 
+// WSJT-X suppresses UDP decodes for 0.6 FT8 periods after a band change.
+// Require the configured idle profile throughout that interval before using
+// the GUI. Startup can briefly report the saved dial and then change away.
+func waitScreenFT8Ready(t *testing.T, receiver screenReceiver) Snapshot {
+	t.Helper()
+	var stableSince time.Time
+	var last Snapshot
+	for deadline := time.Now().Add(35 * time.Second); time.Now().Before(deadline); {
+		current, ok := receiver.Snapshot("fixture1")
+		last = current.Observation
+		s := last.Status
+		if !ok || last.Availability != Live || s == nil || last.StatusSeenAt == nil {
+			t.Fatal("initial receive status unavailable")
+		}
+		if s.TXEnabled || s.Transmitting {
+			t.Fatal("transmit active during receive-only fixture startup")
+		}
+		if s.Mode != nil && *s.Mode == "FT8" && s.DialFrequency == screenFT8DialHz && s.RXOffset < 4999 {
+			if stableSince.IsZero() {
+				stableSince = time.Now()
+			} else if time.Since(stableSince) >= 10*time.Second {
+				return last
+			}
+		} else {
+			stableSince = time.Time{}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	mode := ""
+	if last.Status != nil && last.Status.Mode != nil {
+		mode = *last.Status.Mode
+	}
+	t.Fatalf("FT8 profile did not settle: mode=%q dial=%d RX=%d", mode, last.Status.DialFrequency, last.Status.RXOffset)
+	return Snapshot{}
+}
+
 func checkScreenReceiveOffset(t *testing.T, receiver screenReceiver, x func(...string) string, window string) {
 	t.Helper()
-	original, ok := receiver.Snapshot("fixture1")
-	if !ok || original.Observation.Status == nil || original.Observation.StatusSeenAt == nil {
-		t.Fatal("initial receive status unavailable")
-	}
-	o := original.Observation
+	o := waitScreenFT8Ready(t, receiver)
 	initial := o.Status
-	if initial.Mode == nil || *initial.Mode != "FT8" || initial.DialFrequency != screenFT8DialHz || initial.RXOffset >= 4999 || initial.TXEnabled || initial.Transmitting {
-		t.Fatal("expected an idle FT8 receive offset")
-	}
 	for _, step := range []struct {
 		key    string
 		offset uint32
