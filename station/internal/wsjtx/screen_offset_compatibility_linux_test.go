@@ -31,12 +31,17 @@ func openScreenWindow(t *testing.T, ctx context.Context, dir, pid string, uid, g
 		}
 		return strings.TrimSpace(string(out))
 	}
+	return x, findScreenWindow(t, pid, x)
+}
+
+func findScreenWindow(t *testing.T, pid string, x func(...string) string) string {
+	t.Helper()
 	window := x("search", "--sync", "--all", "--onlyvisible", "--pid", pid, "--name", "^WSJT-X.*fixture1[[:space:]]+v3[.]0[.]2")
 	if _, err := strconv.ParseUint(window, 10, 32); err != nil || x("getwindowpid", window) != pid {
 		t.Fatal("expected one managed WSJT-X main window")
 	}
 	x("windowactivate", "--sync", window)
-	return x, window
+	return window
 }
 
 // WSJT-X suppresses UDP decodes for 0.6 FT8 periods after a band change.

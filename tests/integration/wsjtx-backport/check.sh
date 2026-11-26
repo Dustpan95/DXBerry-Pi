@@ -28,3 +28,21 @@ cat decode.txt
 awk '$1 == "120000" && $4 >= 1497 && $4 <= 1503 && $5 == "~" && $6 == "CQ" && $7 == "K1ABC" && $8 == "FN42" { found = 1 }
      END { exit !found }' decode.txt
 echo 'Verified native ARM64 backport packages, installed libraries and offline FT8 decode.'
+
+export XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data" XDG_CACHE_HOME="$home/cache"
+export XDG_RUNTIME_DIR="$home/runtime" XDG_STATE_HOME="$home/state"
+mkdir -m 700 "$XDG_CONFIG_HOME" "$XDG_RUNTIME_DIR"
+export PULSE_SERVER="unix:$XDG_RUNTIME_DIR/pulse.sock"
+cat > "$home/pulse.pa" <<PULSE
+load-module module-native-protocol-unix socket=$XDG_RUNTIME_DIR/pulse.sock auth-anonymous=1
+load-module module-null-sink sink_name=fixture_null sink_properties=device.description=DXBerryFixture
+set-default-sink fixture_null
+set-default-source fixture_null.monitor
+PULSE
+pulseaudio --daemonize=yes --exit-idle-time=-1 -n --file="$home/pulse.pa"
+[[ $(pactl get-default-sink) == fixture_null && $(pactl get-default-source) == fixture_null.monitor ]]
+export DXB_BACKPORT_WAV="$home/260101_120000.wav"
+timeout 120 xvfb-run -a -s '-screen 0 1280x900x24 -nolisten tcp' bash -ec '
+  openbox > "$HOME/openbox.log" 2>&1 &
+  exec /fixture/profile.test -test.v -test.timeout=110s -test.run="^TestBackportApplicationProfile$"
+'
