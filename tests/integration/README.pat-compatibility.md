@@ -122,8 +122,8 @@ and a stopped unit. Both fixture services have checked private device views.
 Its partial report and serial log are retained in `pat-manager-evidence`
 (artifact `14907846573`, ZIP SHA-256
 `2a454db21c4294909426be1bfe84e11383c8a18a5a3a16cec5bacc6d9d8a432a`).
-The full public DXBerry hooks, physical eligibility, outgoing dialing,
-completed peer exchange, station workload and RF acceptance remain open. Native
+The full public DXBerry hooks, physical eligibility, station workload and RF
+acceptance remain open. Native
 collection stays disabled.
 
 The tagged driver now owns its bounded, synchronized diagnostic capture. This
@@ -138,3 +138,10 @@ The peer saw EOF, the reader refused the stopped unit, and a fresh instance
 reported an idle listener. The outbox still held the original synthetic
 message for a different recipient with the same ID and contents.
 [Manager evidence](https://github.com/Dustpan95/DXBerry-Pi/actions/runs/45896391337/job/140171226466).
+
+
+The addressed local peer received the queued message with the original ID,
+content and addresses. On reconnect it received no duplicate. Pat reported an
+empty outbox and one matching sent entry. The manager fixture also exercises an
+outbound loopback connection through the Pat connect endpoint.
+[Verified message delivery](https://github.com/Dustpan95/DXBerry-Pi/actions/runs/45898676600/job/140178912906).

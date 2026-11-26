@@ -40,6 +40,12 @@ exchange. The managed Pat API must show an empty outbox and exactly one sent
 entry with that MID. Dependencies for this guest helper are pinned in its own
 Go module. The station binaries do not include it.
 
+For the outgoing connection the test submits an explicit guest-loopback address
+to the normal Pat connect endpoint. The peer waits at the transport login and
+B2F handshake boundaries while the managed reader checks dialing and connected
+status. An empty exchange must finish successfully, restore idle status, and
+preserve the earlier sent message.
+
 After preparing the image, run from the repository on Linux/amd64:
 
 ```sh
@@ -56,6 +62,6 @@ guest completion marker, with no failure marker. The console log contains an
 explicitly partial synthetic report. Failure to obtain assets, boot the guest,
 start Pat or verify ownership fails the job; it is never converted to a skip.
 
-Public DXBerry prepare/session/stopped hooks, physical eligibility, outgoing
-dialing, ARM64 capture workload and RF acceptance
+Public DXBerry prepare/session/stopped hooks, physical eligibility,
+ARM64 capture workload and RF acceptance
 remain open. Native collection stays disabled on the maintained Pi.

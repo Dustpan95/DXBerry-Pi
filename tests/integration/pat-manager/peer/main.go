@@ -4,6 +4,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -26,10 +27,44 @@ func receive(box *mailbox.DirHandler) (fbb.TrafficStats, error) {
 	return session.Exchange(c)
 }
 
+// Respond to one already authenticated guest-loopback connection inherited on fd 3.
+func respond() error {
+	file := os.NewFile(3, "fixture peer")
+	if file == nil {
+		return errors.New("missing peer socket")
+	}
+	defer file.Close()
+	conn, err := net.FileConn(file)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	addr, ok := conn.RemoteAddr().(*net.TCPAddr)
+	if !ok || !addr.IP.IsLoopback() {
+		return errors.New("expected a loopback TCP peer")
+	}
+	if err := conn.SetDeadline(time.Now().Add(8 * time.Second)); err != nil {
+		return err
+	}
+	session := fbb.NewSession("N0CALL-2", "N0CALL", "AA00aa", nil)
+	session.IsMaster(true)
+	stats, err := session.Exchange(conn)
+	if err == nil && (len(stats.Received) != 0 || len(stats.Sent) != 0) {
+		return errors.New("unexpected traffic in empty outgoing Pat session")
+	}
+	return err
+}
+
 func run() error {
 	marker, err := os.ReadFile("/fixture/pat-manager-guest")
-	if err != nil || string(marker) != "isolated-pat-manager\n" || os.Geteuid() == 0 || len(os.Args) != 4 {
-		return errors.New("unprivileged manager guest and expected MID, subject and body required")
+	if err != nil || string(marker) != "isolated-pat-manager\n" || os.Geteuid() == 0 {
+		return errors.New("unprivileged manager guest required")
+	}
+	if len(os.Args) == 2 && os.Args[1] == "respond" {
+		return respond()
+	}
+	if len(os.Args) != 4 {
+		return errors.New("expected MID, subject and body")
 	}
 	mid, subject, body := os.Args[1], os.Args[2], os.Args[3]
 	dir, err := os.MkdirTemp("", "pat-peer-")

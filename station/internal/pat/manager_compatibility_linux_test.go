@@ -250,9 +250,9 @@ PrivateDevices=yes
 	// idle-reader checks. The queued message belongs to a different callsign.
 	configureFixturePeer(t, config)
 	manager(ctx, "start", unit)
-	waitFixturePeerStatus(t, ctx, r, false)
+	waitFixturePeerStatus(t, ctx, r, false, false)
 	peer := openFixturePeer(t)
-	waitFixturePeerStatus(t, ctx, r, true)
+	waitFixturePeerStatus(t, ctx, r, false, true)
 	manager(ctx, "stop", unit)
 	result, err := exec.CommandContext(ctx, "/usr/bin/systemctl", "show", unit, "-p", "Result", "--value").Output()
 	if err != nil || strings.TrimSpace(string(result)) != "success" {
@@ -272,30 +272,28 @@ PrivateDevices=yes
 		t.Fatal(err)
 	}
 	manager(ctx, "start", unit)
-	waitFixturePeerStatus(t, ctx, r, false)
+	waitFixturePeerStatus(t, ctx, r, false, false)
 	if readFixtureMessage(t, ctx) != messageID {
 		t.Fatal("active service stop replaced the waiting outbox message")
 	}
 	exchangeCtx, finishExchange := context.WithTimeout(ctx, 20*time.Second)
 	defer finishExchange()
-	exchange := exec.CommandContext(exchangeCtx, "/fixture/pat-peer", messageID, fixtureSubject, fixtureBody)
-	exchange.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "TMPDIR=/tmp"}
-	exchange.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{
-		Uid: 65534, Gid: 65534, Groups: []uint32{},
-	}}
+	exchange := fixturePeerCommand(exchangeCtx, messageID, fixtureSubject, fixtureBody)
 	if output, err := exchange.CombinedOutput(); err != nil {
 		t.Fatalf("fixture peer exchange failed: %v (%s)", err, output)
 	}
 	checkFixtureDelivery(t, ctx, messageID)
-	waitFixturePeerStatus(t, ctx, r, false)
+	waitFixturePeerStatus(t, ctx, r, false, false)
+	checkFixtureOutgoing(t, ctx, r)
+	checkFixtureDelivery(t, ctx, messageID)
 	manager(ctx, "stop", unit)
 	var files syscall.Statfs_t
 	if err := syscall.Statfs("/sys/fs/cgroup", &files); err != nil || uint64(files.Type) != 0x63677270 {
 		t.Fatal("private guest cgroup v2 required")
 	}
 	report := map[string]any{"kind": "pat-real-manager-reader", "result": "partial", "package_sha256": compatibilityPackageHash,
-		"passed":   []string{"actual owned idle read", "real systemd/proc/cgroup/socket metadata", "restart replacement refusal", "assignment ABA refusal", "multiple owner refusal", "queued P2P message preserved across managed restart", "incoming loopback P2P connection observed, normal stop during active exchange and queued message verified on restart", "complete queued peer delivery with matching sender and recipient mailboxes and empty reconnect", "stopped unit refusal"},
-		"untested": []string{"public DXBerry prepare/session/stopped hooks", "physical radio eligibility", "outbound Pat dialing", "ARM64 station workload", "physical radio/RF"}}
+		"passed":   []string{"actual owned idle read", "real systemd/proc/cgroup/socket metadata", "restart replacement refusal", "assignment ABA refusal", "multiple owner refusal", "queued P2P message preserved across managed restart", "incoming loopback P2P connection observed, normal stop during active exchange and queued message verified on restart", "complete queued peer delivery with matching sender and recipient mailboxes and empty reconnect", "outgoing Pat dialing, connected, successful completion and idle observations", "stopped unit refusal"},
+		"untested": []string{"public DXBerry prepare/session/stopped hooks", "physical radio eligibility", "ARM64 station workload", "physical radio/RF"}}
 	raw, err := json.Marshal(report)
 	if err != nil {
 		t.Fatal(err)
