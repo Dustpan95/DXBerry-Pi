@@ -75,9 +75,11 @@ test_capture_bounds_live_stream_metadata() (
 
 test_capture_caps_records_and_marks_partial_history() (
   cap_env
-  jq -cn 'range(0;1001)|{_BOOT_ID:"11111111111111111111111111111111",__MONOTONIC_TIMESTAMP:tostring,__REALTIME_TIMESTAMP:tostring,MESSAGE:"input POLLERR"}' > "$TEST_TMP/events"
+  jq -cn 'range(1000;-1;-1)|{_BOOT_ID:"11111111111111111111111111111111",__MONOTONIC_TIMESTAMP:tostring,__REALTIME_TIMESTAMP:tostring,MESSAGE:(if .==1000 then "output POLLERR" else "input POLLERR" end)}' > "$TEST_TMP/events"
   local report; report=$(dxb_status_capture)
-  assert_eq "$(jq -c '[.journal.truncated,.journal.records_returned,.journal.records_considered,.journal.input,.journal.monotonic_span_us]' <<< "$report")" '[true,1001,1000,1000,999]'
+  assert_eq "$(jq -c '[.journal.truncated,.journal.records_returned,.journal.records_considered,.journal.input,.journal.output,.journal.monotonic_span_us]' <<< "$report")" '[true,1001,1000,999,1,999]'
+  assert_eq "$(jq -c '.journal.realtime_bounds_us' <<< "$report")" '{"minimum":1,"maximum":1000}'
+  assert_file_contains "$TEST_TMP/capture-calls" '--reverse'
 )
 
 test_capture_unknown_timestamps_do_not_invent_an_interval() (

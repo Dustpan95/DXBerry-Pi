@@ -60,8 +60,8 @@ dxb_status_capture() (
   if [[ -z $current || -z $selected ]]; then
     reason=boot_unavailable
   else
-    # At most 1001 selected records and 2 MiB. The extra record detects truncation.
-    if "$timeout_cmd" 5 "$journal" --boot="$selected" --unit=graywolf.service --grep=POLLERR --no-pager --output=json -n 1001 2>/dev/null |
+    # Read newest first. The final (oldest) record only detects truncation.
+    if "$timeout_cmd" 5 "$journal" --boot="$selected" --unit=graywolf.service --grep=POLLERR --reverse --no-pager --output=json -n 1001 2>/dev/null |
       head -c 2097153 > "$work/journal"; then rc=0; else rc=${PIPESTATUS[0]}; fi
     bytes=$(wc -c < "$work/journal")
     if (( bytes > 2097152 )); then reason=output_limit
@@ -73,7 +73,7 @@ dxb_status_capture() (
     if ! jq -sc --arg boot "$selected" '
       def stamp: if type=="string" and test("^[0-9]{1,16}$") then tonumber else null end;
       if any(.[]; type!="object" or (._BOOT_ID|type)!="string" or (._BOOT_ID|test("^[0-9a-f]{32}$")|not) or (.MESSAGE|type)!="string") then error("record") else . end |
-      . as $all | (length>1000) as $clipped | .[-1000:] as $recent |
+      . as $all | (length>1000) as $clipped | .[:1000] as $recent |
       [$recent[] | select(._BOOT_ID==$boot and (.MESSAGE|type)=="string" and (.MESSAGE|contains("POLLERR")))] as $events |
       [$events[] | .__MONOTONIC_TIMESTAMP | stamp | select(.!=null)] as $mono |
       [$events[] | .__REALTIME_TIMESTAMP | stamp | select(.!=null)] as $real |
