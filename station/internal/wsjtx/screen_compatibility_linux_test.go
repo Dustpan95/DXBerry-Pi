@@ -267,6 +267,7 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 		if err != nil {
 			t.Fatal("actual session cgroup unavailable")
 		}
+		var appPID string
 		for _, name := range []string{"wsjtx", "Xvnc", "openbox"} {
 			reference, err := os.Stat("/usr/bin/" + name)
 			if err != nil {
@@ -280,6 +281,9 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 				actual, err := os.Stat(filepath.Join("/proc", pid, "exe"))
 				if err == nil && os.SameFile(actual, reference) {
 					found = true
+					if name == "wsjtx" {
+						appPID = pid
+					}
 				}
 			}
 			if !found {
@@ -302,6 +306,9 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 		}
 		if info, err := os.Stat(dir + "/Xauthority"); err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Sys().(*syscall.Stat_t).Uid != uint32(uid) {
 			t.Fatal("actual private X cookie unavailable")
+		}
+		if routing == nil {
+			checkScreenReceiveOffset(t, ctx, receiver, dir, appPID, uid, gid)
 		}
 		if routing != nil && generation == 0 {
 			routing.restartWhileRunning(t, ctx)
@@ -338,8 +345,10 @@ func runWSJTXScreenFixture(t *testing.T, options screenFixtureOptions) {
 	}
 	report := map[string]any{"kind": "wsjtx-real-screen-session", "result": "partial", "package_sha256": applicationPackageHash,
 		"passed":   []string{"production screen runner and WSJT-X module", "actual Xvnc/Openbox with private UNIX VNC and X cookie", "two fresh actual application observations and manager invocations", "normal mixed-mode stop and real stop-post guard", "fresh stopped checks before synthetic reprepare"},
-		"untested": []string{"physical eligibility and public prepare/session/stopped IPC", "native route restoration and update/rollback", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}}
-	if routing != nil {
+		"untested": []string{"physical eligibility and public prepare/session/stopped IPC", "native route restoration and update/rollback", "Decode/Clear application input", "ARM64 capture workload", "physical radio/RF"}}
+	if routing == nil {
+		report["passed"] = append(report["passed"].([]string), "receive-offset GUI changes and Status latency on both managed starts")
+	} else {
 		report["kind"] = "wsjtx-public-hook-routing"
 		report["passed"] = append(report["passed"].([]string), "actual public root hook IPC", "actual application-user settings helper", "durable approval/generation/journal", "managed route installation and restoration on two normal stops", "running mutation refusal and routing/logging preservation", "actual service/receiver replacement while application remains running", "owed-route restoration after replacement and fresh persistent endpoint")
 		report["untested"] = []string{"physical eligibility and public prepare/session CLI", "whole-process replacement, abrupt death and interrupted helper write", "update/rollback", "GUI change and Decode/Clear input", "ARM64 capture workload", "physical radio/RF"}

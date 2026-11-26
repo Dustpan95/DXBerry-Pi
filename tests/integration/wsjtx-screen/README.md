@@ -41,3 +41,11 @@ network disabled, all capabilities dropped, read-only root, 5 GiB outer memory,
 The image runs a 4 GiB emulated guest with no NIC or host device passthrough.
 Success requires the shared runner's single PASS marker and zero QEMU exit code;
 failure retains bounded synthetic service text in the evidence log.
+
+On both managed starts the display owner selects the verified WSJT-X main
+window. In FT8 the unmodified F12 and F11 keys move the receive audio offset by
+one hertz and restore it. The production observer must receive a fresh Status
+for each change within five seconds on the same observation generation. The
+fixture records elapsed time and checks that the dial frequency and transmit
+offset remain stable and that transmit stays disabled. All input goes to the
+guest's private display; its only audio devices are synthetic.
