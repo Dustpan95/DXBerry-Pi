@@ -31,7 +31,10 @@ diagnostics include bounded text logs only from new synthetic profiles. The fixt
 own processes and does not claim graceful application shutdown acceptance.
 An exited child is reported separately from a mismatched library, with its wait
 status retained in failure diagnostics. CI runs three consecutive fresh fixtures;
-every run must pass, without retrying a failed result.
+every run must pass, without retrying a failed result. If the idle check fails,
+the hosted runner looks for a WSJT-X segfault in its kernel journal during the
+check. It records only the module name when available. The journal can lack a
+matching entry, and a module name alone does not identify the cause.
 
 After building the image separately, run on a Linux/amd64 Docker host:
 
