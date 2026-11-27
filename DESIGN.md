@@ -50,8 +50,8 @@ monospaced instrument readout against quiet cool-gray panels, with a raspberry
 accent reserved for navigation, selection and safe primary actions.
 
 This is a product interface for radio operators on phones, tablets and computers.
-The current continuation serves an English-speaking operator in southwest Kansas;
-the existing product remains radio-independent. Its language is English, its
+The public project serves operators at fixed and portable stations worldwide.
+Derive station identity, location and radio labels from the installation. Its language is English, its
 protocol times are explicitly UTC, and its existing light/dark themes remain.
 Do not introduce a market-specific visual style or localization policy without
 product evidence. Familiar controls and honest unavailable states take priority
@@ -160,12 +160,15 @@ verification must be recorded before declaring this increment ready.
 
 ### Station dashboard
 
-The console opens on the operating desk. The desktop rail and mobile menu share
-the same destinations, including direct links and browser history. The masthead
-pairs the station callsign with locally bundled prairie antenna artwork and
-Barlow Condensed. It identifies the station in daylight and low-light themes.
-The live program display and the radio controls have independent visual weight.
-The frequency is a readout. Only controls and destinations receive button styling.
-The monitor keeps its space in standby and pauses when hidden. Detailed station
-administration lives in its named section. The dashboard styles and icon mask
-are owned by `station/web/dxberry.css`; the artwork and font ship on the Pi.
+The identity panel reads the station callsign and Maidenhead locator from the
+status report. The globe faces the center of that grid square. Without a usable
+grid, show an unmarked world map. The land mask comes from Natural Earth's
+public-domain [1:110m land dataset](https://www.naturalearthdata.com/downloads/110m-physical-vectors/110m-land/). All map rendering happens in the browser using
+assets served by the Pi. The station coordinates never go to a tile provider.
+
+A horizontal desktop navigation bar and a mobile menu share destinations. The
+program monitor expands for a running desktop and takes less space in standby.
+The radio's primary frequency uses tabular figures. Barlow Condensed identifies
+the station and section headings. The dashboard palette pairs petrol, pale
+paper, and amber UTC figures, with a low-light counterpart. Runtime ownership
+remains in `station/web/dxberry.css`.

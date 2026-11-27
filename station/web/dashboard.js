@@ -129,22 +129,62 @@ function dashTick() {
   if (dashboard.local) dashboard.local.textContent = `${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+// Decode the center of a Maidenhead field, square, subsquare or extended square.
+function dashGridCenter(grid) {
+  const g = String(grid || "").toUpperCase();
+  if (!/^[A-R]{2}(?:[0-9]{2}(?:[A-X]{2}(?:[0-9]{2})?)?)?$/.test(g)) return null;
+  let lon = -180, lat = -90, width = 360, height = 180;
+  const sizes = [18, 10, 24, 10];
+  for (let pos = 0; pos < g.length; pos += 2) {
+    const size = sizes[pos / 2];
+    const base = size === 10 ? 48 : 65;
+    width /= size;
+    height /= size;
+    lon += (g.charCodeAt(pos) - base) * width;
+    lat += (g.charCodeAt(pos + 1) - base) * height;
+  }
+  return { lat: lat + height / 2, lon: lon + width / 2 };
+}
+
+const dashAtlas = { grid: null, plate: null };
+
+function dashLocator(grid) {
+  if (dashAtlas.plate && dashAtlas.grid === grid) return dashAtlas.plate;
+  const point = dashGridCenter(grid);
+  const canvas = point ? el("canvas", { width: 432, height: 432, "aria-hidden": "true" }) : null;
+  const plate = el("div", { class: "dash-atlas", "aria-hidden": "true" }, canvas);
+  dashAtlas.grid = grid;
+  dashAtlas.plate = plate;
+  if (canvas?.getContext) {
+    import("./station-atlas.js").then(module => module.paintGlobe(canvas, point))
+      .then(() => plate.classList.add("is-projected")).catch(() => {});
+  }
+  return plate;
+}
+
 function dashStrip(s) {
   const st = s.station && s.station.ok ? s.station : null;
   const call = st ? st.callsign : "";
   const radios = s.radios && s.radios.ok ? Object.keys(s.radios.radios || {}).length : null;
   const problems = Object.keys(s).filter(k => s[k] && typeof s[k] === "object" && s[k].ok === false);
   const health = problems.length ? badge(dashPlural(problems.length, "problem", "problems"), "bad") : badge("Station healthy", "good");
-  const facts = [st && st.grid ? `Grid ${st.grid}` : null, radios === null ? null : dashPlural(radios, "radio", "radios")].filter(Boolean);
+  const grid = st && st.grid;
+  const point = dashGridCenter(grid);
+  const coordinate = (value, positive, negative) => `${Math.abs(value).toFixed(2)}° ${value < 0 ? negative : positive}`;
   dashboard.utc = el("span", { class: "dash-clock", id: "dash-utc" });
   dashboard.local = el("span", { class: "dash-clock", id: "dash-local" });
   return el("div", { class: "card dash-strip" },
     el("div", { class: "dash-welcome" },
-      el("div", { class: "dash-call-label" }, el("span", { class: "dash-caption" }, "Station callsign"), health),
+      el("div", { class: "dash-call-label" }, el("span", { class: "dash-caption" }, "Station callsign")),
       el("h2", { id: "dashboard-title" }, call || "Station overview"),
-      call ? null : el("p", { class: "muted hint" }, "Set CALLSIGN in dxberry.txt to see it here."),
-      el("p", { class: "dash-facts" }, facts.join("  ·  ")),
+      st && !call ? el("p", { class: "muted hint" }, "Set CALLSIGN in dxberry.txt to see it here.") : null,
+      el("div", { class: "dash-facts" }, health, radios === null ? null : dashPlural(radios, "radio", "radios")),
       problems.length ? el("p", { class: "muted hint" }, "Some station details could not be read.") : null),
+    dashLocator(grid),
+    el("div", { class: "dash-grid-readout" }, el("span", { class: "dash-caption" }, "Maidenhead locator"),
+      el("strong", {}, grid || "Unavailable"),
+      point ? el("span", { class: "dash-position", title: "Approximate center of the grid square" },
+        `${coordinate(point.lat, "N", "S")} · ${coordinate(point.lon, "E", "W")}`) : null),
     el("div", { class: "dash-clocks" },
       el("div", {}, el("span", { class: "muted" }, "UTC"), dashboard.utc),
       el("div", {}, el("span", { class: "muted" }, "Local"), dashboard.local)));
@@ -236,7 +276,8 @@ function dashRadioCard(s, n, x) {
   const rows = [];
   let dial = null;
   if (x.cat) {
-    const was = freq(x.freq, x.mode);
+    const reading = freq(x.freq, x.mode);
+    const was = reading === DASH ? "No CAT reading" : reading;
     dial = el("div", { class: "dash-dial" }, el("span", { class: "dash-caption" }, "Dial frequency"),
       el("strong", { "data-live-freq": n, "data-was": was }, dashLiveFreq(n, was)));
     rows.push(["Transmitter", el("span", { "data-live-owner": n }, dashOwnerText(n))]);
@@ -445,7 +486,7 @@ function dashRender(s) {
 }
 
 // Keep the framebuffer outside status redraws. Only a visible dashboard holds a shared viewer.
-const dashPreview = { choices: [], selected: "", key: "", revision: 0, viewer: null, visible: true, signature: null };
+const dashPreview = { choices: [], selected: "", key: "", revision: 0, viewer: null, visible: true, signature: null, standby: "No program window is running." };
 
 function dashPreviewMessage(state, message) {
   const status = document.getElementById("preview-state");
@@ -470,7 +511,7 @@ async function dashPreviewConnect(retry = false) {
   const surface = document.getElementById("preview-surface");
   surface.replaceChildren();
   if (!key) {
-    dashPreviewMessage(item ? "Paused" : "Standby", item ? "Preview paused." : "No program window is running.");
+    dashPreviewMessage(item ? "Paused" : "Standby", item ? "Preview paused." : dashPreview.standby);
     return;
   }
   dashPreviewMessage("Connecting", "Opening program preview…");
@@ -500,13 +541,20 @@ async function dashPreviewConnect(retry = false) {
 
 function dashPreviewUpdate(s, radios) {
   const choices = [];
+  const stopped = [];
   for (const [n, radio] of Object.entries(radios)) {
     const p = dashProgram(s, radio.owner);
     if (!p || p.name === "graywolf" || (p.open && p.open.kind !== "screen") ||
-        !PROGRAM_RE.test(p.name) || !NAME_RE.test(n) || dashState(s, n, radio) !== "running") continue;
+        !PROGRAM_RE.test(p.name) || !NAME_RE.test(n)) continue;
+    const state = dashState(s, n, radio);
+    if (state === "stopped") stopped.push(p.label || p.name);
+    if (state !== "running") continue;
     choices.push({ session: p.name + "-" + n, label: (p.label || p.name) + " · " + (radio.label || n) });
   }
-  const signature = JSON.stringify(choices);
+  dashPreview.standby = stopped.length === 1
+    ? `${stopped[0]} is stopped. Start it from the radio desk to see its window here.`
+    : "No program window is running.";
+  const signature = JSON.stringify([choices, choices.length ? "" : dashPreview.standby]);
   if (signature === dashPreview.signature) return;
   dashPreview.signature = signature;
   dashPreview.choices = choices;

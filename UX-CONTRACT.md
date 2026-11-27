@@ -16,7 +16,7 @@ their maintained specifications and are not certified by this increment.
 | Native observation, lifecycle and recovery | `docs/design/wsjtx-status-adapter.md`; `station/internal/wsjtx` | API / lifecycle contract | 2026-11-18 |
 | Current scope and deployment acceptance | `docs/design/project-roadmap.md` | Continuation roadmap | 2026-11-18 |
 | Data lifecycle and retention | Adapter design's bounded session/history and journal sections | Domain contract | 2026-11-18 |
-| Market and content | Station-app purpose/principles; current operator's southwest Kansas context | Product brief | 2026-11-18 |
+| Market and content | Public station app, configured station identity and detected equipment | Product brief | 2026-11-18 |
 
 This read-only feature introduces no billing, legal text, retention change,
 deletion, privilege grant or external dispatch. It does not change collection

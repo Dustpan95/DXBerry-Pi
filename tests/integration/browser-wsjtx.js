@@ -183,6 +183,18 @@ function contrast(a, b) {
 
     await page.unroute("**/api/cli/dxberry-status");
     await page.goto(base + "/");
+    await page.waitForFunction(() => typeof last !== "undefined" && last?.radios?.ok);
+    const showIdentity = async (callsign, grid) => page.evaluate(([callsign, grid]) => {
+      dashRender({ ...last, station: { ok: true, callsign, grid } });
+    }, [callsign, grid]);
+    await showIdentity("VK2ABC", "QF56od");
+    await page.waitForSelector(".dash-atlas.is-projected canvas");
+    assert.equal(await page.locator("#dashboard-title").innerText(), "VK2ABC");
+    assert.match(await page.locator(".dash-position").innerText(), /33.85° S.*151.21° E/);
+    await showIdentity("", "");
+    assert.equal(await page.locator("#dashboard-title").innerText(), "Station overview");
+    assert.equal(await page.locator(".dash-atlas canvas").count(), 0);
+    await page.evaluate(() => dashRender(last));
     const radio = page.locator('.dash-radio[data-radio="radio1"]');
     await radio.locator("summary").click();
     await page.evaluate(() => dashRender(last));
