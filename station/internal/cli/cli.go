@@ -102,6 +102,7 @@ var allow = map[string][][]string{
 		{"claim", "NAME", "PROG", "--json"},
 		{"release", "NAME", "--json"},
 		{"models", "--json"},
+		{"power", "NAME", "on", "--json"}, {"power", "NAME", "off", "--json"}, {"power", "NAME", "status", "--json"},
 		{"set", "NAME", "OPTVAL...", "--json"},
 		{"remove", "NAME", "--json"},
 		{"hotplug", "--json"},
