@@ -183,6 +183,15 @@ function contrast(a, b) {
 
     await page.unroute("**/api/cli/dxberry-status");
     await page.goto(base + "/");
+    const radio = page.locator('.dash-radio[data-radio="radio1"]');
+    await radio.locator("summary").click();
+    await page.evaluate(() => dashRender(last));
+    assert.equal(await radio.locator("details").evaluate(e => e.open), true);
+    await page.goto(base + "/#programs");
+    await page.waitForSelector("#programs:visible");
+    assert.equal(await page.locator("#dashboard").isVisible(), false);
+    await page.goBack();
+    await page.waitForSelector("#dashboard:visible");
     await page.getByRole("link", { name: "WSJT-X status for radio1", exact: true }).click();
     await waitKind("live");
     assert.equal(new URL(page.url()).hash, "#wsjtx-status");

@@ -188,60 +188,169 @@ body.screen-page { margin: 0; max-width: none; height: 100vh; height: 100dvh; pa
 /* The terminal page (terminal.html). */
 #term { flex: 1; min-height: 0; background: #000; padding: 4px; overflow: hidden; }
 
-/* The operating desk groups station time, radio controls and the passive program display. */
-.dashboard {
-  --desk-ink: #172c40; --desk-glass: #102335; --desk-light: #f4f8fd;
-  --desk-muted: #bed1df; --desk-signal: #79d7cb;
-  gap: 20px;
+/* Station console. The artwork, font and pictograms are served by the Pi. */
+@font-face {
+  font-family: "Barlow Condensed"; src: url("/art/barlow-condensed.woff2") format("woff2");
+  font-style: normal; font-weight: 600; font-display: swap;
 }
-.brand { display: inline-flex; align-items: center; gap: 8px; }
-.brand img { border-radius: 7px; }
+.station-shell {
+  --rail: #221e2c; --rail-ink: #f9f4f3; --rail-muted: #c9becc;
+  --desk-accent: #933a4c; --desk-ink: #302c36; --desk-paper: #f4f2ef;
+  --desk-panel: #fffcf8; --desk-rule: #dcd6d3; --desk-muted: #655c69;
+  --desk-dial: #eee9df; --desk-key: #502939; --desk-key-ink: #fff8f6;
+  --desk-display: "Barlow Condensed", "Arial Narrow", system-ui, sans-serif;
+  padding: 0 clamp(16px, 3vw, 48px) 32px; background: var(--desk-paper);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .station-shell {
+    --desk-accent: #f4a6ac; --desk-ink: #f4eceb; --desk-paper: #17161c; --desk-panel: #232129;
+    --desk-rule: #433d47; --desk-muted: #c3b7c1; --desk-dial: #342e35; --desk-key: #f4b6b7; --desk-key-ink: #361b28;
+  }
+}
+:root[data-theme="dark"] .station-shell {
+  --desk-accent: #f4a6ac; --desk-ink: #f4eceb; --desk-paper: #17161c; --desk-panel: #232129;
+  --desk-rule: #433d47; --desk-muted: #c3b7c1; --desk-dial: #342e35; --desk-key: #f4b6b7; --desk-key-ink: #361b28;
+}
+.station-shell .brand { display: inline-flex; align-items: center; gap: 10px; font-size: 24px; letter-spacing: -.065em; }
+.station-shell .brand img { border-radius: 8px; width: 34px; height: 34px; }
+.station-shell .bar { background: var(--rail); color: var(--rail-ink); }
+.station-shell .bar .callsign, .station-shell .bar .clock { color: var(--rail-muted); }
+.station-shell .bar .btn { background: transparent; color: var(--rail-ink); border-color: #615461; }
+.station-shell #top { min-height: 80px; margin: 0; color: var(--desk-ink); }
+.station-shell #top h1 { font: 600 clamp(26px, 2.5vw, 38px)/1.15 var(--desk-display); }
+.station-shell #top .host { font: 500 12px var(--font-mono); color: var(--desk-muted); }
+.station-shell #updated { font-size: 12px; color: var(--desk-muted); }
+.station-shell #refresh { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; }
+.station-shell .menu a::before, .desk-icon, .radio-emblem::before, .dash-recent h2::before,
+.dash-box h2::before, .station-shell #refresh::before, .station-shell #logout::before, #preview-note::before {
+  content: ""; display: inline-block; width: 20px; height: 20px; flex: none; background: currentColor;
+  mask: url("/art/console-icons.png") center var(--glyph, 0%) / 100% 1100% no-repeat;
+}
+.station-shell .menu a[href$="#cards"] { --glyph: 10%; }
+.station-shell .menu a[href$="#settings"] { --glyph: 20%; }
+.station-shell .menu a[href$="#updates"] { --glyph: 30%; }
+.station-shell .menu a[href$="#programs"] { --glyph: 40%; }
+.station-shell .menu a[href="/terminal"] { --glyph: 50%; }
+.station-shell #refresh { --glyph: 80%; }
+.station-shell #logout { --glyph: 90%; display: flex; align-items: center; gap: 10px; }
+.station-shell .menu a { display: flex; align-items: center; gap: 13px; min-height: 44px; }
+.station-shell .menu a[aria-current="page"] { font-weight: 700; }
+.station-shell :is(#top,#dashboard,#cards,#programs,#updates,#settings,#notices) { max-width: 1580px; margin-inline: auto; }
+.dashboard { color: var(--desk-ink); gap: 22px; }
+.dashboard .card, .dash-monitor {
+  border: 1px solid var(--desk-rule); background: var(--desk-panel); border-radius: 14px; min-width: 0;
+}
 .dashboard .dash-strip {
-  isolation: isolate; position: relative; overflow: hidden; color: var(--desk-light);
-  background: var(--desk-ink); border: 0; border-radius: 12px;
-  padding: clamp(22px, 3vw, 38px); gap: 20px;
+  position: relative; isolation: isolate; overflow: hidden; display: grid; align-content: center;
+  justify-content: start; gap: 15px; border: 0; min-height: clamp(195px, 17vw, 270px);
+  padding: 21px clamp(22px,3.2vw,48px); color: #fff9f1;
+  background: #37323f url("/art/prairie-dusk.webp") center 64% / cover no-repeat;
 }
-.dash-strip::before {
-  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
-  background: repeating-radial-gradient(ellipse at 78% 160%, transparent 0 23px, #78b8c61a 24px 25px, transparent 26px 44px),
-    linear-gradient(108deg, #162538 6%, #23465b 67%, #20434a);
-}
-.dash-caption, .dash-clocks .muted {
-  font: 650 11px/1.4 var(--font-mono); text-transform: uppercase; letter-spacing: .13em;
-}
-.dash-strip .muted, .dash-strip .dash-caption { color: var(--desk-muted); }
-.dash-welcome h2 { font: 750 clamp(36px, 5.2vw, 68px)/1.06 system-ui, sans-serif; letter-spacing: -.055em; margin: 5px 0 9px; }
-.dash-strip .dash-facts { line-height: 1.8; overflow-wrap: anywhere; }
-.dash-clocks { gap: clamp(14px, 2.4vw, 32px); }
-.dash-clocks div { gap: 5px; }
-.dash-clocks .dash-clock { color: var(--desk-signal); font-size: clamp(21px, 3vw, 39px); font-weight: 500; }
-.dash-clocks div + div .dash-clock { color: var(--desk-light); }
-.dash-workbench { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); align-items: start; gap: 20px; }
-.dash-heading, .dash-monitor-head h2, .dash-bottom h2 { margin: 0; font-size: 19px; letter-spacing: -.025em; }
-.dash-heading { margin-bottom: 10px; }
-.dash-radios { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-.dash-radio, .dash-bottom .card { padding: clamp(16px, 2vw, 24px); }
-.dash-radio h3 { font-size: 19px; letter-spacing: -.025em; }
-.dash-radio h3 span { font: 12px var(--font-mono); }
-.dash-radio .kv, .dash-bottom .kv { grid-template-columns: minmax(80px,auto) minmax(0,1fr); }
-.dash-radio .actions { padding-top: 14px; border-top: 1px solid var(--line); }
-.dash-radio .btn { padding: 7px 11px; }
-.dash-dial { padding: 12px 14px; margin: 10px 0 14px; border-left: 3px solid var(--accent); background: var(--bg); }
-.dash-dial .dash-caption { display: block; color: var(--muted); }
-.dash-dial strong { font: 600 clamp(18px, 2.5vw, 29px)/1.4 var(--font-mono); overflow-wrap: anywhere; }
-.dash-monitor { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--card); min-width: 0; }
-.dash-monitor-head, .dash-monitor-tools { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 10px; padding: 14px 18px; }
-#preview-state { font: 600 12px var(--font-mono); color: var(--muted); }
-.dash-glass { position: relative; display: grid; place-items: center; aspect-ratio: 16/9; overflow: hidden;
-  background-color: var(--desk-glass); background-image: radial-gradient(#89b2bd38 1px, transparent 1px); background-size: 12px 12px; color: var(--desk-muted); }
-#preview-note { text-align: center; background: var(--desk-glass); padding: 8px 12px; }
+.dash-strip::before { content: ""; position: absolute; inset: 0; z-index: -1;
+  background: linear-gradient(90deg,#201c2ae6 0%,#24202ab8 30%,#28212a30 62%,transparent 84%); }
+.dash-welcome h2 { font: 600 clamp(50px,6vw,90px)/.98 var(--desk-display); letter-spacing: -.025em; margin: 5px 0; }
+.dash-call-label { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.dash-caption, .dash-clocks .muted { font: 650 10px/1.35 var(--font-mono); text-transform: uppercase; letter-spacing: .14em; }
+.dash-strip .badge { font-size: 11px; padding: 3px 9px; }
+.dash-strip .badge.good { background: #263e36; color: #d1f6df; }
+.dash-strip .badge::before, #preview-state::before { content: ""; display: inline-block; width: 6px; height: 6px; background: currentColor; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.dash-strip .muted, .dash-strip .dash-caption, .dash-strip .dash-facts { color: #efe4e5; }
+.dash-facts { font: 500 12px/1.5 var(--font-mono); }
+.dash-clocks { align-items: baseline; gap: 22px; }
+.dash-clocks div { flex-direction: row; align-items: baseline; gap: 7px; }
+.dash-clocks .dash-clock { font-size: 16px; font-weight: 500; }
+.dash-workbench { display: grid; grid-template-columns: minmax(0, 1.32fr) minmax(0, 1fr); align-items: start; gap: 20px; }
+.dash-bank { grid-area: 1/2; min-width: 0; }
+.dash-monitor { grid-area: 1/1; overflow: hidden; }
+.dash-heading, .dash-monitor-head h2, .dash-bottom h2 { margin: 0; font: 600 27px/1.05 var(--desk-display); }
+.dash-heading { margin: 0 0 12px; }
+.dash-radios { grid-template-columns: minmax(0,1fr); gap: 12px; }
+.dashboard .dash-radio { padding: 18px 20px; }
+.dash-radio h3 { display: flex; align-items: center; gap: 9px; font-size: 19px; line-height: 1.2; letter-spacing: -.035em; margin: 0 0 16px; }
+.dash-radio h3 .muted { margin-left: auto; color: var(--desk-muted); font: 12px var(--font-mono); }
+.radio-emblem { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; background: var(--desk-key); color: var(--desk-key-ink); --glyph: 10%; }
+.dash-dial { border-radius: 8px; padding: 13px 16px 19px; background: var(--desk-dial); position: relative; }
+.dash-dial::after { content: ""; position: absolute; inset: auto 16px 4px; height: 5px; opacity: .38;
+  background: repeating-linear-gradient(90deg,var(--desk-muted) 0 1px,transparent 1px 8px); }
+.dash-dial .dash-caption { display: block; color: var(--desk-muted); }
+.dash-dial strong { display: block; font: 600 clamp(23px,2vw,33px)/1.24 var(--desk-display); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.dash-radio .kv, .dash-bottom .kv { grid-template-columns: minmax(75px,auto) minmax(0,1fr); gap: 7px 16px; }
+.dash-radio .kv { margin-block: 14px; font-size: 13px; }
+.dashboard .kv dt, .dashboard .muted:not(.dash-strip .muted) { color: var(--desk-muted); }
+.dash-radio .actions { border-top: 1px solid var(--desk-rule); padding-top: 12px; gap: 6px; }
+.dashboard .btn { border-color: var(--desk-rule); color: var(--desk-ink); background: var(--desk-panel); border-radius: 7px; }
+.dashboard .btn.primary { background: var(--desk-key); color: var(--desk-key-ink); border-color: var(--desk-key); }
+.dashboard .btn:hover, .dashboard a:focus-visible { border-color: var(--desk-accent); }
+.dash-radio .btn { padding: 7px 10px; }
+.dash-monitor-head, .dash-monitor-tools { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; padding: 15px 18px; }
+.dash-monitor-head h2, .dash-bottom h2 { display: flex; align-items: center; gap: 10px; }
+.desk-icon { --glyph: 60%; color: var(--desk-accent); }
+#preview-state { color: var(--desk-muted); background: var(--desk-dial); border-radius: 18px; padding: 4px 10px; font: 600 11px var(--font-mono); }
+#preview-state[data-state="Live"] { color: var(--good); background: var(--good-bg); }
+.dash-glass { position: relative; display: grid; place-items: center; aspect-ratio: 16/10; overflow: hidden; margin: 0 10px;
+  border-radius: 8px; background-color: #28262d; color: #f2e8e7;
+  background-image: linear-gradient(#7e737314 1px,transparent 1px),linear-gradient(90deg,#7e737314 1px,transparent 1px);
+  background-size: 28px 28px; }
+#preview-note { display: grid; justify-items: center; gap: 13px; text-align: center; padding: 12px; font-size: 14px; margin: 0; }
+#preview-note::before { --glyph: 60%; width: 38px; height: 38px; color: #cdb5ae; }
 #preview-surface { position: absolute; inset: 0; pointer-events: none; }
-.dash-monitor-tools a { color: var(--accent); font-weight: 650; padding-block: 5px; }
-.dash-monitor-tools select { max-width: 100%; background: var(--card); color: var(--text); padding: 6px; }
-.dash-bottom h2 { margin-bottom: 12px; }
-@media (min-width: 1350px) { body:has(.dashboard) { max-width: 1536px; margin-inline: auto; padding-inline: 32px; } }
-@media (max-width: 800px) {
-  .dash-workbench { grid-template-columns: minmax(0,1fr); }
-  .dash-strip .dash-clocks { justify-content: flex-start; }
+.dash-monitor-tools { min-height: 54px; color: var(--desk-muted); }
+.dash-monitor-tools a { color: var(--desk-accent); font-weight: 650; text-underline-offset: 3px; }
+.dash-monitor-tools select { max-width: 100%; background: var(--desk-panel); color: var(--desk-ink); padding: 6px; }
+.dash-bottom { grid-template-columns: minmax(0,1.32fr) minmax(0,1fr); gap: 20px; }
+.dash-bottom .card { padding: 18px 20px; }
+.dash-bottom h2 { font-size: 24px; margin: 0 0 15px; }
+.dash-recent h2::before { --glyph: 70%; color: var(--desk-accent); }
+.dash-box h2::before { --glyph: 20%; color: var(--desk-accent); }
+@media (min-width: 1000px) {
+  .station-shell { --rail-width: clamp(172px,15vw,216px); padding-left: calc(var(--rail-width) + clamp(24px,3vw,48px)); }
+  .station-shell .bar { position: fixed; inset: 0 auto 0 0; width: var(--rail-width); z-index: 5; margin: 0; padding: 28px 16px 22px;
+    flex-flow: column nowrap; align-items: stretch; border: 0; overflow-y: auto; }
+  .station-shell .brand { padding-inline: 7px; }
+  .station-shell .bar .callsign { font: 11px var(--font-mono); letter-spacing: .12em; margin: 0 7px; }
+  .station-shell .menu, .station-shell .menu[hidden] { display: flex !important; position: static; order: 2; min-width: 0; gap: 4px; border: 0;
+    border-top: 1px solid #4b424f; border-radius: 0; background: transparent; margin: 10px 0 auto; padding-top: 18px; }
+  .station-shell .menu a { padding: 9px 12px; border-radius: 7px; color: var(--rail-muted); font-size: 14px; }
+  .station-shell .menu a:hover, .station-shell .menu a:focus-visible { background: #433746; color: white; }
+  .station-shell .menu a[aria-current="page"] { background: #553747; color: #ffdddd; }
+  .station-shell #menu { display: none; }
+  .station-shell .bar .clock { order: 3; margin: 0; padding: 12px 8px 0; border-top: 1px solid #4b424f; font: 12px var(--font-mono); }
+  .station-shell #logout { order: 4; border: 0; padding: 8px; align-self: flex-start; }
 }
-@media (forced-colors: active) { .dash-strip::before { display: none; } }
+@media (max-width: 999px) {
+  .station-shell { padding: 0 16px 24px; }
+  .station-shell .bar { min-height: 58px; margin: 0 -16px; padding: 8px 16px; border: 0; gap: 9px; }
+  .station-shell #menu { margin-left: auto; min-height: 40px; }
+  .station-shell #logout { min-height: 40px; }
+  .station-shell .bar .clock { display: none; }
+  .station-shell .menu { right: 12px; box-shadow: 0 10px 28px #17151b33; }
+}
+@media (max-width: 760px) {
+  .dashboard { gap: 16px; }
+  .dash-workbench, .dash-bottom { grid-template-columns: minmax(0,1fr); gap: 16px; }
+  .dash-bank, .dash-monitor { grid-area: auto; }
+
+  .dash-glass { aspect-ratio: 16/9; }
+  .dashboard .dash-strip { min-height: 190px; padding: 20px; background-position: 72% center; }
+  .dash-strip::before { background: linear-gradient(90deg,#211c2acc,#201c2a73 62%,transparent); }
+  .station-shell #top { min-height: 70px; }
+  .station-shell #top .host { display: none; }
+  .dash-radio .btn { min-height: 40px; padding: 9px 11px; }
+}
+@media (max-width: 440px) {
+  .station-shell .bar .callsign, .station-shell #logout::before { display: none; }
+  .station-shell .brand { font-size: 21px; }
+  .dash-monitor-head h2 { font-size: 25px; }
+}
+@media (forced-colors: active) {
+  .dash-strip::before, .dash-dial::after { display: none; }
+  .dashboard .dash-strip { background: Canvas; color: CanvasText; }
+}
+
+.dash-options { margin-top: 12px; border-top: 1px solid var(--desk-rule); padding-top: 3px; }
+.dash-options summary { width: fit-content; padding: 9px 0; cursor: pointer; color: var(--desk-accent); font-weight: 650; }
+.dash-options .actions { margin-top: 0; border-top: 0; padding: 2px 0 4px; }
+@media (min-width: 761px) {
+  .dashboard .dash-strip { background-size: auto 114%; background-position: right 75%; background-color: #292635; }
+  .dash-strip::before { background: linear-gradient(90deg,#292635 20%,#292635ef 37%,#29263573 59%,transparent 77%); }
+}
