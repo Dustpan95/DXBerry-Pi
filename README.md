@@ -78,16 +78,27 @@ than 5% of RAM. Real state (Graywolf configuration, mail, logs you keep) is on d
 
 ## The station app
 
+![DXBerry-Pi desktop dashboard with the W0BTE callsign, station map, live WSJT-X preview and FT-991 controls](docs/screenshots/dashboard-desktop.webp)
+
+<details>
+<summary>Phone dashboard</summary>
+
+<img src="docs/screenshots/dashboard-phone.webp" width="360" alt="DXBerry-Pi phone dashboard in dark mode with W0BTE and a WSJT-X preview">
+
+</details>
+
 Browse to `https://<the Pi's address>/` (plain `http://` redirects there). Log in as `dietpi` with the
 Pi's password. The certificate is made by the Pi itself, so your browser warns once; to stop the
 warning on a phone or another computer, open `https://<the Pi's address>/station.crt` and install the
-certificate. The page opens on the dashboard and refreshes every 30 seconds: Graywolf (running or not,
-iGate connection, packets per channel, position log), radios and GPS, the network (Ethernet or WiFi,
-address, signal), the Pi (temperature, power warnings, load, memory, disk), the clock, and versions.
-Buttons open Graywolf, restart it, start, stop or restart DXBerry's services, open each service's log,
-and restart or shut down the Pi. A terminal for the Pi is in the same page, and each program you run on
-a radio opens in its own window. Cockpit, which earlier versions used for this, is gone: the update
-removes it, and the station app takes its place on the same ports (443 and 80), so bookmarks still work.
+certificate.
+
+The dashboard shows the station callsign, Maidenhead locator, clocks, radio controls and recent
+contacts. The program monitor shows a read-only preview when a program window is running.
+Choose **Open full screen** to operate the program. Expand **Radio controls** for program switching,
+radio settings and USB power controls on supported radios.
+
+Open **Station** for Graywolf, iGate and packet activity, radios and GPS, network status, Pi health,
+versions, and service logs and controls. **Terminal** opens the Pi shell in a separate tab.
 
 The terminal is a real root-capable shell for `dietpi` (which has sudo), exactly as over SSH. The
 certificate's names (the Pi's hostname, `dxberry.local` and its addresses) are fixed when it is first
