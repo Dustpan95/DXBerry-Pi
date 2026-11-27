@@ -485,7 +485,10 @@ async function dashPreviewConnect(retry = false) {
     viewer.addEventListener("connect", () => {
       if (revision === dashPreview.revision) dashPreviewMessage("Live", "");
     });
-    viewer.addEventListener("disconnect", failed);
+    viewer.addEventListener("disconnect", () => {
+      if (revision === dashPreview.revision) dashPreview.viewer = null;
+      failed();
+    });
     viewer.addEventListener("securityfailure", failed);
     viewer.addEventListener("credentialsrequired", () => { viewer.disconnect(); failed(); });
   } catch { failed(); }

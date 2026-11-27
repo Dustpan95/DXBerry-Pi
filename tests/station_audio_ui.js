@@ -216,7 +216,7 @@ if (scenario === "dashboard") {
     parts: () => "", freq: () => "—", appLabel: (r, n) => ({ wsjtx: "WSJT-X", graywolf: "Graywolf" })[n] || n, perRadioProgram: () => true,
     openRadioForm() {}, num: String, dxb: { events: { on() {}, onOpen() {}, send() { return true; } }, api() { return Promise.resolve({}); }, hidden: false },
   });
-  ctx.document = { getElementById: () => ({ addEventListener() {} }), querySelectorAll: () => [] };
+  ctx.document = { ...doc, querySelector: () => null, getElementById: () => ({ addEventListener() {} }), querySelectorAll: () => [] };
   vm.runInContext(fs.readFileSync(dir + "/vfo.js", "utf8"), ctx); // its pure part: window.dxbVFO
   vm.runInContext(fs.readFileSync(dir + "/dashboard.js", "utf8"), ctx);
   const s = { radios: { ok: true, radios: {} }, apps: { ok: true, programs: [] } };

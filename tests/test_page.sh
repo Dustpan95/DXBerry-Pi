@@ -488,7 +488,7 @@ test_page_services_card_spans_the_row_and_wraps() {
 # The dashboard, then the cards; Programs after Updates; the two new dialogs.
 test_page_html_puts_the_station_first_and_programs_after_updates() {
   local html=$PG_DIR/index.html ids
-  ids=$(grep -oE '<(section|main|div|dialog) id="[a-z-]+"' "$html" | grep -oE '"[a-z-]+"' | tr -d '"' | tr '\n' ' ')
+  ids=$(grep -oE '<(section|main|div) id="(notices|dashboard|cards|settings|updates|programs)"' "$html" | grep -oE '"[a-z-]+"' | tr -d '"' | tr '\n' ' ')
   assert_contains "$ids" "notices dashboard cards settings updates programs "
   assert_file_contains "$html" '<section id="programs" class="card settings" aria-labelledby="programs-title">'
   assert_file_contains "$html" '<dialog id="switch-dialog" aria-labelledby="switch-dialog-title">'

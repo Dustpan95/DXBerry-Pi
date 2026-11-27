@@ -70,7 +70,7 @@ test_station_page_files_are_plain() {
   assert_file_contains "$SP_WEB/index.html" '<meta name="viewport" content="width=device-width, initial-scale=1">'
   assert_file_contains "$SP_WEB/index.html" '<link rel="manifest" href="/manifest.webmanifest">'
   # app.js first, then dxberry.js; Task 5 adds the other page scripts
-  assert_eq "$(grep -oE 'src="[^"]*"' "$SP_WEB/index.html" | head -2 | tr '\n' ' ')" 'src="/app.js" src="/dxberry.js" '
+  assert_eq "$(grep -oE '<script src="[^"]*"' "$SP_WEB/index.html" | cut -d' ' -f2 | head -2 | tr '\n' ' ')" 'src="/app.js" src="/dxberry.js" '
 }
 
 test_station_page_manifest_and_icons() {
