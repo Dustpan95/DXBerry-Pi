@@ -134,21 +134,17 @@ function dashStrip(s) {
   const call = st ? st.callsign : "";
   const radios = s.radios && s.radios.ok ? Object.keys(s.radios.radios || {}).length : null;
   const problems = Object.keys(s).filter(k => s[k] && typeof s[k] === "object" && s[k].ok === false);
-  const facts = [
-    s.release && s.release.ok && s.release.dxberry ? el("span", {}, `DXBerry ${s.release.dxberry}`) : null,
-    radios === null ? null : el("span", {}, dashPlural(radios, "radio", "radios")),
-    problems.length ? badge(dashPlural(problems.length, "problem", "problems"), "bad") : badge("Station healthy", "good"),
-  ];
+  const health = problems.length ? badge(dashPlural(problems.length, "problem", "problems"), "bad") : badge("Station healthy", "good");
+  const facts = [st && st.grid ? `Grid ${st.grid}` : null, radios === null ? null : dashPlural(radios, "radio", "radios")].filter(Boolean);
   dashboard.utc = el("span", { class: "dash-clock", id: "dash-utc" });
   dashboard.local = el("span", { class: "dash-clock", id: "dash-local" });
   return el("div", { class: "card dash-strip" },
     el("div", { class: "dash-welcome" },
-      el("span", { class: "dash-caption" }, "Amateur radio station"),
+      el("div", { class: "dash-call-label" }, el("span", { class: "dash-caption" }, "Station callsign"), health),
       el("h2", { id: "dashboard-title" }, call || "Station overview"),
       call ? null : el("p", { class: "muted hint" }, "Set CALLSIGN in dxberry.txt to see it here."),
-      el("p", { class: "dash-facts" }, facts.filter(Boolean).map((f, i) => (i ? [" · ", f] : f))),
-      problems.length ? el("p", { class: "muted hint" }, "Some station details could not be read.") : null,
-      st && st.grid ? el("p", { class: "muted hint" }, `Grid ${st.grid}`) : null),
+      el("p", { class: "dash-facts" }, facts.join("  ·  ")),
+      problems.length ? el("p", { class: "muted hint" }, "Some station details could not be read.") : null),
     el("div", { class: "dash-clocks" },
       el("div", {}, el("span", { class: "muted" }, "UTC"), dashboard.utc),
       el("div", {}, el("span", { class: "muted" }, "Local"), dashboard.local)));
@@ -237,7 +233,7 @@ function dashRadioCard(s, n, x) {
   const why = busyText ? "Wait for the change shown on this card to finish" : null;
   const state = dashState(s, n, x);
   const [stText, stKind] = DASH_STATES[state] || [state || DASH, "muted"];
-  const rows = [["Interface", parts(x)]];
+  const rows = [];
   let dial = null;
   if (x.cat) {
     const was = freq(x.freq, x.mode);
@@ -246,8 +242,10 @@ function dashRadioCard(s, n, x) {
     rows.push(["Transmitter", el("span", { "data-live-owner": n }, dashOwnerText(n))]);
   }
   rows.push(["Program", x.owner ? [label, " ", badge(stText, stKind)] : "No program"]);
+  rows.push(["Interface", parts(x)]);
   if (x.owner === "graywolf") rows.push(["APRS", dashGraywolfLine(s.graywolf, n)]);
   const acts = [];
+  const options = [];
   // no Open while a job installs, updates or removes the program
   if (x.owner && state === "running" && !job) acts.push(dashOpenLink(s, n, x, label));
   if (x.owner === "wsjtx" && DASH_RADIO_RE.test(n)) {
@@ -265,12 +263,12 @@ function dashRadioCard(s, n, x) {
     acts.push(el("a", { class: "btn small", href: DASH_SCREEN + `flrig-${n}`, target: "_blank", rel: "noopener", "data-key": `dash:${n}:flrig` }, "Open flrig"));
   }
   if (x.owner) {
-    acts.push(btn("Switch program", () => dashSwitchOpen(n), { key: `dash:${n}:switch`, aria: `Switch the program on ${n}`, disabled: !!busyText, title: why }));
+    options.push(btn("Switch program", () => dashSwitchOpen(n), { key: `dash:${n}:switch`, aria: `Switch the program on ${n}`, disabled: !!busyText, title: why }));
     if (perRadioProgram(x.owner)) {
       if (state === "running" || state === "starting") {
-        acts.push(btn("Stop", () => dashAppAction(n, "stop", label), { key: `dash:${n}:stop`, aria: `Stop ${label} on ${n}`, disabled: !!busyText, title: why }));
+        options.push(btn("Stop", () => dashAppAction(n, "stop", label), { key: `dash:${n}:stop`, aria: `Stop ${label} on ${n}`, disabled: !!busyText, title: why }));
       } else if (state) {
-        acts.push(btn("Start", () => dashAppAction(n, "start", label), { key: `dash:${n}:start`, aria: `Start ${label} on ${n}`,
+        acts.unshift(btn("Start", () => dashAppAction(n, "start", label), { cls: "primary", key: `dash:${n}:start`, aria: `Start ${label} on ${n}`,
           disabled: !!busyText || !x.present, title: why || (x.present ? null : "Plug the radio in first") }));
       }
     }
@@ -280,22 +278,24 @@ function dashRadioCard(s, n, x) {
   if (x.cat && x.rig && x.rig.model === 1035 && (!x.rig.control || x.rig.control === "hamlib") && NAME_RE.test(n)) {
     const radioLabel = x.label || n;
     for (const action of ["on", "off"]) {
-      acts.push(btn(`Power ${action} radio`, () => dashPower(n, radioLabel, action), {
+      options.push(btn(`Power ${action} radio`, () => dashPower(n, radioLabel, action), {
         key: `dash:${n}:power-${action}`, aria: `Power ${action} ${radioLabel}`, disabled: !!busyText, title: why
       }));
     }
   }
-  acts.push(btn("Radio settings", () => openRadioForm(n), { key: `dash:${n}:settings`, aria: `Settings of ${n}`, disabled: !!busyText, title: why }));
+  options.push(btn("Radio settings", () => openRadioForm(n), { key: `dash:${n}:settings`, aria: `Settings of ${n}`, disabled: !!busyText, title: why }));
   // the radio's settings changed while the program ran: it takes them at its next start (ruling 7)
   const prog = x.owner ? dashProgram(s, x.owner) : null;
   const here = prog ? (prog.sessions || []).find(q => q.radio === n) : null;
   const rewire = state === "running" && here && here.rewire_pending === true;
   return el("section", { class: "card dash-radio", "data-radio": n, "aria-label": `Radio ${n}` },
-    el("h3", {}, x.label || n, x.label ? el("span", { class: "muted" }, ` ${n}`) : null),
+    el("h3", {}, el("span", { class: "radio-emblem", "aria-hidden": "true" }), x.label || n, x.label ? el("span", { class: "muted" }, ` ${n}`) : null),
     busyText ? el("p", {}, badge(busyText + "…", "warn")) : null,
     rewire ? el("p", { class: "hint" }, badge(`Restart ${label} to use the new radio settings`, "warn")) : null,
     dial, kv(rows),
-    el("div", { class: "actions" }, acts));
+    el("div", { class: "actions" }, acts),
+    el("details", { id: `dash-options-${n}`, class: "dash-options", open: document.getElementById(`dash-options-${n}`)?.open },
+      el("summary", { "data-key": `dash:${n}:options` }, "Radio controls"), el("div", { class: "actions" }, options)));
 }
 
 // ---- the Switch program dialog ------------------------------------------------------------------
@@ -328,6 +328,7 @@ function dashSwitchOpen(n) {
 
 // dashToPrograms: the page scrolls to the Programs section (Install more…, Set up the logbook).
 function dashToPrograms() {
+  if (location.hash !== "#programs") location.hash = "#programs";
   const p = document.getElementById("programs");
   if (p && p.scrollIntoView) p.scrollIntoView({ behavior: "smooth", block: "start" });
 }
@@ -401,6 +402,7 @@ function dashStationBox(s) {
     ["Logbook", dashLogbookState(s)],
     ["APRS-IS", ig ? [badge(ig.connected ? "connected" : "not connected", ig.connected ? "good" : "warn"), " ", ig.server] : (g && g.ok && g.api_error) || DASH],
     ["GPS", s.radios && s.radios.ok ? gps(s.radios.gps) : DASH],
+    ["Version", s.release && s.release.ok && s.release.dxberry ? `DXBerry ${s.release.dxberry}` : DASH],
     ["Network", how ? [badge(how, n.state === "ETH" || n.state === "WIFI" ? "good" : "bad"), n.address ? ` ${n.address}` : ""] : DASH],
   ]));
 }
@@ -446,7 +448,9 @@ function dashRender(s) {
 const dashPreview = { choices: [], selected: "", key: "", revision: 0, viewer: null, visible: true, signature: null };
 
 function dashPreviewMessage(state, message) {
-  document.getElementById("preview-state").textContent = state;
+  const status = document.getElementById("preview-state");
+  status.textContent = state;
+  status.dataset.state = state;
   const note = document.getElementById("preview-note");
   note.textContent = message;
   note.hidden = !message;

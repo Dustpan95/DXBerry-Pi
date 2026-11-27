@@ -160,10 +160,12 @@ verification must be recorded before declaring this increment ready.
 
 ### Station dashboard
 
-The callsign and two labeled clocks share a deep-blue station panel. Subtle
-range rings frame the clock without depicting measured RF activity. The radio
-desk pairs the live frequency and its controls with a passive program monitor.
-On phones the monitor follows the radios. Its reserved 16:9 surface distinguishes
-standby, connecting, live, paused and unavailable states. Colors for these two
-instrument surfaces are scoped to the dashboard in `dxberry.css`; application
-actions and health states use the shared theme.
+The console opens on the operating desk. The desktop rail and mobile menu share
+the same destinations, including direct links and browser history. The masthead
+pairs the station callsign with locally bundled prairie antenna artwork and
+Barlow Condensed. It identifies the station in daylight and low-light themes.
+The live program display and the radio controls have independent visual weight.
+The frequency is a readout. Only controls and destinations receive button styling.
+The monitor keeps its space in standby and pauses when hidden. Detailed station
+administration lives in its named section. The dashboard styles and icon mask
+are owned by `station/web/dxberry.css`; the artwork and font ship on the Pi.

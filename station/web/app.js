@@ -323,6 +323,25 @@
   byId("logout").addEventListener("click", () => dxb.logout());
   byId("logs-refresh").addEventListener("click", () => { if (logUnit) loadLog(); });
   byId("logs-close").addEventListener("click", closeLog);
+  // Use the existing section links as destinations and preserve browser Back/Forward.
+  if (byId("view-title")?.id === "view-title" && location.pathname === "/") {
+    const links = Array.from(byId("menu-list").querySelectorAll('a[href^="#"]'));
+    function showSection(event) {
+      const selected = links.find(a => a.hash === location.hash) || links[0];
+      if (!selected) return;
+      for (const link of links) {
+        byId(link.hash.slice(1)).hidden = link !== selected;
+        if (link === selected) link.setAttribute("aria-current", "page");
+        else link.removeAttribute("aria-current");
+      }
+      byId("view-title").textContent = selected.hash === "#dashboard" ? "Station dashboard" : selected.textContent;
+      if (logUnit) closeLog();
+      if (event) byId("view-title").focus({ preventScroll: true });
+      window.scrollTo(0, 0);
+    }
+    showSection();
+    window.addEventListener("hashchange", showSection);
+  }
   tickClock();
   setInterval(tickClock, 1000);
 })();
