@@ -15,4 +15,4 @@ app_varac_unwire() { return 0; }
 app_varac_local_version() { python3 "$DXB_LIB/varac-archive.py" "$1"; }
 app_varac_unpack() { python3 "$DXB_LIB/varac-archive.py" "$1" "$2"; }
 app_varac_command() { printf '%s\n' /opt/dxberry/bin/dxberry-varac "$1"; }
-app_varac_setup_note() { echo "Configure VARA HF under Settings in VarAC. The modem is a separate installation."; }
+app_varac_setup_note() { echo "For the native XARA trial, disable automatic modem launch and connect to 127.0.0.1:8300 in VarAC."; }
