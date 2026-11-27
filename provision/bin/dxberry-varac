@@ -33,6 +33,8 @@ PULSE_SOURCE=${1^^}.in "$modem" --call "$call" --hf 500 --audio alsa \
   --capture pulse --playback null --addr 127.0.0.1 --port 8300 --kiss-port 8100 &
 xara_pid=$!
 varac_pid=
+# Invoked by the EXIT trap.
+# shellcheck disable=SC2317
 cleanup() {
   kill "$xara_pid" ${varac_pid:+"$varac_pid"} 2>/dev/null || true
   wait "$xara_pid" ${varac_pid:+"$varac_pid"} 2>/dev/null || true
