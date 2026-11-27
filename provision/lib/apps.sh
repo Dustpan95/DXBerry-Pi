@@ -73,6 +73,7 @@ _dxb_apps_parse_source() {
     ($s | capture("^(?<t>[a-z]+)(:(?<rest>.*))?$")) as $m
     | ($m.rest // "") as $r
     | if $m.t == "builtin" and $m.rest == null then {type: "builtin", repo: null, package: null, patterns: []}
+      elif $m.t == "local" and ($r | test("^[a-z][a-z0-9_]{0,15}$")) then {type: "local", repo: null, package: $r, patterns: []}
       elif $m.t == "apt" and ($r | test("^[a-z0-9][a-z0-9+.-]+$")) then {type: "apt", repo: null, package: $r, patterns: []}
       elif $m.t == "tag" and ($r | test(repo_re)) then {type: "tag", repo: $r, package: null, patterns: []}
       elif $m.t == "github" then
@@ -128,6 +129,15 @@ dxb_apps_source_latest() {
   type=$(jq -r .type <<< "$src")
   case $type in
     builtin) return 1 ;;
+    local)
+      pkg=$(jq -r .package <<< "$src")
+      asset="$DXB_STATE_DIR/installers/$pkg.zip"
+      if [[ ! -r $asset ]] || ! _dxb_apps_has "$pkg" local_version; then
+        echo "Place the official kit at $asset" >&2; return 1
+      fi
+      ver=$("app_${pkg}_local_version" "$asset") || return 1
+      jq -cn --arg v "$ver" --arg a "$pkg.zip" '{version:$v, asset:$a, type:"local", url:null, sha256:null}'
+      return 0 ;;
     apt)
       pkg=$(jq -r .package <<< "$src")
       ver=$("$DXB_APT_CACHE" policy "$pkg" 2> /dev/null | sed -n 's/^[[:blank:]]*Candidate:[[:blank:]]*//p' | head -1)
@@ -376,6 +386,7 @@ dxb_apps_place() {
   local name=$1 bin=${3:-$1} type asset ver file dir stage old k
   type=$(jq -r .type <<< "$2"); asset=$(jq -r .asset <<< "$2"); ver=$(jq -r .version <<< "$2")
   file=$DXB_APPS_WORK/$asset; dir=$DXB_APPS_OPT/$name
+  [[ $type != local ]] || file=$DXB_STATE_DIR/installers/$asset
   [[ -f $file ]] || { echo "$asset was not downloaded; $name was left as it was" >&2; return 6; }
   if [[ $type == deb ]]; then
     echo "installing $asset"
@@ -391,6 +402,10 @@ dxb_apps_place() {
   fi
   echo "unpacking $asset"
   case $type in
+    local)
+      if ! _dxb_apps_has "$name" unpack || ! ver=$("app_${name}_unpack" "$file" "$stage"); then
+        rm -rf "$stage"; return 6
+      fi ;;
     appimage) _dxb_apps_unpack_appimage "$file" "$stage/squashfs-root" || { rm -rf "$stage"; return 6; } ;;
     bin)
       if ! { cp "$file" "$stage/$bin" && chmod 755 "$stage/$bin"; }; then
@@ -467,7 +482,7 @@ dxb_apps_install() {
       || { echo "the newest $label could not be found (is the Pi online?); nothing changed" >&2; return 6; }
     type=$(jq -r .type <<< "$latest"); ver=$(jq -r .version <<< "$latest")
     echo "$label $ver ($(jq -r .asset <<< "$latest"))"
-    dxb_apps_download "$latest" || { rm -rf "$DXB_APPS_WORK"; return 6; }
+    if [[ $stype != local ]]; then dxb_apps_download "$latest" || { rm -rf "$DXB_APPS_WORK"; return 6; }; fi
   fi
   if _dxb_apps_has "$name" prepare_source; then
     "app_${name}_prepare_source" || { echo "$label package source could not be prepared" >&2; return 6; }

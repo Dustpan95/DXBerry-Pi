@@ -18,7 +18,7 @@ ap_module() {
 
 test_apps_tsv_has_every_program_once() {
   fx_apps_env
-  assert_eq "$(dxb_apps_rows | jq -r 'map(.name) | join(" ")')" "graywolf wsjtx js8call fldigi qsstv pat flrig wavelog mercury hfpacket"
+  assert_eq "$(dxb_apps_rows | jq -r 'map(.name) | join(" ")')" "graywolf wsjtx js8call fldigi qsstv pat flrig wavelog mercury hfpacket varac"
   assert_eq "$(dxb_apps_row js8call | jq -c .packages)" '["libxcb-cursor0","pulseaudio"]'
   dxb_apps_row nope > /dev/null 2>&1; assert_eq "$?" "3"
 }
@@ -29,7 +29,7 @@ test_apps_rows_carry_every_column() {
     '{"name":"flrig","label":"flrig","kind":"rigcontrol","source":"apt:flrig","packages":[],"description":"Rig control with your radio'\''s full front panel"}'
   # no nginx: it comes only through dxb_webproxy_install, inside its policy-rc.d guard (Task 12)
   assert_eq "$(dxb_apps_row wavelog | jq -r '.packages | join(" ")')" "php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd mariadb-server"
-  assert_eq "$(dxb_apps_rows | jq -r 'map(.name) | unique | length')" "10"
+  assert_eq "$(dxb_apps_rows | jq -r 'map(.name) | unique | length')" "11"
 }
 
 test_apps_source_parses_every_kind() {
@@ -556,4 +556,25 @@ test_apps_mercury_source_uses_a_scoped_key_and_limits_packages() {
     assert_file_contains "$DXB_ETC_APT/preferences.d/dxberry-mercury" "Package: mercury mercury-ui"
     assert_file_contains "$DXB_ETC_APT/preferences.d/dxberry-mercury" "Pin-Priority: -1"
   )
+}
+
+test_apps_varac_installs_the_native_local_kit() {
+  fx_apps_env
+  mkdir -p "$DXB_STATE_DIR/installers"
+  python3 - "$DXB_STATE_DIR/installers/varac.zip" <<'PY'
+from zipfile import ZipFile
+import sys
+with ZipFile(sys.argv[1], "w") as kit:
+    kit.writestr("VarAC/README.txt", "VarAC 17.1.7 (Rust) - Linux test build")
+    kit.writestr("VarAC/VarAC", bytes.fromhex("7f454c460201" + "00" * 12 + "b700"))
+    for name in ("License.txt", "THIRD-PARTY-LICENSES.txt", "VarAC_cat_commands.ini",
+                 "VarAC_templates.ini", "VarAC_UI_languages.ini"):
+        kit.writestr("VarAC/" + name, "fixture")
+PY
+  dxb_apps_install varac > "$TEST_TMP/out" || _fail "could not install the operator kit"
+  assert_eq "$(dxb_apps_version varac)" "17.1.7"
+  [[ -x $DXB_APPS_OPT/varac/VarAC ]] || _fail "missing client"
+  echo 'invalid kit' > "$DXB_STATE_DIR/installers/varac.zip"
+  dxb_apps_install varac update >/dev/null 2>&1; assert_eq "$?" "6"
+  assert_eq "$(dxb_apps_version varac)" "17.1.7"
 }

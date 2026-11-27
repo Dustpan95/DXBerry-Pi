@@ -372,7 +372,7 @@ dxb_screen_prepare() {
   dxb_radio_present "$r" || { dxb_error "radio $r is not plugged in"; return 4; }
   # These TNCs listen on all interfaces. Only the local client and rigctld need IP access.
   case $a in
-    mercury|hfpacket)
+    mercury|hfpacket|varac)
       "$DXB_SYSTEMCTL" set-property --runtime "$(dxb_app_session_unit "$a" "$r")" IPAddressDeny=any IPAddressAllow=localhost || return 6 ;;
   esac
   w=$(dxb_apps_wiring "$r") || return 3
