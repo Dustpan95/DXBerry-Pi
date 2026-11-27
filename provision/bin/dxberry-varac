@@ -27,8 +27,16 @@ if (exec 3<>/dev/tcp/127.0.0.1/8300) 2>/dev/null; then
   echo "VarAC's HF modem port 8300 is already in use." >&2
   exit 6
 fi
-call=N0CALL
+call=
 if [[ -r $HOME/.config/dxberry-xara/$1.call ]]; then read -r call < "$HOME/.config/dxberry-xara/$1.call"; fi
+# Profiles created before the companion was added already have a VarAC callsign.
+if [[ -z $call || $call == N0CALL ]]; then
+  if [[ -r VarAC.ini ]]; then
+    call=$(awk -F= 'tolower($1) == "mycall" {sub(/\r$/, "", $2); print toupper($2); exit}' VarAC.ini)
+  fi
+fi
+[[ $call =~ ^[A-Z0-9]{3,7}(-[0-9]{1,2})?$ && $call != N0CALL ]] ||
+  { echo "Set your station callsign before starting the XARA modem." >&2; exit 6; }
 PULSE_SOURCE=${1^^}.in "$modem" --call "$call" --hf 500 --audio alsa \
   --capture pulse --playback null --addr 127.0.0.1 --port 8300 --kiss-port 8100 &
 xara_pid=$!
