@@ -1,0 +1,22 @@
+#!/bin/bash
+# VarAC keeps its database and settings beside its executable.
+set -euo pipefail
+[[ $# == 1 && $1 =~ ^[a-z][a-z0-9]{0,11}$ ]]
+src=${DXB_APPS_OPT:-/opt/dxberry-apps}/varac
+dir=$HOME/varac/$1
+umask 077
+mkdir -p "$dir"
+cd "$dir"
+if ! cmp -s "$src/VarAC" VarAC; then
+  install -m 700 "$src/VarAC" VarAC.new
+  mv -fT VarAC.new VarAC
+fi
+for file in License.txt THIRD-PARTY-LICENSES.txt README.txt; do cp -f "$src/$file" "$file"; done
+for file in VarAC_cat_commands.ini VarAC_UI_languages.ini VarAC_templates.ini; do
+  # Refresh an untouched default on upgrade and keep an operator-edited copy.
+  if [[ ! -f $file ]] || cmp -s "$file" ".$file.default"; then cp "$src/$file" "$file"; fi
+  cp "$src/$file" ".$file.default"
+done
+export ICED_BACKEND=tiny-skia
+export WINEPREFIX="$dir/wine"
+exec ./VarAC

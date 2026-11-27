@@ -14,3 +14,4 @@ flrig	flrig	rigcontrol	apt:flrig	-	Rig control with your radio's full front pane
 wavelog	Wavelog	service	tag:wavelog/wavelog	php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd mariadb-server	A logbook on this Pi
 mercury	Mercury HF	radio	apt:mercury-ui	mercury pulseaudio crudini	HF modem and chat for direct ARQ connections and broadcasts
 hfpacket	HF Packet	radio	apt:direwolf	xterm	300-baud AX.25 packet terminal with a local KISS interface
+varac	VarAC	radio	local:varac	python3 pulseaudio	Peer-to-peer chat using the operator's native ARM64 client and VARA modem

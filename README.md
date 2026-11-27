@@ -277,9 +277,13 @@ slide one finger to move the pointer, tap to click, or hold and slide to drag.
 - **JS8Call** supports directed relays for weak-signal messaging. For a first
   two-hop test, arrange a relay and destination on the same dial frequency.
   With one FT-991 you can listen and operate one end of that path.
-- **VarAC** requires the operator’s official download and a supported modem.
-  Its publisher lists Wine for Linux/Pi and VARA HF for HF operation.
-  [VarAC download and prerequisites](https://www.varac-hamradio.com/download)
+- **VarAC** uses the publisher’s native Linux ARM64 Raspberry Pi ZIP. Place your
+  copy at `/var/lib/dxberry/installers/varac.zip` and choose **Install** under
+  **Programs**. Replacing that ZIP supplies the next client update. Each radio’s
+  settings and contacts live under `/var/lib/dxberry-apps/varac/RADIO/`.
+  The separate Windows VARA HF modem uses Wine. Set its path in VarAC’s modem
+  settings. The session uses local connections for the modem and radio control.
+  [Publisher downloads](https://www.varac-hamradio.com/download)
 
 ## Radio plumbing
 
