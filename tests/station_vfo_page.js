@@ -173,7 +173,7 @@ const flush = () => new Promise((r) => setImmediate(r));
   // the dashboard card: a rig event changes the frequency text in place
   const live = { dataset: { liveFreq: "ic7300", was: "old" }, textContent: "old" };
   const dctx = { ...ctx, DASH: "-", NAME_RE: /./, PROGRAM_RE: /./, updWatchers: [], last: null, el() {}, kv() {}, badge() {}, btn() {}, num() {}, table() {}, field() {}, choice() {} };
-  dctx.document = { ...doc, getElementById: () => ({ addEventListener() {} }), querySelectorAll: (q) => (q === "[data-live-freq]" ? [live] : []) };
+  dctx.document = { ...doc, querySelector: () => null, getElementById: () => ({ addEventListener() {} }), querySelectorAll: (q) => (q === "[data-live-freq]" ? [live] : []) };
   dctx.window = dctx;
   dctx.dxb = { events: { on() {}, onOpen() {}, send() { return true; } }, api() { return Promise.resolve({}); }, hidden: false };
   dctx.dxbVFO = ctx.dxbVFO;

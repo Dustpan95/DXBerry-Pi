@@ -79,6 +79,7 @@ class E extends N {
 }
 const doc = {
   activeElement: null,
+  addEventListener() {},
   body: new E("body"),
   createElement: t => new E(t),
   getElementById(id) { return this.body.querySelector("#" + id); },
@@ -107,6 +108,7 @@ settingsD.append(sform);
 const updatesSec = mk("section", "updates", "card settings");
 // dashboard.js and programs.js: the sections they fill, the Switch program dialog and the logbook dialog
 const dashSec = mk("section", "dashboard");
+for (const id of ["dash-identity", "dash-instruments", "dash-summary", "preview-surface", "preview-state", "preview-note", "preview-tools"]) dashSec.append(mk("div", id));
 const progSec = mk("section", "programs", "card settings");
 const switchD = mk("dialog", "switch-dialog"); const swform = mk("form", "switch-form");
 swform.append(mk("h2", "switch-dialog-title"), mk("div", "switch-fields", "form-grid"), mk("button", "switch-cancel", "btn"), mk("button", "switch-ok", "btn primary"));
@@ -894,8 +896,8 @@ const programsPath = sibling("programs.js");
   const redraw = async () => { doc.getElementById("refresh").click(); await flush(); await flush(); await flush(); };
   vm.runInContext("updLoadJob()", ctx); await flush(); await flush();
   await redraw();
-  ok(dashText().includes("Welcome, W0BTE"), "the strip welcomes the callsign: " + dashText());
-  ok(dashText().includes("DXBerry 0.4.0") && dashText().includes("2 radios") && dashText().includes("All parts OK"), "the strip has the version, the radios and the health: " + dashText());
+  ok(dashText().includes("W0BTE"), "the strip welcomes the callsign: " + dashText());
+  ok(dashText().includes("DXBerry 0.4.0") && dashText().includes("2 radios") && dashText().includes("Station healthy"), "the strip has the version, the radios and the health: " + dashText());
   ok(/^\d\d:\d\d:\d\d$/.test(doc.getElementById("dash-utc").textContent), "the UTC clock reads HH:MM:SS: " + doc.getElementById("dash-utc").textContent);
   ok(/^\d\d:\d\d$/.test(doc.getElementById("dash-local").textContent), "the local clock reads HH:MM: " + doc.getElementById("dash-local").textContent);
   // the clocks' timer is made once, on the first render ever: a timeout to the Pi's next whole
@@ -1188,7 +1190,7 @@ const programsPath = sibling("programs.js");
   delete progSec.scrollIntoView;
   ok(!linkIn(dashSec, "Open the logbook"), "and no Open the logbook");
   ok(dashText().includes("2 contacts waiting to be sent"), "contacts waiting are counted: " + dashText());
-  ok(dashText().includes("Welcome") && dashText().includes("Set CALLSIGN in dxberry.txt to see it here."), "no callsign: Welcome and where to set it");
+  ok(dashText().includes("Station overview") && dashText().includes("Set CALLSIGN in dxberry.txt to see it here."), "no callsign: Welcome and where to set it");
   ok(dashText().includes("1 problem") && dashText().includes("Some station details could not be read.") && !dashText().includes("time"),
     "a failed part counts as a problem, in plain words: " + dashText());
   st.apps.logbook = lbConfigured;

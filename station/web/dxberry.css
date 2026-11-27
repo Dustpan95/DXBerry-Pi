@@ -187,3 +187,61 @@ body.screen-page { margin: 0; max-width: none; height: 100vh; height: 100dvh; pa
 
 /* The terminal page (terminal.html). */
 #term { flex: 1; min-height: 0; background: #000; padding: 4px; overflow: hidden; }
+
+/* The operating desk groups station time, radio controls and the passive program display. */
+.dashboard {
+  --desk-ink: #172c40; --desk-glass: #102335; --desk-light: #f4f8fd;
+  --desk-muted: #bed1df; --desk-signal: #79d7cb;
+  gap: 20px;
+}
+.brand { display: inline-flex; align-items: center; gap: 8px; }
+.brand img { border-radius: 7px; }
+.dashboard .dash-strip {
+  isolation: isolate; position: relative; overflow: hidden; color: var(--desk-light);
+  background: var(--desk-ink); border: 0; border-radius: 12px;
+  padding: clamp(22px, 3vw, 38px); gap: 20px;
+}
+.dash-strip::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: repeating-radial-gradient(ellipse at 78% 160%, transparent 0 23px, #78b8c61a 24px 25px, transparent 26px 44px),
+    linear-gradient(108deg, #162538 6%, #23465b 67%, #20434a);
+}
+.dash-caption, .dash-clocks .muted {
+  font: 650 11px/1.4 var(--font-mono); text-transform: uppercase; letter-spacing: .13em;
+}
+.dash-strip .muted, .dash-strip .dash-caption { color: var(--desk-muted); }
+.dash-welcome h2 { font: 750 clamp(36px, 5.2vw, 68px)/1.06 system-ui, sans-serif; letter-spacing: -.055em; margin: 5px 0 9px; }
+.dash-strip .dash-facts { line-height: 1.8; overflow-wrap: anywhere; }
+.dash-clocks { gap: clamp(14px, 2.4vw, 32px); }
+.dash-clocks div { gap: 5px; }
+.dash-clocks .dash-clock { color: var(--desk-signal); font-size: clamp(21px, 3vw, 39px); font-weight: 500; }
+.dash-clocks div + div .dash-clock { color: var(--desk-light); }
+.dash-workbench { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); align-items: start; gap: 20px; }
+.dash-heading, .dash-monitor-head h2, .dash-bottom h2 { margin: 0; font-size: 19px; letter-spacing: -.025em; }
+.dash-heading { margin-bottom: 10px; }
+.dash-radios { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.dash-radio, .dash-bottom .card { padding: clamp(16px, 2vw, 24px); }
+.dash-radio h3 { font-size: 19px; letter-spacing: -.025em; }
+.dash-radio h3 span { font: 12px var(--font-mono); }
+.dash-radio .kv, .dash-bottom .kv { grid-template-columns: minmax(80px,auto) minmax(0,1fr); }
+.dash-radio .actions { padding-top: 14px; border-top: 1px solid var(--line); }
+.dash-radio .btn { padding: 7px 11px; }
+.dash-dial { padding: 12px 14px; margin: 10px 0 14px; border-left: 3px solid var(--accent); background: var(--bg); }
+.dash-dial .dash-caption { display: block; color: var(--muted); }
+.dash-dial strong { font: 600 clamp(18px, 2.5vw, 29px)/1.4 var(--font-mono); overflow-wrap: anywhere; }
+.dash-monitor { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--card); min-width: 0; }
+.dash-monitor-head, .dash-monitor-tools { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 10px; padding: 14px 18px; }
+#preview-state { font: 600 12px var(--font-mono); color: var(--muted); }
+.dash-glass { position: relative; display: grid; place-items: center; aspect-ratio: 16/9; overflow: hidden;
+  background-color: var(--desk-glass); background-image: radial-gradient(#89b2bd38 1px, transparent 1px); background-size: 12px 12px; color: var(--desk-muted); }
+#preview-note { text-align: center; background: var(--desk-glass); padding: 8px 12px; }
+#preview-surface { position: absolute; inset: 0; pointer-events: none; }
+.dash-monitor-tools a { color: var(--accent); font-weight: 650; padding-block: 5px; }
+.dash-monitor-tools select { max-width: 100%; background: var(--card); color: var(--text); padding: 6px; }
+.dash-bottom h2 { margin-bottom: 12px; }
+@media (min-width: 1350px) { body:has(.dashboard) { max-width: 1536px; margin-inline: auto; padding-inline: 32px; } }
+@media (max-width: 800px) {
+  .dash-workbench { grid-template-columns: minmax(0,1fr); }
+  .dash-strip .dash-clocks { justify-content: flex-start; }
+}
+@media (forced-colors: active) { .dash-strip::before { display: none; } }

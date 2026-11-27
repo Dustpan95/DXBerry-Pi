@@ -157,3 +157,13 @@ its established red surface remains. The new activity scroller also establishes
 the previously missing global scrollbar baseline. Other legacy workflows remain
 outside this feature's migration scope. Official design-format lint and runtime
 verification must be recorded before declaring this increment ready.
+
+### Station dashboard
+
+The callsign and two labeled clocks share a deep-blue station panel. Subtle
+range rings frame the clock without depicting measured RF activity. The radio
+desk pairs the live frequency and its controls with a passive program monitor.
+On phones the monitor follows the radios. Its reserved 16:9 surface distinguishes
+standby, connecting, live, paused and unavailable states. Colors for these two
+instrument surfaces are scoped to the dashboard in `dxberry.css`; application
+actions and health states use the shared theme.

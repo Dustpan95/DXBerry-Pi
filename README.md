@@ -265,11 +265,12 @@ Under **Programs**, install the program you want. On the FT-991 radio card, use
 slide one finger to move the pointer, tap to click, or hold and slide to drag.
 **Actual size** enlarges the desktop and **Fit screen** brings the whole window back.
 
+- **WSPR** is included with WSJT-X. Open WSJT-X and choose **Mode → WSPR**. For receive-only operation, leave **Enable Tx** off.
 - **Mercury HF** opens Rhizomatica’s modem and chat client. Use its client window
   for direct ARQ chat or a broadcast. Both ends need Mercury. Automatic wiring
   uses the selected radio’s audio server and its rigctld endpoint for CAT PTT.
-- **HF Packet** opens a Dire Wolf terminal configured for 300-baud HF AX.25.
-  Listen for decoded frames, or enter an unconnected UI frame such as
+- **HF APRS / Packet** opens a Dire Wolf terminal configured for 300-baud HF AX.25.
+  Use the FT-991 in SSB data mode on the dial frequency appropriate to the network. Listen for APRS positions and messages. Use `/msg CALL text` for an unacknowledged APRS message or `/status text` for a status packet. You can also enter an unconnected UI frame such as
   `YOURCALL>DEST:hello` using your own callsign. A cooperating digipeater can be
   included as `YOURCALL>DEST,RELAY:hello`. The local KISS port is 8311 while
   the program is running. The supplied profile sends no beacons and enables no

@@ -2,7 +2,7 @@
 # shellcheck shell=bash
 app_hfpacket_kind() { echo radio; }
 app_hfpacket_session() { echo yes; }
-app_hfpacket_label() { echo "HF Packet"; }
+app_hfpacket_label() { echo "HF APRS / Packet"; }
 app_hfpacket_multi() { echo no; }
 app_hfpacket_audio() { echo alsa; }
 app_hfpacket_screen() { echo yes; }
@@ -33,5 +33,5 @@ app_hfpacket_firstfill() {
 }
 
 app_hfpacket_command() {
-  printf '%s\n' xterm -title "HF Packet · $1" -e /opt/dxberry/bin/dxberry-hfpacket-terminal "$(app_hfpacket_settings_file "$1")"
+  printf '%s\n' xterm -title "HF APRS / Packet · $1" -e /opt/dxberry/bin/dxberry-hfpacket-terminal "$(app_hfpacket_settings_file "$1")"
 }
