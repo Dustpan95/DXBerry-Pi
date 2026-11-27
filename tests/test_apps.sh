@@ -18,7 +18,7 @@ ap_module() {
 
 test_apps_tsv_has_every_program_once() {
   fx_apps_env
-  assert_eq "$(dxb_apps_rows | jq -r 'map(.name) | join(" ")')" "graywolf wsjtx js8call fldigi qsstv pat flrig wavelog mercury hfpacket varac"
+  assert_eq "$(dxb_apps_rows | jq -r 'map(.name) | join(" ")')" "graywolf wsjtx js8call fldigi qsstv pat flrig wavelog mercury hfpacket varac xara"
   assert_eq "$(dxb_apps_row js8call | jq -c .packages)" '["libxcb-cursor0","pulseaudio"]'
   dxb_apps_row nope > /dev/null 2>&1; assert_eq "$?" "3"
 }
@@ -577,4 +577,27 @@ PY
   echo 'invalid kit' > "$DXB_STATE_DIR/installers/varac.zip"
   dxb_apps_install varac update >/dev/null 2>&1; assert_eq "$?" "6"
   assert_eq "$(dxb_apps_version varac)" "17.1.7"
+}
+
+test_apps_xara_trial_uses_receive_audio_and_discards_playback() {
+  fx_apps_env
+  mkdir -p "$DXB_STATE_DIR/installers"
+  python3 - "$DXB_STATE_DIR/installers/xara.zip" <<'PY'
+from zipfile import ZipFile
+import sys
+with ZipFile(sys.argv[1], "w") as kit:
+    kit.writestr("xara", bytes.fromhex("7f454c460201" + "00" * 12 + "b700"))
+    kit.writestr("LICENSE", "fixture")
+    kit.writestr("VERSION", "0.1.3\n")
+PY
+  dxb_apps_install xara > "$TEST_TMP/out" || _fail "could not install the native XARA kit"
+  assert_eq "$(dxb_apps_version xara)" "0.1.3"
+  [[ -x $DXB_APPS_OPT/xara/xara ]] || _fail "missing native modem"
+  (
+    source "$DXB_LIB/apps/xara.sh"
+    dxb_apps_station() { echo '{"call":"N0CALL"}'; }
+    app_xara_firstfill ft991 || _fail "could not prepare station callsign"
+    assert_eq "$(app_xara_command ft991 | tail -n +6 | paste -sd ' ')" \
+      "PULSE_SOURCE=FT991.in $DXB_APPS_OPT/xara/xara --call N0CALL --hf 500 --audio alsa --capture pulse --playback null --addr 127.0.0.1 --port 8300 --kiss-port 8100"
+  )
 }

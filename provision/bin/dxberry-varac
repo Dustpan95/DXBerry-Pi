@@ -18,22 +18,4 @@ for file in VarAC_cat_commands.ini VarAC_UI_languages.ini VarAC_templates.ini; d
   cp "$src/$file" ".$file.default"
 done
 export ICED_BACKEND=tiny-skia
-if [[ -z ${DXB_XARA_RX_CALL:-} ]]; then exec ./VarAC; fi
-
-# The receive trial shares the radio session's capture stream. ALSA discards modem playback.
-modem=${DXB_APPS_OPT:-/opt/dxberry-apps}/xara/xara
-[[ -x $modem ]] || { echo "Missing native XARA modem: $modem" >&2; exit 1; }
-export PULSE_SOURCE=${CARD:?missing radio sound card}.in
-"$modem" --call "$DXB_XARA_RX_CALL" --hf 500 --audio alsa --capture pulse --playback null \
-  --addr 127.0.0.1 --port 8300 --kiss-port 8100 &
-modem_pid=$!
-client_pid=
-stop_children() {
-  kill "$modem_pid" ${client_pid:+"$client_pid"} 2>/dev/null || :
-  wait "$modem_pid" ${client_pid:+"$client_pid"} 2>/dev/null || :
-}
-trap stop_children EXIT
-trap 'exit 0' HUP INT TERM
-./VarAC &
-client_pid=$!
-wait -n "$modem_pid" "$client_pid"
+exec ./VarAC
