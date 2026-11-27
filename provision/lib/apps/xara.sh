@@ -12,6 +12,10 @@ app_xara_version() { dxb_apps_version xara; }
 app_xara_unit() { dxb_app_session_unit xara "$1"; }
 app_xara_wire() { return 0; }
 app_xara_unwire() { return 0; }
+app_xara_bundled_kit() {
+  [[ -r $DXB_SHARE/xara.zip ]] || return 1
+  printf '%s/xara.zip\n' "$DXB_SHARE"
+}
 app_xara_local_version() { python3 "$DXB_LIB/native-archive.py" xara "$1"; }
 app_xara_unpack() { python3 "$DXB_LIB/native-archive.py" xara "$1" "$2"; }
 

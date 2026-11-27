@@ -298,20 +298,25 @@ slide one finger to move the pointer, tap to click, or hold and slide to drag.
   copy at `/var/lib/dxberry/installers/varac.zip` and choose **Install** under
   **Programs**. Replacing that ZIP supplies the next client update. Each radio’s
   settings and contacts live under `/var/lib/dxberry-apps/varac/RADIO/`.
-  The client requires a separate modem. VarAC 17.1.7 disconnects from XARA
-  0.1.3 because XARA reports VARA HF 4.9.0 and this client requires 4.9.1.
+  The client requires a modem. The bundled XARA build enables the HF version
+  reply required by VarAC 17.1.7. For the receive-only setup below, configure
+  **VARA HF** at `127.0.0.1:8300` in VarAC, turn off automatic modem launch,
+  and disable PTT. Set `DXB_VARAC_MODEM=xara` in a systemd override for
+  `dxberry-screen@varac-RADIO.service` using `sudo systemctl edit`. Put
+  `Environment=DXB_VARAC_MODEM=xara` under `[Service]`, then restart VarAC
+  from the radio card. The session starts and stops its own XARA process.
   [Publisher downloads](https://www.varac-hamradio.com/download)
 
 - **XARA HF (receive only)** opens the native modem’s activity in a terminal.
   Choose it under **Switch program** to listen on the selected radio at 500 Hz
   bandwidth. XARA uses the radio’s receive stream and discards playback. Local
   clients can use command port 8300, data port 8301 and KISS port 8100 while
-  the session runs. To install or update on another ARM64 Pi, build the
-  `xara` executable from a tagged source release with
-  `cargo build --locked --release --bin xara`. Put the executable, its
-  `LICENSE` and a `VERSION` text file containing the release number at the
-  root of `/var/lib/dxberry/installers/xara.zip`, then use **Programs → Install**.
-  [XARA source and build requirements](https://github.com/anelson/xara/tree/v0.1.3)
+  the session runs.
+  Use **Programs → Install** or **Update** to install the bundled ARM64 kit.
+  The kit is built from the pinned DXBerry-Pi fork with the `varac-17` feature.
+  Builds made from source can generate it with `build/build-xara-kit.sh` on
+  ARM64 after installing Rust, `libasound2-dev`, and `libpulse-dev`.
+  [XARA source](https://github.com/Dustpan95/xara/tree/d00900ab771c80f27c0a0b60664eff256ed32022)
 
 On a Yaesu FT-991 with USB CAT and Hamlib selected, the dashboard radio card
 offers **Power on radio** and **Power off radio**. Leave the radio’s DC supply on

@@ -497,6 +497,10 @@ jobs:
           libs=$(ldd station/out/dxberryd)
           echo "$libs"
           ! grep -q libopusfile <<< "$libs"
+      - name: Build the native XARA kit for VarAC
+        run: |
+          sudo apt-get install -y libasound2-dev libpulse-dev
+          build/build-xara-kit.sh provision/share/xara.zip
       - name: Package and verify unpublished ARM64 update candidate
         run: |
           for binary in dxberryd dxberry-wsjtx-settings dxberry-preset dxberry-program-state; do
@@ -509,6 +513,7 @@ jobs:
           for binary in dxberryd dxberry-wsjtx-settings dxberry-preset dxberry-program-state; do
             tar -xOzf "$archive" "dxberry/bin/$binary" | cmp - "station/out/$binary"
           done
+          tar -xOzf "$archive" dxberry/share/xara.zip | cmp - provision/share/xara.zip
           test "$(tar -xOzf "$archive" dxberry/VERSION)" = "$(station/out/dxberryd -version)"
           git rev-parse HEAD > "$out/SOURCE_COMMIT"
           git rev-parse 'HEAD^{tree}' > "$out/SOURCE_TREE"

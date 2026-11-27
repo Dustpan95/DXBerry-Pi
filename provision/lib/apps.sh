@@ -100,6 +100,12 @@ _dxb_apps_has() {
   declare -F "app_$1_$2" > /dev/null
 }
 
+# Some local installers ship a kit in the image. Unbundled programs use the operator's kit.
+_dxb_apps_local_kit() {
+  if _dxb_apps_has "$1" bundled_kit && "app_${1}_bundled_kit"; then return 0; fi
+  printf '%s/installers/%s.zip\n' "$DXB_STATE_DIR" "$1"
+}
+
 # ---- the newest release --------------------------------------------------------------------
 # _dxb_apps_curl ARGS... URL: curl; an https URL may only ever be fetched (and redirected) over https
 _dxb_apps_curl() {
@@ -131,7 +137,7 @@ dxb_apps_source_latest() {
     builtin) return 1 ;;
     local)
       pkg=$(jq -r .package <<< "$src")
-      asset="$DXB_STATE_DIR/installers/$pkg.zip"
+      asset=$(_dxb_apps_local_kit "$pkg")
       if [[ ! -r $asset ]] || ! _dxb_apps_has "$pkg" local_version; then
         echo "Place the official kit at $asset" >&2; return 1
       fi
@@ -386,7 +392,7 @@ dxb_apps_place() {
   local name=$1 bin=${3:-$1} type asset ver file dir stage old k
   type=$(jq -r .type <<< "$2"); asset=$(jq -r .asset <<< "$2"); ver=$(jq -r .version <<< "$2")
   file=$DXB_APPS_WORK/$asset; dir=$DXB_APPS_OPT/$name
-  [[ $type != local ]] || file=$DXB_STATE_DIR/installers/$asset
+  [[ $type != local ]] || file=$(_dxb_apps_local_kit "$name")
   [[ -f $file ]] || { echo "$asset was not downloaded; $name was left as it was" >&2; return 6; }
   if [[ $type == deb ]]; then
     echo "installing $asset"

@@ -2,6 +2,7 @@
 out/
 build/work/
 station/out/
+provision/share/xara.zip
 provision/bin/dxberryd
 provision/bin/dxberry-wsjtx-settings
 provision/bin/dxberry-preset
