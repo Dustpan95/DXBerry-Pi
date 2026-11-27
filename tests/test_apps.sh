@@ -575,7 +575,7 @@ PY
   assert_eq "$(dxb_apps_version varac)" "17.1.7"
   [[ -x $DXB_APPS_OPT/varac/VarAC ]] || _fail "missing client"
   # An online publisher update goes through the normal download and version check.
-  local profile=$DXB_APPS_HOME/varac/radio1
+  local profile=$TEST_TMP/home/dxbapps/varac/radio1
   mkdir -p "$profile"
   printf 'MyCall=N0CALL\n' > "$profile/VarAC.ini"
   printf 'saved contacts\n' > "$profile/VarAC.db"
