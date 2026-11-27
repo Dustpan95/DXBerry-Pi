@@ -327,7 +327,14 @@ test_update_apply_dxberry_swaps_the_tree_and_runs_the_new_setup() {
   dxb_update_set_prereleases on
   up_release_file 0.3.0-rc4
   : > "$TEST_TMP/calls"
+  local profile=$TEST_TMP/var/lib/dxberry-apps
+  local -x DXB_APPS_HOME=$profile
+  mkdir -p "$profile/.config" "$profile/.local/share/WSJT-X"
+  echo 'custom audio and logging' > "$profile/.config/WSJT-X.ini"
+  echo 'logged contact' > "$profile/.local/share/WSJT-X/wsjtx_log.adi"
+  sha256sum "$profile/.config/WSJT-X.ini" "$profile/.local/share/WSJT-X/wsjtx_log.adi" "$DXB_BOOT_DIR/dxberry.txt" > "$TEST_TMP/preserved"
   assert_ok dxb_update_apply_dxberry > "$TEST_TMP/out" 2>&1
+  assert_ok sha256sum --check --status "$TEST_TMP/preserved"
   # no program session is listed: nothing restarts
   assert_not_contains "$(cat "$TEST_TMP/calls")" "restart"
   assert_eq "$(cat "$DXB_OPT/VERSION")" "0.3.0-rc4"

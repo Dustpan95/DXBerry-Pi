@@ -54,7 +54,7 @@ load_config() {
 }
 
 # _source_kind SOURCE: where a catalog source comes from, as the page says it.
-_source_kind() { case $1 in local:*) echo "Operator-provided archive" ;; builtin) echo builtin ;; apt:*) echo debian ;; *) echo upstream ;; esac; }
+_source_kind() { case $1 in local:varac|local:xara) echo upstream ;; local:*) echo "Operator-provided archive" ;; builtin) echo builtin ;; apt:*) echo debian ;; *) echo upstream ;; esac; }
 
 # _program_facts NAME: {sessions, single_copy, open, setup_note, kept} from NAME's module (none: no
 # sessions, not single-copy, nothing to open, no note). Each session is {radio, state,
