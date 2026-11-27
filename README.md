@@ -296,6 +296,12 @@ slide one finger to move the pointer, tap to click, or hold and slide to drag.
   root of `/var/lib/dxberry/installers/xara.zip`, then use **Programs → Install**.
   [XARA source and build requirements](https://github.com/anelson/xara/tree/v0.1.3)
 
+On a Yaesu FT-991 with USB CAT and Hamlib selected, the dashboard radio card
+offers **Power on radio** and **Power off radio**. Leave the radio’s DC supply on
+and its USB cable connected for remote wake. The same controls are available
+with `dxberry-radio power NAME on|off|status --json`. The station reads the power
+state back over CAT and reports an unconfirmed result if the radio stops replying.
+
 ## Radio plumbing
 
 `sudo dxberry-radio scan` lists the USB sound cards, serial ports and HID PTT interfaces currently

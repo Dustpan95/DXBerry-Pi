@@ -953,6 +953,18 @@ const programsPath = sibling("programs.js");
   await redraw();
   ok(r1 && r1.textContent.includes("Heard 0") && r1.textContent.includes("10 gated to APRS-IS"), "Graywolf's radio has the heard/sent/gated line: " + (r1 && r1.textContent));
 
+  ok(!dkey("dash:radio2:power-off"), "other CAT models do not offer FT-991 power controls");
+  st.radios.radios.radio2.rig.model = 1035;
+  await redraw();
+  ok(!!dkey("dash:radio2:power-on"), "FT-991 offers power on");
+  dkey("dash:radio2:power-off").click();
+  ok(confirmD.open && confirmD.querySelector(".ok").textContent === "Power off radio", "turning off the transceiver asks for confirmation");
+  confirmD.returnValue = "ok"; confirmD.close();
+  await flush(); await flush(); await flush();
+  ok(calls.some(c => c.args && c.args.join(" ") === "/opt/dxberry/bin/dxberry-radio power radio2 off --json"), "confirmation only targets the selected transceiver");
+  st.radios.radios.radio2.rig.model = 3073;
+  await redraw();
+
   // Switch program on radio2: No program first, then the installed programs, the current one marked
   dkey("dash:radio2:switch").click();
   ok(switchD.open, "Switch program opens its dialog");

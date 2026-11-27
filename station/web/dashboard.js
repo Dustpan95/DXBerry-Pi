@@ -207,6 +207,27 @@ function dashAppAction(n, verb, label) {
   });
 }
 
+function dashPower(n, label, action) {
+  if (!dashNamesOk(n) || pending[n]) return;
+  const run = () => {
+    if (pending[n]) return;
+    pending[n] = `Requesting power ${action} for ${label}`;
+    show();
+    dxb.run([RADIO, "power", n, action, "--json"]).then(out => {
+      const state = JSON.parse(out).state;
+      if (state === action) notice(`${label} reports power ${state}.`, "good");
+      else if (state === "on" || state === "off") notice(`${label} still reports power ${state}.`, "warn");
+      else notice(`Power ${action} requested. ${label} has not confirmed its state.`, "warn");
+    }).catch(ex => failure(`Power ${action} for ${label}`, ex, RADIO_EXITS)).finally(() => {
+      delete pending[n];
+      refresh(true);
+      show();
+    });
+  };
+  if (action === "off") confirmThen(`Power off ${label}?`, "The transceiver will stop receiving. Its current program may lose contact with the radio.", "Power off radio", run);
+  else run();
+}
+
 function dashRadioCard(s, n, x) {
   const r = s.radios;
   const label = x.owner ? appLabel(r, x.owner) : "";
@@ -252,6 +273,14 @@ function dashRadioCard(s, n, x) {
     }
   } else {
     acts.push(btn("Choose a program", () => dashSwitchOpen(n), { cls: "primary", key: `dash:${n}:choose`, aria: `Choose a program for ${n}`, disabled: !!busyText, title: why }));
+  }
+  if (x.cat && x.rig && x.rig.model === 1035 && (!x.rig.control || x.rig.control === "hamlib") && NAME_RE.test(n)) {
+    const radioLabel = x.label || n;
+    for (const action of ["on", "off"]) {
+      acts.push(btn(`Power ${action} radio`, () => dashPower(n, radioLabel, action), {
+        key: `dash:${n}:power-${action}`, aria: `Power ${action} ${radioLabel}`, disabled: !!busyText, title: why
+      }));
+    }
   }
   acts.push(btn("Radio settings", () => openRadioForm(n), { key: `dash:${n}:settings`, aria: `Settings of ${n}`, disabled: !!busyText, title: why }));
   // the radio's settings changed while the program ran: it takes them at its next start (ruling 7)

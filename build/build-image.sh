@@ -63,7 +63,7 @@ REQUIRED_FILES=(
   provision/lib/storage.sh provision/lib/graywolf.sh provision/lib/scrub.sh
   provision/templates/interfaces-eth0.tmpl provision/templates/interfaces-wlan0.tmpl
   provision/templates/journald-dxberry.conf provision/templates/dxberry-journal-link.service provision/templates/dxberry-netwatch.service
-  provision/bin/dxberry-radio provision/lib/radio.sh provision/lib/radio_udev.sh provision/lib/rigctld.sh
+  provision/bin/dxberry-radio provision/lib/radio.sh provision/lib/radio_udev.sh provision/lib/rigctld.sh provision/lib/ft991-power.py
   provision/bin/dxberry-radio-event provision/templates/dxberry-radio-reconcile.service
   provision/templates/dxberry-radio-reconcile.path provision/templates/dxberry-radio-reconcile.timer
   provision/lib/gps.sh provision/lib/apps/graywolf.sh provision/share/radio-profiles.tsv
