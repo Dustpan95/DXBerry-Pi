@@ -11,7 +11,7 @@
 </head>
 <body>
   <header class="bar">
-    <strong class="brand">DXBerry</strong>
+    <strong class="brand"><img src="/icons/icon-192.png" width="28" height="28" alt=""> DXBerry</strong>
     <span id="callsign" class="callsign"></span>
     <span id="link" class="chip" hidden>Reconnecting…</span>
     <span id="utc" class="clock"></span>
@@ -28,13 +28,24 @@
   </header>
   <div class="top" id="top">
     <div>
-      <h1>DXBerry-Pi <span id="host" class="host"></span></h1>
+      <h1>Station dashboard <span id="host" class="host"></span></h1>
       <p id="updated" class="muted"></p>
     </div>
     <button id="refresh" class="btn" type="button">Refresh</button>
   </div>
   <div id="notices" aria-live="polite"></div>
-  <section id="dashboard" class="dashboard" aria-labelledby="dashboard-title"></section>
+  <section id="dashboard" class="dashboard" aria-labelledby="dashboard-title">
+    <div id="dash-identity"></div>
+    <div class="dash-workbench">
+      <div><h2 class="dash-heading">Radio desk</h2><div id="dash-instruments" class="dash-radios"></div></div>
+      <section class="dash-monitor" aria-label="Program preview">
+        <div class="dash-monitor-head"><h2>Program monitor</h2><span id="preview-state">Standby</span></div>
+        <div class="dash-glass"><div id="preview-surface" inert></div><p id="preview-note">Waiting for station status…</p></div>
+        <div id="preview-tools" class="dash-monitor-tools"></div>
+      </section>
+    </div>
+    <div id="dash-summary" class="dash-bottom"></div>
+  </section>
   <main id="cards" class="cards"><p class="muted">Reading the station&hellip;</p></main>
   <section id="settings" class="card settings" aria-labelledby="settings-title"></section>
   <section id="updates" class="card settings" aria-labelledby="updates-title"></section>

@@ -6,6 +6,28 @@ if (exec 3<>/dev/tcp/127.0.0.1/8311) 2>/dev/null; then
   echo 'Another service is using the HF packet KISS port.' >&2
   exit 1
 fi
+# Keep the original TNC2 input and add the APRS message and status formats.
+aprs_input() {
+  local call=$1 line target message
+  while IFS= read -r line; do
+    case $line in
+      /msg\ *)
+        if [[ $line =~ ^/msg[[:space:]]+([[:alnum:]-]{1,9})[[:space:]]+(.+)$ ]]; then
+          target=${BASH_REMATCH[1]^^}; message=${BASH_REMATCH[2]}
+          if [[ ${#message} -le 67 ]]; then
+            printf '%s>APRS::%-9s:%s\n' "$call" "$target" "$message"
+            continue
+          fi
+        fi
+        echo 'Use /msg CALL text (up to 67 characters).' >&2 ;;
+      /status\ ?*) printf '%s>APRS:>%s\n' "$call" "${line#/status }" ;;
+      /*) echo 'Use /status text, /msg CALL text, or a complete TNC2 frame.' >&2 ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done
+}
+call=$(awk '$1 == "MYCALL" {print $2; exit}' "$1")
+[[ -n $call ]] || { echo 'The radio profile has no callsign.' >&2; exit 2; }
 direwolf -t 0 -c "$1" &
 modem=$!
 trap 'kill "$modem" 2>/dev/null || true; wait "$modem" 2>/dev/null || true' EXIT
@@ -13,8 +35,10 @@ trap 'exit 0' TERM HUP
 for ((i=0; i<80; i++)); do
   kill -0 "$modem" 2>/dev/null || { wait "$modem"; exit 1; }
   if (exec 3<>/dev/tcp/127.0.0.1/8311) 2>/dev/null; then
+    printf '\nHF APRS · 300 baud · 1600/1800 Hz AFSK\n'
+    printf 'Received positions and messages appear here. Type /status text for a status or /msg CALL text for an unacknowledged message.\n'
     printf '\nType a UI frame as YOURCALL>DEST:message and press Enter. Ctrl-D closes the terminal.\n'
-    kissutil -h 127.0.0.1 -p 8311
+    aprs_input "$call" | kissutil -h 127.0.0.1 -p 8311
     exit $?
   fi
   sleep 0.1

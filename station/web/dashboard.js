@@ -137,13 +137,14 @@ function dashStrip(s) {
   const facts = [
     s.release && s.release.ok && s.release.dxberry ? el("span", {}, `DXBerry ${s.release.dxberry}`) : null,
     radios === null ? null : el("span", {}, dashPlural(radios, "radio", "radios")),
-    problems.length ? badge(dashPlural(problems.length, "problem", "problems"), "bad") : badge("All parts OK", "good"),
+    problems.length ? badge(dashPlural(problems.length, "problem", "problems"), "bad") : badge("Station healthy", "good"),
   ];
   dashboard.utc = el("span", { class: "dash-clock", id: "dash-utc" });
   dashboard.local = el("span", { class: "dash-clock", id: "dash-local" });
   return el("div", { class: "card dash-strip" },
     el("div", { class: "dash-welcome" },
-      el("h2", { id: "dashboard-title" }, call ? `Welcome, ${call}` : "Welcome"),
+      el("span", { class: "dash-caption" }, "Amateur radio station"),
+      el("h2", { id: "dashboard-title" }, call || "Station overview"),
       call ? null : el("p", { class: "muted hint" }, "Set CALLSIGN in dxberry.txt to see it here."),
       el("p", { class: "dash-facts" }, facts.filter(Boolean).map((f, i) => (i ? [" · ", f] : f))),
       problems.length ? el("p", { class: "muted hint" }, "Some station details could not be read.") : null,
@@ -236,10 +237,12 @@ function dashRadioCard(s, n, x) {
   const why = busyText ? "Wait for the change shown on this card to finish" : null;
   const state = dashState(s, n, x);
   const [stText, stKind] = DASH_STATES[state] || [state || DASH, "muted"];
-  const rows = [["Connected through", parts(x)]];
+  const rows = [["Interface", parts(x)]];
+  let dial = null;
   if (x.cat) {
     const was = freq(x.freq, x.mode);
-    rows.push(["Frequency", el("span", { "data-live-freq": n, "data-was": was }, dashLiveFreq(n, was))]);
+    dial = el("div", { class: "dash-dial" }, el("span", { class: "dash-caption" }, "Dial frequency"),
+      el("strong", { "data-live-freq": n, "data-was": was }, dashLiveFreq(n, was)));
     rows.push(["Transmitter", el("span", { "data-live-owner": n }, dashOwnerText(n))]);
   }
   rows.push(["Program", x.owner ? [label, " ", badge(stText, stKind)] : "No program"]);
@@ -250,7 +253,7 @@ function dashRadioCard(s, n, x) {
   if (x.owner === "wsjtx" && DASH_RADIO_RE.test(n)) {
     acts.push(el("a", { class: "btn small", href: `/radio/${encodeURIComponent(n)}#wsjtx-status`, "data-key": `dash:${n}:program-status`, "aria-label": `WSJT-X status for ${n}` }, "WSJT-X status"));
   }
-  if (x.cat && DASH_RADIO_RE.test(n)) acts.push(el("a", { class: "btn small", href: `/radio/${n}`, "data-key": `dash:${n}:vfo`, "aria-label": `Open the VFO page of ${n}` }, "Open"));
+  if (x.cat && DASH_RADIO_RE.test(n)) acts.push(el("a", { class: "btn small", href: `/radio/${n}`, "data-key": `dash:${n}:vfo`, "aria-label": `Open the VFO page of ${n}` }, "Open VFO"));
   // Listen opens the radio's page, which starts the audio at the first tap there (#listen; a
   // browser plays sound only from a gesture on the page itself). Graywolf holds its radio's sound
   // card directly, so such a radio has no browser audio.
@@ -291,7 +294,7 @@ function dashRadioCard(s, n, x) {
     el("h3", {}, x.label || n, x.label ? el("span", { class: "muted" }, ` ${n}`) : null),
     busyText ? el("p", {}, badge(busyText + "…", "warn")) : null,
     rewire ? el("p", { class: "hint" }, badge(`Restart ${label} to use the new radio settings`, "warn")) : null,
-    kv(rows),
+    dial, kv(rows),
     el("div", { class: "actions" }, acts));
 }
 
@@ -417,11 +420,12 @@ function dashRender(s) {
   }
   const radios = s.radios && s.radios.ok ? s.radios.radios || {} : {};
   const names = Object.keys(radios);
-  sec.replaceChildren(
-    dashStrip(s),
-    names.length ? el("div", { class: "dash-radios" }, names.map(n => dashRadioCard(s, n, radios[n])))
-      : el("p", { class: "card muted" }, s.radios && s.radios.ok ? "No radios set up yet: add one under Radios below." : "The radios could not be read; see the Radios card below."),
-    el("div", { class: "dash-bottom" }, dashRecent(s), dashStationBox(s)));
+  document.getElementById("dash-identity").replaceChildren(dashStrip(s));
+  document.getElementById("dash-instruments").replaceChildren(...(names.length
+    ? names.map(n => dashRadioCard(s, n, radios[n]))
+    : [el("p", { class: "card muted" }, s.radios && s.radios.ok ? "No radios configured. Add one under Radios." : "Radio status unavailable.")]));
+  document.getElementById("dash-summary").replaceChildren(dashRecent(s), dashStationBox(s));
+  dashPreviewUpdate(s, radios);
   dashTick();
   dashWatch(names);
   dashLoadOwners(names);
@@ -434,11 +438,100 @@ function dashRender(s) {
   }
   if (focused) {
     const again = [...sec.querySelectorAll("[data-key]")].find(e => e.dataset.key === focused);
-    if (again) again.focus();
+    if (again && again !== document.activeElement) again.focus({ preventScroll: true });
   }
 }
 
+// Keep the framebuffer outside status redraws. Only a visible dashboard holds a shared viewer.
+const dashPreview = { choices: [], selected: "", key: "", revision: 0, viewer: null, visible: true, signature: null };
+
+function dashPreviewMessage(state, message) {
+  document.getElementById("preview-state").textContent = state;
+  const note = document.getElementById("preview-note");
+  note.textContent = message;
+  note.hidden = !message;
+  document.getElementById("preview-surface").hidden = !!message;
+  const retry = document.getElementById("preview-retry");
+  if (retry) retry.hidden = state !== "Unavailable";
+}
+
+async function dashPreviewConnect(retry = false) {
+  const item = dashPreview.choices.find(c => c.session === dashPreview.selected);
+  const key = item && !document.hidden && dashPreview.visible ? item.session : "";
+  if (!retry && key === dashPreview.key) return;
+  const revision = ++dashPreview.revision;
+  dashPreview.key = key;
+  if (dashPreview.viewer) dashPreview.viewer.disconnect();
+  dashPreview.viewer = null;
+  const surface = document.getElementById("preview-surface");
+  surface.replaceChildren();
+  if (!key) {
+    dashPreviewMessage(item ? "Paused" : "Standby", item ? "Preview paused." : "No program window is running.");
+    return;
+  }
+  dashPreviewMessage("Connecting", "Opening program preview…");
+  const failed = () => {
+    if (revision === dashPreview.revision) dashPreviewMessage("Unavailable", "Program preview unavailable.");
+  };
+  try {
+    const { default: RFB } = await import("./vendor/novnc/core/rfb.js");
+    if (revision !== dashPreview.revision) return;
+    const viewer = new RFB(surface, dxb.ws("/api/vnc/" + key), { shared: true });
+    dashPreview.viewer = viewer;
+    viewer.viewOnly = true;
+    viewer.focusOnClick = false;
+    viewer.resizeSession = false;
+    viewer.scaleViewport = true;
+    viewer.addEventListener("connect", () => {
+      if (revision === dashPreview.revision) dashPreviewMessage("Live", "");
+    });
+    viewer.addEventListener("disconnect", failed);
+    viewer.addEventListener("securityfailure", failed);
+    viewer.addEventListener("credentialsrequired", () => { viewer.disconnect(); failed(); });
+  } catch { failed(); }
+}
+
+function dashPreviewUpdate(s, radios) {
+  const choices = [];
+  for (const [n, radio] of Object.entries(radios)) {
+    const p = dashProgram(s, radio.owner);
+    if (!p || p.name === "graywolf" || (p.open && p.open.kind !== "screen") ||
+        !PROGRAM_RE.test(p.name) || !NAME_RE.test(n) || dashState(s, n, radio) !== "running") continue;
+    choices.push({ session: p.name + "-" + n, label: (p.label || p.name) + " · " + (radio.label || n) });
+  }
+  const signature = JSON.stringify(choices);
+  if (signature === dashPreview.signature) return;
+  dashPreview.signature = signature;
+  dashPreview.choices = choices;
+  if (!choices.some(c => c.session === dashPreview.selected)) dashPreview.selected = choices[0]?.session || "";
+  const tools = document.getElementById("preview-tools");
+  if (!choices.length) {
+    tools.replaceChildren(el("a", { href: "#programs" }, "Browse programs"));
+  } else {
+    const link = el("a", { href: DASH_SCREEN + dashPreview.selected, target: "_blank", rel: "noopener" }, "Open full screen");
+    const selector = choices.length === 1 ? el("strong", {}, choices[0].label)
+      : el("select", { "aria-label": "Program to preview", onchange: e => {
+        dashPreview.selected = e.target.value;
+        link.href = DASH_SCREEN + dashPreview.selected;
+        dashPreviewConnect();
+      } }, choices.map(c => el("option", { value: c.session, selected: c.session === dashPreview.selected }, c.label)));
+    tools.replaceChildren(selector, el("button", { id: "preview-retry", class: "btn small", type: "button", hidden: true,
+      onclick: () => dashPreviewConnect(true) }, "Retry preview"), link);
+  }
+  dashPreviewConnect(true);
+}
+
 function dashInit() {
+  const monitor = document.querySelector(".dash-monitor");
+  if (monitor && window.IntersectionObserver) {
+    dashPreview.visible = false;
+    new IntersectionObserver(entries => {
+      dashPreview.visible = entries[0].isIntersecting;
+      dashPreviewConnect();
+    }).observe(monitor);
+  }
+  document.addEventListener("visibilitychange", () => dashPreviewConnect());
+
   document.getElementById("switch-form").addEventListener("submit", dashSwitchSave);
   document.getElementById("switch-cancel").addEventListener("click", () => { dashboard.switching = null; document.getElementById("switch-dialog").close(); });
   // a job starting or ending changes which radios wait for it
