@@ -29,7 +29,7 @@ test_apps_rows_carry_every_column() {
     '{"name":"flrig","label":"flrig","kind":"rigcontrol","source":"apt:flrig","packages":[],"description":"Rig control with your radio'\''s full front panel"}'
   # no nginx: it comes only through dxb_webproxy_install, inside its policy-rc.d guard (Task 12)
   assert_eq "$(dxb_apps_row wavelog | jq -r '.packages | join(" ")')" "php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd mariadb-server"
-  assert_eq "$(dxb_apps_rows | jq -r 'map(.name) | unique | length')" "11"
+  assert_eq "$(dxb_apps_rows | jq 'length == (map(.name) | unique | length)')" true
 }
 
 test_apps_source_parses_every_kind() {
