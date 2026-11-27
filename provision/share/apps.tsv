@@ -15,3 +15,4 @@ wavelog	Wavelog	service	tag:wavelog/wavelog	php-fpm php-mysql php-curl php-mbstr
 mercury	Mercury HF	radio	apt:mercury-ui	mercury pulseaudio crudini	HF modem and chat for direct ARQ connections and broadcasts
 hfpacket	HF Packet	radio	apt:direwolf	xterm	300-baud AX.25 packet terminal with a local KISS interface
 varac	VarAC	radio	local:varac	python3 pulseaudio	Peer-to-peer chat using the operator's native ARM64 client and VARA modem
+xara	XARA HF (receive only)	radio	local:xara	python3 pulseaudio libasound2-plugins xterm	Native HF modem activity with receive audio and local command, data and KISS ports

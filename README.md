@@ -281,9 +281,20 @@ slide one finger to move the pointer, tap to click, or hold and slide to drag.
   copy at `/var/lib/dxberry/installers/varac.zip` and choose **Install** under
   **Programs**. Replacing that ZIP supplies the next client update. Each radio’s
   settings and contacts live under `/var/lib/dxberry-apps/varac/RADIO/`.
-  The separate Windows VARA HF modem uses Wine. Set its path in VarAC’s modem
-  settings. The session uses local connections for the modem and radio control.
+  The client requires a separate modem. VarAC 17.1.7 disconnects from XARA
+  0.1.3 because XARA reports VARA HF 4.9.0 and this client requires 4.9.1.
   [Publisher downloads](https://www.varac-hamradio.com/download)
+
+- **XARA HF (receive only)** opens the native modem’s activity in a terminal.
+  Choose it under **Switch program** to listen on the selected radio at 500 Hz
+  bandwidth. XARA uses the radio’s receive stream and discards playback. Local
+  clients can use command port 8300, data port 8301 and KISS port 8100 while
+  the session runs. To install or update on another ARM64 Pi, build the
+  `xara` executable from a tagged source release with
+  `cargo build --locked --release --bin xara`. Put the executable, its
+  `LICENSE` and a `VERSION` text file containing the release number at the
+  root of `/var/lib/dxberry/installers/xara.zip`, then use **Programs → Install**.
+  [XARA source and build requirements](https://github.com/anelson/xara/tree/v0.1.3)
 
 ## Radio plumbing
 

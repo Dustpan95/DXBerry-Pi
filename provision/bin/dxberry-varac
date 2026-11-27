@@ -18,5 +18,4 @@ for file in VarAC_cat_commands.ini VarAC_UI_languages.ini VarAC_templates.ini; d
   cp "$src/$file" ".$file.default"
 done
 export ICED_BACKEND=tiny-skia
-export WINEPREFIX="$dir/wine"
 exec ./VarAC
