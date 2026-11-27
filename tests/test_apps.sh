@@ -582,7 +582,7 @@ PY
 test_apps_xara_prefers_the_bundled_varac_kit() {
   fx_apps_env
   mkdir -p "$DXB_STATE_DIR/installers" "$TEST_TMP/share"
-  DXB_SHARE=$TEST_TMP/share
+  local DXB_SHARE=$TEST_TMP/share
   python3 - "$DXB_STATE_DIR/installers/xara.zip" "$DXB_SHARE/xara.zip" <<'PYKIT'
 import sys
 from zipfile import ZipFile
