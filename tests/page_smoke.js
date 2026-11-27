@@ -869,7 +869,7 @@ const programsPath = sibling("programs.js");
   st.radios.apps = [{ name: "graywolf", label: "Graywolf", kind: "radio", session: false, installed: true }, { name: "wsjtx", label: "WSJT-X", kind: "radio", session: true, installed: true },
     { name: "pat", label: "Pat (Winlink)", kind: "radio", session: true, installed: false }];
   st.release.dxberry = "0.4.0";
-  st.station = { ok: true, callsign: "W0BTE", grid: "EM28qv" };
+  st.station = { ok: true, callsign: "VK2ABC", grid: "QF56od" };
   const lbConfigured = { configured: true, url: "https://log.example.org/", type: "wavelog", station_id: "1", slug: "", key: "set", queue: 0, refused: 0, refused_reason: null,
     local: { installed: false, url: null, web: null } };
   const contacts = [
@@ -896,7 +896,8 @@ const programsPath = sibling("programs.js");
   const redraw = async () => { doc.getElementById("refresh").click(); await flush(); await flush(); await flush(); };
   vm.runInContext("updLoadJob()", ctx); await flush(); await flush();
   await redraw();
-  ok(dashText().includes("W0BTE"), "the strip welcomes the callsign: " + dashText());
+  ok(dashText().includes("VK2ABC"), "the strip welcomes the callsign: " + dashText());
+  ok(dashText().includes("QF56od") && dashText().includes("33.85° S") && dashText().includes("151.21° E"), "the locator and the map use the southern station's grid center");
   ok(dashText().includes("DXBerry 0.4.0") && dashText().includes("2 radios") && dashText().includes("Station healthy"), "the strip has the version, the radios and the health: " + dashText());
   ok(/^\d\d:\d\d:\d\d$/.test(doc.getElementById("dash-utc").textContent), "the UTC clock reads HH:MM:SS: " + doc.getElementById("dash-utc").textContent);
   ok(/^\d\d:\d\d$/.test(doc.getElementById("dash-local").textContent), "the local clock reads HH:MM: " + doc.getElementById("dash-local").textContent);

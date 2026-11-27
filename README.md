@@ -31,6 +31,11 @@ Suggestions are welcome.
 6. In Graywolf, use **Detect Devices** to pick your sound card and PTT. Everything else is already seeded
    from `dxberry.txt` (callsign, iGate, position beacon) when `CALLSIGN` is set.
 
+The console displays the station-wide `CALLSIGN` from `dxberry.txt`, with the
+APRS SSID removed. For example, `N0CALL-10` appears as `N0CALL`. Configured
+coordinates or a GPS fix supply the Maidenhead locator. The dashboard map marks
+the center of the locator square. It works without an external map service.
+
 If `dxberry.txt` is missing or has errors, the Pi boots on DietPi defaults instead (DHCP, hostname
 `dxberry-pi`, login `root` / `dietpi`) and writes `dxberry-ERROR.txt` on the boot partition explaining why.
 Until a valid `dxberry.txt` is applied, the Pi is reachable on your LAN with the stock DietPi

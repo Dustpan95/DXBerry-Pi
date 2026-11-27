@@ -519,10 +519,10 @@ test_status_text_tolerates_null_arrays_in_otherwise_ok_parts() {
 # station: the callsign without its SSID and the grid, as the programs are told (dxb_apps_station)
 test_status_station_reads_the_callsign_and_grid() {
   st_env
-  printf 'CALLSIGN=W0BTE-10\nLATITUDE=38.9\nLONGITUDE=-94.6\n' > "$DXB_BOOT_DIR/dxberry.txt"
-  assert_eq "$(st_run dxb_status_station | jq -c .)" '{"callsign":"W0BTE","grid":"EM28qv"}'
+  printf 'CALLSIGN=N0CALL-10\nLATITUDE=38.9\nLONGITUDE=-94.6\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  assert_eq "$(st_run dxb_status_station | jq -c .)" '{"callsign":"N0CALL","grid":"EM28qv"}'
   # no position in dxberry.txt: the grid of the GPS fix
-  printf 'CALLSIGN=W0BTE\n' > "$DXB_BOOT_DIR/dxberry.txt"
+  printf 'CALLSIGN=N0CALL\n' > "$DXB_BOOT_DIR/dxberry.txt"
   cat > "$TEST_TMP/st-bin/gpspipe" << 'GPS'
 #!/bin/bash
 echo '{"class":"DEVICES","devices":[{"path":"/dev/ttyACM0"}]}'
@@ -530,7 +530,7 @@ echo '{"class":"TPV","mode":3,"lat":38.9,"lon":-94.6}'
 GPS
   chmod 755 "$TEST_TMP/st-bin/gpspipe"
   local DXB_GPSPIPE=$TEST_TMP/st-bin/gpspipe
-  assert_eq "$(st_run dxb_status_station | jq -c .)" '{"callsign":"W0BTE","grid":"EM28qv"}'
+  assert_eq "$(st_run dxb_status_station | jq -c .)" '{"callsign":"N0CALL","grid":"EM28qv"}'
   # no dxberry.txt and no fix: both empty, and the part is still ok
   rm -f "$DXB_BOOT_DIR/dxberry.txt"
   DXB_GPSPIPE=false
