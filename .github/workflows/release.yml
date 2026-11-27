@@ -4,7 +4,7 @@ on:
     branches: ['release/v0.5.0-rc5']
 env:
   RELEASE_TAG: v0.5.0-rc5
-  RELEASE_COMMIT: 67dbdf4cfeb9b8f87687a32324e4251c0e9bd0cb
+  RELEASE_COMMIT: 8f60837e5a244be5dfaaba45f2f87b6561fd8210
 permissions:
   contents: write
 jobs:
@@ -63,8 +63,21 @@ jobs:
             station/out/dxberry-preset
             station/out/dxberry-program-state
           if-no-files-found: error
+  tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ env.RELEASE_COMMIT }}
+      - name: Build disposable root-fixture runner
+        run: docker build -t dxberry-shell-ci -f tests/integration/Dockerfile.shell .
+      - name: Syntax, lint, root fixtures and packaging checks
+        run: docker run --rm --network none -v "$PWD:/source:ro" dxberry-shell-ci
   build:
-    needs: binary
+    needs: [binary, tests]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -82,24 +95,6 @@ jobs:
           install -m 755 dl/dxberry-preset provision/bin/dxberry-preset
           install -m 755 dl/dxberry-program-state provision/bin/dxberry-program-state
           file provision/bin/dxberryd
-      - name: No real station config in the tree
-        run: '! git ls-files | grep -qxE "boot/dxberry\.txt|boot/dietpi-wifi\.txt"'
-      - name: No attribution lines committed
-        run: |
-          if git grep -qIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic' -- . ; then
-            echo "attribution text found in a tracked file:" >&2
-            git grep -nIiE 'co-?auth[o]red-?by|cla[u]de|anthr[o]pic' -- . >&2
-            exit 1
-          fi
-      - name: Syntax
-        run: |
-          for f in $(grep -lE '^#!/bin/(ba)?sh' provision/bin/*) provision/lib/*.sh provision/lib/apps/*.sh build/*.sh boot/*.sh tests/*.sh tests/fixtures/*.sh; do bash -n "$f"; done
-      - name: shellcheck
-        run: shellcheck -x $(grep -lE '^#!/bin/(ba)?sh' provision/bin/*) provision/lib/*.sh provision/lib/apps/*.sh build/build-image.sh build/make-update-tarball.sh boot/*.sh tests/*.sh tests/fixtures/*.sh
-      - name: Unit tests
-        run: tests/run.sh
-      - name: Build tree check
-        run: build/build-image.sh --check
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y parted
       - name: DXBerry update file
