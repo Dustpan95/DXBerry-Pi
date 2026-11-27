@@ -1,7 +1,10 @@
 name: Release image
 on:
   push:
-    tags: ['v*']
+    branches: ['release/v0.5.1']
+env:
+  RELEASE_TAG: v0.5.1
+  RELEASE_COMMIT: 8984c0a5f027022935c422c6ae82ca46dbc7a175
 permissions:
   contents: write
 jobs:
@@ -16,6 +19,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ env.RELEASE_COMMIT }}
       - uses: actions/setup-go@v5
         with:
           go-version: stable
@@ -26,7 +30,7 @@ jobs:
       - name: go test
         run: cd station && go test -race ./...
       - name: Build dxberryd
-        run: bash station/build.sh out/dxberryd "${GITHUB_REF_NAME#v}"
+        run: bash station/build.sh out/dxberryd "${RELEASE_TAG#v}"
       - name: Cross-user WSJT-X settings bridge
         run: tests/integration/test-wsjtx-settings-bridge.sh
       - name: Prepare preset HTTP test images
@@ -76,6 +80,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ env.RELEASE_COMMIT }}
       - name: Build disposable root-fixture runner
         run: docker build -t dxberry-shell-ci -f tests/integration/Dockerfile.shell .
       - name: Syntax, lint, root fixtures and packaging checks
@@ -87,6 +92,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ env.RELEASE_COMMIT }}
       - uses: actions/download-artifact@v4
         with:
           name: dxberryd-arm64
@@ -105,18 +111,23 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y parted
       - name: DXBerry update file
-        run: build/make-update-tarball.sh "${GITHUB_REF_NAME#v}" out
+        run: build/make-update-tarball.sh "${RELEASE_TAG#v}" out
       - name: Build image
-        run: sudo build/build-image.sh --version "${GITHUB_REF_NAME#v}"
+        run: sudo build/build-image.sh --version "${RELEASE_TAG#v}"
       - name: Release notes
         run: |
           {
-            echo "Flash \`DXBerry-Pi-${GITHUB_REF_NAME#v}-rpi234-arm64.img.xz\`, rename \`dxberry.txt.example\` to \`dxberry.txt\` on the boot partition, fill it in, boot."
+            echo "Flash \`DXBerry-Pi-${RELEASE_TAG#v}-rpi234-arm64.img.xz\`, rename \`dxberry.txt.example\` to \`dxberry.txt\` on the boot partition, fill it in, boot."
+            echo
+            echo "## Highlights"
+            echo "- Update VarAC from the publisher’s ARM64 download and check the XARA fork for compatible releases."
+            echo "- Check both Mercury HF packages from the Updates page."
+            echo "- Includes regression coverage for persistent station profiles and contact logs."
             echo
             echo "DietPi base image: $(cat build/work/*.img.xz.sha256)"
             echo "Graywolf: latest release at first boot (pin with GRAYWOLF_VERSION=)."
             echo "Console: https://<the Pi's address>/ (log in as dietpi with PASSWORD)."
-            echo "Update from the console: Updates card, or sudo dxberry-update dxberry (dxberry-pi-${GITHUB_REF_NAME#v}.tar.gz)."
+            echo "Update from the console: Updates card, or sudo dxberry-update dxberry (dxberry-pi-${RELEASE_TAG#v}.tar.gz)."
           } > notes.md
       - name: Publish
         env:
@@ -124,8 +135,8 @@ jobs:
         run: |
           # A hyphen in the tag means a pre-release suffix (v0.1.0-rc1); plain vX.Y.Z is final.
           flags=()
-          case "$GITHUB_REF_NAME" in
+          case "$RELEASE_TAG" in
             *-*) flags+=(--prerelease) ;;
           esac
-          gh release create "$GITHUB_REF_NAME" out/*.img.xz out/*.tar.gz out/*.sha256 \
-            --title "DXBerry-Pi $GITHUB_REF_NAME" --notes-file notes.md "${flags[@]}"
+          gh release create "$RELEASE_TAG" --target "$RELEASE_COMMIT" --latest out/*.img.xz out/*.tar.gz out/*.sha256 \
+            --title "DXBerry-Pi $RELEASE_TAG" --notes-file notes.md "${flags[@]}"
