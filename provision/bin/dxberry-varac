@@ -18,4 +18,36 @@ for file in VarAC_cat_commands.ini VarAC_UI_languages.ini VarAC_templates.ini; d
   cp "$src/$file" ".$file.default"
 done
 export ICED_BACKEND=tiny-skia
-exec ./VarAC
+if [[ ${DXB_VARAC_MODEM:-} != xara ]]; then exec ./VarAC; fi
+
+# The session owns the radio's PulseAudio server. Keep the XARA trial receive-only.
+modem=${DXB_APPS_OPT:-/opt/dxberry-apps}/xara/xara
+[[ -x $modem ]] || { echo "Install XARA under Programs before selecting it for VarAC." >&2; exit 6; }
+if (exec 3<>/dev/tcp/127.0.0.1/8300) 2>/dev/null; then
+  echo "VarAC's HF modem port 8300 is already in use." >&2
+  exit 6
+fi
+call=N0CALL
+if [[ -r $HOME/.config/dxberry-xara/$1.call ]]; then read -r call < "$HOME/.config/dxberry-xara/$1.call"; fi
+PULSE_SOURCE=${1^^}.in "$modem" --call "$call" --hf 500 --audio alsa \
+  --capture pulse --playback null --addr 127.0.0.1 --port 8300 --kiss-port 8100 &
+xara_pid=$!
+varac_pid=
+cleanup() {
+  kill "$xara_pid" ${varac_pid:+"$varac_pid"} 2>/dev/null || true
+  wait "$xara_pid" ${varac_pid:+"$varac_pid"} 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 0' TERM INT HUP
+for ((attempt=0; attempt<60; attempt++)); do
+  kill -0 "$xara_pid" 2>/dev/null || exit 6
+  if (exec 3<>/dev/tcp/127.0.0.1/8300) 2>/dev/null; then
+    ./VarAC &
+    varac_pid=$!
+    wait -n "$xara_pid" "$varac_pid"
+    exit
+  fi
+  sleep 0.1
+done
+echo "XARA did not open VarAC's HF command port." >&2
+exit 6

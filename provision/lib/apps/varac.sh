@@ -14,5 +14,8 @@ app_varac_wire() { return 0; }   # PulseAudio is supplied by the session.
 app_varac_unwire() { return 0; }
 app_varac_local_version() { python3 "$DXB_LIB/native-archive.py" varac "$1"; }
 app_varac_unpack() { python3 "$DXB_LIB/native-archive.py" varac "$1" "$2"; }
+app_varac_firstfill() {
+  dxb_app_load xara && app_xara_firstfill "$1"
+}
 app_varac_command() { printf '%s\n' /opt/dxberry/bin/dxberry-varac "$1"; }
-app_varac_setup_note() { echo "VarAC 17.1.7 needs a separate modem reporting VARA HF 4.9.1 or newer. XARA 0.1.3 runs as a separate station program."; }
+app_varac_setup_note() { echo "VarAC 17.1.7 needs a separate modem reporting VARA HF 4.9.1 or newer. Install or update XARA to use the bundled VarAC 17 build. See the README for selecting XARA as the local modem."; }

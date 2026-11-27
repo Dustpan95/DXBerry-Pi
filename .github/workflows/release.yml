@@ -50,6 +50,15 @@ jobs:
           libs=$(ldd station/out/dxberryd)
           echo "$libs"
           ! grep -q libopusfile <<< "$libs"
+      - name: Build the native XARA kit for VarAC
+        run: |
+          sudo apt-get install -y libasound2-dev libpulse-dev
+          build/build-xara-kit.sh provision/share/xara.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xara-arm64
+          path: provision/share/xara.zip
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: dxberryd-arm64
@@ -82,6 +91,10 @@ jobs:
         with:
           name: dxberryd-arm64
           path: dl
+      - uses: actions/download-artifact@v4
+        with:
+          name: xara-arm64
+          path: provision/share
       - name: Place the station binary
         run: |
           install -m 755 dl/dxberryd provision/bin/dxberryd

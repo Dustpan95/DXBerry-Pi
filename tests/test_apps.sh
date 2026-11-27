@@ -579,6 +579,25 @@ PY
   assert_eq "$(dxb_apps_version varac)" "17.1.7"
 }
 
+test_apps_xara_prefers_the_bundled_varac_kit() {
+  fx_apps_env
+  mkdir -p "$DXB_STATE_DIR/installers" "$TEST_TMP/share"
+  DXB_SHARE=$TEST_TMP/share
+  python3 - "$DXB_STATE_DIR/installers/xara.zip" "$DXB_SHARE/xara.zip" <<'PYKIT'
+import sys
+from zipfile import ZipFile
+for file, version in zip(sys.argv[1:], ("0.1.3", "0.1.3+" + "d" * 40)):
+    with ZipFile(file, "w") as kit:
+        kit.writestr("xara", bytes.fromhex("7f454c460201" + "00" * 12 + "b700"))
+        kit.writestr("LICENSE", "MIT")
+        kit.writestr("VERSION", version + "\n")
+PYKIT
+  assert_eq "$(dxb_apps_source_latest local:xara | jq -r .version)" \
+    "0.1.3+dddddddddddddddddddddddddddddddddddddddd"
+  dxb_apps_install xara > "$TEST_TMP/out" || _fail "could not install bundled XARA"
+  assert_eq "$(dxb_apps_version xara)" "0.1.3+dddddddddddddddddddddddddddddddddddddddd"
+}
+
 test_apps_xara_trial_uses_receive_audio_and_discards_playback() {
   fx_apps_env
   mkdir -p "$DXB_STATE_DIR/installers"

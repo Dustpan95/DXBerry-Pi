@@ -31,7 +31,7 @@ def read_kit(program, archive, destination=None):
             if program == "varac":
                 version = re.match(rb"VarAC (\d+(?:\.\d+){2,3})\b", header)
             else:
-                version = re.fullmatch(rb"(\d+\.\d+\.\d+)\s*", header) if not readme.read(1) else None
+                version = re.fullmatch(rb"(\d+\.\d+\.\d+(?:\+[a-f0-9]{40})?)\s*", header) if not readme.read(1) else None
         if not version:
             raise ValueError("missing program version")
         if destination:
