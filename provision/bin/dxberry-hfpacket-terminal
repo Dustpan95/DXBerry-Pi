@@ -1,0 +1,23 @@
+#!/bin/bash
+# Run inside the selected radio's screen session as dxbapps.
+set -uo pipefail
+[[ $# == 1 && -r $1 ]] || exit 2
+if (exec 3<>/dev/tcp/127.0.0.1/8311) 2>/dev/null; then
+  echo 'Another service is using the HF packet KISS port.' >&2
+  exit 1
+fi
+direwolf -t 0 -c "$1" &
+modem=$!
+trap 'kill "$modem" 2>/dev/null || true; wait "$modem" 2>/dev/null || true' EXIT
+trap 'exit 0' TERM HUP
+for ((i=0; i<80; i++)); do
+  kill -0 "$modem" 2>/dev/null || { wait "$modem"; exit 1; }
+  if (exec 3<>/dev/tcp/127.0.0.1/8311) 2>/dev/null; then
+    printf '\nType a UI frame as YOURCALL>DEST:message and press Enter. Ctrl-D closes the terminal.\n'
+    kissutil -h 127.0.0.1 -p 8311
+    exit $?
+  fi
+  sleep 0.1
+done
+echo 'The HF packet modem did not open its KISS port.' >&2
+exit 1

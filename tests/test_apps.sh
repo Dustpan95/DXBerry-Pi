@@ -18,7 +18,7 @@ ap_module() {
 
 test_apps_tsv_has_every_program_once() {
   fx_apps_env
-  assert_eq "$(dxb_apps_rows | jq -r 'map(.name) | join(" ")')" "graywolf wsjtx js8call fldigi qsstv pat flrig wavelog"
+  assert_eq "$(dxb_apps_rows | jq -r 'map(.name) | join(" ")')" "graywolf wsjtx js8call fldigi qsstv pat flrig wavelog mercury hfpacket"
   assert_eq "$(dxb_apps_row js8call | jq -c .packages)" '["libxcb-cursor0","pulseaudio"]'
   dxb_apps_row nope > /dev/null 2>&1; assert_eq "$?" "3"
 }
@@ -29,7 +29,7 @@ test_apps_rows_carry_every_column() {
     '{"name":"flrig","label":"flrig","kind":"rigcontrol","source":"apt:flrig","packages":[],"description":"Rig control with your radio'\''s full front panel"}'
   # no nginx: it comes only through dxb_webproxy_install, inside its policy-rc.d guard (Task 12)
   assert_eq "$(dxb_apps_row wavelog | jq -r '.packages | join(" ")')" "php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd mariadb-server"
-  assert_eq "$(dxb_apps_rows | jq -r 'map(.name) | unique | length')" "8"
+  assert_eq "$(dxb_apps_rows | jq -r 'map(.name) | unique | length')" "10"
 }
 
 test_apps_source_parses_every_kind() {
@@ -526,3 +526,34 @@ test_apps_wiring_carries_label_hash_and_every_ptt_method() {
   dxb_apps_wiring nope > /dev/null 2>&1; assert_eq "$?" "3"
 }
 
+
+test_apps_hf_packet_uses_the_selected_radio_and_disables_playback_without_ptt() {
+  (
+    source "$DXB_LIB/apps/hfpacket.sh"
+    DXB_APPS_HOME=$TEST_TMP
+    dxb_apps_station() { echo '{"call":"N0CALL"}'; }
+    dxb_apps_wiring() { jq -nc --arg p "$ptt_mode" '{device:"plughw:CARD=HF,DEV=0",rigctld:"127.0.0.1:4536",ptt:$p}'; }
+    local ptt_mode=cat f
+    f=$(app_hfpacket_settings_file hf)
+    app_hfpacket_wire hf || _fail "HF wiring failed"
+    assert_file_contains "$f" "MODEM 300"
+    assert_file_contains "$f" "PTT RIG 2 127.0.0.1:4536"
+    ptt_mode=none
+    app_hfpacket_wire hf || _fail "receive-only HF wiring failed"
+    assert_file_contains "$f" "ADEVICE plughw:CARD=HF,DEV=0 null"
+    assert_file_not_contains "$f" "PTT RIG"
+  )
+}
+
+test_apps_mercury_source_uses_a_scoped_key_and_limits_packages() {
+  (
+    source "$DXB_LIB/apps/mercury.sh"
+    DXB_ETC_APT=$TEST_TMP/apt DXB_SHARE=$DXB_ROOT/provision/share
+    mkdir -p "$DXB_ETC_APT"/{sources.list.d,preferences.d}
+    app_mercury_prepare_source || _fail "Mercury source setup failed"
+    app_mercury_prepare_source || _fail "Mercury source could not be reused"
+    assert_file_contains "$DXB_ETC_APT/sources.list.d/dxberry-mercury.list" "signed-by=$DXB_SHARE/hermes-archive.asc"
+    assert_file_contains "$DXB_ETC_APT/preferences.d/dxberry-mercury" "Package: mercury mercury-ui"
+    assert_file_contains "$DXB_ETC_APT/preferences.d/dxberry-mercury" "Pin-Priority: -1"
+  )
+}

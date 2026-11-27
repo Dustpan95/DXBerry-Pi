@@ -258,6 +258,29 @@ and `sudo dxberry-logbook get`.
   then select **Save**. The Pi accepts private IPv4 addresses, IPv6 unique-local addresses, and
   names that resolve to those addresses. HTTP sends the key without encryption.
 
+## HF chat and packet experiments
+
+Under **Programs**, install the program you want. On the FT-991 radio card, use
+**Switch program**, choose the program, then open its window. In the phone viewer,
+slide one finger to move the pointer, tap to click, or hold and slide to drag.
+**Actual size** enlarges the desktop and **Fit screen** brings the whole window back.
+
+- **Mercury HF** opens Rhizomatica’s modem and chat client. Use its client window
+  for direct ARQ chat or a broadcast. Both ends need Mercury. Automatic wiring
+  uses the selected radio’s audio server and its rigctld endpoint for CAT PTT.
+- **HF Packet** opens a Dire Wolf terminal configured for 300-baud HF AX.25.
+  Listen for decoded frames, or enter an unconnected UI frame such as
+  `YOURCALL>DEST:hello` using your own callsign. A cooperating digipeater can be
+  included as `YOURCALL>DEST,RELAY:hello`. The local KISS port is 8311 while
+  the program is running. The supplied profile sends no beacons and enables no
+  digipeater. With PTT set to None the profile discards playback.
+- **JS8Call** supports directed relays for weak-signal messaging. For a first
+  two-hop test, arrange a relay and destination on the same dial frequency.
+  With one FT-991 you can listen and operate one end of that path.
+- **VarAC** requires the operator’s official download and a supported modem.
+  Its publisher lists Wine for Linux/Pi and VARA HF for HF operation.
+  [VarAC download and prerequisites](https://www.varac-hamradio.com/download)
+
 ## Radio plumbing
 
 `sudo dxberry-radio scan` lists the USB sound cards, serial ports and HID PTT interfaces currently

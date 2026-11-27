@@ -463,7 +463,7 @@ test_screen_list_json() {
     '{"name":"gamma","label":"Gamma","kind":"radio","description":"A program for the tests","source":"debian","installed":true,"version":"1.0","sessions":[{"radio":"radio2","state":"running","rewire_pending":true}],"single_copy":false,"open":{"kind":"screen"},"setup_note":null,"kept":[]}'
   assert_eq "$(jq -c '.[] | select(.name == "wsjtx") | [.source, .installed, .version, .sessions]' "$TEST_TMP/out")" '["upstream",false,null,[]]'
   assert_eq "$(jq -r '.[] | select(.name == "graywolf") | .source' "$TEST_TMP/out")" "builtin"
-  assert_eq "$(jq -r 'map(.name) | join(" ")' "$TEST_TMP/out")" "graywolf wsjtx js8call fldigi qsstv pat flrig wavelog gamma"
+  assert_eq "$(jq -r 'map(.name) | join(" ")' "$TEST_TMP/out")" "graywolf wsjtx js8call fldigi qsstv pat flrig wavelog mercury hfpacket gamma"
 }
 
 # a session wires itself at its start (ruling 7): one whose radio's wiring changed since then says

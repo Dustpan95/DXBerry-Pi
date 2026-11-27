@@ -82,6 +82,7 @@ REQUIRED_FILES=(
   provision/templates/dxberry-logbridge.service provision/templates/dxberry-logbook-flush.service provision/templates/dxberry-logbook-flush.timer
   provision/bin/dxberry-app provision/lib/screen.sh provision/lib/apps.sh provision/lib/wsjtx.sh provision/share/apps.tsv provision/share/wsjtx-native-protocol
   provision/lib/apps/fldigi.sh provision/lib/apps/flrig.sh provision/lib/apps/js8call.sh provision/lib/apps/qsstv.sh provision/lib/apps/wsjtx.sh
+  provision/lib/apps/mercury.sh provision/lib/apps/hfpacket.sh provision/share/hermes-archive.asc provision/bin/dxberry-hfpacket-terminal
   provision/templates/dxberry-screen@.service provision/templates/dxberry-apps.tmpfiles
   provision/bin/dxberry-audio provision/templates/dxberry-audio@.service
   station/web/dashboard.js station/web/programs.js station/web/screen.html station/web/screen.js
@@ -90,6 +91,7 @@ REQUIRED_FILES=(
   station/web/vendor/xterm/addon-fit.js station/web/vendor/xterm/LICENSE station/web/vendor/xterm/LICENSE.addon-fit station/web/vendor/xterm/VERSION
 )
 EXECUTABLE_FILES=(
+  provision/bin/dxberry-hfpacket-terminal
   provision/bin/dxberry-preset
   provision/bin/dxberry-radio-event
   provision/bin/dxberry-program-state
