@@ -8,6 +8,7 @@ app_mercury_audio() { echo pulse; }
 app_mercury_screen() { echo yes; }
 app_mercury_needs_service_restart() { echo no; }
 app_mercury_installed() { dxb_apps_installed mercury; }
+app_mercury_companion_package() { echo mercury; }
 app_mercury_version() { dxb_apps_version mercury; }
 app_mercury_unit() { dxb_app_session_unit mercury "$1"; }
 app_mercury_unwire() { return 0; }

@@ -193,7 +193,32 @@ dxb_apps_source_latest() {
 dxb_apps_latest() {
   local row
   row=$(dxb_apps_row "$1") || return $?
-  dxb_apps_source_latest "$(jq -r .source <<< "$row")"
+  local source offline installed
+  source=$(jq -r .source <<< "$row")
+  if [[ $source == local:* ]] && _dxb_apps_has "$1" remote_latest; then
+    "app_${1}_remote_latest" && return 0
+    # A first install can still use an operator-supplied or bundled offline kit.
+    if [[ ${2:-check} != install ]]; then
+      offline=$(dxb_apps_source_latest "$source" 2>/dev/null) || return 1
+      installed=$(dxb_apps_version "$1")
+      dxb_apps_upgrade_available "$1" "$source" "$installed" "$(jq -r .version <<< "$offline")" local || return 1
+      printf '%s\n' "$offline"
+      return 0
+    fi
+  fi
+  dxb_apps_source_latest "$source"
+}
+
+# Compare release versions using Debian ordering. A compatible XARA release can
+# advance to a new source commit before the upstream project bumps its version.
+dxb_apps_upgrade_available() {
+  local name=$1 src=$2 installed=$3 latest=$4 kind=$5
+  if [[ $src == github:*deb=* ]]; then installed=${installed#*:}; installed=${installed%-*}; fi
+  if [[ $name == xara && $installed == *+* && ${installed%%+*} == "${latest%%+*}" ]]; then
+    [[ $kind == kit && $latest == *+* && $installed != "$latest" ]]
+  else
+    dpkg --compare-versions "$installed" lt "$latest"
+  fi
 }
 
 # ---- what is installed ---------------------------------------------------------------------
@@ -408,8 +433,10 @@ dxb_apps_place() {
   fi
   echo "unpacking $asset"
   case $type in
-    local)
-      if ! _dxb_apps_has "$name" unpack || ! ver=$("app_${name}_unpack" "$file" "$stage"); then
+    local|kit)
+      local actual
+      if ! _dxb_apps_has "$name" unpack || ! actual=$("app_${name}_unpack" "$file" "$stage") || [[ $actual != "$ver" ]]; then
+        echo "The $name kit failed validation for $ver." >&2
         rm -rf "$stage"; return 6
       fi ;;
     appimage) _dxb_apps_unpack_appimage "$file" "$stage/squashfs-root" || { rm -rf "$stage"; return 6; } ;;
@@ -484,11 +511,19 @@ dxb_apps_install() {
     fi
   else
     echo "looking up the newest $label"
-    latest=$(dxb_apps_source_latest "$(jq -r .source <<< "$row")") \
+    latest=$(dxb_apps_latest "$name" "$mode") \
       || { echo "the newest $label could not be found (is the Pi online?); nothing changed" >&2; return 6; }
     type=$(jq -r .type <<< "$latest"); ver=$(jq -r .version <<< "$latest")
+    if [[ $mode == update ]] && ! dxb_apps_upgrade_available "$name" "$(jq -r .source <<< "$row")" "$(dxb_apps_version "$name")" "$ver" "$type"; then
+      echo "$label already has this release or newer."
+      return 0
+    fi
     echo "$label $ver ($(jq -r .asset <<< "$latest"))"
-    if [[ $stype != local ]]; then dxb_apps_download "$latest" || { rm -rf "$DXB_APPS_WORK"; return 6; }; fi
+    if [[ $type != local ]]; then dxb_apps_download "$latest" || { rm -rf "$DXB_APPS_WORK"; return 6; }; fi
+    if [[ $type == kit ]] && [[ $("app_${name}_local_version" "$DXB_APPS_WORK/$(jq -r .asset <<< "$latest")") != "$ver" ]]; then
+      echo "The downloaded $label kit does not match the advertised version $ver." >&2
+      rm -rf "$DXB_APPS_WORK"; return 6
+    fi
   fi
   if _dxb_apps_has "$name" prepare_source; then
     "app_${name}_prepare_source" || { echo "$label package source could not be prepared" >&2; return 6; }
@@ -511,8 +546,10 @@ dxb_apps_install() {
     fi
   fi
   if [[ $stype == apt && $mode == update ]]; then
-    echo "upgrading $pkg"
-    if ! _dxb_apps_apt install -y --no-install-recommends --only-upgrade "$pkg"; then
+    local -a upgrade=("$pkg")
+    if _dxb_apps_has "$name" companion_package; then upgrade+=("$("app_${name}_companion_package")"); fi
+    echo "upgrading ${upgrade[*]}"
+    if ! _dxb_apps_apt install -y --no-install-recommends --only-upgrade "${upgrade[@]}"; then
       echo "apt-get could not upgrade $pkg" >&2; return $fail
     fi
   fi

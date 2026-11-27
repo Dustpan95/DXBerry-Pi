@@ -103,33 +103,46 @@ dxb_update_system_info() {
   awk '/^Inst /{ print $2 }' <<< "$sim" | jq -Rsc 'split("\n") | map(select(length > 0)) | {count: length, packages: .[:50]}'
 }
 
+# A modem and GUI can advance independently in the same APT repository.
+_dxb_update_package_pair() {
+  local name=$1 gui=$2 installed=$3 companion current latest next available=false
+  companion=$("app_${name}_companion_package") || return 1
+  current=$(_dxb_apps_dpkg_version "$companion")
+  latest=$(dxb_apps_source_latest "apt:$gui" | jq -er .version) || return 1
+  next=$(dxb_apps_source_latest "apt:$companion" | jq -er .version) || return 1
+  [[ -n $latest && -n $next ]] || return 1
+  if dpkg --compare-versions "$installed" lt "$latest" || [[ -z $current ]] || dpkg --compare-versions "$current" lt "$next"; then available=true; fi
+  if [[ $installed != "$current" || $latest != "$next" ]]; then
+    installed="UI $installed / modem ${current:-missing}"
+    latest="UI $latest / modem $next"
+  fi
+  jq -cn --arg i "$installed" --arg l "$latest" --argjson u "$available" '{installed:$i,latest:$l,source:"debian",update:$u}'
+}
+
 # dxb_update_apps_info: {NAME: {installed, latest, source: "upstream"|"debian", update} | {error}}
 # for every installed program except Graywolf (which keeps its own part). A Debian program's
 # newest version is the apt candidate (the system part has already run apt-get update, so this
-# does not); an upstream one's is GitHub's newest release (dxb_apps_latest). "update" is true when
-# the newest is known and written differently from the installed one - compared as plain strings,
-# not with dpkg --compare-versions. An upstream program may be a .deb, whose installed version dpkg
-# writes with an epoch and a Debian revision ("1:3.0.3-1") that the release tag ("3.0.3") never
-# has, so for upstream programs those two are stripped from the installed side before comparing.
-# A Debian program is compared as dpkg reports both sides, unchanged.
+# does not). Other programs resolve their publisher or compatible kit feed.
 # The caller supplies true only after its system package check succeeds; no
 # argument leaves Debian availability unknown. Upstream checks are independent.
 dxb_update_apps_info() {
-  local apt_fresh=${1:-false} rows name label src installed cmp latest out='{}' e
+  local apt_fresh=${1:-false} rows name label src installed latest release available out='{}' e
   declare -F dxb_apps_rows > /dev/null || { echo '{}'; return 0; }
   rows=$(dxb_apps_rows 2> /dev/null) || { echo '{}'; return 0; }
   while IFS=$'\t' read -r name label src; do
     [[ -n $name ]] || continue
     installed=$(dxb_apps_version "$name" 2> /dev/null)
     [[ -n $installed ]] || continue
-    cmp=$installed
-    if [[ $src != apt:* ]]; then cmp=${cmp#*:}; [[ $installed == [0-9]*:* ]] || cmp=$installed; cmp=${cmp%-*}; fi
     if [[ $src == apt:* && $apt_fresh != true ]]; then
       e=$(jq -cn --arg i "$installed" --arg m "$label's newest version is unknown because the system package check failed" \
         '{installed:$i,source:"debian",error:$m}')
-    elif latest=$(dxb_apps_latest "$name" 2> /dev/null) && latest=$(jq -r '.version // empty' <<< "$latest" 2> /dev/null) && [[ -n $latest ]]; then
-      e=$(jq -cn --arg i "$installed" --arg l "$latest" --arg c "$cmp" --arg s "$([[ $src == apt:* ]] && echo debian || echo upstream)" \
-        '{installed: $i, latest: $l, source: $s, update: ($l != "" and $l != $c)}')
+    elif [[ $src == apt:* ]] && _dxb_apps_has "$name" companion_package; then
+      e=$(_dxb_update_package_pair "$name" "${src#apt:}" "$installed") || e=$(jq -cn --arg m "$label's package versions could not be found" '{error:$m}')
+    elif release=$(dxb_apps_latest "$name" 2> /dev/null) && latest=$(jq -er '.version | select(length > 0)' <<< "$release"); then
+      available=false
+      if dxb_apps_upgrade_available "$name" "$src" "$installed" "$latest" "$(jq -r .type <<< "$release")"; then available=true; fi
+      e=$(jq -cn --arg i "$installed" --arg l "$latest" --argjson u "$available" --arg s "$([[ $src == apt:* ]] && echo debian || echo upstream)" \
+        '{installed: $i, latest: $l, source: $s, update: $u}')
     else
       e=$(jq -cn --arg m "$label's newest version could not be found" '{error: $m}')
     fi

@@ -143,7 +143,16 @@ fldigi, flrig, QSSTV, Pat (Winlink email), and Wavelog (a logbook that lives on 
 installed until you ask: the Programs card lists them, and **Install** and **Remove** work like the
 Updates card, as a background job whose output the page shows. WSJT-X, JS8Call, Pat and Wavelog come
 from their authors' newest release; fldigi, flrig and QSSTV come from Debian, in the version Debian
-ships. The Updates card brings them all up to date.
+ships. **Updates → Check now** reads those feeds and offers each available app
+update independently of the DXBerry release. Mercury checks both the modem and
+its UI in the Hermes APT repository. Installing an update restarts any managed
+sessions that were using that program.
+
+An in-place DXBerry update swaps the software under `/opt/dxberry`. Station
+configuration stays in the boot configuration and `/var/lib/dxberry`. App
+updates replace program files while profiles and QSO logs stay under
+`/var/lib/dxberry-apps`. Local Wavelog also retains its database, configuration,
+uploads and backups. A fresh SD-card image needs a separate backup and restore.
 
 Choose a program for a radio with **Switch program** on the radio's card and it opens in its own browser tab through the console, so you
 use it as if it were a window on the Pi, signed in with the same login as the console. Each radio keeps
@@ -294,9 +303,10 @@ slide one finger to move the pointer, tap to click, or hold and slide to drag.
 - **JS8Call** supports directed relays for weak-signal messaging. For a first
   two-hop test, arrange a relay and destination on the same dial frequency.
   With one FT-991 you can listen and operate one end of that path.
-- **VarAC** uses the publisher’s native Linux ARM64 Raspberry Pi ZIP. Place your
-  copy at `/var/lib/dxberry/installers/varac.zip` and choose **Install** under
-  **Programs**. Replacing that ZIP supplies the next client update. Each radio’s
+- **VarAC** uses the publisher’s native Linux ARM64 Raspberry Pi ZIP. Choose
+  **Install** under **Programs**. The Pi checks the publisher’s Raspberry Pi
+  download and verifies the version inside the ARM64 kit before replacement.
+  An offline first install can use `/var/lib/dxberry/installers/varac.zip`. Each radio’s
   settings and contacts live under `/var/lib/dxberry-apps/varac/RADIO/`.
   The client requires a modem. The bundled XARA build enables the HF version
   reply required by VarAC 17.1.7. For the receive-only setup below, configure
@@ -312,7 +322,10 @@ slide one finger to move the pointer, tap to click, or hold and slide to drag.
   bandwidth. XARA uses the radio’s receive stream and discards playback. Local
   clients can use command port 8300, data port 8301 and KISS port 8100 while
   the session runs.
-  Use **Programs → Install** or **Update** to install the bundled ARM64 kit.
+  **Programs → Update** checks the XARA fork for a published VarAC-compatible
+  ARM64 kit. The asset is named `xara-varac17-aarch64.zip`, its release asset
+  label is the exact version in its VERSION file, and GitHub supplies its SHA-256.
+  The bundled kit supports installation before a compatible release is published.
   The kit is built from the pinned DXBerry-Pi fork with the `varac-17` feature.
   Builds made from source can generate it with `build/build-xara-kit.sh` on
   ARM64 after installing Rust, `libasound2-dev`, and `libpulse-dev`.

@@ -16,6 +16,19 @@ app_xara_bundled_kit() {
   [[ -r $DXB_SHARE/xara.zip ]] || return 1
   printf '%s/xara.zip\n' "$DXB_SHARE"
 }
+# The generic XARA builds omit the VarAC 17 feature. Only accept a release
+# explicitly packaged for this mode and carrying GitHub's SHA-256 digest.
+app_xara_remote_latest() {
+  local releases kit
+  releases=$(_dxb_apps_api "$DXB_GH_API/Dustpan95/xara/releases?per_page=100") || return 1
+  kit=$(jq -c 'first(.[] | select(.draft == false and .prerelease == false)
+    | .assets[] | select(.name | test("^xara-varac17-aarch64[.]zip$"))
+    | {version:(.label // ""), asset:.name, type:"kit", url:.browser_download_url, sha256:.digest}) // empty' <<< "$releases") || return 1
+  if [[ -z $kit ]]; then dxb_apps_source_latest local:xara; return; fi
+  jq -ce 'select((.version | test("^[0-9]+[.][0-9]+[.][0-9]+([+][a-f0-9]{40})?$"))
+    and (.sha256 | test("^sha256:[a-f0-9]{64}$")) and (.url | startswith("https://github.com/Dustpan95/xara/releases/download/")))
+    | .sha256 |= ltrimstr("sha256:")' <<< "$kit"
+}
 app_xara_local_version() { python3 "$DXB_LIB/native-archive.py" xara "$1"; }
 app_xara_unpack() { python3 "$DXB_LIB/native-archive.py" xara "$1" "$2"; }
 

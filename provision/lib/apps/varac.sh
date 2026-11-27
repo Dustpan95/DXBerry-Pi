@@ -12,6 +12,16 @@ app_varac_version() { dxb_apps_version varac; }
 app_varac_unit() { dxb_app_session_unit varac "$1"; }
 app_varac_wire() { return 0; }   # PulseAudio is supplied by the session.
 app_varac_unwire() { return 0; }
+# Read just the publisher redirect during a check. Download the ZIP on install.
+app_varac_remote_latest() {
+  local url=https://www.varac-hamradio.com/download-varac-linux_arm64_raspberrypi target filename
+  target=$(_dxb_apps_curl -fsS --head --connect-timeout 10 --max-time 30 -o /dev/null -w '%{redirect_url}' "$url") || return 1
+  [[ $target == https://* ]] || return 1
+  target=${target%%\?*}
+  filename=${target##*/}
+  [[ $filename =~ ^VarAC_([0-9]+(\.[0-9]+){2,3})_[A-Za-z0-9_-]+_linux-arm64-raspberrypi\.zip$ ]] || return 1
+  jq -cn --arg v "${BASH_REMATCH[1]}" --arg u "$url" '{version:$v, asset:"varac.zip", type:"kit", url:$u, sha256:null}'
+}
 app_varac_local_version() { python3 "$DXB_LIB/native-archive.py" varac "$1"; }
 app_varac_unpack() { python3 "$DXB_LIB/native-archive.py" varac "$1" "$2"; }
 app_varac_firstfill() {

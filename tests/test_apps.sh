@@ -574,9 +574,43 @@ PY
   dxb_apps_install varac > "$TEST_TMP/out" || _fail "could not install the operator kit"
   assert_eq "$(dxb_apps_version varac)" "17.1.7"
   [[ -x $DXB_APPS_OPT/varac/VarAC ]] || _fail "missing client"
+  # An online publisher update goes through the normal download and version check.
+  local profile=$DXB_APPS_HOME/varac/radio1
+  mkdir -p "$profile"
+  printf 'MyCall=N0CALL\n' > "$profile/VarAC.ini"
+  printf 'saved contacts\n' > "$profile/VarAC.db"
+  python3 - "$DXB_STATE_DIR/installers/varac.zip" "$TEST_TMP/http/vendor.zip" <<'PYKIT'
+import sys
+from zipfile import ZipFile
+with ZipFile(sys.argv[1]) as old, ZipFile(sys.argv[2], "w") as new:
+    for member in old.namelist():
+        data = old.read(member)
+        if member.endswith("README.txt"):
+            data = data.replace(b"17.1.7", b"17.2.0")
+        new.writestr(member, data)
+PYKIT
+  (
+    DXB_APPS_CURL=publisher_fixture
+    publisher_fixture() {
+      if [[ " $* " == *" --head "* ]]; then echo 'https://example.org/VarAC_17.2.0_build_linux-arm64-raspberrypi.zip?download=1'
+      else
+        while [[ $# -gt 1 && $1 != -o ]]; do shift; done
+        cp "$TEST_TMP/http/vendor.zip" "$2"
+      fi
+    }
+    assert_ok dxb_apps_install varac update > "$TEST_TMP/out"
+    assert_eq "$(dxb_apps_version varac)" "17.2.0"
+    assert_file_contains "$profile/VarAC.ini" "MyCall=N0CALL"
+    assert_file_contains "$profile/VarAC.db" "saved contacts"
+    # Metadata changed while a ZIP was in flight: never replace the previous kit.
+    cp "$DXB_STATE_DIR/installers/varac.zip" "$TEST_TMP/http/vendor.zip"
+    echo 17.1.9 > "$DXB_APPS_OPT/varac/VERSION"
+    dxb_apps_install varac update >/dev/null 2>&1; assert_eq "$?" "6"
+    assert_eq "$(dxb_apps_version varac)" "17.1.9"
+  )
   echo 'invalid kit' > "$DXB_STATE_DIR/installers/varac.zip"
   dxb_apps_install varac update >/dev/null 2>&1; assert_eq "$?" "6"
-  assert_eq "$(dxb_apps_version varac)" "17.1.7"
+  assert_eq "$(dxb_apps_version varac)" "17.1.9"
 }
 
 test_apps_xara_prefers_the_bundled_varac_kit() {
@@ -596,6 +630,15 @@ PYKIT
     "0.1.3+dddddddddddddddddddddddddddddddddddddddd"
   dxb_apps_install xara > "$TEST_TMP/out" || _fail "could not install bundled XARA"
   assert_eq "$(dxb_apps_version xara)" "0.1.3+dddddddddddddddddddddddddddddddddddddddd"
+  local releases=$TEST_TMP/http/Dustpan95/xara
+  mkdir -p "$releases"
+  jq -n '[{draft:false, prerelease:false, assets:[{name:"xara-varac17-aarch64.zip",
+    label:"0.1.4", digest:("sha256:"+("b"*64)), browser_download_url:"https://github.com/Dustpan95/xara/releases/download/v0.1.4/xara-varac17-aarch64.zip"}]}]' > "$releases/releases?per_page=100"
+  assert_eq "$(dxb_apps_latest xara | jq -r .version)" "0.1.4"
+  assert_eq "$(dxb_apps_latest xara | jq -r .type)" kit
+  assert_ok dxb_apps_upgrade_available xara local:xara "0.1.3+dddddddddddddddddddddddddddddddddddddddd" "0.1.4" kit
+  assert_fails dxb_apps_upgrade_available xara local:xara "0.1.4" "0.1.3" local
+
 }
 
 test_apps_xara_trial_uses_receive_audio_and_discards_playback() {
@@ -620,3 +663,14 @@ PY
       "PULSE_SOURCE=FT991.in $DXB_APPS_OPT/xara/xara --call N0CALL --hf 500 --audio alsa --capture pulse --playback null --addr 127.0.0.1 --port 8300 --kiss-port 8100"
   )
 }
+
+test_apps_mercury_modem_only_update() (
+  fx_apps_env
+  AP_INSTALLED="mercury-ui=2.0 mercury=1.9"
+  AP_CANDIDATE=2.0
+  assert_eq "$(dxb_update_apps_info true | jq -r .mercury.update)" true
+  local DXB_ETC_APT=$TEST_TMP/etc/apt DXB_SHARE=$DXB_ROOT/provision/share
+  mkdir -p "$DXB_ETC_APT/preferences.d" "$DXB_ETC_APT/sources.list.d"
+  assert_ok dxb_apps_install mercury update >/dev/null
+  assert_file_contains "$TEST_TMP/calls" "--only-upgrade mercury-ui mercury"
+)
