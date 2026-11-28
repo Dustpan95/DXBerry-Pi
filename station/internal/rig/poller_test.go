@@ -872,3 +872,26 @@ func TestPollerNoProbeAtPageWithoutGuardOrAfterHooksCleared(t *testing.T) {
 		t.Fatalf("the probe kept running after the hooks were cleared: %d", n)
 	}
 }
+
+func TestHealthMeterIsSampledSlowlyAndInvalidatedOnBadRead(t *testing.T) {
+	l := newPlLink()
+	l.set("get_level VD_METER", "13.8")
+	caps := meterCaps()
+	caps.ReadableMeters = []string{"VD_METER"}
+	p := newPoller(l, caps, newPlClock(), nil)
+	ctx := context.Background()
+	p.mainCycle(ctx, Page)
+	if got := p.State().Meters["VD_METER"]; got != 13.8 {
+		t.Fatalf("voltage = %v", got)
+	}
+	p.mainCycle(ctx, Page)
+	if l.count("get_level VD_METER") != 1 {
+		t.Fatal("slow meter read again in the same interval")
+	}
+	p.clock.(*plClock).Advance(2 * time.Second)
+	l.set("get_level VD_METER", "unavailable")
+	p.mainCycle(ctx, Page)
+	if _, ok := p.State().Meters["VD_METER"]; ok {
+		t.Fatal("failed voltage reading left the old voltage on screen")
+	}
+}

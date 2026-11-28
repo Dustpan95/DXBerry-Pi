@@ -25,5 +25,5 @@ COPY tests/integration/browser-login.js tests/integration/browser-login.sh tests
 COPY --from=build /dxberry-browser-fixture /usr/local/bin/dxberry-browser-fixture
 COPY tests/page_smoke.js tests/page_smoke.js
 COPY tests/integration/browser-ptt.js tests/integration/browser-ptt.sh tests/integration/
-COPY tests/integration/browser-wsjtx.js tests/integration/browser-wsjtx.sh tests/integration/
+COPY tests/integration/browser-radio-monitor.js tests/integration/browser-wsjtx.js tests/integration/browser-wsjtx.sh tests/integration/
 CMD ["bash", "tests/integration/browser-ptt.sh"]

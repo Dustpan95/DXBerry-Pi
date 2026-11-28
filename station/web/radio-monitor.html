@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Radio status · DXBerry</title>
+  <link rel="stylesheet" href="/dxberry.css">
+  <link rel="stylesheet" href="/radio-monitor.css">
+</head>
+<body class="monitor">
+  <header><h1 id="radio-name">Radio status</h1><a id="detach" target="_blank" rel="noopener" hidden>Pop out ↗</a></header>
+  <main>
+    <div class="dial">
+      <span id="phase" role="status">Connecting…</span>
+      <div class="frequency"><strong id="frequency">—</strong> <small>MHz</small></div>
+      <div id="tuning">—</div>
+    </div>
+    <dl id="meters"></dl>
+    <p class="muted" id="meter-note"></p>
+  </main>
+  <script src="/app.js"></script>
+  <script src="/radio-monitor.js"></script>
+</body>
+</html>

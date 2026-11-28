@@ -216,6 +216,9 @@ function contrast(a, b) {
     assert.equal(await page.evaluate(() => scrollY), 0, "New data must not repeat the anchor jump");
     evidence.push("dashboard status link reveals and focuses the phone panel once; later updates preserve page position");
 
+    await require("./browser-radio-monitor")(context, base);
+    evidence.push("read-only program radio monitor, RX/TX, phone dock, desktop and pop-out");
+
     const fixtureState = await (await fetch(base + "/fixture/state")).json();
     assert.equal(fixtureState.keyed, false);
     assert.equal(fixtureState.ptt, false);

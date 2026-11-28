@@ -217,7 +217,7 @@ func TestDiscoverProbesLevels(t *testing.T) {
 	if _, ok := hiddenWhy(c, "STRENGTH"); ok {
 		t.Error("STRENGTH must not be hidden")
 	}
-	want := []string{"get_level STRENGTH", "get_level SWR", "get_level ALC", "get_level RFPOWER", "get_level RFPOWER_METER_WATTS", "get_level AF", "get_level RF", "get_level SQL"}
+	want := []string{"get_level STRENGTH", "get_level SWR", "get_level ALC", "get_level RFPOWER", "get_level RFPOWER_METER_WATTS", "get_level AF", "get_level RF", "get_level SQL", "get_level VD_METER", "get_level ID_METER", "get_level TEMP_METER", "get_level COMP_METER"}
 	var got []string
 	for _, call := range f.calls {
 		if strings.HasPrefix(call, "get_level") {

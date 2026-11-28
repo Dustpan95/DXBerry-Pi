@@ -290,6 +290,14 @@ Under **Programs**, install the program you want. On the FT-991 radio card, use
 slide one finger to move the pointer, tap to click, or hold and slide to drag.
 **Actual size** enlarges the desktop and **Fit screen** brings the whole window back.
 
+Choose **Radio status** in the program toolbar to monitor the radio beside the
+desktop or below it on a phone. **Pop out** opens the same readouts in a separate
+window. The display uses the station’s shared CAT connection. On the FT-991 it
+shows VFO, dial frequency, mode, passband, signal, supply voltage and PA current.
+During TX it also shows SWR, measured RF output, ALC and compression. The FT-991
+does not report temperature through Hamlib. Other models show the meters their
+driver and radio support.
+
 - **WSPR** is included with WSJT-X. Open WSJT-X and choose **Mode → WSPR**. For receive-only operation, leave **Enable Tx** off.
 - **Mercury HF** opens Rhizomatica’s modem and chat client. Use its client window
   for direct ARQ chat or a broadcast. Both ends need Mercury. Automatic wiring

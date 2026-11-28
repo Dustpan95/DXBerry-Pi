@@ -1,0 +1,24 @@
+body.monitor { max-width: 44rem; margin: auto; padding: 12px; background: var(--bg); }
+.monitor header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.monitor h1 { font-size: 1rem; overflow-wrap: anywhere; }
+.monitor a { color: var(--accent); font-weight: 650; white-space: nowrap; }
+.monitor .dial { padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 6px; background: var(--card); }
+#phase { color: var(--muted); font-size: .8rem; font-weight: 650; }
+#phase[data-state="tx"] { color: var(--bad); }
+#phase[data-state="rx"] { color: var(--good); }
+.monitor .frequency { line-height: 1.2; padding-block: 3px; white-space: nowrap; }
+.monitor .frequency strong { font: 600 clamp(1.25rem, 7vw, 2.2rem)/1.15 var(--font-mono); letter-spacing: -.06em; }
+.monitor .frequency small, #tuning { color: var(--muted); }
+.monitor dl { margin: 8px 0; display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%, 104px),1fr)); gap: 0 12px; }
+.monitor dl div { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.monitor dt { font-size: .8rem; color: var(--muted); }
+.monitor dd { margin: 0; font: 600 1rem/1.45 var(--font-mono); font-variant-numeric: tabular-nums; }
+#meter-note { margin: 8px 0; font-size: .8rem; }
+@media (min-width: 340px) and (max-height: 240px) {
+  body.monitor { padding: 6px 10px; }
+  .monitor main { display: grid; grid-template-columns: minmax(135px, .9fr) 1.5fr; gap: 2px 12px; align-items: start; }
+  .monitor dl { margin: 0; grid-template-columns: repeat(2,1fr); }
+  .monitor dl div { padding: 2px 0; }
+  .monitor .frequency strong { font-size: 1.25rem; }
+  #meter-note { grid-column: 1/-1; }
+}

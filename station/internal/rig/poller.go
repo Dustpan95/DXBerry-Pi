@@ -67,6 +67,7 @@ type State struct {
 	Mode       string             `json:"mode"`
 	Passband   string             `json:"passband"`
 	PTT        bool               `json:"ptt"`
+	PTTKnown   bool               `json:"ptt_known"`
 	VFO        string             `json:"vfo"`
 	Split      bool               `json:"split"`
 	Levels     map[string]float64 `json:"levels"`
@@ -117,6 +118,8 @@ type Poller struct {
 	transmitting atomic.Bool
 	observing    atomic.Bool // at most one on-demand observation per poller
 	wake         chan struct{}
+
+	lastSlowMeters time.Time // accessed only by the polling loop
 
 	wmu sync.Mutex // serializes writes against each other
 
@@ -251,6 +254,7 @@ func (p *Poller) onState(up bool) {
 	if p.st.Connected != up {
 		p.observationEpoch++
 		p.st.Connected = up
+		p.st.PTTKnown = false
 		p.publishLocked()
 	}
 	p.mu.Unlock()
@@ -507,17 +511,22 @@ func (p *Poller) lastReadPTT() bool {
 // zero depends on the reading, not on the cadence that happened to run.
 func (p *Poller) readPTT(ctx context.Context, c *cycle) (on, ok bool) {
 	r, got, ok := p.read(ctx, c, "get_ptt")
-	if !got {
-		return false, ok
-	}
 	v, found := field(r, "PTT", 0)
-	if !found {
-		return false, true
+	if !got || !found {
+		if ok {
+			p.mu.Lock()
+			if p.st.PTTKnown {
+				p.st.PTTKnown, c.dirty = false, true
+			}
+			p.mu.Unlock()
+		}
+		return false, ok
 	}
 	on = v != "0"
 	c.set(func(s *State) bool {
 		p.readPTTv = on
-		d := confirm(s, "ptt")
+		d := confirm(s, "ptt") || !s.PTTKnown
+		s.PTTKnown = true
 		if s.PTT != on {
 			s.PTT, d = on, true
 		}
@@ -556,6 +565,26 @@ func (p *Poller) store(c *cycle, name string, v float64) {
 		}
 		return d
 	})
+}
+
+// A rejected or malformed meter read invalidates its old value. A failed
+// sample must not count as a successful read for the radio liveness check.
+func (p *Poller) readMeter(ctx context.Context, c *cycle, name string) (float64, bool, bool) {
+	r, got, ok := p.read(ctx, c, "get_level", name)
+	if !ok {
+		return 0, false, false
+	}
+	if v, valid := number(r); got && valid {
+		p.store(c, name, v)
+		return v, true, true
+	}
+	p.mu.Lock()
+	if _, had := p.st.Meters[name]; had {
+		delete(p.st.Meters, name)
+		c.dirty = true
+	}
+	p.mu.Unlock()
+	return 0, false, true
 }
 
 func (p *Poller) mainCycle(ctx context.Context, in Interest) bool {
@@ -639,19 +668,24 @@ func (p *Poller) mainCycle(ctx context.Context, in Interest) bool {
 		}
 	}
 	if in == Page {
+		now := p.clock.Now()
+		slowDue := p.lastSlowMeters.IsZero() || now.Sub(p.lastSlowMeters) >= 2*time.Second
 		for _, n := range caps.ReadableMeters {
 			if isTxMeter(n) {
 				continue
 			}
-			r, got, ok := p.read(ctx, c, "get_level", n)
-			if !ok {
-				return false
-			}
-			if got {
-				if v, found := number(r); found {
-					p.store(c, n, v)
+			switch n {
+			case "VD_METER", "ID_METER", "TEMP_METER", "COMP_METER":
+				if !slowDue {
+					continue
 				}
 			}
+			if _, _, ok := p.readMeter(ctx, c, n); !ok {
+				return false
+			}
+		}
+		if slowDue {
+			p.lastSlowMeters = now
 		}
 	}
 	return true
@@ -689,17 +723,12 @@ func (p *Poller) txCycle(ctx context.Context) bool {
 		if !isTxMeter(n) {
 			continue
 		}
-		r, got, ok := p.read(ctx, c, "get_level", n)
+		v, got, ok := p.readMeter(ctx, c, n)
 		if !ok {
 			return false
 		}
-		if got {
-			if v, found := number(r); found {
-				p.store(c, n, v)
-				if n == "SWR" && hook != nil {
-					hook(v, true)
-				}
-			}
+		if got && n == "SWR" && hook != nil {
+			hook(v, true)
 		}
 	}
 	return true
