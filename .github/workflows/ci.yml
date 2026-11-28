@@ -431,6 +431,10 @@ jobs:
         run: docker run --rm --network none --shm-size=256m dxberry-browser
       - name: Exercise read-only native program status and recovery states
         run: docker run --rm --network none --shm-size=256m dxberry-browser bash tests/integration/browser-wsjtx.sh
+      - name: Exercise mobile program sessions in WebKit
+        run: |
+          docker build --target webkit -t dxberry-mobile-webkit -f tests/integration/Dockerfile.browser .
+          docker run --rm --network none --shm-size=256m dxberry-mobile-webkit
       - name: Log in through the station HTTPS front end and verify the browser session
         run: docker run --rm --network none --add-host dxberry.local:127.0.0.1 --shm-size=256m dxberry-browser bash tests/integration/browser-login.sh
   station:

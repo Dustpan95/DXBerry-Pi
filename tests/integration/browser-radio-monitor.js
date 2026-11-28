@@ -101,8 +101,10 @@ async function mobileViewer(context, base) {
     assert((await canvas.boundingBox()).width > fitted.width * 1.4);
     await page.locator("#zoom-fit").click();
     const gestures = async (type, points) => canvas.evaluate((target, { type, points }) => {
-      const touches = points.map(([clientX, clientY], identifier) => new Touch({ target, clientX, clientY, identifier }));
-      target.dispatchEvent(new TouchEvent(type, { touches, changedTouches: touches, bubbles: true, cancelable: true }));
+      const touches = points.map(([clientX, clientY], identifier) => ({ target, clientX, clientY, identifier }));
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "touches", { value: touches });
+      target.dispatchEvent(event);
     }, { type, points });
     const cy = fitted.y + fitted.height / 2;
     for (const direct of [false, true]) {
@@ -132,9 +134,9 @@ async function mobileViewer(context, base) {
     await page.evaluate(() => {
       Object.defineProperty(document, "hidden", { value: true, configurable: true });
       document.dispatchEvent(new Event("visibilitychange"));
-      window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+      window.dispatchEvent(new Event("pagehide"));
       Object.defineProperty(document, "hidden", { value: false, configurable: true });
-      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+      window.dispatchEvent(new Event("pageshow"));
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await connected();
@@ -148,3 +150,5 @@ async function mobileViewer(context, base) {
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 }
+
+module.exports.mobileViewer = mobileViewer;

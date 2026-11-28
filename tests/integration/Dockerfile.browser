@@ -10,7 +10,7 @@ RUN CGO_ENABLED=1 go test -c -tags=nolibopusfile,browserfixture -trimpath \
     -o /dxberry-browser-fixture ./internal/httpapi \
  && CGO_ENABLED=1 go build -tags=nolibopusfile -trimpath -o /dxberryd ./cmd/dxberryd
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim AS browser
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash chromium nodejs npm curl ca-certificates libopus0 libpam0g libpam-modules libpam-runtime nginx-light openssl libnss3-tools passwd && \
     rm -rf /var/lib/apt/lists/*
@@ -27,3 +27,10 @@ COPY tests/page_smoke.js tests/page_smoke.js
 COPY tests/integration/browser-ptt.js tests/integration/browser-ptt.sh tests/integration/
 COPY tests/integration/browser-radio-monitor.js tests/integration/browser-wsjtx.js tests/integration/browser-wsjtx.sh tests/integration/
 CMD ["bash", "tests/integration/browser-ptt.sh"]
+
+FROM browser AS webkit
+RUN playwright install --with-deps webkit
+ENV DXB_BROWSER_ENGINE=webkit
+CMD ["bash", "tests/integration/browser-wsjtx.sh"]
+
+FROM browser AS standard

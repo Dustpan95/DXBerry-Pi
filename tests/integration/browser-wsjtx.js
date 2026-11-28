@@ -3,7 +3,7 @@ const fs = require("fs");
 const vm = require("vm");
 const path = require("path");
 const assert = require("assert/strict");
-const { chromium } = require("playwright");
+const { chromium, webkit, devices } = require("playwright");
 const base = "http://127.0.0.1:8090";
 const output = process.env.DXB_BROWSER_OUTPUT || "/tmp/dxberry-wsjtx-browser";
 fs.mkdirSync(output, { recursive: true });
@@ -47,6 +47,13 @@ function contrast(a, b) {
   const errors = [], mutations = [];
   const evidence = [];
   try {
+    if (process.env.DXB_BROWSER_ENGINE === "webkit") {
+      browser = await webkit.launch();
+      const phone = await browser.newContext(devices["iPhone 13"]);
+      await require("./browser-radio-monitor").mobileViewer(phone, base);
+      console.log("ok: mobile WebKit zoom, pan, keyboard events and shared desktop reconnect");
+      return;
+    }
     browser = await chromium.launch({ executablePath: process.env.DXB_CHROMIUM || "/usr/bin/chromium", headless: true, args: ["--no-sandbox"] });
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     page = await context.newPage();
