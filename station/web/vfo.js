@@ -339,7 +339,9 @@
     return e;
   }
 
-  const nativeStatus = window.dxbWSJTX ? window.dxbWSJTX.create({ radio: name, h, retry: () => watch(), formatFrequency: formatFreq }) : null;
+  const nativeStatus = window.dxbWSJTX ? window.dxbWSJTX.create({ radio: name, h, retry: () => watch(),
+    configure: (action, data) => dxb.api("POST", "/api/radio/" + encodeURIComponent(name) + "/wsjtx/" + action, data),
+    formatFrequency: formatFreq }) : null;
   let nativeAnchored = false;
 
   function onProgram(message) {

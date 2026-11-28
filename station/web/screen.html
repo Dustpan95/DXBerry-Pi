@@ -11,12 +11,22 @@
     <strong id="program"></strong>
     <span id="radio" class="muted"></span>
     <span id="state" class="muted" aria-live="polite"></span>
-    <button id="zoom" class="btn" type="button" hidden>Actual size</button>
+    <div id="zoom" role="group" aria-label="Screen zoom" hidden>
+      <button id="zoom-out" class="btn" type="button" aria-label="Zoom out">−</button>
+      <button id="zoom-fit" class="btn" type="button" title="Fit entire screen">Fit</button>
+      <button id="zoom-in" class="btn" type="button" aria-label="Zoom in">+</button>
+    </div>
+    <button id="keyboard" class="btn" type="button" aria-controls="typing" aria-expanded="false" hidden>Keyboard</button>
     <label id="pad-label" hidden><input type="checkbox" id="trackpad"> Trackpad</label>
     <button id="hud-toggle" class="btn" type="button" aria-controls="hud-dock" aria-expanded="false" hidden>Radio status</button>
     <button id="reconnect" class="btn" type="button">Reconnect</button>
     <a id="back" class="muted" href="/">Back to the station</a>
   </header>
+  <div id="typing" hidden>
+    <label for="key-input">Type into program</label>
+    <textarea id="key-input" rows="1" inputmode="text" autocapitalize="none" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
+    <button id="keyboard-done" class="btn" type="button">Done</button>
+  </div>
   <div class="screen-workspace">
   <main id="screen-area">
     <div id="screen"></div>
@@ -24,7 +34,7 @@
   </main>
   <aside id="hud-dock" aria-label="Radio status" hidden></aside>
   </div>
-  <p class="pad-help" id="pad-help" hidden>Slide to move the pointer. Tap to click. Hold and slide to drag.</p>
+  <p class="pad-help" id="pad-help" hidden>Slide to move the pointer. Tap to click. Hold to drag. Pinch to zoom. Pan with two fingers.</p>
   <script src="/app.js"></script>
   <script type="module" src="/screen.js"></script>
 </body>

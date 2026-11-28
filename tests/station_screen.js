@@ -76,6 +76,7 @@ class E extends N {
   }
 }
 const doc = {
+  addEventListener() {},
   activeElement: null,
   body: new E("body"),
   createElement: t => new E(t),
@@ -89,11 +90,11 @@ const mk = (tag, id, cls) => { const e = new E(tag); if (id) e.setAttribute("id"
     const src = fs.readFileSync(process.argv[2], "utf8");
     const importLine = /^import RFB from "\.\/vendor\/novnc\/core\/rfb\.js";$/m;
     ok(importLine.test(src), "screen.js imports RFB from ./vendor/novnc/core/rfb.js");
-    const code = src.replace(importLine, "const RFB = globalThis.FakeRFB;").replace(/^import \{ releaseCapture \}.*;$/m, "const releaseCapture = () => {};");
+    const code = src.replace(/^import keysyms .*;$/m, "const keysyms = {lookup: n => n};").replace(importLine, "const RFB = globalThis.FakeRFB;").replace(/^import \{ releaseCapture \}.*;$/m, "const releaseCapture = () => {};");
     const flush2 = () => new Promise(r => setImmediate(r));
     const run = async (hash, info, fail, mobile = false) => {
       doc.body.replaceChildren();
-      for (const [tag, id, cls] of [["strong", "program"], ["span", "radio"], ["span", "state"], ["button", "reconnect", "btn"], ["a", "back"], ["main", "screen-area"], ["div", "screen"], ["span", "pointer"], ["input", "trackpad"], ["label", "pad-label"], ["button", "zoom"], ["button", "hud-toggle"], ["aside", "hud-dock"], ["p", "pad-help"]]) doc.body.append(mk(tag, id, cls));
+      for (const [tag, id, cls] of [["strong", "program"], ["span", "radio"], ["span", "state"], ["button", "reconnect", "btn"], ["a", "back"], ["main", "screen-area"], ["div", "screen"], ["span", "pointer"], ["input", "trackpad"], ["label", "pad-label"], ...["zoom", "zoom-out", "zoom-in", "zoom-fit", "keyboard", "keyboard-done", "typing", "key-input"].map(id => ["div", id]), ["button", "hud-toggle"], ["aside", "hud-dock"], ["p", "pad-help"]]) doc.body.append(mk(tag, id, cls));
       const spawns = []; const rfbs = []; const sockets = [];
       class FakeRFB {
         constructor(target, url, opts) { this.target = target; this.url = url; this.opts = opts; this.listeners = {}; rfbs.push(this); }
@@ -103,7 +104,7 @@ const mk = (tag, id, cls) => { const e = new E(tag); if (id) e.setAttribute("id"
         disconnect() { this.gone = true; this.emit("disconnect"); }
       }
       const sctx = {
-        window: { addEventListener() {} }, matchMedia: () => ({matches: mobile}), document: doc, requestAnimationFrame() {}, console, FakeRFB, decodeURIComponent, Error, JSON,
+        window: { addEventListener() {} }, matchMedia: () => ({matches: mobile}), document: doc, requestAnimationFrame() {}, setTimeout() { return 1; }, clearTimeout() {}, console, FakeRFB, decodeURIComponent, Error, JSON,
         location: { hash, host: "pi" },
         dxb: {
           run(args, input) { spawns.push({ args, input }); return fail ? Promise.reject(fail) : Promise.resolve(JSON.stringify(info)); },

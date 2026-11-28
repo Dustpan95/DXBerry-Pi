@@ -52,7 +52,7 @@
     if (s.recovery_required) return stateView("recovery", "Collection needs recovery", "Collection settings need review. Use the full WSJT-X window in the meantime.", "warn");
     const obs = s.observation;
     if (s.release_paused && !obs) return stateView("paused", "Paused for maintenance", "New status collection is paused. The full program window remains available.", "warn");
-    if ((!s.configured || !s.enabled) && !obs) return stateView("off", "Native status is off", "Status collection is not enabled for this radio. Use the full WSJT-X window.");
+    if ((!s.configured || !s.enabled) && !obs) return stateView("off", "Native status is off", "To see mode, dial frequency and band activity here, stop WSJT-X from the radio card and review its status destination.");
     if (!obs) return stateView("waiting", "Waiting for WSJT-X", "No program updates are available yet.");
     if (obs.Radio !== radio || !integer(obs.Generation) || !integer(obs.Epoch)) return stateView("unavailable", "Status unavailable", "The station's program session could not be verified.", "warn");
     if ((obs.Schema && ![2, 3].includes(obs.Schema)) || (obs.Availability === "live" && ![2, 3].includes(obs.Schema)) || (obs.Availability === "waiting" && obs.Counters && obs.Counters.UnsupportedSchema > 0)) {
@@ -94,7 +94,7 @@
     return view;
   }
 
-  function create({ radio, h, retry, formatFrequency, now = () => performance.now() }) {
+  function create({ radio, h, retry, configure, formatFrequency, now = () => performance.now() }) {
     let target = null, ui = null, frame = null, receivedAt = 0;
     let connected = false, connectedAt = now(), count = ROW_STEP, epoch = "", historyKey = "";
 
@@ -136,6 +136,31 @@
       const status = h("span", { class: "badge muted", role: "status" });
       const retryButton = h("button", { class: "btn small", type: "button", onclick: refresh }, "Refresh status");
       const message = h("p", { class: "muted wsjtx-message" });
+      let fingerprint = "";
+      const feedback = h("p", { class: "hint", role: "status" });
+      const setup = h("button", { class: "btn small", type: "button", onclick: async () => {
+        const approved = fingerprint;
+        fingerprint = "";
+        setup.disabled = true;
+        try {
+          const reply = await configure(approved ? "enable" : "preview", approved ? { fingerprint: approved } : {});
+          if (reply.ok === false) feedback.textContent = [reply.reason, reply.fix].filter(Boolean).join(" ");
+          else if (approved && reply.ok === true) {
+            feedback.textContent = "Collection enabled. Start WSJT-X from the radio card.";
+            retry();
+          } else if (reply.radio === radio && /^[a-f0-9]{64}$/.test(reply.fingerprint) && reply.settings?.Current) {
+            const route = reply.settings.Current;
+            const server = route.Server.Present ? route.Server.Value : "default host";
+            const port = route.Port.Present ? route.Port.Value : "default port";
+            feedback.textContent = `WSJT-X currently sends status to ${server}:${port}. While it runs, DXBerry will receive that stream instead. Stopping WSJT-X restores this destination. The secondary logging destination stays separate.`;
+            fingerprint = reply.fingerprint;
+          } else feedback.textContent = "Could not verify the status destination. Review it again.";
+        } catch (_) { feedback.textContent = "Could not reach the station. Review the destination again."; }
+        finally {
+          setup.disabled = false;
+          setup.textContent = fingerprint ? "Enable status collection" : "Review status destination";
+        }
+      } }, "Review status destination");
       const frequency = h("dd", { class: "wsjtx-frequency" }, "—");
       const mode = h("dd", { class: "wsjtx-mode" }, "—");
       const transmit = h("p", { class: "hint wsjtx-transmit" });
@@ -158,11 +183,11 @@
       } }, "Show older decodes");
       target.replaceChildren(
         h("div", { class: "wsjtx-heading" }, h("h3", { tabindex: "-1" }, "WSJT-X status"), status, h("span", { class: "muted hint" }, "Read-only"), retryButton),
-        h("div", { class: "wsjtx-summary" }, message, warnings,
+        h("div", { class: "wsjtx-summary" }, message, setup, feedback, warnings,
           h("dl", { class: "wsjtx-readouts" }, h("div", {}, h("dt", {}, "Last reported dial · Hz"), frequency), h("div", {}, h("dt", {}, "Last reported mode"), mode)), transmit, reported),
         h("div", { class: "wsjtx-heading wsjtx-activity-heading" }, h("h4", {}, "Band activity"), h("span", { class: "muted hint" }, "Newest received first")),
         region, h("div", { class: "wsjtx-footer" }, range, more, announce));
-      ui = { status, retryButton, message, frequency, mode, transmit, reported, warnings, body, empty, table, region, range, more };
+      ui = { status, retryButton, message, setup, feedback, frequency, mode, transmit, reported, warnings, body, empty, table, region, range, more };
       paint();
     }
 
@@ -189,6 +214,9 @@
       if (ui.status.textContent !== view.label) ui.status.textContent = view.label;
       ui.status.className = `badge ${view.tone}`;
       ui.message.textContent = view.message;
+      ui.setup.hidden = !configure || view.kind !== "off" || !frame?.data?.state?.configured;
+      if (view.kind === "off" && !frame.data.state.configured)
+        ui.message.textContent = "Station setup is required. On the Pi, run sudo /opt/dxberry/bin/dxberryd -wsjtx-initialize once, then refresh status.";
       ui.retryButton.disabled = !connected;
       const st = view.status;
       ui.frequency.textContent = st && integer(st.DialFrequency) && st.DialFrequency >= 0 ? formatFrequency(st.DialFrequency) : "—";

@@ -170,7 +170,12 @@ body.screen-page { margin: 0; max-width: none; height: 100vh; height: 100dvh; pa
 }
 #screen-area { position: relative; flex: 1; min-height: 0; min-width: 0; padding: 0; margin: 0; max-width: none; overflow: hidden; }
 #screen { width: 100%; height: 100%; background: #000; overflow: hidden; }
-#screen-area.trackpad { touch-action: none; }
+#screen { touch-action: none; overscroll-behavior: contain; }
+#zoom:not([hidden]), #typing:not([hidden]) { display: flex; align-items: center; gap: 3px; }
+#zoom .btn { min-width: 40px; font-variant-numeric: tabular-nums; }
+#typing { gap: 8px; padding: 4px 8px; background: var(--card); }
+#key-input { flex: 1; min-width: 0; resize: none; font: 16px/1.4 sans-serif; }
+body.screen-page { height: var(--viewer-height, 100dvh); }
 #pointer { position: absolute; pointer-events: none; width: 14px; height: 14px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 0 1px black, inset 0 0 0 1px black; transform: translate(-50%, -50%); }
 .pad-help { margin: 0; padding: 4px 12px; font-size: 12px; text-align: center; }
 @media (max-width: 700px), (pointer: coarse) {

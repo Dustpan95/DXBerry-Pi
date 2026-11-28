@@ -3,7 +3,7 @@ const fs = require("fs");
 const vm = require("vm");
 const path = require("path");
 const assert = require("assert/strict");
-const { chromium } = require("playwright");
+const { chromium, webkit, devices } = require("playwright");
 const base = "http://127.0.0.1:8090";
 const output = process.env.DXB_BROWSER_OUTPUT || "/tmp/dxberry-wsjtx-browser";
 fs.mkdirSync(output, { recursive: true });
@@ -47,6 +47,13 @@ function contrast(a, b) {
   const errors = [], mutations = [];
   const evidence = [];
   try {
+    if (process.env.DXB_BROWSER_ENGINE === "webkit") {
+      browser = await webkit.launch();
+      const phone = await browser.newContext(devices["iPhone 13"]);
+      await require("./browser-radio-monitor").mobileViewer(phone, base);
+      console.log("ok: mobile WebKit zoom, pan, keyboard events and shared desktop reconnect");
+      return;
+    }
     browser = await chromium.launch({ executablePath: process.env.DXB_CHROMIUM || "/usr/bin/chromium", headless: true, args: ["--no-sandbox"] });
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     page = await context.newPage();
@@ -225,7 +232,28 @@ function contrast(a, b) {
     assert.deepEqual(mutations, []);
     assert.equal(await page.evaluate(() => window.fixtureWatches.every(m => m.type === "watch")), true);
     assert.deepEqual(errors, []);
-    evidence.push("zero radio/collection mutation requests or transmitter keying");
+    evidence.push("zero radio/collection mutation requests or transmitter keying during observation");
+    await setState({ configured: true, enabled: false, release_paused: false, recovery_required: false });
+    await waitKind("off");
+    const approval = "d".repeat(64);
+    const actions = [];
+    await page.route("**/api/radio/radio1/wsjtx/*", route => {
+      const action = new URL(route.request().url()).pathname.split("/").pop();
+      actions.push([action, route.request().postDataJSON()]);
+      return route.fulfill({ json: action === "preview"
+        ? { radio: "radio1", fingerprint: approval, settings: { Current: {
+          Server: { Present: true, Value: "127.0.0.1" }, Port: { Present: true, Value: "2237" } } } }
+        : { ok: true } });
+    });
+    await panel.getByRole("button", { name: "Review status destination" }).click();
+    await panel.getByText(/currently sends status to 127.0.0.1:2237/).waitFor();
+    assert.deepEqual(actions, [["preview", {}]]);
+    await panel.getByRole("button", { name: "Enable status collection" }).click();
+    await panel.getByText(/Collection enabled/).waitFor();
+    assert.deepEqual(actions, [["preview", {}], ["enable", { fingerprint: approval }]]);
+    assert.deepEqual(errors, []);
+    evidence.push("explicit approval of the reviewed WSJT-X destination");
+    evidence.push("real noVNC zoom, pan, scaled pointer, keyboard and foreground/network reconnect");
     fs.writeFileSync(path.join(output, "checks.json"), JSON.stringify({ passed: evidence, errors, mutations }, null, 2));
     evidence.forEach(text => console.log("ok: " + text));
   } catch (error) {
