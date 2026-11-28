@@ -318,6 +318,7 @@
     byId("menu").setAttribute("aria-expanded", open ? "true" : "false");
   }
 
+  if (!byId("menu")) return; // Standalone program and radio-monitor windows use only the shared API.
   byId("menu").addEventListener("click", () => setMenu(byId("menu-list").hidden));
   byId("menu-list").addEventListener("click", () => setMenu(false));
   byId("logout").addEventListener("click", () => dxb.logout());

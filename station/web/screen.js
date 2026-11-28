@@ -181,6 +181,35 @@ function scrRecheck(run) {
   });
 }
 
+// Removing the iframe releases its read-only watch while leaving VNC connected.
+const hudButton = scrEl("hud-toggle");
+const hudDock = scrEl("hud-dock");
+let hudRadio = "";
+let hudWanted = false;
+try { hudWanted = localStorage.getItem("dxb.screen.radioStatus") === "open"; } catch (_) { /* storage unavailable */ }
+
+function showHud(radio) {
+  hudRadio = radio;
+  hudButton.hidden = !radio;
+  const open = Boolean(radio && hudWanted);
+  hudButton.setAttribute("aria-expanded", String(open));
+  hudDock.hidden = !open;
+  if (open) {
+    const frame = document.createElement("iframe");
+    frame.title = "Radio status";
+    frame.src = "/radio-monitor#" + encodeURIComponent(radio);
+    hudDock.replaceChildren(frame);
+  } else {
+    hudDock.replaceChildren();
+  }
+}
+hudButton.addEventListener("click", () => {
+  hudWanted = !hudWanted;
+  try { localStorage.setItem("dxb.screen.radioStatus", hudWanted ? "open" : "closed"); } catch (_) { /* optional */ }
+  showHud(hudRadio);
+  requestAnimationFrame(drawPointer);
+});
+
 function scrShow(info, run) {
   const label = info.label || info.app || scr.session;
   const radio = info.radio_label || info.radio || "";
@@ -188,6 +217,7 @@ function scrShow(info, run) {
   scrEl("radio").textContent = radio;
   document.title = label + " · " + radio;
   if (info.state === "running" && info.socket) {
+    showHud(/^[a-z][a-z0-9]{0,11}$/.test(info.radio) ? info.radio : "");
     scrEl("screen").replaceChildren();
     scrConnect(run);
     return;
@@ -204,6 +234,7 @@ function scrStart() {
   scr.run += 1;
   const run = scr.run;
   scrDrop();
+  showHud("");
   scrEl("state").textContent = "Reading";
   dxb.run([SCR_APP, "screen", scr.session, "--json"]).then(text => {
     if (run !== scr.run) return;

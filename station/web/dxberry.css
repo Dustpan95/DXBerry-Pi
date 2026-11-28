@@ -160,6 +160,14 @@ pre.log { max-height: 260px; overflow: auto; margin: 8px 0 0; padding: 8px 10px;
 body.screen-page { margin: 0; max-width: none; height: 100vh; height: 100dvh; padding: 0; display: flex; flex-direction: column; }
 .screenbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 16px; background: var(--card); border-bottom: 1px solid var(--line); }
 .screenbar a { margin-left: auto; }
+.screen-workspace { flex: 1; display: flex; min-height: 0; min-width: 0; }
+#hud-dock { flex: 0 0 clamp(240px, 24vw, 330px); border-left: 1px solid var(--line); }
+#hud-dock iframe { display: block; border: 0; width: 100%; height: 100%; }
+#hud-toggle[aria-expanded="true"] { background: var(--text); color: var(--card); }
+@media (max-width: 700px) {
+  .screen-workspace { flex-direction: column; }
+  #hud-dock { flex: 0 0 min(34dvh, 215px); border-left: 0; border-top: 1px solid var(--line); }
+}
 #screen-area { position: relative; flex: 1; min-height: 0; min-width: 0; padding: 0; margin: 0; max-width: none; overflow: hidden; }
 #screen { width: 100%; height: 100%; background: #000; overflow: hidden; }
 #screen-area.trackpad { touch-action: none; }

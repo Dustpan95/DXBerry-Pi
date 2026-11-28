@@ -53,7 +53,7 @@ type Caps struct {
 const dummyWhy = "rig control is Hamlib's dummy model: this radio has no CAT"
 
 // probedLevels are read with get_level to see what the radio reports.
-var probedLevels = []string{"STRENGTH", "SWR", "ALC", "RFPOWER", "RFPOWER_METER_WATTS", "AF", "RF", "SQL"}
+var probedLevels = []string{"STRENGTH", "SWR", "ALC", "RFPOWER", "RFPOWER_METER_WATTS", "AF", "RF", "SQL", "VD_METER", "ID_METER", "TEMP_METER", "COMP_METER"}
 
 // settableControls are the levels the page offers as controls.
 var settableControls = []string{"RFPOWER", "AF", "RF", "SQL"}
@@ -152,15 +152,8 @@ func levelNames(s string) []string {
 // numericReply reports whether a get_level reply carries a number, with or
 // without rigctld's "Level Value:" label.
 func numericReply(r Reply) bool {
-	for _, l := range r.Lines {
-		if i := strings.LastIndex(l, ":"); i >= 0 {
-			l = l[i+1:]
-		}
-		if _, err := strconv.ParseFloat(strings.TrimSpace(l), 64); err == nil {
-			return true
-		}
-	}
-	return false
+	_, ok := number(r)
+	return ok
 }
 
 // notReadable are the rigctld codes that say a level cannot be read: invalid (-1), not
@@ -230,6 +223,12 @@ var modelRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 // <state dir>/rigcaps/). The caller loads before Discover and stores after.
 type CapsCache struct{ Dir string }
 
+// Older probes did not check voltage, current, temperature or compression.
+type cachedCaps struct {
+	Caps
+	MeterSchema int `json:"meter_schema"`
+}
+
 func (cc CapsCache) path(model string) (string, bool) {
 	if !modelRe.MatchString(model) {
 		return "", false
@@ -252,11 +251,11 @@ func (cc CapsCache) Load(model string) (Caps, bool) {
 	if err != nil {
 		return Caps{}, false
 	}
-	var c Caps
-	if json.Unmarshal(b, &c) != nil || c.Probed.IsZero() || time.Since(c.Probed) > capsMaxAge || time.Until(c.Probed) > 10*time.Minute {
+	var c cachedCaps
+	if json.Unmarshal(b, &c) != nil || c.MeterSchema != 1 || c.Probed.IsZero() || time.Since(c.Probed) > capsMaxAge || time.Until(c.Probed) > 10*time.Minute {
 		return Caps{}, false
 	}
-	return c, true
+	return c.Caps, true
 }
 
 // Store writes caps for model, mode 0644, replacing any earlier file.
@@ -268,7 +267,7 @@ func (cc CapsCache) Store(model string, c Caps) error {
 	if err := os.MkdirAll(cc.Dir, 0o755); err != nil {
 		return err
 	}
-	b, err := json.Marshal(c)
+	b, err := json.Marshal(cachedCaps{Caps: c, MeterSchema: 1})
 	if err != nil {
 		return err
 	}

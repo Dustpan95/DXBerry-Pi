@@ -93,7 +93,7 @@ const mk = (tag, id, cls) => { const e = new E(tag); if (id) e.setAttribute("id"
     const flush2 = () => new Promise(r => setImmediate(r));
     const run = async (hash, info, fail, mobile = false) => {
       doc.body.replaceChildren();
-      for (const [tag, id, cls] of [["strong", "program"], ["span", "radio"], ["span", "state"], ["button", "reconnect", "btn"], ["a", "back"], ["main", "screen-area"], ["div", "screen"], ["span", "pointer"], ["input", "trackpad"], ["label", "pad-label"], ["button", "zoom"], ["p", "pad-help"]]) doc.body.append(mk(tag, id, cls));
+      for (const [tag, id, cls] of [["strong", "program"], ["span", "radio"], ["span", "state"], ["button", "reconnect", "btn"], ["a", "back"], ["main", "screen-area"], ["div", "screen"], ["span", "pointer"], ["input", "trackpad"], ["label", "pad-label"], ["button", "zoom"], ["button", "hud-toggle"], ["aside", "hud-dock"], ["p", "pad-help"]]) doc.body.append(mk(tag, id, cls));
       const spawns = []; const rfbs = []; const sockets = [];
       class FakeRFB {
         constructor(target, url, opts) { this.target = target; this.url = url; this.opts = opts; this.listeners = {}; rfbs.push(this); }
@@ -103,7 +103,7 @@ const mk = (tag, id, cls) => { const e = new E(tag); if (id) e.setAttribute("id"
         disconnect() { this.gone = true; this.emit("disconnect"); }
       }
       const sctx = {
-        window: { addEventListener() {} }, matchMedia: () => ({matches: mobile}), document: doc, console, FakeRFB, decodeURIComponent, Error, JSON,
+        window: { addEventListener() {} }, matchMedia: () => ({matches: mobile}), document: doc, requestAnimationFrame() {}, console, FakeRFB, decodeURIComponent, Error, JSON,
         location: { hash, host: "pi" },
         dxb: {
           run(args, input) { spawns.push({ args, input }); return fail ? Promise.reject(fail) : Promise.resolve(JSON.stringify(info)); },
@@ -128,6 +128,10 @@ const mk = (tag, id, cls) => { const e = new E(tag); if (id) e.setAttribute("id"
     r = await run("#wsjtx-radio2", runningInfo, false, true);
     r.rfbs[0].emit("connect");
     ok(r.rfbs[0].scaleViewport && !r.rfbs[0].resizeSession, "phone fits the desktop without shrinking the remote session");
+    r.el("hud-toggle").click();
+    ok(r.el("hud-dock").children[0].src === "/radio-monitor#radio2" && !r.rfbs[0].gone, "radio status opens for the session radio without disconnecting VNC");
+    r.el("hud-toggle").click();
+    ok(r.el("hud-dock").hidden && !r.el("hud-dock").children.length, "closing radio status removes its watch");
     ok(r.el("trackpad").checked && !r.el("pad-label").hidden, "phone starts with trackpad controls");
     r.el("trackpad").checked = false;
     r.el("trackpad").fire("change");
