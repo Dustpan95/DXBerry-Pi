@@ -288,7 +288,15 @@ and `sudo dxberry-logbook get`.
 Under **Programs**, install the program you want. On the FT-991 radio card, use
 **Switch program**, choose the program, then open its window. In the phone viewer,
 slide one finger to move the pointer, tap to click, or hold and slide to drag.
-**Actual size** enlarges the desktop and **Fit screen** brings the whole window back.
+Pinch or tap **+** and **−** to zoom, pan with two fingers, and tap the percentage to fit the whole desktop. Tap a field in the program, then **Keyboard** to type. Returning to the viewer after switching apps reconnects to the program on the Pi.
+
+For WSJT-X band activity on the radio page, initialize the station once with
+`sudo /opt/dxberry/bin/dxberryd -wsjtx-initialize` if prompted. On the radio
+card choose **Radio controls → Stop**, then **WSJT-X status → Review status
+destination**. Check the existing primary UDP destination and select **Enable
+status collection**. Return to the radio card and select **Start**. WSJT-X
+uses the local collector while running and restores its original destination
+on stop. The separate Wavelog logging port is unaffected.
 
 Choose **Radio status** in the program toolbar to monitor the radio beside the
 desktop or below it on a phone. **Pop out** opens the same readouts in a separate

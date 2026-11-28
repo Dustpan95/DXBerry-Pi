@@ -3,6 +3,7 @@ const assert = require("assert/strict");
 
 // Exercise the shipped program page, dock, and monitor against read-only CAT fixtures.
 module.exports = async function radioMonitor(context, base) {
+  await mobileViewer(context, base);
   const page = await context.newPage();
   const errors = [], writes = [];
   page.on("pageerror", e => errors.push(e.message));
@@ -67,3 +68,83 @@ module.exports = async function radioMonitor(context, base) {
     assert.deepEqual(writes,[]);
   } finally { await page.close(); }
 };
+
+// Exercise the vendored noVNC implementation, including its framebuffer-to-input scaling.
+async function mobileViewer(context, base) {
+  const page = await context.newPage();
+  const errors = [], keys = [], presses = [], commands = [];
+  let connections = 0;
+  page.on("pageerror", e => errors.push(e.message));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route("**/api/cli/dxberry-app", r => {
+    commands.push(r.request().postDataJSON().args);
+    return r.fulfill({ json: { exit: 0, stdout: JSON.stringify({ state: "running", access: true,
+      radio: "radio1", label: "WSJT-X", socket: "fixture" }) } });
+  });
+  page.on("websocket", ws => {
+    if (!ws.url().endsWith("/api/vnc/wsjtx-radio1")) return;
+    connections++;
+    ws.on("framesent", ({ payload }) => {
+      const data = Buffer.from(payload);
+      if (data[0] === 4 && data[1] === 1) keys.push(data.readUInt32BE(4));
+      if (data[0] === 5 && data[1]) presses.push([data.readUInt16BE(2), data.readUInt16BE(4)]);
+    });
+  });
+  try {
+    await page.goto(base + "/screen#wsjtx-radio1");
+    const connected = () => page.getByText("Connected", { exact: true }).waitFor();
+    await connected();
+    const canvas = page.locator("#screen canvas");
+    const fitted = await canvas.boundingBox();
+    assert(fitted.width <= 391 && fitted.width > 300);
+    await page.getByRole("button", { name: "Zoom in" }).click();
+    assert((await canvas.boundingBox()).width > fitted.width * 1.4);
+    await page.locator("#zoom-fit").click();
+    const gestures = async (type, points) => canvas.evaluate((target, { type, points }) => {
+      const touches = points.map(([clientX, clientY], identifier) => new Touch({ target, clientX, clientY, identifier }));
+      target.dispatchEvent(new TouchEvent(type, { touches, changedTouches: touches, bubbles: true, cancelable: true }));
+    }, { type, points });
+    const cy = fitted.y + fitted.height / 2;
+    for (const direct of [false, true]) {
+      if (direct) await page.locator("#trackpad").uncheck();
+      await gestures("touchstart", [[165,cy],[225,cy]]);
+      await gestures("touchmove", [[105,cy],[285,cy]]);
+      await gestures("touchmove", [[75,cy],[255,cy]]);
+      await gestures("touchend", [[75,cy]]);
+      await gestures("touchend", []);
+      assert((await canvas.boundingBox()).width > fitted.width * 2.8);
+      assert(await canvas.evaluate(c => c.parentElement.scrollLeft > 0));
+      if (!direct) await page.locator("#zoom-fit").click();
+    }
+    assert.equal(presses.length, 0, "pinching does not click the remote desktop");
+    const rect = await canvas.boundingBox();
+    await gestures("touchstart", [[180,cy]]);
+    await gestures("touchend", []);
+    await page.getByRole("button", { name: "Keyboard", exact: true }).click();
+    assert(await page.locator("#key-input").evaluate(e => document.activeElement === e));
+    await page.keyboard.insertText("CQ");
+    await page.keyboard.press("Backspace"); await page.keyboard.press("Enter");
+    await page.getByRole("button", { name: "Done" }).click();
+    assert.deepEqual(keys, [67,81,0xff08,0xff0d]);
+    assert.equal(presses.length, 1);
+    assert(Math.abs(presses[0][0] - (180 - rect.x) * 1200 / rect.width) <= 2);
+    const zoomed = rect.width;
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", { value: true, configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+      Object.defineProperty(document, "hidden", { value: false, configurable: true });
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await connected();
+    assert.equal(connections, 2);
+    assert.equal((await canvas.boundingBox()).width, zoomed);
+    await page.request.post(base + "/fixture/drop-viewer");
+    await page.waitForFunction(() => document.querySelector("#state").textContent !== "Connected");
+    await connected();
+    assert.equal(connections, 3);
+    assert(commands.every(a => JSON.stringify(a) === JSON.stringify(["screen", "wsjtx-radio1", "--json"])));
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+}
